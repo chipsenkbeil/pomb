@@ -24,7 +24,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let path = dir.path().join("bin.redb");
     let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
     let user_id = db.create_user("admin").expect("create user");
-    let session = db.create_session(&user_id).expect("session");
+    let session = db.create_session(&user_id, "").expect("session");
     let board_id = db.create_board(&user_id, "Bin").expect("board");
     let col_todo = db.create_column(&board_id, "Todo", None).expect("column");
     let col_done = db

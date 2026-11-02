@@ -526,7 +526,7 @@ async fn a_browser_edit_should_report_a_user() {
     settle().await;
     let cookie = format!(
         "session={}",
-        fx.db.create_session(&fx.admin).expect("session")
+        fx.db.create_session(&fx.admin, "").expect("session")
     );
     let patched = call(
         &fx.app,

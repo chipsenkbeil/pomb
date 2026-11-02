@@ -13,11 +13,12 @@ use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
 use crate::auth::{PENDING_ROUTES, new_api_token_record, required_permission};
 use crate::db::{
-    AccountDb, BootstrapToken, Db, FencedWrite, FieldCreateOutcome, LinkAddOutcome, NewComment,
+    AccountDb, BootstrapToken, Change, Db, FeedAdd, FencedWrite, FieldCreateOutcome,
+    LinkAddOutcome, NewComment,
 };
 use crate::models::{
     AccountId, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind, FieldOwner,
-    InstanceMode, LinkKind,
+    InstanceMode, LinkKind, SubtaskTemplate,
 };
 
 /// Largest response body a test reads.
@@ -36,6 +37,7 @@ const SUB_ID_PARAMS: &[&str] = &[
     "comment_id",
     "attachment_id",
     "color_id",
+    "feed_id",
 ];
 
 /// The ids one account's requests name.
@@ -67,12 +69,16 @@ pub(super) struct Ids {
     attachment: String,
     /// A color in the palette of [`Ids::board`].
     color: String,
+    /// A calendar feed of [`Ids::board`].
+    feed: String,
     /// A custom field on [`Ids::board`].
     field: String,
     /// A time entry logged on [`Ids::task`].
     entry: String,
     /// A template saved from [`Ids::board`].
     template: String,
+    /// A subtask template in the account's settings.
+    subtask_template: String,
     /// The account's API token.
     token: String,
     /// The account's passkey.
@@ -81,7 +87,7 @@ pub(super) struct Ids {
 
 impl Ids {
     /// Returns every id, for blanking them out of an answer.
-    fn all(&self) -> [&str; 18] {
+    fn all(&self) -> [&str; 20] {
         [
             &self.account,
             &self.board,
@@ -96,9 +102,11 @@ impl Ids {
             &self.comment,
             &self.attachment,
             &self.color,
+            &self.feed,
             &self.field,
             &self.entry,
             &self.template,
+            &self.subtask_template,
             &self.token,
             &self.passkey,
         ]
@@ -223,6 +231,21 @@ fn seed_field(db: &Db, board: &str) -> String {
     }
 }
 
+/// Adds a calendar feed to `board` and returns its id.
+fn seed_feed(db: &Db, board: &str, name: &str) -> String {
+    match db
+        .add_board_feed(
+            board,
+            &format!("{name} feed"),
+            &format!("{name}-feed-token"),
+        )
+        .expect("feed")
+    {
+        FeedAdd::Added(feed) => feed.id,
+        other => panic!("feed not added: {other:?}"),
+    }
+}
+
 /// Seeds one of everything for `account`, on two boards, beside its `token` and `passkey`.
 pub(super) fn seed(
     db: &Db,
@@ -265,12 +288,21 @@ pub(super) fn seed(
         .save_board_as_template(account, &board, &format!("{name} template"), "")
         .expect("template")
         .expect("board");
+    let subtask_template = uuid::Uuid::new_v4().to_string();
+    let mut settings = db.settings(account).expect("settings");
+    settings.subtask_templates.push(SubtaskTemplate {
+        id: subtask_template.clone(),
+        name: format!("{name} checklist"),
+        subtasks: vec!["Step".to_string()],
+    });
+    db.update_settings(account, &settings).expect("settings");
     Ids {
         account: account.as_str().to_string(),
         link: seed_link(&owned, &task, &task2),
         comment: seed_comment(&owned, &task, name),
         attachment: seed_attachment(&owned, &task),
         color: db.list_colors(&board).expect("colors")[1].id.clone(),
+        feed: seed_feed(db, &board, name),
         field: seed_field(db, &board),
         entry: db.create_entry(&task, 5, "secret note").expect("entry"),
         board,
@@ -282,6 +314,7 @@ pub(super) fn seed(
         binned,
         subtask,
         template,
+        subtask_template,
         token,
         passkey,
     }
@@ -352,8 +385,12 @@ async fn seeded() -> Seeded {
     let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
     let a = db.create_user("alice").expect("alice");
     let b = db.create_user("bob").expect("bob");
-    let cookie =
-        |account: &AccountId| format!("session={}", db.create_session(account).expect("session"));
+    let cookie = |account: &AccountId| {
+        format!(
+            "session={}",
+            db.create_session(account, "").expect("session")
+        )
+    };
     let (a_cookie, b_cookie) = (cookie(&a), cookie(&b));
     let (a_token_id, a_token) = seed_token(&db, &a, "Alice agent");
     let (b_token_id, b_token) = seed_token(&db, &b, "Bob agent");
@@ -618,6 +655,7 @@ fn param<'a>(class: RouteClass, path: &str, name: &str, main: &'a Ids, sub: &'a 
         "comment_id" => &sub.comment,
         "attachment_id" => &sub.attachment,
         "color_id" => &sub.color,
+        "feed_id" => &sub.feed,
         "index" => "0",
         "id" => match class {
             RouteClass::Board => &main.board,
@@ -658,6 +696,7 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
         }
         (&Method::POST, "/api/boards/:id/save-as-template") => json!({"name": "Saved"}),
         (&Method::POST, "/api/boards/:id/colors") => json!({"value": "yellow"}),
+        (&Method::POST, "/api/boards/:id/calendar-feeds") => json!({"label": "Sneak"}),
         (&Method::PATCH, "/api/boards/:id/colors/:color_id") => json!({"label": "Renamed"}),
         (&Method::POST, "/api/boards/:id/colors/copy-from") => {
             json!({"source_board_id": body_ids.board2})
@@ -667,13 +706,23 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
             json!({"column_id": body_ids.column, "position": 0})
         }
         (&Method::POST, "/api/tasks/:id/watch") => json!({"watched": true}),
+        (&Method::POST, "/api/boards/:id/tasks/bulk") => {
+            json!({"task_ids": [body_ids.task], "action": "move", "column_id": body_ids.column})
+        }
         (&Method::POST, "/api/tasks/:id/checklist/:index") => {
             json!({"checked": true, "description_hash": "x"})
         }
         (&Method::POST, "/api/tasks/:id/time") => json!({"minutes": 5}),
         (&Method::POST, "/api/tasks/:id/subtasks") => json!({"name": "Sub"}),
+        (&Method::POST, "/api/tasks/:id/subtasks/template") => json!({"name": "Checklist"}),
+        (&Method::POST, "/api/tasks/:id/subtasks/from-template") => {
+            json!({"template_id": body_ids.subtask_template})
+        }
         (&Method::PUT, "/api/tasks/:id/subtasks/order") => json!({"order": []}),
         (&Method::PATCH, "/api/tasks/:id/subtasks/:sub_id") => json!({"done": true}),
+        (&Method::POST, "/api/tasks/:id/subtasks/:sub_id/convert") => {
+            json!({"column_id": body_ids.column, "relation": "related"})
+        }
         (&Method::POST, "/api/tasks/:id/links") => {
             json!({"kind": "blocks", "target_id": body_ids.task2})
         }
@@ -724,9 +773,11 @@ fn missing() -> Ids {
         comment: fresh(),
         attachment: fresh(),
         color: fresh(),
+        feed: fresh(),
         field: fresh(),
         entry: fresh(),
         template: fresh(),
+        subtask_template: fresh(),
         token: fresh(),
         passkey: fresh(),
     }
@@ -1212,6 +1263,8 @@ fn body_id_cases(b: &Ids) -> Vec<(Method, String, BodyOf)> {
     let b_task_uri = |rest: &str| format!("/api/tasks/{}{rest}", b.task);
     let b_column = b.column.clone();
     let b_move_column = b.column.clone();
+    let b_bulk_task = b.task.clone();
+    let b_color_task = b.task.clone();
     vec![
         (
             Method::POST,
@@ -1273,6 +1326,32 @@ fn body_id_cases(b: &Ids) -> Vec<(Method, String, BodyOf)> {
             Box::new(
                 move |ids: &Ids| json!({"column_id": b_move_column, "swimlane_id": ids.lane, "position": 0}),
             ),
+        ),
+        (
+            Method::POST,
+            format!("/api/boards/{}/tasks/bulk", b.board),
+            Box::new(
+                |ids: &Ids| json!({"task_ids": [ids.task], "action": "move", "column_id": ids.column}),
+            ),
+        ),
+        (
+            Method::POST,
+            format!("/api/boards/{}/tasks/bulk", b.board),
+            Box::new(
+                move |ids: &Ids| json!({"task_ids": [b_bulk_task], "action": "move", "column_id": ids.column}),
+            ),
+        ),
+        (
+            Method::POST,
+            format!("/api/boards/{}/tasks/bulk", b.board),
+            Box::new(
+                move |ids: &Ids| json!({"task_ids": [b_color_task], "action": "color", "color_id": ids.color}),
+            ),
+        ),
+        (
+            Method::POST,
+            b_task_uri(&format!("/subtasks/{}/convert", b.subtask)),
+            Box::new(|ids: &Ids| json!({"column_id": ids.column, "relation": "related"})),
         ),
         (
             Method::PATCH,
@@ -1705,6 +1784,7 @@ fn route_of(uri: &str) -> &'static str {
         (Some("tasks"), "tasks") => "/api/tasks",
         (Some("tasks"), "links") => "/api/tasks/:id/links",
         (Some("tasks"), "move") => "/api/tasks/:id/move",
+        (Some("tasks"), "convert") => "/api/tasks/:id/subtasks/:sub_id/convert",
         (Some("tasks"), _) => "/api/tasks/:id",
         (Some("timer"), "start") => "/api/timer/start",
         (Some("timer"), _) => "/api/timer/retarget",
@@ -1713,6 +1793,7 @@ fn route_of(uri: &str) -> &'static str {
         (Some("columns"), _) => "/api/columns",
         (Some("swimlanes"), _) => "/api/swimlanes",
         (Some("boards"), "copy-from") => "/api/boards/:id/colors/copy-from",
+        (Some("boards"), "bulk") => "/api/boards/:id/tasks/bulk",
         other => panic!("{uri}: no route for {other:?}"),
     }
 }
@@ -1915,8 +1996,16 @@ async fn calendar_feed_should_serve_only_its_board() {
     fx.db
         .set_task_due(&hidden, Some("2030-01-01T10:00:00Z"), None)
         .expect("due");
-    let link = format!("/api/boards/{}/calendar-feed", fx.a_ids.board);
-    let (status, text) = send(&fx.app, Who::Token(&fx.a_token), &Method::POST, &link, None).await;
+    let link = format!("/api/boards/{}/calendar-feeds", fx.a_ids.board);
+    let label = Payload::Json(json!({"label": "Phone"}));
+    let (status, text) = send(
+        &fx.app,
+        Who::Token(&fx.a_token),
+        &Method::POST,
+        &link,
+        Some(&label),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{text}");
     let feed: Value = serde_json::from_str(&text).expect("json");
     let path = feed["path"].as_str().expect("feed path").to_string();
@@ -1929,6 +2018,203 @@ async fn calendar_feed_should_serve_only_its_board() {
 
     let (status, _) = send(&fx.app, Who::Token(&fx.b_token), &Method::GET, &link, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "B cannot read A's feed link");
+}
+
+/// Gives A's two tasks a due date each and A's first task's subtask one.
+fn due_dates_of_a(fx: &Accounts) {
+    let owned = fx.db.account(&fx.a);
+    for (task, due) in [
+        (&fx.a_ids.task, "2030-01-10T10:00:00Z"),
+        (&fx.a_ids.task2, "2030-03-01T10:00:00Z"),
+    ] {
+        let proof = owned.task(task).expect("read").expect("task");
+        owned
+            .apply_task_change(&proof, Actor::SYSTEM, |row| {
+                row.due_at = Some(due.to_string());
+                if let Some(sub) = row.subtasks.first_mut() {
+                    sub.due_at = Some("2030-01-20T10:00:00Z".to_string());
+                }
+                ((), true)
+            })
+            .expect("due")
+            .expect("task");
+    }
+}
+
+/// The export holds a board's due dates in the range for the chosen due date type, as CSV.
+#[tokio::test]
+async fn calendar_export_should_write_the_due_dates_in_range_for_the_chosen_type() {
+    let fx = accounts().await;
+    due_dates_of_a(&fx);
+    let export = |query: &str| {
+        let uri = format!(
+            "/api/calendar-export?boards={}&format=csv&{query}",
+            fx.a_ids.board
+        );
+        let app = fx.app.clone();
+        let token = fx.a_token.clone();
+        async move { send(&app, Who::Token(&token), &Method::GET, &uri, None).await }
+    };
+    let (status, all) = export("from=2030-01-01&to=2030-01-31").await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    assert!(all.contains("\"Task\",\"Task\""), "{all}");
+    assert!(all.contains("2030-01-10T10:00:00Z"), "{all}");
+    assert!(all.contains("\"Subtask\",\"Task\""), "{all}");
+    assert!(!all.contains("2030-03-01"), "outside the range: {all}");
+
+    let (_, tasks) = export("from=2030-01-01&to=2030-12-31&type=task").await;
+    assert!(tasks.contains("2030-03-01T10:00:00Z"), "{tasks}");
+    assert!(!tasks.contains("\"Subtask\",\"Task\""), "{tasks}");
+
+    let (_, subtasks) = export("type=subtask").await;
+    assert!(subtasks.contains("2030-01-20T10:00:00Z"), "{subtasks}");
+    assert!(!subtasks.contains("\"Task\",\"Task\""), "{subtasks}");
+    assert!(!subtasks.contains("2030-01-10T10:00:00Z"), "{subtasks}");
+}
+
+/// The Excel export is a zip workbook that holds the same rows.
+#[tokio::test]
+async fn calendar_export_should_write_an_excel_workbook() {
+    let fx = accounts().await;
+    due_dates_of_a(&fx);
+    let uri = format!("/api/calendar-export?boards={}", fx.a_ids.board);
+    let request = Request::builder()
+        .uri(&uri)
+        .header("authorization", format!("Bearer {}", fx.a_token))
+        .body(Body::empty())
+        .expect("request");
+    let response = fx.app.clone().oneshot(request).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["content-type"],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    assert!(
+        response.headers()["content-disposition"]
+            .to_str()
+            .expect("header")
+            .contains("due-dates.xlsx")
+    );
+    let bytes = to_bytes(response.into_body(), MAX_BODY_BYTES)
+        .await
+        .expect("body");
+    assert_eq!(&bytes[..4], b"PK\x03\x04");
+    let text = String::from_utf8_lossy(&bytes);
+    for part in [
+        "xl/workbook.xml",
+        "xl/worksheets/sheet1.xml",
+        "2030-01-10T10:00:00Z",
+    ] {
+        assert!(text.contains(part), "{part}");
+    }
+}
+
+/// Another account's board, alone or beside one's own, looks as missing as an absent one in an
+/// export, and a bad query is refused.
+#[tokio::test]
+async fn calendar_export_should_look_missing_for_another_accounts_board() {
+    let fx = accounts().await;
+    due_dates_of_a(&fx);
+    let absent = missing();
+    let get = |query: String, who| {
+        let app = fx.app.clone();
+        async move {
+            send(
+                &app,
+                who,
+                &Method::GET,
+                &format!("/api/calendar-export?{query}"),
+                None,
+            )
+            .await
+        }
+    };
+    for who in [Who::Token(&fx.b_token), Who::Session(&fx.b_cookie)] {
+        let (foreign, foreign_text) = get(format!("boards={}", fx.a_ids.board), who).await;
+        let (gone, gone_text) = get(format!("boards={}", absent.board), who).await;
+        assert_eq!(foreign, StatusCode::NOT_FOUND, "{foreign_text}");
+        assert_eq!(
+            (foreign, without_ids(&foreign_text, &[&fx.a_ids])),
+            (gone, without_ids(&gone_text, &[&absent]))
+        );
+        let (mixed, mixed_text) = get(
+            format!("boards={},{}&format=csv", fx.b_ids.board, fx.a_ids.board),
+            who,
+        )
+        .await;
+        assert_eq!(mixed, StatusCode::NOT_FOUND, "{mixed_text}");
+        assert!(!mixed_text.contains("2030"), "{mixed_text}");
+    }
+    let (own, _) = get(
+        format!("boards={}&format=csv", fx.b_ids.board),
+        Who::Token(&fx.b_token),
+    )
+    .await;
+    assert_eq!(own, StatusCode::OK);
+    for query in [
+        "boards=".to_string(),
+        format!("boards={}&format=pdf", fx.a_ids.board),
+        format!("boards={}&type=weekly", fx.a_ids.board),
+        format!("boards={}&from=2030-13-40", fx.a_ids.board),
+        format!("boards={}&from=2030-02-01&to=2030-01-01", fx.a_ids.board),
+    ] {
+        let (status, text) = get(query.clone(), Who::Token(&fx.a_token)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {text}");
+    }
+}
+
+#[tokio::test]
+async fn calendar_export_should_refuse_a_board_outside_the_token_set() {
+    let assigned = assigned().await;
+    let fx = open(&assigned.seeded);
+    let who = Who::Token(&assigned.token);
+    let outside = fx.a_ids.board.clone();
+    for query in [
+        format!("boards={outside}"),
+        format!("boards={},{outside}", assigned.granted.board),
+    ] {
+        let uri = format!("/api/calendar-export?format=csv&{query}");
+        let (status, text) = send(&fx.app, who, &Method::GET, &uri, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{query}: {text}");
+        let error: Value = serde_json::from_str(&text).expect("json error");
+        assert_eq!(error["code"], "permission_denied", "{query}: {text}");
+        assert_eq!(error["board_id"], outside, "{query}: {text}");
+    }
+    let uri = format!(
+        "/api/calendar-export?format=csv&boards={},{}",
+        assigned.granted.board, assigned.granted.board2
+    );
+    let (status, text) = send(&fx.app, who, &Method::GET, &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+}
+
+#[tokio::test]
+async fn calendar_export_should_refuse_a_bad_query_with_what_to_change() {
+    let fx = accounts().await;
+    let board = &fx.a_ids.board;
+    let many = (0..=20)
+        .map(|n| format!("board-{n}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let cases = [
+        (format!("boards={board}&format=pdf"), "format must be"),
+        (format!("boards={board}&type=weekly"), "type must be"),
+        (format!("boards={board}&from=2030-13-40"), "from must be"),
+        (format!("boards={board}&to=soon"), "to must be"),
+        (
+            format!("boards={board}&from=2030-02-01&to=2030-01-01"),
+            "to must not be before from",
+        ),
+        ("boards=".to_string(), "name 1 to 20 boards"),
+        ("boards=%20,,".to_string(), "name 1 to 20 boards"),
+        (format!("boards={many}"), "name 1 to 20 boards"),
+    ];
+    for (query, message) in cases {
+        let uri = format!("/api/calendar-export?{query}");
+        let (status, text) = send(&fx.app, Who::Token(&fx.a_token), &Method::GET, &uri, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {text}");
+        assert!(text.contains(message), "{query}: {text}");
+    }
 }
 
 /// Approving a device request mints the device's token for the account that approved it.
@@ -2098,4 +2384,59 @@ async fn ownerless_credentials_should_act_as_the_owner_after_setup() {
             .expect("boards")
             .is_empty()
     );
+}
+
+/// An account lists and marks only its own notifications, and only from the browser session.
+#[tokio::test]
+async fn notifications_should_belong_to_their_account_and_the_browser_session() {
+    let fx = accounts().await;
+    let board = fx
+        .db
+        .board(&fx.a_ids.board)
+        .expect("read")
+        .expect("A's board");
+    let actor = Actor {
+        name: "api-token",
+        token_name: Some("ci"),
+        kind: ActorKind::ApiToken,
+    };
+    fx.db
+        .notify(Change::BoardDeleted(&board), actor)
+        .expect("notify");
+    let get = Method::GET;
+    let post = Method::POST;
+    let list = "/api/notifications";
+    let all = "/api/notifications/read";
+
+    let (status, text) = send(&fx.app, Who::Session(&fx.a_cookie), &get, list, None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let mine: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(mine["unread"], 1, "{text}");
+    let id = mine["items"][0]["id"].as_u64().expect("id");
+
+    let (status, text) = send(&fx.app, Who::Session(&fx.b_cookie), &get, list, None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let theirs: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(theirs["items"], json!([]), "{text}");
+    assert_eq!(theirs["unread"], 0, "{text}");
+
+    let one = format!("/api/notifications/{id}/read");
+    let (status, _) = send(&fx.app, Who::Session(&fx.b_cookie), &post, &one, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(&fx.app, Who::Session(&fx.b_cookie), &post, all, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, text) = send(&fx.app, Who::Session(&fx.a_cookie), &get, list, None).await;
+    let still: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(still["unread"], 1, "B's calls changed A's notification");
+
+    for (method, uri) in [(&get, list), (&post, all)] {
+        let (status, text) = send(&fx.app, Who::Token(&fx.a_token), method, uri, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
+        assert!(text.contains("session_required"), "{uri}: {text}");
+    }
+
+    let (status, text) = send(&fx.app, Who::Session(&fx.a_cookie), &post, &one, None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let marked: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(marked["unread"], 0, "{text}");
 }

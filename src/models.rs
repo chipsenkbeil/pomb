@@ -153,6 +153,8 @@ impl TextCap {
     pub const DUE_REPEAT: Self = Self::chars("due_repeat", 200);
     /// A time entry's note.
     pub const ENTRY_NOTE: Self = Self::bytes("note", 4 * 1024);
+    /// A calendar feed's label.
+    pub const FEED_LABEL: Self = Self::chars("label", 100);
     /// Most columns of one table field.
     pub const FIELD_COLUMNS: Self = Self::items("columns", 50);
     /// A table column's label.
@@ -186,6 +188,12 @@ impl TextCap {
     pub const STOP_REASON: Self = Self::bytes("reason", 1024);
     /// A subtask's name.
     pub const SUBTASK_NAME: Self = Self::chars("subtask name", 500);
+    /// Most subtask templates, in the account settings.
+    pub const SUBTASK_TEMPLATES: Self = Self::items("subtask_templates", 50);
+    /// A subtask template's id.
+    pub const SUBTASK_TEMPLATE_ID: Self = Self::chars("subtask_templates.id", 100);
+    /// Most subtask names in one subtask template.
+    pub const SUBTASK_TEMPLATE_NAMES: Self = Self::items("subtask_templates.subtasks", 200);
     /// A swimlane's description.
     pub const SWIMLANE_DESCRIPTION: Self = Self::chars("swimlane description", 500);
     /// A swimlane's name.
@@ -264,6 +272,29 @@ fn check_labels(labels: &[String], held: Option<&[String]>) -> Result<(), TooLon
     Ok(())
 }
 
+/// The config bag key that holds a board's calendar feeds.
+const FEEDS_KEY: &str = "calendar_feed_secrets";
+/// The config bag key of a board's single unnamed feed token.
+const LEGACY_FEED_KEY: &str = "calendar_feed_token";
+/// The id of the feed that token becomes.
+pub const LEGACY_FEED_ID: &str = "legacy";
+/// The label of that feed.
+const LEGACY_FEED_LABEL: &str = "Calendar feed";
+/// Most calendar feeds one board holds.
+pub const MAX_BOARD_FEEDS: usize = 20;
+
+/// One named calendar feed of a board. The token is the bearer secret of its iCal URL, which only
+/// the authenticated feed endpoints reveal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoardFeed {
+    /// The feed's id, which the delete endpoint names.
+    pub id: String,
+    /// The name the owner gave it.
+    pub label: String,
+    /// The token in its URL.
+    pub token: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BoardRow {
     pub id: String,
@@ -317,18 +348,36 @@ impl BoardRow {
             })
     }
 
-    /// Calendar-feed bearer token, stored in the board's opaque config bag. The bag is never
-    /// serialized to clients: export-data exposes only the board id/name and the config view only
-    /// exposes legend_visible/archived/due_time, so the raw token only leaves the server via the
-    /// authenticated feed-link endpoint.
-    pub fn feed_token(&self) -> Option<String> {
-        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
-            .ok()
-            .and_then(|m| {
-                m.get("calendar_feed_token")
-                    .and_then(serde_json::Value::as_str)
-                    .map(|s| s.to_string())
-            })
+    /// Returns the board's calendar feeds, including the one a token held under the older
+    /// single-feed key, which has the id [`LEGACY_FEED_ID`] so a subscribed URL keeps working.
+    pub fn feeds(&self) -> Vec<BoardFeed> {
+        let Ok(bag) =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
+        else {
+            return Vec::new();
+        };
+        let mut feeds: Vec<BoardFeed> = bag
+            .get(FEEDS_KEY)
+            .and_then(|list| serde_json::from_value(list.clone()).ok())
+            .unwrap_or_default();
+        if let Some(token) = bag.get(LEGACY_FEED_KEY).and_then(serde_json::Value::as_str) {
+            feeds.push(BoardFeed {
+                id: LEGACY_FEED_ID.to_string(),
+                label: LEGACY_FEED_LABEL.to_string(),
+                token: token.to_string(),
+            });
+        }
+        feeds
+    }
+
+    /// Returns the config bag as JSON with `feeds` as its calendar feeds.
+    pub fn config_with_feeds(&self, feeds: &[BoardFeed]) -> String {
+        let mut bag =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
+                .unwrap_or_default();
+        bag.remove(LEGACY_FEED_KEY);
+        bag.insert(FEEDS_KEY.to_string(), serde_json::json!(feeds));
+        serde_json::Value::Object(bag).to_string()
     }
 
     /// The time a date-only due date gets on this board: the `due_time` "HH:MM" entry in the config
@@ -488,6 +537,13 @@ pub struct TaskRow {
     /// ("Edit grouping date"). Null means use the created/completed date.
     #[serde(default)]
     pub grouping_date: Option<String>,
+    /// First day of the task's timeline as `YYYY-MM-DD`, set together with `timeline_end`, or
+    /// null when the task has no timeline.
+    #[serde(default)]
+    pub timeline_start: Option<String>,
+    /// Last day of the task's timeline as `YYYY-MM-DD`, never before `timeline_start`, or null.
+    #[serde(default)]
+    pub timeline_end: Option<String>,
     /// Watch flag (KanbanFlow parity: task More menu "Watch"). False for
     /// rows written before watching existed.
     #[serde(default)]
@@ -690,6 +746,13 @@ pub struct TaskCard {
     /// Override date used when the column groups tasks by date.
     #[serde(default)]
     pub grouping_date: Option<String>,
+    /// First day of the task's timeline as `YYYY-MM-DD`, set together with `timeline_end`, or
+    /// null when the task has no timeline.
+    #[serde(default)]
+    pub timeline_start: Option<String>,
+    /// Last day of the task's timeline as `YYYY-MM-DD`, never before `timeline_start`, or null.
+    #[serde(default)]
+    pub timeline_end: Option<String>,
     /// Watch flag (KanbanFlow parity: task More menu "Watch").
     #[serde(default)]
     pub watched: bool,
@@ -762,6 +825,8 @@ impl From<&TaskRow> for TaskCard {
             member_ids: row.member_ids.clone(),
             responsible: row.responsible.clone(),
             grouping_date: row.grouping_date.clone(),
+            timeline_start: row.timeline_start.clone(),
+            timeline_end: row.timeline_end.clone(),
             watched: row.watched,
             labels: row.labels.clone(),
             due_at: row.due_at.clone(),
@@ -950,11 +1015,13 @@ impl TaskRow {
         }
         check_labels(&self.labels, before.map(|row| row.labels.as_slice()))?;
         for subtask in &self.subtasks {
-            let held = before
-                .and_then(|row| row.subtasks.iter().find(|held| held.id == subtask.id))
-                .map(|held| held.name.as_str());
-            if changed(&subtask.name, held) {
+            let held =
+                before.and_then(|row| row.subtasks.iter().find(|held| held.id == subtask.id));
+            if changed(&subtask.name, held.map(|held| held.name.as_str())) {
                 TextCap::SUBTASK_NAME.check(&subtask.name)?;
+            }
+            if subtask.member_ids.len() > held.map_or(0, |held| held.member_ids.len()) {
+                TextCap::MEMBERS.check_count(&subtask.member_ids)?;
             }
         }
         if self.member_ids.len() > before.map_or(0, |row| row.member_ids.len()) {
@@ -1669,6 +1736,84 @@ impl BoardEventRow {
     }
 }
 
+/// What a notification reports.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationKind {
+    /// The account was made a member of a task.
+    TaskAssigned,
+    /// A comment was added to a task the account follows.
+    CommentAdded,
+    /// A task the account follows changed column.
+    TaskMoved,
+    /// A task the account follows was deleted.
+    TaskDeleted,
+    /// A column was renamed.
+    ColumnRenamed,
+    /// A column was deleted.
+    ColumnDeleted,
+    /// A board was deleted.
+    BoardDeleted,
+}
+
+impl NotificationKind {
+    /// Every kind, in the order the API lists them.
+    pub const ALL: [Self; 7] = [
+        Self::TaskAssigned,
+        Self::CommentAdded,
+        Self::TaskMoved,
+        Self::TaskDeleted,
+        Self::ColumnRenamed,
+        Self::ColumnDeleted,
+        Self::BoardDeleted,
+    ];
+
+    /// Returns the name the kind has in JSON.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TaskAssigned => "task_assigned",
+            Self::CommentAdded => "comment_added",
+            Self::TaskMoved => "task_moved",
+            Self::TaskDeleted => "task_deleted",
+            Self::ColumnRenamed => "column_renamed",
+            Self::ColumnDeleted => "column_deleted",
+            Self::BoardDeleted => "board_deleted",
+        }
+    }
+}
+
+/// One notification of an account, as stored under the account and a sequence number.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NotificationRow {
+    /// What happened.
+    pub kind: NotificationKind,
+    /// The board it happened on.
+    pub board_id: String,
+    /// The board's name when it happened.
+    pub board_name: String,
+    /// The task it happened to, absent for a column or board event.
+    #[serde(default)]
+    pub task_id: Option<String>,
+    /// The task's name when it happened.
+    #[serde(default)]
+    pub task_name: Option<String>,
+    /// The column a moved task went to, or the name of a renamed or deleted column.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// The username, `api-token` or `system` of whoever made the change.
+    pub actor: String,
+    /// How the change's author authenticated.
+    pub actor_kind: ActorKind,
+    /// Name of the API token that made the change, or null.
+    #[serde(default)]
+    pub token_name: Option<String>,
+    /// RFC3339.
+    pub created_at: String,
+    /// Whether the account has read it.
+    #[serde(default)]
+    pub read: bool,
+}
+
 /// One checklist item on a task (KanbanFlow parity: Subtasks section).
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Subtask {
@@ -1682,6 +1827,9 @@ pub struct Subtask {
     /// stored before the field existed. Without `subtasks.delete`, only that token may delete it.
     #[serde(default)]
     pub token_id: Option<String>,
+    /// Ids of the accounts the subtask is assigned to.
+    #[serde(default)]
+    pub member_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2763,6 +2911,10 @@ pub struct SessionRow {
     /// RFC 3339 time the session last proved a passkey, absent for a session that never did.
     #[serde(default)]
     pub verified_at: Option<String>,
+    /// The browser and system the sign-in came from, as the sessions list names it, empty when
+    /// unknown.
+    #[serde(default)]
+    pub device: String,
 }
 
 /// One Pomodoro break activity (KanbanFlow parity: Break activities tab).
@@ -2781,6 +2933,17 @@ pub struct BreakActivity {
 
 fn default_daily_goal() -> u32 {
     1
+}
+
+/// A saved list of subtask names an account adds to a task in one step.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct SubtaskTemplate {
+    /// The template's id, generated by the server.
+    pub id: String,
+    /// The template's name, unique within the account.
+    pub name: String,
+    /// The subtask names, in the order they are added.
+    pub subtasks: Vec<String>,
 }
 
 /// App settings, edited on the /settings page and stored as one JSON row.
@@ -2828,6 +2991,12 @@ pub struct Settings {
     /// the done children in the Children tab. Empty for rows written before the field existed.
     #[serde(default)]
     pub modal_folded_groups: Vec<String>,
+    /// Notification kinds the account turned off, so none of them is recorded for it.
+    #[serde(default)]
+    pub muted_notifications: Vec<NotificationKind>,
+    /// Subtask templates saved from a task's checklist, added from its Subtasks menu.
+    #[serde(default)]
+    pub subtask_templates: Vec<SubtaskTemplate>,
 }
 
 fn default_ticking_mode() -> String {
@@ -2868,6 +3037,28 @@ impl Settings {
         for group in &self.modal_folded_groups {
             if !held_folded.contains(group) {
                 TextCap::FOLDED_GROUP.check(group)?;
+            }
+        }
+        let held_templates = before.map_or(&[][..], |held| held.subtask_templates.as_slice());
+        if self.subtask_templates.len() > held_templates.len() {
+            TextCap::SUBTASK_TEMPLATES.check_count(&self.subtask_templates)?;
+        }
+        for template in &self.subtask_templates {
+            let held = held_templates.iter().find(|held| held.id == template.id);
+            if held.is_none() {
+                TextCap::SUBTASK_TEMPLATE_ID.check(&template.id)?;
+            }
+            if held.map(|held| &held.name) != Some(&template.name) {
+                TextCap::TEMPLATE_NAME.check(&template.name)?;
+            }
+            let held_names = held.map_or(&[][..], |held| held.subtasks.as_slice());
+            if template.subtasks.len() > held_names.len() {
+                TextCap::SUBTASK_TEMPLATE_NAMES.check_count(&template.subtasks)?;
+            }
+            for name in &template.subtasks {
+                if !held_names.contains(name) {
+                    TextCap::SUBTASK_NAME.check(name)?;
+                }
             }
         }
         let held_activities = before.map_or(&[][..], |held| held.break_activities.as_slice());
@@ -2922,6 +3113,8 @@ impl Default for Settings {
             break_activities: Vec::new(),
             favorite_boards: Vec::new(),
             modal_folded_groups: Vec::new(),
+            muted_notifications: Vec::new(),
+            subtask_templates: Vec::new(),
             interrupt_reasons: vec![
                 "Boss interrupted",
                 "Colleague interrupted",

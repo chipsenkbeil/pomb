@@ -102,9 +102,9 @@ impl PublicDb {
         self.db.claim_first_passkey(user, passkey, recovery)
     }
 
-    /// Opens a session for `user` and returns its token.
-    pub fn create_session(&self, user: &AccountId) -> DbResult<String> {
-        self.db.create_session(user)
+    /// Opens a session for `user` that came from `device`, and returns its token.
+    pub fn create_session(&self, user: &AccountId, device: &str) -> DbResult<String> {
+        self.db.create_session(user, device)
     }
 
     /// Ends the session with `token`.

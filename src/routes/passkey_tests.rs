@@ -631,6 +631,141 @@ async fn sign_out_other_sessions_should_keep_only_this_browser() {
     assert!(page.body.to_string().contains("Sign out other sessions"));
 }
 
+const FIREFOX_ON_LINUX: &str =
+    "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0";
+const SAFARI_ON_IPHONE: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) \
+    AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+
+#[tokio::test]
+async fn sessions_list_should_show_each_browser_and_mark_the_current_one() {
+    let (_dir, db) = open_db();
+    let (app, code) = passkey_app(db);
+    let mut laptop = SoftAuthenticator::new(7);
+    let first = session_of(&set_up(&app, &code, &mut laptop, json!({ "username": "chip" })).await);
+    let phone = session_of(&sign_in(&app, &mut laptop, &[("user-agent", SAFARI_ON_IPHONE)]).await);
+    let desk = session_of(&sign_in(&app, &mut laptop, &[("user-agent", FIREFOX_ON_LINUX)]).await);
+
+    let listed = call(
+        &app,
+        "GET",
+        "/api/v1/auth/sessions",
+        &[("cookie", desk.as_str())],
+        None,
+    )
+    .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    let rows = listed.body.as_array().expect("array");
+    assert_eq!(rows.len(), 3);
+    let devices: Vec<&str> = rows
+        .iter()
+        .map(|row| row["device"].as_str().unwrap())
+        .collect();
+    assert!(devices.contains(&"Firefox on Linux"), "{devices:?}");
+    assert!(devices.contains(&"Safari on iOS"), "{devices:?}");
+    assert!(devices.contains(&""), "{devices:?}");
+    let current: Vec<&Value> = rows.iter().filter(|row| row["current"] == true).collect();
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0]["device"], "Firefox on Linux");
+    assert!(
+        rows.iter()
+            .all(|row| row["created_at"].is_string() && row["id"].is_string())
+    );
+    assert!(!listed.body.to_string().contains(&first));
+    assert!(!listed.body.to_string().contains(&phone));
+
+    let page = call(&app, "GET", "/settings", &[("cookie", desk.as_str())], None).await;
+    let html = page.body.to_string();
+    assert!(html.contains("Safari on iOS"), "{html}");
+    assert!(html.contains("[Your current session]"));
+    assert_eq!(html.matches("session-revoke\\\"").count(), 2, "{html}");
+}
+
+#[tokio::test]
+async fn revoking_a_session_should_sign_out_only_that_browser() {
+    let (_dir, db) = open_db();
+    let (app, code) = passkey_app(db);
+    let mut laptop = SoftAuthenticator::new(7);
+    let here = session_of(&set_up(&app, &code, &mut laptop, json!({ "username": "chip" })).await);
+    let phone = session_of(&sign_in(&app, &mut laptop, &[("user-agent", SAFARI_ON_IPHONE)]).await);
+    let third = session_of(&sign_in(&app, &mut laptop, &[]).await);
+    let cookie = [("cookie", here.as_str())];
+    let phone_cookie = [("cookie", phone.as_str())];
+    let third_cookie = [("cookie", third.as_str())];
+
+    let listed = call(&app, "GET", "/api/v1/auth/sessions", &cookie, None).await;
+    let rows = listed.body.as_array().expect("array");
+    let phone_id = rows
+        .iter()
+        .find(|row| row["device"] == "Safari on iOS")
+        .expect("phone row")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let own_id = rows
+        .iter()
+        .find(|row| row["current"] == true)
+        .expect("own row")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let own = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/auth/sessions/{own_id}"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(own.status, StatusCode::CONFLICT, "{}", own.body);
+    let unknown = call(
+        &app,
+        "DELETE",
+        "/api/v1/auth/sessions/nothing",
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    let cross_site = [("cookie", here.as_str()), ("sec-fetch-site", "cross-site")];
+    let refused = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/auth/sessions/{phone_id}"),
+        &cross_site,
+        None,
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(whoami(&app, &phone_cookie).await.status, StatusCode::OK);
+
+    let revoked = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/auth/sessions/{phone_id}"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    assert_eq!(revoked.body["revoked"], phone_id);
+    assert_eq!(
+        whoami(&app, &phone_cookie).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(whoami(&app, &cookie).await.status, StatusCode::OK);
+    assert_eq!(whoami(&app, &third_cookie).await.status, StatusCode::OK);
+    let again = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/auth/sessions/{phone_id}"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn passkey_management_should_need_the_browser_session() {
     let (_dir, db) = open_db();
@@ -644,6 +779,8 @@ async fn passkey_management_should_need_the_browser_session() {
         ("POST", "/api/v1/auth/passkeys/options"),
         ("GET", "/api/v1/auth/passkeys"),
         ("DELETE", "/api/v1/auth/passkeys/anything"),
+        ("GET", "/api/v1/auth/sessions"),
+        ("DELETE", "/api/v1/auth/sessions/anything"),
     ] {
         let reply = call(&app, method, uri, &headers, None).await;
         assert_eq!(reply.status, StatusCode::FORBIDDEN, "{method} {uri}");
@@ -1047,7 +1184,7 @@ async fn setup_should_need_the_setup_code_and_spend_it() {
 async fn setup_should_need_the_code_even_with_a_session_cookie() {
     let (_dir, db) = open_db();
     let user_id = db.create_user("admin").expect("user");
-    let session = db.create_session(&user_id).expect("session");
+    let session = db.create_session(&user_id, "").expect("session");
     let cookie = format!("session={session}");
     let (app, code) = passkey_app(db.clone());
 

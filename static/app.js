@@ -20,6 +20,7 @@
   var moveTargetColumnId = null;
   var moveSwimlaneId = null;
   var moveTaskId = null;
+  var moveBulkIds = null;
 
   // ---------- small helpers ----------
 
@@ -31,6 +32,20 @@
   function modalBoardId() {
     var shell = document.querySelector('.board-settings-page[data-board-id]');
     return boardId() || (shell && shell.querySelector('.bshell-report') ? shell.dataset.boardId : null);
+  }
+
+  function modalTaskBoard() {
+    var modal = document.querySelector('#modal-root .task-modal');
+    var id = modal && modal.dataset ? modal.dataset.boardId : null;
+    return id ? { id: id, name: modal.dataset.boardName || id } : null;
+  }
+
+  function boardNameFor(id) {
+    var own = modalTaskBoard();
+    if (own && own.id === id) return own.name;
+    var title = document.querySelector('.board-bar-title');
+    var text = title ? title.textContent.trim() : '';
+    return text || document.title.replace(/ — Pomb$/, '');
   }
 
   function api(path, method, data) {
@@ -113,6 +128,12 @@
           }
           var cards = Array.prototype.slice.call(toList.querySelectorAll('.task-card'));
           var position = cards.indexOf(card);
+          var group = dragGroupIds(card);
+          if (group) {
+            var others = cards.filter(function (el) { return el === card || !isSelected(el); });
+            moveSelectionTo(group, toList, others.indexOf(card));
+            return;
+          }
           var estimate = cardEstimateMinutes(card);
           var fromCol = fromList.dataset.columnId;
           var toCol = toList.dataset.columnId;
@@ -150,6 +171,7 @@
             tmp.innerHTML = html;
             var fresh = tmp.firstElementChild;
             if (fresh) card.replaceWith(fresh);
+            paintSelection();
             // KF-199: the server-rendered card carries no client-side timer
             // state — re-apply the timer outline and live badge immediately
             // so a move while the timer runs re-renders at once instead of
@@ -255,8 +277,261 @@
     }
   }
 
-  // ---------- column drag reorder ----------
+  var selectedIds = [];
+  var selectionAnchor = null;
 
+  function boardCardOrder() {
+    var order = [];
+    var headers = document.querySelectorAll('#column-headers-row .columnHeader');
+    Array.prototype.forEach.call(headers, function (th, col) {
+      var lists = document.querySelectorAll('.task-list[data-column-id="' + cssEscape(th.dataset.columnId) + '"]');
+      Array.prototype.forEach.call(lists, function (list) {
+        var index = 0;
+        Array.prototype.forEach.call(list.querySelectorAll('.task-card'), function (el) {
+          if (el.hidden || el.offsetParent === null) return;
+          order.push({ id: el.dataset.taskId, el: el, col: col, lane: list.dataset.swimlaneId || '', index: index++ });
+        });
+      });
+    });
+    return order;
+  }
+
+  function rangeIds(order, fromId, toId) {
+    var ids = order.map(function (entry) { return entry.id; });
+    var a = ids.indexOf(fromId);
+    var b = ids.indexOf(toId);
+    if (a < 0 || b < 0) return b < 0 ? [] : [toId];
+    return ids.slice(Math.min(a, b), Math.max(a, b) + 1);
+  }
+
+  function neighbourId(order, id, key) {
+    var from = order.filter(function (entry) { return entry.id === id; })[0];
+    if (!from) return null;
+    var cell = function (entry, col) { return entry.col === col && entry.lane === from.lane; };
+    if (key === 'ArrowUp' || key === 'ArrowDown') {
+      var step = key === 'ArrowUp' ? -1 : 1;
+      var same = order.filter(function (entry) { return cell(entry, from.col); });
+      var next = same.filter(function (entry) { return entry.index === from.index + step; })[0];
+      return next ? next.id : null;
+    }
+    var dir = key === 'ArrowLeft' ? -1 : 1;
+    var cols = order.filter(function (entry) { return entry.lane === from.lane && (entry.col - from.col) * dir > 0; })
+      .map(function (entry) { return entry.col; });
+    if (!cols.length) return null;
+    var target = cols.reduce(function (best, col) { return Math.abs(col - from.col) < Math.abs(best - from.col) ? col : best; });
+    var cards = order.filter(function (entry) { return cell(entry, target); });
+    return cards[Math.min(from.index, cards.length - 1)].id;
+  }
+
+  function isSelected(card) {
+    return !!card && selectedIds.indexOf(card.dataset.taskId) !== -1;
+  }
+
+  function paintSelection() {
+    document.querySelectorAll('.task-card').forEach(function (card) {
+      card.classList.toggle('task-card--selected', isSelected(card));
+    });
+  }
+
+  function setSelection(ids, anchor) {
+    selectedIds = ids;
+    if (anchor !== undefined) selectionAnchor = anchor;
+    paintSelection();
+  }
+
+  function clearSelection() {
+    setSelection([], null);
+  }
+
+  function selectedCards() {
+    return boardCardOrder().filter(function (entry) { return selectedIds.indexOf(entry.id) !== -1; })
+      .map(function (entry) { return entry.el; });
+  }
+
+  function dragGroupIds(card) {
+    if (!isSelected(card)) return null;
+    var cards = selectedCards();
+    if (cards.length < 2) return null;
+    var rest = cards.filter(function (el) { return el !== card; });
+    return [card].concat(rest).map(function (el) { return el.dataset.taskId; });
+  }
+
+  function reloadSelectionSoon(failed) {
+    if (failed) setTimeout(function () { window.location.reload(); }, 2500);
+    else window.location.reload();
+  }
+
+  function moveSelectionTo(ids, toList, position) {
+    var body = {
+      task_ids: ids,
+      action: 'move',
+      column_id: toList.dataset.columnId,
+      swimlane_id: toList.dataset.swimlaneId || null,
+      position: position,
+    };
+    api('/api/boards/' + encodeURIComponent(boardId()) + '/tasks/bulk', 'POST', body)
+      .then(drained)
+      .then(function (res) {
+        if (!res.ok) toast('Could not move the selected tasks.');
+        reloadSelectionSoon(!res.ok);
+      })
+      .catch(function () {
+        toast('Could not move the selected tasks.');
+        reloadSelectionSoon(true);
+      });
+  }
+
+  function deleteSelection() {
+    var cards = selectedCards();
+    if (!cards.length) return;
+    var title = cards.length === 1 ? 'Delete task' : 'Delete tasks';
+    var message = cards.length === 1
+      ? 'Delete "' + (cards[0].dataset.taskName || '') + '"?'
+      : 'Delete ' + cards.length + ' tasks?';
+    showConfirmDialog(title, message, 'Delete', function () {
+      Promise.all(cards.map(function (card) {
+        return api('/api/tasks/' + encodeURIComponent(card.dataset.taskId), 'DELETE').then(drained);
+      })).then(function (results) {
+        var failed = results.filter(function (res) { return !res.ok; }).length;
+        if (failed) toast('Could not delete ' + failed + (failed === 1 ? ' task.' : ' tasks.'));
+        reloadSelectionSoon(failed > 0);
+      }).catch(function () {
+        toast('Could not delete tasks.');
+        reloadSelectionSoon(true);
+      });
+    });
+  }
+
+  function postBulk(body) {
+    return api('/api/boards/' + encodeURIComponent(boardId()) + '/tasks/bulk', 'POST', body).then(drained);
+  }
+
+  function refreshBulkCards(ids) {
+    if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) ids.forEach(TimerUI.refreshTaskCard, TimerUI);
+  }
+
+  function bulkColor(ids, colorId) {
+    return postBulk({ task_ids: ids, action: 'color', color_id: colorId }).then(function (res) {
+      if (!res.ok) { toast('Could not change color.'); return; }
+      refreshBulkCards(ids);
+    });
+  }
+
+  function bulkUnassign(ids) {
+    return postBulk({ task_ids: ids, action: 'unassign_members' }).then(function (res) {
+      if (!res.ok) { toast('Could not update members.'); return; }
+      refreshBulkCards(ids);
+    });
+  }
+
+  function commonMembers(ids) {
+    var lists = ids.map(function (id) {
+      var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
+      return card && card.dataset.memberIds ? card.dataset.memberIds.split(',') : [];
+    });
+    return lists.length ? lists[0].filter(function (member) {
+      return lists.every(function (list) { return list.indexOf(member) !== -1; });
+    }) : [];
+  }
+
+  function openBulkMembersDialog(ids) {
+    initMembersDialog();
+    membersBulkIds = ids;
+    membersDialogTaskId = null;
+    membersRoster = [];
+    membersAssigned = commonMembers(ids);
+    membersResponsible = null;
+    var search = document.getElementById('members-search');
+    search.value = '';
+    document.getElementById('members-list').innerHTML = '<div class="member-row">Loading…</div>';
+    document.getElementById('members-dialog').hidden = false;
+    search.focus();
+    fetchJson('/api/members').catch(function () { return []; }).then(function (roster) {
+      if (membersBulkIds !== ids) return;
+      membersRoster = roster || [];
+      renderMembersList('');
+    });
+  }
+
+  function toggleBulkMember(memberId) {
+    var ids = membersBulkIds;
+    var everyone = membersAssigned.indexOf(memberId) !== -1;
+    postBulk({
+      task_ids: ids,
+      action: 'members',
+      add_member_ids: everyone ? [] : [memberId],
+      remove_member_ids: everyone ? [memberId] : [],
+    }).then(function (res) {
+      if (!res.ok) { toast('Could not update members.'); return; }
+      membersAssigned = everyone
+        ? membersAssigned.filter(function (member) { return member !== memberId; })
+        : membersAssigned.concat([memberId]);
+      renderMembersList(document.getElementById('members-search').value);
+      refreshBulkCards(ids);
+    });
+  }
+
+  function typingTarget(el) {
+    return !!el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable === true);
+  }
+
+  function selectionBlocked() {
+    return !!document.querySelector('#modal-root .task-modal, .dlg-overlay:not([hidden]), .menu-floating:not([hidden])');
+  }
+
+  function onSelectionKey(e) {
+    if (!selectedIds.length || e.defaultPrevented || typingTarget(e.target) || selectionBlocked()) return;
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === 'Escape') {
+      clearSelection();
+    } else if (/^Arrow(Up|Down|Left|Right)$/.test(e.key) && !e.shiftKey) {
+      e.preventDefault();
+      var order = boardCardOrder();
+      var from = selectionAnchor && selectedIds.indexOf(selectionAnchor) !== -1 ? selectionAnchor : selectedIds[selectedIds.length - 1];
+      var next = neighbourId(order, from, e.key);
+      if (!next) return;
+      setSelection([next], next);
+      var entry = order.filter(function (item) { return item.id === next; })[0];
+      if (entry) {
+        entry.el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        entry.el.focus({ preventScroll: true });
+      }
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      deleteSelection();
+    }
+  }
+
+  function onSelectionClick(e) {
+    if (!(e.metaKey || e.ctrlKey || e.shiftKey) || dragging) return;
+    var card = e.target.closest ? e.target.closest('.task-card') : null;
+    if (!card || !card.dataset.taskId || e.target.closest('button, a, input, select, textarea, label')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var id = card.dataset.taskId;
+    if (e.shiftKey && selectionAnchor) {
+      var range = rangeIds(boardCardOrder(), selectionAnchor, id);
+      var kept = (e.metaKey || e.ctrlKey) ? selectedIds.filter(function (other) { return range.indexOf(other) === -1; }) : [];
+      setSelection(kept.concat(range));
+    } else if (e.shiftKey) {
+      setSelection([id], id);
+    } else if (isSelected(card)) {
+      setSelection(selectedIds.filter(function (other) { return other !== id; }), id);
+    } else {
+      setSelection(selectedIds.concat([id]), id);
+    }
+  }
+
+  function initSelection() {
+    document.addEventListener('click', onSelectionClick, true);
+    document.addEventListener('keydown', onSelectionKey);
+    document.addEventListener('mousedown', function (e) {
+      if (e.shiftKey && e.target.closest && e.target.closest('.task-card')) e.preventDefault();
+    });
+    document.addEventListener('htmx:afterSwap', paintSelection);
+  }
+
+  // ---------- column drag reorder ----------
   function initColumnSortable() {
     if (typeof Sortable === 'undefined') return;
     var row = document.getElementById('column-headers-row');
@@ -942,7 +1217,8 @@
       var card = e.target.closest('.task-card');
       if (card) {
         e.preventDefault();
-        openCardMenu(card, e.clientX, e.clientY);
+        if (isSelected(card) && selectedCards().length > 1) openBulkMenu(e.clientX, e.clientY);
+        else openCardMenu(card, e.clientX, e.clientY);
         return;
       }
       // KF-038/KF-230: no ⋮ button on column headers (KanbanFlow parity) —
@@ -1190,6 +1466,74 @@
         else if (act === 'task-url') copyTaskUrl(task ? task.id : null);
         else if (act === 'delete') deleteCardTask(task);
       }
+    });
+
+    var bulkCards = [];
+
+    function bulkIds() {
+      return bulkCards.map(function (card) { return card.dataset.taskId; });
+    }
+
+    function openBulkMenu(x, y) {
+      bulkCards = selectedCards();
+      var anyMember = bulkCards.some(function (card) { return !!card.dataset.memberIds; });
+      var menu = document.getElementById('bulk-ctx-menu');
+      menu.querySelector('[data-bulk-act="members"]').hidden = anyMember;
+      menu.querySelector('[data-bulk-act="members-menu"]').hidden = !anyMember;
+      placeMenu(menu, x, y);
+    }
+
+    function bulkSubmenuButton(label, kind, extra) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.setAttribute('data-bulk-sub', kind);
+      Object.keys(extra || {}).forEach(function (k) { b.setAttribute(k, extra[k]); });
+      return b;
+    }
+
+    document.getElementById('bulk-ctx-menu').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-bulk-act]');
+      if (!btn || !bulkCards.length) return;
+      var act = btn.getAttribute('data-bulk-act');
+      if (act === 'color') {
+        openCardSubmenu(btn, function (sub) {
+          sub.classList.add('card-sub--color');
+          var src = document.getElementById('board-colors');
+          if (!src) return;
+          Array.prototype.forEach.call(src.querySelectorAll('span[data-id]'), function (s) {
+            var b = bulkSubmenuButton(s.dataset.label || s.dataset.value, 'color', { 'data-color-id': s.dataset.id });
+            b.style.backgroundColor = s.dataset.bg || '#fff';
+            sub.appendChild(b);
+          });
+        });
+      } else if (act === 'members-menu') {
+        openCardSubmenu(btn, function (sub) {
+          sub.appendChild(bulkSubmenuButton('Assign members', 'members'));
+          sub.appendChild(bulkSubmenuButton('Unassign all members', 'unassign'));
+        });
+      } else {
+        var ids = bulkIds();
+        var anchor = bulkCards[0];
+        hideCardSubmenu();
+        hideFloatingMenus();
+        if (act === 'move') openMoveDialog(null, anchor, ids);
+        else if (act === 'members') openBulkMembersDialog(ids);
+        else if (act === 'delete') deleteSelection();
+      }
+    });
+
+    document.getElementById('card-ctx-submenu').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-bulk-sub]');
+      if (!btn || !bulkCards.length) return;
+      var kind = btn.getAttribute('data-bulk-sub');
+      var ids = bulkIds();
+      var colorId = btn.getAttribute('data-color-id');
+      hideCardSubmenu();
+      hideFloatingMenus();
+      if (kind === 'color') bulkColor(ids, colorId);
+      else if (kind === 'members') openBulkMembersDialog(ids);
+      else if (kind === 'unassign') bulkUnassign(ids);
     });
 
     function openGroupingDateDialog(card, point) {
@@ -2590,7 +2934,8 @@
     input.value = '';
     var current = boardId();
     var title = document.querySelector('.board-bar-title');
-    linkPicker.board = current ? { id: current, name: title ? title.textContent.trim() : current } : null;
+    linkPicker.board = modalTaskBoard() ||
+      (current ? { id: current, name: title ? title.textContent.trim() : current } : null);
     paintPickerChip();
     picker.hidden = false;
     input.focus();
@@ -4037,6 +4382,8 @@
       if (showModalTab('subtasks')) return;
       var subInput = document.getElementById('modal-subtask-input');
       if (subInput) { subInput.focus(); subInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    } else if (act === 'add-timeline' || act === 'edit-timeline') {
+      TimelineDialog.open();
     } else if (act === 'add-duedate') {
       // KF-145: was openDueDateDialog() (undefined) — the dialog object is DueDateDialog.
       DueDateDialog.open(source);
@@ -4111,10 +4458,12 @@
 
   // KF-070/KF-334: the "Move task" dialog for `taskId` (default: the open
   // modal's task). Given `anchorCard`, it opens as a popover at that card.
-  function openMoveDialog(taskId, anchorCard) {
+  function openMoveDialog(taskId, anchorCard, bulkIds) {
     var id = taskId || modalTaskId();
-    if (!id) return;
+    if (!id && !bulkIds) return;
     moveTaskId = id;
+    moveBulkIds = bulkIds || null;
+    document.getElementById('mt-title').textContent = bulkIds ? 'Move ' + bulkIds.length + ' tasks' : 'Move task';
     var card = anchorCard || document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
     var list = card ? card.closest('.task-list') : null;
     var headers = Array.prototype.slice.call(document.querySelectorAll('#column-headers-row .columnHeader'));
@@ -4131,7 +4480,7 @@
     // picks the target board's lane on a cross-board move.
     function syncTarget() {
       moveTargetColumnId = colSel.value || null;
-      moveSwimlaneId = boardSel.value === currentBid ? origLane : null;
+      moveSwimlaneId = !bulkIds && boardSel.value === currentBid ? origLane : null;
     }
     function fillColumns(cols, selectedId) {
       colSel.innerHTML = '';
@@ -4149,7 +4498,7 @@
     boardSel.innerHTML = '';
     var here = document.createElement('option');
     here.value = currentBid;
-    here.textContent = document.title.replace(/ — Pomb$/, '');
+    here.textContent = boardNameFor(currentBid);
     boardSel.appendChild(here);
     fillColumns(boardCols, origColId);
     if (!boardCols.length && currentBid) {
@@ -4168,7 +4517,11 @@
     }
     fetchJson('/api/boards').then(function (boards) {
       boardSel.innerHTML = '';
-      (boards || []).forEach(function (b) {
+      var listed = (boards || []).slice();
+      if (currentBid && !listed.some(function (b) { return b.id === currentBid; })) {
+        listed.unshift({ id: currentBid, name: here.textContent });
+      }
+      listed.forEach(function (b) {
         var o = document.createElement('option');
         o.value = b.id;
         o.textContent = b.name;
@@ -4207,6 +4560,15 @@
   }
 
   function doMoveTask() {
+    if (moveBulkIds && moveTargetColumnId) {
+      postBulk({ task_ids: moveBulkIds, action: 'move', column_id: moveTargetColumnId, swimlane_id: null, position: 1e9 })
+        .then(function (res) {
+          document.getElementById('move-task-dialog').hidden = true;
+          if (!res.ok) { toast('Could not move the selected tasks.'); return; }
+          window.location.reload();
+        });
+      return;
+    }
     var id = moveTaskId;
     if (!id) return;
     if (!moveTargetColumnId) { toast('Could not move task.'); return; }
@@ -4473,7 +4835,11 @@
         '<ellipse cx="3" cy="8" rx="2.0" ry="2.25" fill="currentColor"/>' +
         '<ellipse cx="3" cy="13.5" rx="2.0" ry="2.25" fill="currentColor"/></svg>';
       div.appendChild(check);
+      var members = document.createElement('span');
+      members.className = 'tm-subtask-members';
+      div.dataset.memberIds = '';
       div.appendChild(name);
+      div.appendChild(members);
       div.appendChild(handle);
       return div;
     }
@@ -4495,6 +4861,389 @@
 
     input.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); addSubtask(); }
+    });
+
+    function openSubtaskDialog(title, label) {
+      var overlay = document.createElement('div');
+      overlay.className = 'dlg-overlay dlg-overlay-top';
+      var dlg = document.createElement('div');
+      dlg.className = 'dlg dlg-light';
+      dlg.setAttribute('role', 'dialog');
+      dlg.setAttribute('aria-label', label);
+      var heading = document.createElement('div');
+      heading.className = 'dlg-title';
+      heading.textContent = title;
+      var body = document.createElement('div');
+      var actions = document.createElement('div');
+      actions.className = 'dlg-actions';
+      var cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'btn';
+      cancel.textContent = 'Cancel';
+      actions.appendChild(cancel);
+      dlg.appendChild(heading);
+      dlg.appendChild(body);
+      dlg.appendChild(actions);
+      overlay.appendChild(dlg);
+      function close() { overlay.remove(); }
+      cancel.addEventListener('click', close);
+      overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
+      overlay.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { e.stopPropagation(); close(); }
+      });
+      document.body.appendChild(overlay);
+      return { body: body, actions: actions, cancel: cancel, close: close };
+    }
+
+    function saveSubtaskTemplate() {
+      var dialog = openSubtaskDialog('Save as template', 'Save subtasks as template');
+      var field = document.createElement('label');
+      field.className = 'dlg-field';
+      var caption = document.createElement('span');
+      caption.textContent = 'Name';
+      var nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.maxLength = 200;
+      nameInput.autocomplete = 'off';
+      field.appendChild(caption);
+      field.appendChild(nameInput);
+      dialog.body.appendChild(field);
+      var save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'btn btn-primary';
+      save.textContent = 'Save';
+      dialog.actions.appendChild(save);
+      function submit() {
+        var name = nameInput.value.trim();
+        if (!name) { nameInput.focus(); return; }
+        api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/template', 'POST', { name: name })
+          .then(function (res) {
+            if (!res.ok) { toast('Could not save the template.'); return; }
+            dialog.close();
+            toast('Saved template');
+          })
+          .catch(function () { toast('Could not save the template.'); });
+      }
+      save.addEventListener('click', submit);
+      nameInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); submit(); }
+      });
+      nameInput.focus();
+    }
+
+    function addFromSubtaskTemplate() {
+      var dialog = openSubtaskDialog('Add from template', 'Add subtasks from template');
+      var list = document.createElement('div');
+      list.className = 'tm-template-list';
+      dialog.body.appendChild(list);
+      var templates = [];
+
+      function showMessage(text) {
+        list.textContent = '';
+        var p = document.createElement('p');
+        p.className = 'dlg-text';
+        p.textContent = text;
+        list.appendChild(p);
+      }
+
+      function apply(template) {
+        api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/from-template', 'POST',
+            { template_id: template.id })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (subs) {
+            if (!subs) { toast('Could not add subtasks from the template.'); return; }
+            subs.forEach(function (sub) { wrap.appendChild(subtaskRow(sub)); });
+            updateSubtaskCount();
+            modalDirty = true;
+            dialog.close();
+          })
+          .catch(function () { toast('Could not add subtasks from the template.'); });
+      }
+
+      function remove(doomed) {
+        fetch('/api/settings')
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (fresh) {
+            if (!fresh) return null;
+            var rest = (fresh.subtask_templates || []).filter(function (template) { return template.id !== doomed.id; });
+            return api('/api/settings', 'PUT', { subtask_templates: rest });
+          })
+          .then(function (res) { return res && res.ok ? res.json() : null; })
+          .then(function (settings) {
+            if (!settings) { toast('Could not delete the template.'); return; }
+            templates = settings.subtask_templates || [];
+            render();
+          })
+          .catch(function () { toast('Could not delete the template.'); });
+      }
+
+      function render() {
+        if (!templates.length) { showMessage('No saved templates yet.'); return; }
+        list.textContent = '';
+        templates.forEach(function (template) {
+          var row = document.createElement('div');
+          row.className = 'tm-template-row';
+          var pick = document.createElement('button');
+          pick.type = 'button';
+          pick.className = 'tm-template-pick';
+          var count = template.subtasks.length;
+          pick.textContent = template.name + ' (' + count + (count === 1 ? ' subtask)' : ' subtasks)');
+          pick.addEventListener('click', function () { apply(template); });
+          var del = document.createElement('button');
+          del.type = 'button';
+          del.className = 'btn btn-danger tm-template-delete';
+          del.textContent = 'Delete';
+          del.setAttribute('aria-label', 'Delete template ' + template.name);
+          del.addEventListener('click', function () { remove(template); });
+          row.appendChild(pick);
+          row.appendChild(del);
+          list.appendChild(row);
+        });
+      }
+
+      showMessage('Loading...');
+      fetch('/api/settings')
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (settings) {
+          if (!settings) { showMessage('Could not load the templates.'); return; }
+          templates = settings.subtask_templates || [];
+          render();
+        })
+        .catch(function () { showMessage('Could not load the templates.'); });
+    }
+
+    function deleteAllSubtasks() {
+      showConfirmDialog('Delete all subtasks', 'Delete every subtask of this task?', 'Delete', function () {
+        api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks', 'DELETE')
+          .then(function (res) {
+            if (!res.ok) { toast('Could not delete the subtasks.'); return; }
+            wrap.querySelectorAll('.tm-subtask').forEach(function (row) { row.remove(); });
+            updateSubtaskCount();
+            modalDirty = true;
+          })
+          .catch(function () { toast('Could not delete the subtasks.'); });
+      });
+    }
+
+    var memberRoster = null;
+    function loadMemberRoster() {
+      if (memberRoster) return Promise.resolve(memberRoster);
+      return fetchJson('/api/members').then(function (members) {
+        memberRoster = members || [];
+        return memberRoster;
+      });
+    }
+
+    function subtaskInitials(name) {
+      var words = name.trim().split(/\s+/);
+      return (words.length > 1 ? words[0][0] + words[1][0] : name.slice(0, 2)).toUpperCase();
+    }
+
+    function rowMemberIds(row) {
+      return (row.dataset.memberIds || '').split(',').filter(Boolean);
+    }
+
+    function setRowMembers(row, ids) {
+      row.dataset.memberIds = ids.join(',');
+      var holder = row.querySelector('.tm-subtask-members');
+      if (!holder) {
+        holder = document.createElement('span');
+        holder.className = 'tm-subtask-members';
+        row.insertBefore(holder, row.querySelector('.tm-subtask-handle'));
+      }
+      holder.textContent = '';
+      (memberRoster || []).forEach(function (member) {
+        if (ids.indexOf(member.id) === -1) return;
+        var chip = document.createElement('span');
+        chip.className = 'tm-member-disc tm-subtask-member';
+        chip.title = member.username;
+        chip.textContent = subtaskInitials(member.username);
+        holder.appendChild(chip);
+      });
+    }
+
+    function memberPicker(body, selected, onPick) {
+      var search = document.createElement('input');
+      search.type = 'text';
+      search.placeholder = 'Search...';
+      search.autocomplete = 'off';
+      search.setAttribute('aria-label', 'Search members');
+      var list = document.createElement('div');
+      list.className = 'members-list';
+      list.setAttribute('role', 'listbox');
+      list.setAttribute('aria-label', 'Members');
+      body.appendChild(search);
+      body.appendChild(list);
+      function render() {
+        var query = search.value.trim().toLowerCase();
+        var shown = 0;
+        list.textContent = '';
+        (memberRoster || []).forEach(function (member) {
+          if (query && member.username.toLowerCase().indexOf(query) === -1) return;
+          shown++;
+          var on = selected.indexOf(member.id) !== -1;
+          var item = document.createElement('button');
+          item.type = 'button';
+          item.className = 'member-row';
+          item.setAttribute('role', 'option');
+          item.setAttribute('aria-selected', on ? 'true' : 'false');
+          var name = document.createElement('span');
+          name.className = 'member-name';
+          name.textContent = member.username;
+          item.appendChild(name);
+          if (on) {
+            var check = document.createElement('span');
+            check.className = 'member-check';
+            check.setAttribute('aria-hidden', 'true');
+            check.innerHTML = '&#10003;';
+            item.appendChild(check);
+          }
+          item.addEventListener('click', function () { onPick(member.id); });
+          list.appendChild(item);
+        });
+        if (!shown) {
+          var empty = document.createElement('div');
+          empty.className = 'member-row';
+          empty.textContent = memberRoster && memberRoster.length ? 'No members match.' : 'No members.';
+          list.appendChild(empty);
+        }
+      }
+      search.addEventListener('input', render);
+      loadMemberRoster().then(render, function () { toast('Could not load the members.'); });
+      return { search: search, render: render };
+    }
+
+    function assignSubtask(row) {
+      var selected = rowMemberIds(row);
+      var dialog = openSubtaskDialog('Assign', 'Assign subtask');
+      dialog.cancel.textContent = 'Done';
+      var picker = memberPicker(dialog.body, selected, function (id) {
+        var next = selected.slice();
+        var at = next.indexOf(id);
+        if (at === -1) next.push(id);
+        else next.splice(at, 1);
+        api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/' +
+            encodeURIComponent(row.dataset.subtaskId), 'PATCH', { member_ids: next })
+          .then(function (res) {
+            if (!res.ok) { toast('Could not assign the subtask.'); return; }
+            selected.length = 0;
+            next.forEach(function (kept) { selected.push(kept); });
+            setRowMembers(row, selected);
+            picker.render();
+            modalDirty = true;
+          })
+          .catch(function () { toast('Could not assign the subtask.'); });
+      });
+      picker.search.focus();
+    }
+
+    function dialogSelect(dialog, caption, options, value) {
+      var field = document.createElement('label');
+      field.className = 'dlg-field';
+      var text = document.createElement('span');
+      text.textContent = caption;
+      var select = document.createElement('select');
+      options.forEach(function (option) {
+        var el = document.createElement('option');
+        el.value = option[0];
+        el.textContent = option[1];
+        select.appendChild(el);
+      });
+      select.value = value;
+      field.appendChild(text);
+      field.appendChild(select);
+      dialog.body.appendChild(field);
+      return select;
+    }
+
+    function convertSubtask(row) {
+      var boardId = modalBoardId();
+      if (!boardId) { toast('Could not convert the subtask.'); return; }
+      var board = encodeURIComponent(boardId);
+      Promise.all([
+        fetchJson('/api/boards/' + board + '/colors'),
+        fetchJson('/api/boards/' + board + '/columns'),
+        fetchJson('/api/tasks/' + encodeURIComponent(taskId)),
+        loadMemberRoster(),
+      ]).then(function (loaded) {
+        var colors = (loaded[0].colors || loaded[0]).filter(function (c) { return c.enabled; });
+        var dialog = openSubtaskDialog('Convert to task', 'Convert subtask to task');
+        var colorOptions = [['', 'Board default']].concat(colors.map(function (c) {
+          return [c.id, c.label || c.standard_name];
+        }));
+        var color = dialogSelect(dialog, 'Colour', colorOptions, '');
+        var chosen = [];
+        var members = document.createElement('div');
+        members.className = 'dlg-field';
+        var membersCaption = document.createElement('span');
+        membersCaption.textContent = 'Members';
+        members.appendChild(membersCaption);
+        dialog.body.appendChild(members);
+        var picker = memberPicker(members, chosen, function (id) {
+          var at = chosen.indexOf(id);
+          if (at === -1) chosen.push(id);
+          else chosen.splice(at, 1);
+          picker.render();
+        });
+        var labelField = document.createElement('label');
+        labelField.className = 'dlg-field';
+        var labelCaption = document.createElement('span');
+        labelCaption.textContent = 'Labels';
+        var labelInput = document.createElement('input');
+        labelInput.type = 'text';
+        labelInput.placeholder = 'Comma separated';
+        labelInput.autocomplete = 'off';
+        labelField.appendChild(labelCaption);
+        labelField.appendChild(labelInput);
+        dialog.body.appendChild(labelField);
+        var column = dialogSelect(dialog, 'Target column', loaded[1].map(function (c) {
+          return [c.id, c.name];
+        }), loaded[2].column_id);
+        var relation = dialogSelect(dialog, 'Relation', [
+          ['none', 'None'],
+          ['related', 'Related to parent'],
+          ['parent_depends_on_new', 'Parent depends on new task'],
+          ['parent_required_by_new', 'Parent required by new task'],
+        ], 'none');
+        var convert = document.createElement('button');
+        convert.type = 'button';
+        convert.className = 'btn btn-primary';
+        convert.textContent = 'Convert';
+        dialog.actions.appendChild(convert);
+        convert.addEventListener('click', function () {
+          convert.disabled = true;
+          var body = {
+            color_id: color.value || null,
+            member_ids: chosen,
+            labels: labelInput.value.split(',').map(function (l) { return l.trim(); }).filter(Boolean),
+            column_id: column.value,
+            relation: relation.value,
+          };
+          api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/' +
+              encodeURIComponent(row.dataset.subtaskId) + '/convert', 'POST', body)
+            .then(function (res) {
+              if (!res.ok) { convert.disabled = false; return toastRefusal(res, 'Could not convert the subtask.'); }
+              row.remove();
+              updateSubtaskCount();
+              modalDirty = true;
+              dialog.close();
+              toast('Subtask converted to a task.');
+            })
+            .catch(function () { convert.disabled = false; toast('Could not convert the subtask.'); });
+        });
+      }).catch(function () { toast('Could not convert the subtask.'); });
+    }
+
+    var subtaskActions = {
+      'save-template': saveSubtaskTemplate,
+      'add-from-template': addFromSubtaskTemplate,
+      'delete-all': deleteAllSubtasks,
+    };
+    document.querySelectorAll('[data-tm-subtask-act]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        closeAllTmMenus();
+        subtaskActions[btn.getAttribute('data-tm-subtask-act')]();
+      });
     });
 
     wrap.addEventListener('change', function (e) {
@@ -4533,6 +5282,19 @@
           DueDateDialog.open(row.querySelector('.tm-subtask-handle'), row.dataset.subtaskId);
         });
         subtaskMenu.appendChild(dueItem);
+        [['Assign', assignSubtask], ['Convert to task', convertSubtask]].forEach(function (entry) {
+          var action = document.createElement('button');
+          action.type = 'button';
+          action.textContent = entry[0];
+          action.setAttribute('role', 'menuitem');
+          action.addEventListener('click', function () {
+            var row = subtaskMenu._row;
+            closeAllTmMenus();
+            if (!row || !row.isConnected) return;
+            entry[1](row);
+          });
+          subtaskMenu.appendChild(action);
+        });
         var item = document.createElement('button');
         item.type = 'button';
         item.textContent = 'Delete subtask';
@@ -4699,6 +5461,7 @@
   // The gear navigates to Settings, matching the header gear convention.
 
   var membersDialogTaskId = null;
+  var membersBulkIds = null;
   var membersRoster = [];
   var membersAssigned = [];
   var membersResponsible = null;
@@ -4802,6 +5565,7 @@
 
   function openMembersDialog(taskId) {
     initMembersDialog();
+    membersBulkIds = null;
     membersDialogTaskId = taskId || null;
     membersRoster = [];
     membersAssigned = [];
@@ -4864,7 +5628,7 @@
       var line = document.createElement('div');
       line.className = 'member-line';
       line.appendChild(row);
-      if (isAssigned) {
+      if (isAssigned && !membersBulkIds) {
         var isResponsible = !!membersResponsible &&
           membersResponsible.kind === 'member' && membersResponsible.id === m.id;
         if (isResponsible) {
@@ -4894,6 +5658,7 @@
   }
 
   function toggleMemberAssignment(memberId) {
+    if (membersBulkIds) { toggleBulkMember(memberId); return; }
     if (!membersDialogTaskId) { toast('Open a task to assign members.'); return; }
     var next = membersAssigned.slice();
     var idx = next.indexOf(memberId);
@@ -5845,7 +6610,9 @@
     // its break (golden timer/26).
     syncBell: function () {
       var badge = document.querySelector('#notifications-btn .notification-badge');
-      if (badge) badge.hidden = !this.waitingForBreak();
+      if (!badge) return;
+      badge.hidden = Notifications.unread <= 0 && !this.waitingForBreak();
+      badge.textContent = Notifications.badgeText();
     },
 
     // KF-001/KF-366: KanbanFlow's panel — a clock row (big time + Start,
@@ -6700,6 +7467,7 @@
           var fresh = holder.querySelector('.task-card');
           if (!fresh) return;
           card.replaceWith(fresh);
+          paintSelection();
           applyCardSecState(fresh);
           self.updateCardIndicators();
           self.updateCardLive();
@@ -7738,6 +8506,166 @@
     }, true);
   })();
 
+  var TimelineDialog = (function () {
+    var DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    var taskId = null;
+    var loaded = false;
+    var startISO = '';
+    var endISO = '';
+    var active = 'start';
+    var left = { y: 0, m: 0 };
+    var right = { y: 0, m: 0 };
+
+    function toISO(d) {
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
+        String(d.getDate()).padStart(2, '0');
+    }
+    function parseISO(s) {
+      var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((s || '').trim());
+      if (!m) return null;
+      var d = new Date(+m[1], +m[2] - 1, +m[3]);
+      return (d.getFullYear() === +m[1] && d.getMonth() === +m[2] - 1 &&
+        d.getDate() === +m[3]) ? d : null;
+    }
+    function addDays(iso, days) {
+      var d = parseISO(iso);
+      return toISO(new Date(d.getFullYear(), d.getMonth(), d.getDate() + days));
+    }
+    function defaultRange(todayISO, dueISO) {
+      if (dueISO && parseISO(dueISO) && dueISO >= todayISO) return [todayISO, dueISO];
+      return [todayISO, addDays(todayISO, 7)];
+    }
+    function problem(start, end) {
+      if (!parseISO(start) || !parseISO(end)) return 'Invalid start or end date';
+      if (end < start) return 'The end date cannot be before the start date';
+      return null;
+    }
+    function shift(ym, dir) {
+      var m = ym.m + dir;
+      var y = ym.y;
+      while (m < 0) { m += 12; y--; }
+      while (m > 11) { m -= 12; y++; }
+      ym.y = y;
+      ym.m = m;
+    }
+    function qs(id) { return document.getElementById(id); }
+
+    function renderCal(el, ym) {
+      var first = new Date(ym.y, ym.m, 1);
+      var lead = first.getDay();
+      var daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
+      var daysInPrev = new Date(ym.y, ym.m, 0).getDate();
+      var monthName = first.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+      var html = '<div class="mt-cal-head"><button type="button" data-nav="-1" aria-label="Previous month">&lt;</button>' +
+        '<span>' + monthName + '</span><button type="button" data-nav="1" aria-label="Next month">&gt;</button></div>' +
+        '<div class="mt-cal-grid">';
+      DOW.forEach(function (d) { html += '<span class="mt-cal-dow">' + d + '</span>'; });
+      var cells = [];
+      var i;
+      for (i = lead - 1; i >= 0; i--) cells.push({ d: daysInPrev - i, other: true, off: -1 });
+      for (i = 1; i <= daysInMonth; i++) cells.push({ d: i, other: false, off: 0 });
+      var trail = (7 - (cells.length % 7)) % 7;
+      for (i = 1; i <= trail; i++) cells.push({ d: i, other: true, off: 1 });
+      cells.forEach(function (c) {
+        var day = toISO(new Date(ym.y, ym.m + c.off, c.d));
+        var cls = 'mt-cal-day' + (c.other ? ' other-month' : '') +
+          ((!c.other && (day === startISO || day === endISO)) ? ' selected' : '');
+        html += '<button type="button" class="' + cls + '" data-date="' + day + '">' + c.d + '</button>';
+      });
+      el.innerHTML = html + '</div>';
+      el.querySelector('[data-nav="-1"]').addEventListener('click', function () { shift(ym, -1); renderBoth(); });
+      el.querySelector('[data-nav="1"]').addEventListener('click', function () { shift(ym, 1); renderBoth(); });
+      el.querySelectorAll('.mt-cal-day').forEach(function (btn) {
+        btn.addEventListener('click', function () { pickDay(btn.getAttribute('data-date')); });
+      });
+    }
+    function renderBoth() {
+      renderCal(qs('tl-cal-left'), left);
+      renderCal(qs('tl-cal-right'), right);
+    }
+    function syncFields() {
+      qs('tl-start').value = startISO;
+      qs('tl-end').value = endISO;
+    }
+    function pickDay(day) {
+      if (active === 'start') { startISO = day; active = 'end'; } else { endISO = day; active = 'start'; }
+      syncFields();
+      renderBoth();
+    }
+    function showMonths() {
+      var s = parseISO(startISO);
+      var e = parseISO(endISO);
+      left = { y: s.getFullYear(), m: s.getMonth() };
+      right = { y: e.getFullYear(), m: e.getMonth() };
+      if (left.y === right.y && left.m === right.m) shift(right, 1);
+    }
+    function write(patch, verb) {
+      api('/api/tasks/' + encodeURIComponent(taskId), 'PATCH', patch).then(function (res) {
+        if (!res.ok) throw new Error('save failed');
+      }).then(function () {
+        modalDirty = true;
+        qs('timeline-dialog').hidden = true;
+        openModal(taskId, true);
+        toast(verb + '.');
+      }).catch(function () { toast('Could not save the timeline.'); });
+    }
+
+    return {
+      defaultRange: defaultRange,
+      problem: problem,
+      open: function () {
+        var id = modalTaskId();
+        if (!id) return;
+        taskId = id;
+        api('/api/tasks/' + encodeURIComponent(id), 'GET')
+          .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
+          .then(function (detail) {
+            loaded = !!(detail.timeline_start && detail.timeline_end);
+            if (loaded) {
+              startISO = detail.timeline_start;
+              endISO = detail.timeline_end;
+            } else {
+              var due = detail.due_at ? parseDueAt(detail.due_at) : null;
+              var range = defaultRange(toISO(new Date()),
+                due && !isNaN(due.getTime()) ? toISO(due) : '');
+              startISO = range[0];
+              endISO = range[1];
+            }
+            active = 'start';
+            qs('tl-title').textContent = loaded ? 'Edit timeline' : 'Add timeline for task';
+            qs('tl-add').textContent = loaded ? 'Update' : 'Add';
+            qs('tl-delete').hidden = !loaded;
+            syncFields();
+            showMonths();
+            renderBoth();
+            qs('timeline-dialog').hidden = false;
+            qs('tl-add').focus();
+          })
+          .catch(function () { toast('Could not load the timeline.'); });
+      },
+      setActive: function (which) { active = which === 'end' ? 'end' : 'start'; },
+      fieldChanged: function (which) {
+        var v = (qs(which === 'end' ? 'tl-end' : 'tl-start').value || '').trim();
+        if (parseISO(v)) {
+          if (which === 'end') endISO = v; else startISO = v;
+          showMonths();
+          renderBoth();
+        }
+        syncFields();
+      },
+      save: function () {
+        var message = problem(startISO, endISO);
+        if (message) { showAlertDialog(message); return; }
+        write({ timeline_start: startISO, timeline_end: endISO },
+          loaded ? 'Timeline updated' : 'Timeline added');
+      },
+      remove: function () {
+        showConfirmDialog('Delete timeline', 'Are you sure you want to delete the timeline?', 'Delete',
+          function () { write({ timeline_start: null, timeline_end: null }, 'Timeline deleted'); });
+      }
+    };
+  })();
+
   // Comments (KF-064): the modal body always shows the section; Add →
   // Comment focuses the input.
   function addModalComment() {
@@ -8204,6 +9132,18 @@
     if (ddAdd) ddAdd.addEventListener('click', function () { DueDateDialog.add(); });
     var ddDelete = document.getElementById('dd-delete');
     if (ddDelete) ddDelete.addEventListener('click', function () { DueDateDialog.remove(); });
+
+    var tlAdd = document.getElementById('tl-add');
+    if (tlAdd) tlAdd.addEventListener('click', function () { TimelineDialog.save(); });
+    var tlDelete = document.getElementById('tl-delete');
+    if (tlDelete) tlDelete.addEventListener('click', function () { TimelineDialog.remove(); });
+    ['tl-start', 'tl-end'].forEach(function (id, i) {
+      var input = document.getElementById(id);
+      if (!input) return;
+      var which = i === 0 ? 'start' : 'end';
+      input.addEventListener('focus', function () { TimelineDialog.setActive(which); });
+      input.addEventListener('change', function () { TimelineDialog.fieldChanged(which); });
+    });
 
     // KF-253: description editor dialog.
     var descSave = document.getElementById('desc-editor-save');
@@ -9409,7 +10349,8 @@
     // Column set for the tabular formats (Excel/CSV).
     function exportColumns(tableFields) {
       return ['Task', 'Description', 'Column', 'Swimlane', 'Color', 'Labels',
-        'Members', 'Due date', 'Due done', 'Estimate (h)', 'Size (pomodori)',
+        'Members', 'Timeline start', 'Timeline end', 'Due date', 'Due done', 'Estimate (h)',
+        'Size (pomodori)',
         'Time spent (min)', 'Pomodoros', 'Interruptions', 'Created at',
         'Completed at', 'Added to column at', 'Subtasks', 'Comments']
         .concat(tableFields.map(function (def) { return def.label; }));
@@ -9456,6 +10397,8 @@
         color: color ? (color.label || color.value) : '',
         labels: (t.labels || []).join(', '),
         members: members.join(', '),
+        timeline_start: t.timeline_start || '',
+        timeline_end: t.timeline_end || '',
         due_at: t.due_at || '',
         due_done: t.due_done ? 'yes' : '',
         estimate_hours: t.estimate_hours == null ? '' : String(t.estimate_hours),
@@ -9481,7 +10424,7 @@
 
     function recordToRow(r, tableFields) {
       return [r.name, r.description, r.column, r.swimlane, r.color, r.labels,
-        r.members, r.due_at, r.due_done, r.estimate_hours, r.size,
+        r.members, r.timeline_start, r.timeline_end, r.due_at, r.due_done, r.estimate_hours, r.size,
         r.total_minutes, r.pomodori_completed, r.interruptions, r.created_at,
         r.completed_at, r.column_entered_at, r.subtasks, r.comments]
         .concat(tableFields.map(function (def) {
@@ -10167,13 +11110,14 @@
         var created = new Date(t.created_at);
         var done = new Date(t.completed_at);
         if (isNaN(created.getTime()) || isNaN(done.getTime())) return;
-        var started = created;
+        var started = null;
         (t.history || []).forEach(function (e) {
           if (e && e.kind === 'moved') {
             var d = new Date(e.created_at);
-            if (!isNaN(d.getTime()) && d.getTime() < started.getTime()) started = d;
+            if (!isNaN(d.getTime()) && (!started || d.getTime() < started.getTime())) started = d;
           }
         });
+        if (!started || started.getTime() < created.getTime()) started = created;
         out.push({
           id: t.id,
           name: t.name,
@@ -10792,6 +11736,7 @@
       members_updated: 'Members',
       responsible_updated: 'Responsible',
       grouping_date_updated: 'Grouping date',
+      timeline_updated: 'Timeline',
       subtask_renamed: 'Subtask',
       time_logged: 'Time logged',
       time_edited: 'Time edited',
@@ -11007,19 +11952,25 @@
     return { init: init };
   })();
 
-  // KF-338: Calendar report page. Tasks laid out by due date on a month grid
-  // (KanbanFlow's Calendar: "a better overview of when your tasks are due",
-  // filterable by user, color, labels and swimlane), rendered from the
-  // shared export-data dataset. Monday-start weeks, like the other reports.
+  // Calendar report: tasks laid out by due date on a month grid, filterable by
+  // user, color, labels and swimlane, in a dialog over the board.
   var CalendarPage = (function () {
     var initialized = false;
 
     var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
       'July', 'August', 'September', 'October', 'November', 'December'];
-    var MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    var WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    var WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+    var UNASSIGNED = '__unassigned__';
+    var SETTINGS_KEY = 'pomb.calendar.settings';
+
+    var firstDayOfWeek = 0;
+    var showRepeats = true;
+    var currentBoard = null;
+    var selectedBoards = [];
+    var allBoards = [];
+    var feeds = [];
+    var loadToken = 0;
     var viewYear, viewMonth; // month: 0-based
     var dataset = null;
 
@@ -11089,15 +12040,58 @@
     }
 
 
-    // "On today" / "On tomorrow" / "Yesterday" / "On 12. Oct" (local).
-    function fmtRelative(day) {
-      var now = new Date();
-      var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      var diff = Math.round((day - today) / 86400000);
-      if (diff === 0) return 'On today';
-      if (diff === 1) return 'On tomorrow';
-      if (diff === -1) return 'Yesterday';
-      return 'On ' + day.getDate() + '. ' + MONTHS_SHORT[day.getMonth()];
+    function weekdayNames(firstDow) {
+      var out = [];
+      for (var i = 0; i < 7; i++) out.push(WEEKDAYS[(firstDow + i) % 7]);
+      return out;
+    }
+
+    function gridRange(year, month, firstDow) {
+      var start = new Date(year, month, 1);
+      start.setDate(start.getDate() - ((start.getDay() - firstDow + 7) % 7));
+      var end = new Date(year, month + 1, 0);
+      end.setDate(end.getDate() + (6 - ((end.getDay() - firstDow + 7) % 7)));
+      return { start: start, end: end };
+    }
+
+    function dayLabel(d) {
+      return d.getDate() === 1 ? MONTHS[d.getMonth()] + ' 1' : String(d.getDate());
+    }
+
+    function parseMove(detail, currentName) {
+      var body = detail.slice('Moved from '.length).split('; dropped fields:')[0];
+      var tail = currentName ? ' to ' + currentName : null;
+      if (tail && body.length > tail.length && body.slice(-tail.length) === tail) {
+        return { from: body.slice(0, -tail.length), to: currentName };
+      }
+      var at = body.lastIndexOf(' to ');
+      if (at < 0) return { from: null, to: null };
+      return { from: body.slice(0, at), to: body.slice(at + 4) };
+    }
+
+    function moveLine(t, currentName) {
+      var events = t.history || [];
+      for (var i = events.length - 1; i >= 0; i--) {
+        var e = events[i];
+        if (e && e.kind === 'moved' && e.detail.indexOf('Moved from ') === 0) {
+          var m = parseMove(e.detail, currentName);
+          if (m.from === null) return currentName || '';
+          return m.from + ' \u2192 ' + (currentName || m.to);
+        }
+      }
+      return currentName || '';
+    }
+
+    function dayCellHtml(d, viewMon, todayK, chipsHtml) {
+      var cls = 'cal-day';
+      if (d.getMonth() !== viewMon) cls += ' cal-outside';
+      var today = dayKey(d) === todayK;
+      if (today) cls += ' cal-today';
+      return '<div class="' + cls + '" role="gridcell">' +
+        '<div class="cal-daynum">' +
+        (today ? '<span class="cal-today-label">Today</span>' : '') +
+        '<span class="cal-daynum-text">' + dayLabel(d) + '</span></div>' +
+        (chipsHtml || '') + '</div>';
     }
 
     // Pick readable text for a chip background hex color.
@@ -11127,42 +12121,29 @@
       return '';
     }
 
-    function passesFilters(t) {
-      var uf = qs('calendar-user-filter').value;
-      var cf = qs('calendar-color-filter').value;
-      var lf = qs('calendar-label-filter').value;
-      var sf = qs('calendar-swimlane-filter').value;
-      if (uf && (t.member_ids || []).indexOf(uf) < 0) return false;
-      if (cf && (t.color_id || '') !== cf) return false;
-      if (lf && (t.labels || []).indexOf(lf) < 0) return false;
-      if (sf && (t.swimlane_id || '') !== sf) return false;
+    function currentFilters() {
+      return {
+        user: qs('calendar-user-filter').value,
+        color: qs('calendar-color-filter').value,
+        label: qs('calendar-label-filter').value,
+        swimlane: qs('calendar-swimlane-filter').value
+      };
+    }
+
+    function taskPasses(t, f) {
+      var members = t.member_ids || [];
+      if (f.user === UNASSIGNED) {
+        if (members.length) return false;
+      } else if (f.user && members.indexOf(f.user) < 0) {
+        return false;
+      }
+      if (f.color && (t.color_id || '') !== f.color) return false;
+      if (f.label && (t.labels || []).indexOf(f.label) < 0) return false;
+      if (f.swimlane && (t.swimlane_id || '') !== f.swimlane) return false;
       return true;
     }
 
-    function renderChip(t, day) {
-      var bg = colorValueById(t.color_id) || '#e5e7eb';
-      var fg = chipText(bg);
-      var sub = fmtRelative(day) + ' \u2192 ' + colNameById(t.column_id);
-      return '<div class="cal-chip" style="background:' + escapeHtml(bg) +
-        ';color:' + fg + '" title="' + escapeHtml(t.name) + '">' +
-        '<div class="cal-chip-name">' + escapeHtml(t.name) + '</div>' +
-        '<div class="cal-chip-sub">' + escapeHtml(sub) + '</div></div>';
-    }
-
-    function render() {
-      var grid = qs('calendar-grid');
-      qs('calendar-title').textContent = MONTHS[viewMonth] + ' ' + viewYear;
-
-      // Monday-start: find the Monday of the week containing the 1st, and
-      // the Sunday of the week containing the month's last day.
-      var first = new Date(viewYear, viewMonth, 1);
-      var start = new Date(first);
-      start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
-      var last = new Date(viewYear, viewMonth + 1, 0);
-      var end = new Date(last);
-      end.setDate(end.getDate() + (6 - ((end.getDay() + 6) % 7)));
-
-      // Bucket visible tasks by local due day.
+    function bucketTasks(tasks, start, end, repeats, f) {
       var byDay = {};
       var shown = 0;
       function addChip(t, day) {
@@ -11171,35 +12152,99 @@
         (byDay[k] = byDay[k] || []).push({ t: t, day: day });
         shown++;
       }
-      (dataset.tasks || []).forEach(function (t) {
-        if (!t.due_at || !passesFilters(t)) return;
+      tasks.forEach(function (t) {
+        if (!t.due_at || !taskPasses(t, f)) return;
         var day = parseLocalDay(t.due_at);
         if (!day) return;
         addChip(t, day);
-        // KF-352: expand recognized due_repeat cadences into recurrence
-        // instances within the visible range.
+        if (!repeats) return;
         var instances = repeatInstances(day, t.due_repeat, start, end);
         for (var i = 0; i < instances.length; i++) addChip(t, instances[i]);
       });
+      return { byDay: byDay, shown: shown };
+    }
 
-      var todayK = dayKey(new Date());
+    function mergeBoards(parts) {
+      var out = { tasks: [], columns: [], swimlanes: [], colors: [], users: [] };
+      var seenUsers = {};
+      parts.forEach(function (p) {
+        var name = (p.data.board && p.data.board.name) || p.name || '';
+        (p.data.tasks || []).forEach(function (t) {
+          var copy = {};
+          Object.keys(t).forEach(function (k) { copy[k] = t[k]; });
+          copy.board_name = name;
+          out.tasks.push(copy);
+        });
+        out.columns = out.columns.concat(p.data.columns || []);
+        out.swimlanes = out.swimlanes.concat(p.data.swimlanes || []);
+        out.colors = out.colors.concat(p.data.colors || []);
+        (p.data.users || []).forEach(function (u) {
+          if (seenUsers[u.id]) return;
+          seenUsers[u.id] = true;
+          out.users.push(u);
+        });
+      });
+      return out;
+    }
+
+    function exportUrl(boardIds, opts) {
+      var q = ['boards=' + encodeURIComponent(boardIds.join(','))];
+      q.push('format=' + encodeURIComponent(opts.format || 'xlsx'));
+      if (opts.from) q.push('from=' + encodeURIComponent(opts.from));
+      if (opts.to) q.push('to=' + encodeURIComponent(opts.to));
+      q.push('type=' + encodeURIComponent(opts.type || 'all'));
+      return '/api/calendar-export?' + q.join('&');
+    }
+
+    function feedUrl(origin, path) { return origin + path; }
+
+    function feedRowHtml(feed, origin) {
+      var https = feedUrl(origin, feed.path);
+      return '<li class="cal-feed-row" data-feed-id="' + escapeHtml(feed.id) + '">' +
+        '<span class="cal-feed-name">' + escapeHtml(feed.label) + '</span>' +
+        '<input class="cal-feed-url" readonly value="' + escapeHtml(https) +
+        '" aria-label="URL of ' + escapeHtml(feed.label) + '">' +
+        '<a class="cal-tool" href="' + escapeHtml(https.replace(/^https?:\/\//, 'webcal://')) +
+        '">Subscribe</a>' +
+        '<button type="button" class="cal-tool" data-feed-copy>Copy</button>' +
+        '<button type="button" class="cal-icon" data-feed-delete aria-label="Delete ' +
+        escapeHtml(feed.label) + '">&times;</button></li>';
+    }
+
+    function renderChip(t, day) {
+      var bg = colorValueById(t.color_id) || '#e5e7eb';
+      var fg = chipText(bg);
+      var sub = moveLine(t, colNameById(t.column_id));
+      if (selectedBoards.length > 1 && t.board_name) sub = t.board_name + ' · ' + sub;
+      return '<div class="cal-chip" style="background:' + escapeHtml(bg) +
+        ';color:' + fg + '" title="' + escapeHtml(t.name) + '">' +
+        '<div class="cal-chip-name">' + escapeHtml(t.name) + '</div>' +
+        '<div class="cal-chip-sub">' + escapeHtml(sub) + '</div></div>';
+    }
+
+    function gridHtml(tasks, year, month, firstDow, repeats, filters, todayK) {
+      var range = gridRange(year, month, firstDow);
+      var bucket = bucketTasks(tasks, range.start, range.end, repeats, filters);
       var html = '';
-      WEEKDAYS.forEach(function (w) {
+      weekdayNames(firstDow).forEach(function (w) {
         html += '<div class="cal-dow" role="columnheader">' + w + '</div>';
       });
-      for (var d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        var k = dayKey(d);
-        var cls = 'cal-day';
-        if (d.getMonth() !== viewMonth) cls += ' cal-outside';
-        if (k === todayK) cls += ' cal-today';
-        html += '<div class="' + cls + '" role="gridcell">';
-        html += '<div class="cal-daynum">' + d.getDate() + '</div>';
-        (byDay[k] || []).forEach(function (item) {
-          html += renderChip(item.t, item.day);
+      for (var d = new Date(range.start); d <= range.end; d.setDate(d.getDate() + 1)) {
+        var chips = '';
+        (bucket.byDay[dayKey(d)] || []).forEach(function (item) {
+          chips += renderChip(item.t, item.day);
         });
-        html += '</div>';
+        html += dayCellHtml(d, month, todayK, chips);
       }
-      grid.innerHTML = html;
+      return { html: html, shown: bucket.shown };
+    }
+
+    function render() {
+      qs('calendar-title').textContent = MONTHS[viewMonth] + ' ' + viewYear;
+      var grid = gridHtml(dataset.tasks || [], viewYear, viewMonth, firstDayOfWeek, showRepeats,
+        currentFilters(), dayKey(new Date()));
+      var shown = grid.shown;
+      qs('calendar-grid').innerHTML = grid.html;
       setStatus(shown === 0
         ? 'No tasks with due dates in view.'
         : (shown === 1 ? '1 task with a due date in view.'
@@ -11214,14 +12259,18 @@
         (t.labels || []).forEach(function (l) { labels[l] = true; });
         if (t.swimlane_id) swimlanes[t.swimlane_id] = true;
       });
-      function fill(id, map, labelById) {
+      function fill(id, map, labelById, keep) {
         var sel = qs(id);
+        var held = sel.value;
+        while (sel.options.length > keep) sel.remove(keep);
         Object.keys(map).sort().forEach(function (key) {
           var o = document.createElement('option');
           o.value = key;
           o.textContent = labelById(key) || key;
           sel.appendChild(o);
         });
+        sel.value = held;
+        if (sel.value !== held) sel.value = '';
       }
       var userName = function (id) {
         var us = dataset.users || [];
@@ -11239,13 +12288,55 @@
           return id;
         };
       };
-      fill('calendar-user-filter', users, userName);
-      fill('calendar-color-filter', colors, colorLabel);
-      fill('calendar-label-filter', labels, function (l) { return l; });
-      fill('calendar-swimlane-filter', swimlanes, namedLabel(dataset.swimlanes || []));
-      ['calendar-user-filter', 'calendar-color-filter',
-        'calendar-label-filter', 'calendar-swimlane-filter'].forEach(function (id) {
-        qs(id).addEventListener('change', render);
+      fill('calendar-user-filter', users, userName, 2);
+      fill('calendar-color-filter', colors, colorLabel, 1);
+      fill('calendar-label-filter', labels, function (l) { return l; }, 1);
+      fill('calendar-swimlane-filter', swimlanes, namedLabel(dataset.swimlanes || []), 1);
+    }
+
+    function loadSettings() {
+      try {
+        var s = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || '{}');
+        if (s.firstDay === 0 || s.firstDay === 1) firstDayOfWeek = s.firstDay;
+        if (typeof s.showRepeats === 'boolean') showRepeats = s.showRepeats;
+      } catch (e) {}
+    }
+
+    function saveSettings() {
+      try {
+        window.localStorage.setItem(SETTINGS_KEY,
+          JSON.stringify({ firstDay: firstDayOfWeek, showRepeats: showRepeats }));
+      } catch (e) {}
+    }
+
+    var POPS = {
+      'calendar-boards-toggle': 'calendar-boards-panel',
+      'calendar-feed-toggle': 'calendar-feed-panel',
+      'calendar-export': 'calendar-export-panel',
+      'calendar-settings': 'calendar-settings-panel'
+    };
+
+    function closePops(except) {
+      Object.keys(POPS).forEach(function (toggleId) {
+        var panel = qs(POPS[toggleId]);
+        var toggle = qs(toggleId);
+        if (panel && POPS[toggleId] !== except) panel.hidden = true;
+        if (toggle && POPS[toggleId] !== except) toggle.setAttribute('aria-expanded', 'false');
+      });
+    }
+
+    function initPops(onOpen) {
+      Object.keys(POPS).forEach(function (toggleId) {
+        var toggle = qs(toggleId);
+        var panel = qs(POPS[toggleId]);
+        toggle.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var opening = panel.hidden;
+          closePops(POPS[toggleId]);
+          panel.hidden = !opening;
+          toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
+          if (opening && onOpen[toggleId]) onOpen[toggleId]();
+        });
       });
     }
 
@@ -11254,80 +12345,180 @@
       if (el) el.textContent = msg;
     }
 
-    // KF-351: iCal feed subscription. The bearer token is fetched via the
-    // authenticated link endpoint only when the user opens the panel — it
-    // is never embedded in the page source.
-    function initFeed(boardId) {
-      var toggle = qs('calendar-feed-toggle');
-      var panel = qs('calendar-feed-panel');
-      if (!toggle || !panel) return;
-      var linkPath = null;
-      function urls() {
-        var https = window.location.origin + linkPath;
-        return { https: https, webcal: https.replace(/^https?:\/\//, 'webcal://') };
-      }
-      function refreshLinks() {
-        var sub = qs('calendar-feed-subscribe');
-        if (sub) sub.href = urls().webcal;
-      }
-      toggle.addEventListener('click', function () {
-        var opening = panel.hidden;
-        panel.hidden = !panel.hidden;
-        if (!opening || linkPath) return;
-        feedStatus('Loading feed link…');
-        // KF-420: POST, because the first request creates the token.
-        fetch('/api/boards/' + encodeURIComponent(boardId) + '/calendar-feed', {
+    function feedsBase() {
+      return '/api/boards/' + encodeURIComponent(currentBoard) + '/calendar-feeds';
+    }
+
+    function renderFeeds() {
+      var list = qs('calendar-feed-list');
+      list.innerHTML = feeds.length
+        ? feeds.map(function (f) { return feedRowHtml(f, window.location.origin); }).join('')
+        : '<li class="cal-hint">No feeds yet.</li>';
+    }
+
+    function loadFeeds() {
+      feedStatus('Loading feeds…');
+      var board = currentBoard;
+      fetchJson(feedsBase()).then(function (data) {
+        if (board !== currentBoard) return;
+        feeds = data.feeds || [];
+        renderFeeds();
+        feedStatus('');
+      }).catch(function (err) {
+        feedStatus('Could not load feeds: ' + err.message);
+      });
+    }
+
+    function initFeeds() {
+      var label = qs('calendar-feed-label');
+      qs('calendar-feed-generate').addEventListener('click', function () {
+        var text = label.value.trim();
+        if (!text) { feedStatus('Give the feed a label first.'); label.focus(); return; }
+        feedStatus('Generating…');
+        var board = currentBoard;
+        fetch(feedsBase(), {
           method: 'POST',
-          headers: { 'Accept': 'application/json' }
+          headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label: text })
         }).then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.json();
-        }).then(function (data) {
-          linkPath = data.path;
-          refreshLinks();
-          feedStatus('');
+          if (r.ok) return r.json();
+          return r.json().catch(function () { return {}; }).then(function (b) { throw new Error(b.message || 'HTTP ' + r.status); });
+        }).then(function (feed) {
+          if (board !== currentBoard) return;
+          feeds.push(feed);
+          label.value = '';
+          renderFeeds();
+          feedStatus('Feed created.');
         }).catch(function (err) {
-          feedStatus('Could not load feed link: ' + err.message);
+          if (board !== currentBoard) return;
+          feedStatus('Could not create the feed: ' + err.message);
         });
       });
-      var copy = qs('calendar-feed-copy');
-      if (copy) copy.addEventListener('click', function () {
-        if (!linkPath) return;
-        var u = urls().https;
-        function done() { feedStatus('Feed link copied.'); }
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(u).then(done, function () { feedStatus(u); });
-        } else {
-          feedStatus(u);
+      qs('calendar-feed-list').addEventListener('click', function (e) {
+        var row = e.target.closest ? e.target.closest('[data-feed-id]') : null;
+        if (!row) return;
+        var id = row.getAttribute('data-feed-id');
+        var feed = feeds.filter(function (f) { return f.id === id; })[0];
+        if (!feed) return;
+        if (e.target.closest('[data-feed-copy]')) {
+          var u = feedUrl(window.location.origin, feed.path);
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(u).then(function () {
+              feedStatus('Copied ' + feed.label + '.');
+            }, function () { feedStatus(u); });
+          } else {
+            feedStatus(u);
+          }
+        } else if (e.target.closest('[data-feed-delete]')) {
+          if (!window.confirm('Delete the feed "' + feed.label + '"? Its URL will stop working.')) return;
+          var board = currentBoard;
+          fetch(feedsBase() + '/' + encodeURIComponent(id), {
+            method: 'DELETE',
+            headers: { 'Accept': 'application/json' }
+          }).then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            if (board !== currentBoard) return;
+            feeds = feeds.filter(function (f) { return f.id !== id; });
+            renderFeeds();
+            feedStatus('Feed deleted; its URL no longer works.');
+          }).catch(function (err) {
+            if (board !== currentBoard) return;
+            feedStatus('Could not delete the feed: ' + err.message);
+          });
         }
       });
-      var reset = qs('calendar-feed-reset');
-      if (reset) reset.addEventListener('click', function () {
-        if (!window.confirm('Reset the iCal feed link? The old link will stop working.')) return;
-        feedStatus('Resetting…');
-        fetch('/api/boards/' + encodeURIComponent(boardId) + '/calendar-feed/reset', {
-          method: 'POST',
-          headers: { 'Accept': 'application/json' }
-        }).then(function (r) {
+    }
+
+    function exportStatus(msg) {
+      var el = qs('calendar-export-status');
+      if (el) el.textContent = msg;
+    }
+
+    function initExport() {
+      qs('calendar-export-run').addEventListener('click', function () {
+        var opts = {
+          format: qs('calendar-export-format').value,
+          from: qs('calendar-export-from').value,
+          to: qs('calendar-export-to').value,
+          type: qs('calendar-export-type').value
+        };
+        if (opts.from && opts.to && opts.to < opts.from) {
+          exportStatus('To date is before From date.');
+          return;
+        }
+        exportStatus('Exporting…');
+        fetch(exportUrl(selectedBoards, opts), { credentials: 'same-origin' }).then(function (r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.json();
-        }).then(function (data) {
-          linkPath = data.path;
-          refreshLinks();
-          feedStatus('New feed link issued; the old one no longer works.');
+          return r.blob();
+        }).then(function (blob) {
+          saveBlob('due-dates.' + opts.format, blob);
+          exportStatus('');
         }).catch(function (err) {
-          feedStatus('Could not reset feed link: ' + err.message);
+          exportStatus('Could not export: ' + err.message);
         });
       });
     }
 
-    function init(boardId) {
+    function initSettings() {
+      var day = qs('calendar-first-day');
+      var repeats = qs('calendar-show-repeats');
+      day.value = String(firstDayOfWeek);
+      repeats.checked = showRepeats;
+      day.addEventListener('change', function () {
+        firstDayOfWeek = day.value === '1' ? 1 : 0;
+        saveSettings();
+        if (dataset) render();
+      });
+      repeats.addEventListener('change', function () {
+        showRepeats = repeats.checked;
+        saveSettings();
+        if (dataset) render();
+      });
+    }
+
+    function renderBoardPicker() {
+      var list = qs('calendar-boards-list');
+      list.innerHTML = allBoards.map(function (b) {
+        return '<label class="cal-board-row"><input type="checkbox" value="' + escapeHtml(b.id) + '"' +
+          (selectedBoards.indexOf(b.id) >= 0 ? ' checked' : '') + '> ' + escapeHtml(b.name) + '</label>';
+      }).join('');
+    }
+
+    function loadBoardList() {
+      fetchJson('/api/boards').then(function (boards) {
+        allBoards = boards.filter(function (b) { return !b.archived || b.id === currentBoard; });
+        renderBoardPicker();
+      }).catch(function () {
+        allBoards = [{ id: currentBoard, name: 'This board' }];
+        renderBoardPicker();
+      });
+    }
+
+    function initBoardPicker() {
+      qs('calendar-boards-list').addEventListener('change', function () {
+        var ids = [];
+        Array.prototype.forEach.call(
+          qs('calendar-boards-list').querySelectorAll('input[type="checkbox"]'),
+          function (box) { if (box.checked) ids.push(box.value); });
+        if (!ids.length) ids = [currentBoard];
+        selectedBoards = ids;
+        renderBoardPicker();
+        loadData();
+      });
+    }
+
+    function bindOnce() {
       if (initialized) return;
       initialized = true;
-      var now = new Date();
-      viewYear = now.getFullYear();
-      viewMonth = now.getMonth();
-      initFeed(boardId);
+      loadSettings();
+      initPops({
+        'calendar-feed-toggle': loadFeeds,
+        'calendar-boards-toggle': loadBoardList
+      });
+      initFeeds();
+      initExport();
+      initSettings();
+      initBoardPicker();
       qs('calendar-prev').addEventListener('click', function () {
         viewMonth--;
         if (viewMonth < 0) { viewMonth = 11; viewYear--; }
@@ -11344,21 +12535,71 @@
         viewMonth = t.getMonth();
         render();
       });
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' }
-      }).then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      }).then(function (data) {
-        dataset = data;
+      ['calendar-user-filter', 'calendar-color-filter',
+        'calendar-label-filter', 'calendar-swimlane-filter'].forEach(function (id) {
+        qs(id).addEventListener('change', function () { if (dataset) render(); });
+      });
+      var filterToggle = qs('calendar-filter-toggle');
+      filterToggle.addEventListener('click', function () {
+        var panel = qs('calendar-filter-panel');
+        panel.hidden = !panel.hidden;
+        filterToggle.setAttribute('aria-expanded', panel.hidden ? 'false' : 'true');
+      });
+      var overlay = qs('calendar-dialog');
+      overlay.addEventListener('click', function (e) {
+        if (e.target === overlay) { overlay.hidden = true; return; }
+        if (!e.target.closest || !e.target.closest('.cal-pop')) closePops('');
+      });
+    }
+
+    function loadData() {
+      var token = ++loadToken;
+      setStatus('Loading…');
+      Promise.all(selectedBoards.map(function (id) {
+        return fetchJson('/api/boards/' + encodeURIComponent(id) + '/export-data');
+      })).then(function (datas) {
+        if (token !== loadToken) return;
+        dataset = mergeBoards(datas.map(function (data) { return { data: data }; }));
         fillFilters();
         render();
       }).catch(function (err) {
+        if (token !== loadToken) return;
         setStatus('Could not load calendar data: ' + err.message);
       });
     }
 
-    return { init: init };
+    function open(boardId) {
+      bindOnce();
+      currentBoard = boardId;
+      selectedBoards = [boardId];
+      feeds = [];
+      allBoards = [];
+      var now = new Date();
+      viewYear = now.getFullYear();
+      viewMonth = now.getMonth();
+      dataset = null;
+      qs('calendar-grid').innerHTML = '';
+      qs('calendar-title').textContent = MONTHS[viewMonth] + ' ' + viewYear;
+      qs('calendar-feed-list').innerHTML = '';
+      closePops('');
+      qs('calendar-dialog').hidden = false;
+      loadData();
+    }
+
+    return {
+      open: open,
+      weekdayNames: weekdayNames,
+      gridRange: gridRange,
+      dayLabel: dayLabel,
+      moveLine: moveLine,
+      dayCellHtml: dayCellHtml,
+      taskPasses: taskPasses,
+      bucketTasks: bucketTasks,
+      gridHtml: gridHtml,
+      mergeBoards: mergeBoards,
+      exportUrl: exportUrl,
+      feedRowHtml: feedRowHtml
+    };
   })();
 
   // KF-342: Monte Carlo forecasting report page — predicts when N tasks will
@@ -12502,8 +13743,7 @@
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/board-history';
           break;
         case 'calendar':
-          // KF-338: Calendar report page — tasks by due date on a month grid.
-          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/calendar';
+          CalendarPage.open(boardId());
           break;
         case 'montecarlo':
           // KF-342: Monte Carlo forecasting report page — probabilistic completion forecast.
@@ -13421,12 +14661,133 @@
     });
   }
 
-  // KF-310: notifications panel popover (empty state; no notification model
-  // exists). Mirrors the account-menu open/dismiss pattern.
+  var Notifications = {
+    PAGE: 20,
+    BADGE_MAX: 99,
+    unread: 0,
+    generation: 0,
+    nextBefore: null,
+    EVENT_TEXT: {
+      task_assigned: function (n) { return 'assigned you to ' + n.task_name; },
+      comment_added: function (n) { return 'commented on ' + n.task_name; },
+      task_moved: function (n) { return 'moved ' + n.task_name + ' to ' + n.detail; },
+      task_deleted: function (n) { return 'deleted ' + n.task_name; },
+      column_renamed: function (n) { return 'renamed a column on ' + n.board_name + ' to ' + n.detail; },
+      column_deleted: function (n) { return 'deleted the column ' + n.detail + ' on ' + n.board_name; },
+      board_deleted: function (n) { return 'deleted the board ' + n.board_name; }
+    },
+
+    setUnread: function (count) {
+      this.unread = count;
+      TimerUI.syncBell();
+    },
+
+    badgeText: function () {
+      if (this.unread <= 0) return '1';
+      return this.unread > this.BADGE_MAX ? this.BADGE_MAX + '+' : String(this.unread);
+    },
+
+    actorName: function (n) {
+      return n.token_name || n.actor;
+    },
+
+    describe: function (n) {
+      var text = this.EVENT_TEXT[n.kind];
+      return text ? text(n) : n.kind;
+    },
+
+    linkFor: function (n) {
+      if (n.kind === 'board_deleted') return null;
+      if (n.kind === 'task_deleted') return null;
+      var base = '/b/' + encodeURIComponent(n.board_id);
+      if (n.task_id) return { href: base + '#task-' + encodeURIComponent(n.task_id), label: 'VIEW TASK' };
+      return { href: base, label: 'VIEW BOARD' };
+    },
+
+    row: function (n) {
+      var row = document.createElement('div');
+      row.className = 'notification-row' + (n.read ? '' : ' notification-row--unread');
+      row.setAttribute('data-notification-id', String(n.id));
+      var text = document.createElement('div');
+      text.className = 'notification-text';
+      var who = document.createElement('strong');
+      who.textContent = this.actorName(n);
+      text.appendChild(who);
+      text.appendChild(document.createTextNode(' ' + this.describe(n)));
+      row.appendChild(text);
+      var link = this.linkFor(n);
+      if (link) {
+        var a = document.createElement('a');
+        a.className = 'notification-link';
+        a.href = link.href;
+        a.textContent = link.label;
+        row.appendChild(a);
+      }
+      return row;
+    },
+
+    markRead: function (ids) {
+      var self = this;
+      return Promise.all(ids.map(function (id) {
+        return fetch('/api/notifications/' + id + '/read', { method: 'POST', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+          .then(function (res) { return jsonIfJson(res); });
+      })).then(function (results) {
+        var counts = results.filter(Boolean).map(function (r) { return r.unread; });
+        if (counts.length) self.setUnread(Math.min.apply(null, counts));
+      });
+    },
+
+    load: function (list, empty, more, before) {
+      var self = this;
+      var generation = this.generation;
+      var url = '/api/notifications?limit=' + this.PAGE + (before ? '&before=' + before : '');
+      return fetch(url, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then(function (res) { return jsonIfJson(res); })
+        .then(function (page) {
+          if (!page || generation !== self.generation) return;
+          var unseen = [];
+          page.items.forEach(function (n) {
+            list.appendChild(self.row(n));
+            if (!n.read) unseen.push(n.id);
+          });
+          self.nextBefore = page.next_before;
+          empty.hidden = list.children.length > 0;
+          more.hidden = page.next_before === null;
+          self.setUnread(page.unread);
+          if (unseen.length) return self.markRead(unseen);
+        });
+    },
+
+    markAll: function (list) {
+      var self = this;
+      return fetch('/api/notifications/read', { method: 'POST', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then(function (res) { return jsonIfJson(res); })
+        .then(function (done) {
+          if (!done) return;
+          self.setUnread(done.unread);
+          list.querySelectorAll('.notification-row--unread').forEach(function (row) {
+            row.classList.remove('notification-row--unread');
+          });
+        });
+    },
+
+    openTask: function (link) {
+      var url = new URL(link.href, window.location.href);
+      if (url.pathname !== window.location.pathname) return false;
+      history.replaceState(null, '', url.pathname + url.hash);
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      return true;
+    }
+  };
+
   function initNotificationsPanel() {
     var btn = document.getElementById('notifications-btn');
     var panel = document.getElementById('notifications-panel');
     if (!btn || !panel) return;
+    var list = panel.querySelector('.notifications-list');
+    var empty = panel.querySelector('.notifications-empty');
+    var more = panel.querySelector('.notifications-more');
+    var markAll = panel.querySelector('.notifications-mark-all');
     function placePanel() {
       var r = btn.getBoundingClientRect();
       panel.style.top = (r.bottom + 6) + 'px';
@@ -13448,6 +14809,11 @@
         if (ab) ab.setAttribute('aria-expanded', 'false');
       }
     }
+    function refresh() {
+      list.textContent = '';
+      Notifications.generation++;
+      Notifications.load(list, empty, more, null);
+    }
     btn.addEventListener('click', function (e) {
       e.stopPropagation();
       closeAccountMenu();
@@ -13455,7 +14821,19 @@
         placePanel();
         panel.hidden = false;
         btn.setAttribute('aria-expanded', 'true');
+        refresh();
       } else {
+        closePanel();
+      }
+    });
+    markAll.addEventListener('click', function () { Notifications.markAll(list); });
+    more.addEventListener('click', function () {
+      Notifications.load(list, empty, more, Notifications.nextBefore);
+    });
+    list.addEventListener('click', function (e) {
+      var link = e.target.closest('.notification-link');
+      if (link && Notifications.openTask(link)) {
+        e.preventDefault();
         closePanel();
       }
     });
@@ -13471,6 +14849,9 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && !panel.hidden) closePanel();
     });
+    fetch('/api/notifications?limit=1', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      .then(function (res) { return jsonIfJson(res); })
+      .then(function (page) { if (page) Notifications.setUnread(page.unread); });
   }
 
   function initBoardsDropdown() {
@@ -13612,6 +14993,7 @@
     if (boardInitialized) return;
     boardInitialized = true;
     initTaskSortable();
+    initSelection();
     initColumnSortable();
     applyCollapsedColumns();
     initAddTask();

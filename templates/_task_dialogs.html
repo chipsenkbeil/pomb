@@ -28,6 +28,24 @@
   <div class="details-row"><span class="details-label">Task count:</span> <span id="details-col-count"></span></div>
 </div>
 
+<div id="timeline-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light log-custom-dialog timeline-dlg" role="dialog" aria-labelledby="tl-title">
+    <div class="dlg-title"><span id="tl-title">Add timeline for task</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <div class="log-custom-fields">
+      <label>Start date<input type="text" id="tl-start" placeholder="YYYY-MM-DD" inputmode="numeric" autocomplete="off" spellcheck="false"></label>
+      <label>End date<input type="text" id="tl-end" placeholder="YYYY-MM-DD" inputmode="numeric" autocomplete="off" spellcheck="false"></label>
+    </div>
+    <div class="log-custom-cals">
+      <div class="log-custom-cal" id="tl-cal-left"></div>
+      <div class="log-custom-cal" id="tl-cal-right"></div>
+    </div>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-danger" id="tl-delete" hidden>Delete</button>
+      <button type="button" class="btn btn-success" id="tl-add">Add</button>
+    </div>
+  </div>
+</div>
+
 <!-- KF-047: styled delete-confirmation dialog (replaces window.confirm). -->
 <div id="confirm-dialog" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Confirm">
@@ -59,7 +77,7 @@
      popover at the card, KF-334). -->
 <div id="move-task-dialog" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Move task">
-    <div class="dlg-title"><span>Move task</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <div class="dlg-title"><span id="mt-title">Move task</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
     <label class="dlg-field">
       <span>Board</span>
       <select id="mt-board"></select>

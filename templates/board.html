@@ -672,6 +672,13 @@
   <button type="button" data-card-act="delete"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.3a1 1 0 0 0 1 .7h4.6a1 1 0 0 0 1-.7L12 4"/><path d="M6.5 7v4M9.5 7v4"/></svg></span>Delete</button>
 </div>
 <div id="card-ctx-submenu" class="menu-pop menu-floating" hidden role="menu" aria-label="Task submenu"></div>
+<div id="bulk-ctx-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Selection menu">
+  <button type="button" data-bulk-act="move"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h4.5V7M13.5 2.5L7.5 8.5"/><path d="M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/></svg></span>Move advanced</button>
+  <button type="button" data-bulk-act="color" aria-haspopup="menu"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 6.5h12M8 3v10"/></svg></span>Color <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
+  <button type="button" data-bulk-act="members"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="5.8" cy="5.8" r="2.6"/><path d="M1.2 13.2c0-2.6 2.1-4.2 4.6-4.2s4.6 1.6 4.6 4.2"/><circle cx="11.4" cy="6.6" r="2.1"/><path d="M11.2 9.2c2 .4 3.6 1.8 3.6 4"/></svg></span>Assign members</button>
+  <button type="button" data-bulk-act="members-menu" aria-haspopup="menu" hidden><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="5.8" cy="5.8" r="2.6"/><path d="M1.2 13.2c0-2.6 2.1-4.2 4.6-4.2s4.6 1.6 4.6 4.2"/><circle cx="11.4" cy="6.6" r="2.1"/><path d="M11.2 9.2c2 .4 3.6 1.8 3.6 4"/></svg></span>Members <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
+  <button type="button" data-bulk-act="delete"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.3a1 1 0 0 0 1 .7h4.6a1 1 0 0 0 1-.7L12 4"/><path d="M6.5 7v4M9.5 7v4"/></svg></span>Delete</button>
+</div>
 
 <!-- Add column dialog: Name + Position combobox -->
 <div id="add-column-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
@@ -990,6 +997,105 @@
   <div class="menu-sep" role="separator" aria-hidden="true"></div>
   <button type="button" data-report="export" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M8 2v8M4.5 7L8 10.5 11.5 7M2.5 13.5h11"/></svg></span>Export</button>
   <button type="button" data-report="print" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" focusable="false"><path d="M4.5 6V2h7v4M4.5 11.5h-2v-5h11v5h-2M4.5 9.5h7v4.5h-7z"/></svg></span>Print</button>
+</div>
+
+<div id="calendar-dialog" class="dlg-overlay cal-overlay" hidden>
+  <div class="cal-dialog" role="dialog" aria-modal="true" aria-label="Calendar">
+    <div class="cal-topbar">
+      <div class="cal-topbar-left">
+        <button type="button" id="calendar-boards-toggle" class="cal-tool" aria-expanded="false" aria-controls="calendar-boards-panel">Boards</button>
+        <button type="button" id="calendar-filter-toggle" class="cal-tool" aria-expanded="true" aria-controls="calendar-filter-panel">Filter</button>
+        <button type="button" id="calendar-feed-toggle" class="cal-tool" aria-expanded="false" aria-controls="calendar-feed-panel">Feeds</button>
+        <button type="button" id="calendar-export" class="cal-tool" aria-expanded="false" aria-controls="calendar-export-panel">Export</button>
+      </div>
+      <div class="cal-topbar-center">
+        <button type="button" id="calendar-prev" class="cal-nav" title="Previous month" aria-label="Previous month">&lsaquo;</button>
+        <span id="calendar-title" class="cal-title"></span>
+        <button type="button" id="calendar-next" class="cal-nav" title="Next month" aria-label="Next month">&rsaquo;</button>
+        <button type="button" id="calendar-today" class="cal-tool cal-today-btn">Today</button>
+      </div>
+      <div class="cal-topbar-right">
+        <button type="button" id="calendar-settings" class="cal-icon" aria-label="Calendar settings" aria-expanded="false" aria-controls="calendar-settings-panel"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg></button>
+        <button type="button" id="calendar-close" class="cal-icon" data-close-dialog aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2"/></svg></button>
+      </div>
+    </div>
+    <div id="calendar-boards-panel" class="cal-pop" hidden>
+      <div class="cal-pop-title">Boards</div>
+      <div id="calendar-boards-list" class="cal-board-list"></div>
+    </div>
+    <div id="calendar-feed-panel" class="cal-pop cal-pop-wide" hidden>
+      <div class="cal-pop-title">Feeds</div>
+      <label>Label
+        <input type="text" id="calendar-feed-label" maxlength="100" placeholder="e.g. Phone">
+      </label>
+      <button type="button" id="calendar-feed-generate" class="cal-tool">Generate new URL</button>
+      <div class="cal-pop-title">My feeds</div>
+      <ul id="calendar-feed-list" class="cal-feed-list"></ul>
+      <p class="cal-hint">Anyone with a URL can view this board&rsquo;s due dates.</p>
+      <p id="calendar-feed-status" class="cal-hint" role="status"></p>
+    </div>
+    <div id="calendar-export-panel" class="cal-pop" hidden>
+      <div class="cal-pop-title">Export due dates</div>
+      <label>File format
+        <select id="calendar-export-format">
+          <option value="xlsx">Excel (.xlsx)</option>
+          <option value="csv">CSV (.csv)</option>
+        </select>
+      </label>
+      <label>From date <input type="date" id="calendar-export-from"></label>
+      <label>To date <input type="date" id="calendar-export-to"></label>
+      <label>Due date type
+        <select id="calendar-export-type">
+          <option value="all">All</option>
+          <option value="task">Task level</option>
+          <option value="subtask">Subtask level</option>
+        </select>
+      </label>
+      <button type="button" id="calendar-export-run" class="cal-tool">Export</button>
+      <p id="calendar-export-status" class="cal-hint" role="status"></p>
+    </div>
+    <div id="calendar-settings-panel" class="cal-pop cal-pop-right" hidden>
+      <div class="cal-pop-title">Settings</div>
+      <label>First day of week
+        <select id="calendar-first-day">
+          <option value="1">Monday</option>
+          <option value="0">Sunday</option>
+        </select>
+      </label>
+      <label class="cal-check">Repeating tasks
+        <span><input type="checkbox" id="calendar-show-repeats" checked> Show all</span>
+      </label>
+    </div>
+    <div class="cal-body">
+      <aside id="calendar-filter-panel" class="cal-filter" aria-label="Filter">
+        <label>User
+          <select id="calendar-user-filter">
+            <option value="">All users</option>
+            <option value="__unassigned__">Unassigned</option>
+          </select>
+        </label>
+        <label>Color
+          <select id="calendar-color-filter">
+            <option value="">All colors</option>
+          </select>
+        </label>
+        <label>Label
+          <select id="calendar-label-filter">
+            <option value="">All labels</option>
+          </select>
+        </label>
+        <label>Swimlane
+          <select id="calendar-swimlane-filter">
+            <option value="">All swimlanes</option>
+          </select>
+        </label>
+        <p id="calendar-status" class="cal-hint" role="status"></p>
+      </aside>
+      <div class="cal-scroll">
+        <div id="calendar-grid" class="calendar-grid" role="grid" aria-label="Calendar"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Members / Invite dialog (single-admin honest copy) -->

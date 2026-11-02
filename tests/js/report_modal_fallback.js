@@ -20,6 +20,7 @@ function select() {
   return s;
 }
 var elements = {
+  'mt-title': { textContent: '' },
   'mt-board': select(),
   'mt-col': select(),
   'move-task-dialog': {
@@ -54,8 +55,10 @@ function api(path, method, data) {
   calls.push({ path: path, method: method, data: data });
   return Promise.resolve({ ok: true });
 }
+eval(fn('  function modalTaskBoard() {'));
+eval(fn('  function boardNameFor(id) {'));
 eval(fn('  function copyModalTask() {'));
-eval(fn('  function openMoveDialog(taskId, anchorCard) {'));
+eval(fn('  function openMoveDialog(taskId, anchorCard, bulkIds) {'));
 eval(fn('  function doMoveTask() {'));
 
 var failures = 0;

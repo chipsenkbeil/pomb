@@ -1,7 +1,7 @@
 <div class="modal-overlay" id="modal-overlay">
   <div class="task-modal-wrap">
     <div class="task-modal taskColorVars-{{ task.color_value }}"
-         data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
+         data-task-id="{{ task.id }}" data-board-id="{{ board_id }}" data-board-name="{{ board_name }}" data-color-value="{{ task.color_value }}"
          role="dialog" aria-label="Task details">
     <div class="task-modal-head">
       <div class="tm-title-wrap">
@@ -118,14 +118,18 @@
           <button type="button" class="tm-sect-kebab" data-tm-menu="tm-subtasks-menu" aria-label="Subtask section options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="currentColor"/><circle cx="2.5" cy="8" r="2.3" fill="currentColor"/><circle cx="2.5" cy="13.5" r="2.3" fill="currentColor"/></svg></button>
           <div id="tm-subtasks-menu" class="tm-menu" hidden role="menu">
             <button type="button" data-tm-act="add-subtask">Add subtask</button>
+            <button type="button" data-tm-subtask-act="save-template">Save as template</button>
+            <button type="button" data-tm-subtask-act="add-from-template">Add from template</button>
+            <button type="button" data-tm-subtask-act="delete-all">Delete all subtasks</button>
           </div>
         </div>
         <div id="modal-subtasks" class="tm-subtasks" data-task-id="{{ task.id }}">
           {% for sub in task.subtasks %}
-          <div class="tm-subtask{% if sub.done %} tm-subtask-done{% endif %}" data-subtask-id="{{ sub.id }}">
+          <div class="tm-subtask{% if sub.done %} tm-subtask-done{% endif %}" data-subtask-id="{{ sub.id }}" data-member-ids="{{ sub.member_ids|join(",") }}">
             <input type="checkbox" class="tm-subtask-check" {% if sub.done %}checked{% endif %} aria-label="Mark subtask done">
             <span class="tm-subtask-name" tabindex="0" title="Click to edit">{{ sub.name }}</span>
             {% if let Some(label) = sub.due_label() %}<span class="tm-subtask-due{% if sub.due_overdue(task.completed_at.is_some()) %} tm-due-overdue{% endif %}">{{ label }}</span>{% endif %}
+            <span class="tm-subtask-members">{% for chip in self.chips_of(sub.id.as_str()) %}<span class="tm-member-disc tm-subtask-member" title="{{ chip.username }}">{{ chip.initials }}</span>{% endfor %}</span>
             <button type="button" class="tm-subtask-handle" aria-label="Subtask options" aria-haspopup="menu"><svg width="6" height="16" viewBox="0 0 6 16" aria-hidden="true" focusable="false"><ellipse cx="3" cy="2.5" rx="2.0" ry="2.25" fill="currentColor"/><ellipse cx="3" cy="8" rx="2.0" ry="2.25" fill="currentColor"/><ellipse cx="3" cy="13.5" rx="2.0" ry="2.25" fill="currentColor"/></svg></button>
           </div>
           {% endfor %}
@@ -221,6 +225,14 @@
               <dd data-cell="color">
                 <button type="button" class="tm-color-chip" data-tm-act="pick-color" style="background-color: var(--taskColorBorder);"{% if task.show_color_name %} title="{{ task.color_label }} — click to change"{% else %} title="Click to change"{% endif %}></button>
                 {% if task.show_color_name %}<span class="tm-color-name">{{ task.color_label }}</span>{% endif %}
+              </dd>
+              <dt>Timeline</dt>
+              <dd data-cell="timeline" id="modal-timeline-row">
+                {% if let Some(timeline) = task.timeline_display %}
+                <button type="button" class="tm-due-chip" data-tm-act="edit-timeline" title="Edit timeline"><strong>{{ timeline }}</strong></button>
+                {% else %}
+                <button type="button" class="tm-add-link" data-tm-act="add-timeline">Add timeline</button>
+                {% endif %}
               </dd>
               <dt>Members</dt>
               <dd data-cell="members" id="modal-members-row">
@@ -389,6 +401,7 @@
           <button type="button" data-tm-act="add-label"><span class="tm-item-icon" aria-hidden="true">&#127991;</span>Label</button>
           <button type="button" data-tm-act="add-subtask"><span class="tm-item-icon" aria-hidden="true">&#9744;</span>Subtask</button>
           <button type="button" data-tm-act="add-duedate"><span class="tm-item-icon" aria-hidden="true">&#128197;</span>Due date</button>
+          <button type="button" data-tm-act="add-timeline"><span class="tm-item-icon" aria-hidden="true">&#128198;</span>Timeline</button>
           <button type="button" data-tm-act="estimate"><span class="tm-item-icon" aria-hidden="true">&#9201;</span>Time estimate</button>
           <button type="button" data-tm-act="manual-time"><span class="tm-item-icon" aria-hidden="true">&#9998;</span>Manual time entry</button>
           <button type="button" data-tm-act="add-comment"><span class="tm-item-icon" aria-hidden="true">&#128172;</span>Comment</button>

@@ -16,7 +16,6 @@ const pages = [
   { name: 'board-gm-modal', url: `/b/${gm}`, modal: true },
   { name: 'board-vt-modal', url: `/b/${vt}`, modal: true },
   { name: 'settings', url: '/settings' },
-  { name: 'calendar', url: `/b/${gm}/calendar` },
   { name: 'timer-log', url: '/timer/log' },
   { name: 'timer-statistics', url: '/timer/statistics' },
   { name: 'task-count', url: `/b/${gm}/task-count` },

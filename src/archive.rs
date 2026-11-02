@@ -263,6 +263,10 @@ struct TaskInfo {
     column_entered_at: Option<String>,
     /// The date that overrides the task's group in a date-grouped column, or null.
     grouping_date: Option<String>,
+    /// The first day of the task's timeline as `YYYY-MM-DD`, or null.
+    timeline_start: Option<String>,
+    /// The last day of the task's timeline as `YYYY-MM-DD`, or null.
+    timeline_end: Option<String>,
     /// The task's labels.
     labels: Vec<String>,
     /// The handles of the accounts the task is assigned to.
@@ -714,10 +718,7 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
         })
         .collect();
     let mut history = Vec::new();
-    for event in row.history {
-        if !snapshot.shows_event(&event)? {
-            continue;
-        }
+    for event in snapshot.visible_history(row.history)? {
         history.push(EventInfo {
             id: event.id,
             kind: event.kind,
@@ -744,6 +745,8 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
         completed_at: row.completed_at,
         column_entered_at: row.column_entered_at,
         grouping_date: row.grouping_date,
+        timeline_start: row.timeline_start,
+        timeline_end: row.timeline_end,
         labels: row.labels,
         assignees,
         responsible,
@@ -1108,7 +1111,9 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::db::{ColumnKind, Db, NewComment, NewTimeEntry, SCHEMA_VERSION, SchemaTooNew};
+    use crate::db::{
+        AccountDb, ColumnKind, Db, NewComment, NewTimeEntry, SCHEMA_VERSION, SchemaTooNew,
+    };
     use crate::models::{API_TOKEN_ACTOR, AccountId, Actor, EntryKind};
 
     fn untar(gzipped: &[u8]) -> BTreeMap<String, Vec<u8>> {
@@ -1221,7 +1226,7 @@ mod tests {
             ((), true)
         })
         .expect("change");
-        db.ensure_board_config_string(&board, "calendar_feed_token", "feed-secret-value")
+        db.add_board_feed(&board, "Phone", "feed-secret-value")
             .expect("feed token");
         Seeded {
             db,
@@ -1369,6 +1374,41 @@ mod tests {
     }
 
     #[test]
+    fn timeline_should_survive_an_export_and_import_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+        seeded
+            .db
+            .apply_task_change(&seeded.task, Actor::SYSTEM, |row| {
+                row.timeline_start = Some("2026-10-31".to_string());
+                row.timeline_end = Some("2026-11-07".to_string());
+                ((), true)
+            })
+            .expect("timeline");
+        let exported = document(&archive_of(&seeded));
+        assert_eq!(exported["tasks"][0]["timeline_start"], "2026-10-31");
+        assert_eq!(exported["tasks"][0]["timeline_end"], "2026-11-07");
+
+        let spool_dir = tempfile::tempdir().expect("tempdir");
+        let spool = Spool::create(spool_dir.path()).expect("spool");
+        let account = AccountId::new("acc");
+        let importer = Importer {
+            handle: "chip",
+            account: &account,
+            max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
+            activities: &[],
+        };
+        let row = read_board(&archive_bytes(&seeded), &importer, &spool)
+            .expect("import")
+            .0
+            .tasks
+            .remove(0)
+            .row;
+        assert_eq!(row.timeline_start.as_deref(), Some("2026-10-31"));
+        assert_eq!(row.timeline_end.as_deref(), Some("2026-11-07"));
+    }
+
+    #[test]
     fn board_json_should_name_the_handle_that_logged_each_time_entry() {
         let dir = tempfile::tempdir().expect("tempdir");
         let seeded = seed(dir.path());
@@ -1463,7 +1503,11 @@ mod tests {
         let seeded = seed(dir.path());
         let files = archive_of(&seeded);
         let json = String::from_utf8(files["board.json"].clone()).expect("utf8");
-        for secret in ["feed-secret-value", "calendar_feed_token", "tok-secret-id"] {
+        for secret in [
+            "feed-secret-value",
+            "calendar_feed_secrets",
+            "tok-secret-id",
+        ] {
             assert!(!json.contains(secret), "{secret} leaked into board.json");
         }
         for key in [

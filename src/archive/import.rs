@@ -786,6 +786,25 @@ impl Builder<'_> {
                 "{label} has a grouping_date that is not written YYYY-MM-DD"
             )));
         }
+        for (date, what) in [
+            (task.timeline_start.as_deref(), "timeline_start"),
+            (task.timeline_end.as_deref(), "timeline_end"),
+        ] {
+            if date.is_some_and(|raw| !is_plain_date(raw)) {
+                return Err(ImportError::invalid(format!(
+                    "{label} has a {what} that is not written YYYY-MM-DD"
+                )));
+            }
+        }
+        match (&task.timeline_start, &task.timeline_end) {
+            (None, None) => {}
+            (Some(start), Some(end)) if start <= end => {}
+            _ => {
+                return Err(ImportError::invalid(format!(
+                    "{label} has a timeline without both dates or with its end before its start"
+                )));
+            }
+        }
         let column_id = resolve(&self.columns, &task.column_id, "the column of a task")?;
         let swimlane_id = resolve_opt(
             &self.lanes,
@@ -837,6 +856,8 @@ impl Builder<'_> {
             member_ids,
             responsible,
             grouping_date: task.grouping_date,
+            timeline_start: task.timeline_start,
+            timeline_end: task.timeline_end,
             watched: task.watching,
             labels: task.labels,
             due_at: task.due_at,
@@ -894,6 +915,7 @@ impl Builder<'_> {
                     done: subtask.done,
                     due_at: subtask.due_at,
                     token_id: None,
+                    member_ids: Vec::new(),
                 })
             })
             .collect()
@@ -1415,7 +1437,8 @@ mod tests {
             "id": id, "name": name, "description": "", "column_id": "c1", "swimlane_id": null,
             "color_id": null, "position": 0.0, "size_pomodori": 1,
             "created_at": "2026-10-01T10:00:00Z", "updated_at": null, "completed_at": null,
-            "column_entered_at": null, "grouping_date": null, "labels": [], "assignees": [],
+            "column_entered_at": null, "grouping_date": null, "timeline_start": null,
+            "timeline_end": null, "labels": [], "assignees": [],
             "watching": false, "due_at": null, "due_repeat": null, "due_done": false,
             "due_target_column_id": null, "estimate_hours": null, "pomodori_completed": 0,
             "interruptions": 0, "subtasks": [], "comments": [], "attachments": [], "links": [],
@@ -1597,6 +1620,24 @@ mod tests {
                 "YYYY-MM-DD",
             ),
             (
+                "bad timeline date",
+                Box::new(|d: &mut Value| d["tasks"][0]["timeline_start"] = json!("10/29/2026")),
+                "timeline_start",
+            ),
+            (
+                "timeline end before start",
+                Box::new(|d: &mut Value| {
+                    d["tasks"][0]["timeline_start"] = json!("2026-11-07");
+                    d["tasks"][0]["timeline_end"] = json!("2026-10-31");
+                }),
+                "timeline",
+            ),
+            (
+                "timeline without an end",
+                Box::new(|d: &mut Value| d["tasks"][0]["timeline_start"] = json!("2026-10-31")),
+                "timeline",
+            ),
+            (
                 "task name cap",
                 Box::new(move |d: &mut Value| d["tasks"][0]["name"] = json!(long.clone())),
                 "name must be at most 500",
@@ -1710,6 +1751,17 @@ mod tests {
                 "is not in the archive",
             ),
         ]
+    }
+
+    #[test]
+    fn read_board_should_carry_a_task_timeline() {
+        let mut document = base();
+        document["tasks"][0]["timeline_start"] = json!("2026-10-31");
+        document["tasks"][0]["timeline_end"] = json!("2026-11-07");
+        let (import, _) = read(&document).expect("a board");
+        let row = &import.tasks[0].row;
+        assert_eq!(row.timeline_start.as_deref(), Some("2026-10-31"));
+        assert_eq!(row.timeline_end.as_deref(), Some("2026-11-07"));
     }
 
     #[test]

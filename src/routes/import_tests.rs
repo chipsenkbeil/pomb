@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -89,12 +90,14 @@ impl Fixture {
         db.add_attachment(&task, "a.txt", "text/plain", b"hello", Actor::SYSTEM)
             .expect("attachment")
             .expect("task");
-        let mut state = AppState::new(db.clone(), None, passkey_mode())
+        let disk = disk.unwrap_or_else(|| {
+            let born = Instant::now();
+            DiskGuard::with_clock(DiskProbe::of(&db), dir.path(), Arc::new(move || born))
+        });
+        let state = AppState::new(db.clone(), None, passkey_mode())
             .with_mode(InstanceMode::Multi)
-            .with_limits(unthrottled_limits());
-        if let Some(disk) = disk {
-            state = state.with_disk(disk);
-        }
+            .with_limits(unthrottled_limits())
+            .with_disk(disk);
         Self {
             disk: state.disk.clone(),
             admin_read: token(&admin, AuthScope::Read),
@@ -446,7 +449,7 @@ async fn import_should_keep_plain_text_and_name_storage_full_in_a_header_for_a_c
     let archive = fx.archive().await;
     let cookie = format!(
         "session={}",
-        fx.db.create_session(&fx.member).expect("session")
+        fx.db.create_session(&fx.member, "").expect("session")
     );
     let headers = [
         ("cookie", cookie.as_str()),
@@ -463,6 +466,36 @@ async fn import_should_keep_plain_text_and_name_storage_full_in_a_header_for_a_c
     assert!(text.contains("an import would leave less than"), "{text}");
 }
 
+#[tokio::test]
+async fn import_should_be_stopped_by_a_disk_sample_older_than_the_stale_limit() {
+    let born = Instant::now();
+    let aged = Arc::new(Mutex::new(born));
+    let reads = aged.clone();
+    let probe = DiskProbe {
+        stored: Arc::new(|| Ok(1)),
+        file: Arc::new(|| Ok(1)),
+        free: Arc::new(|_| Ok(100_000 * MIB)),
+    };
+    let guard = DiskGuard::with_clock(
+        probe,
+        Path::new("."),
+        Arc::new(move || *reads.lock().expect("clock")),
+    );
+    *aged.lock().expect("clock") = born + DiskGuard::STALE_AFTER + Duration::from_secs(1);
+    let fx = Fixture::with_disk(Some(guard));
+    let archive = fx.archive().await;
+
+    let refused = fx.import(&fx.member_provision, archive).await;
+
+    assert_eq!(refused.status, StatusCode::INSUFFICIENT_STORAGE);
+    assert_eq!(refused.code().as_deref(), Some("storage_full"));
+    assert!(
+        refused.message().contains("not measured"),
+        "{}",
+        refused.message()
+    );
+}
+
 #[test]
 fn import_route_should_be_classified_as_a_write_that_grows_the_database() {
     let entry = ROUTE_ACCESS
@@ -477,7 +510,7 @@ async fn new_board_page_should_offer_the_import() {
     let fx = Fixture::new();
     let cookie = format!(
         "session={}",
-        fx.db.create_session(&fx.member).expect("session")
+        fx.db.create_session(&fx.member, "").expect("session")
     );
     let page = call(&fx.app, "GET", "/boards/new", &[("cookie", &cookie)], None).await;
     assert_eq!(page.status, StatusCode::OK);
@@ -614,7 +647,6 @@ async fn archive_should_round_trip_a_file_of_the_cap_byte_identical() {
         .expect("attach")
         .expect("task");
     let archive = fx.archive().await;
-    fx.disk.refresh();
 
     let made = fx.import(&fx.member_provision, archive).await;
 
@@ -672,8 +704,6 @@ async fn archive_should_round_trip_two_files_of_the_cap_byte_identical() {
         "{}",
         archive.len()
     );
-    fx.disk.refresh();
-
     let made = fx.import(&fx.member_provision, archive).await;
 
     assert_eq!(made.status, StatusCode::OK, "{}", made.message());

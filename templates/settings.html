@@ -4,6 +4,7 @@
 {% block shell_nav %}
     <nav class="bshell-nav" aria-label="Settings">
       <a href="#timer" class="bshell-nav-item bshell-nav-active" data-pane="timer">Timer</a>
+      <a href="#notifications" class="bshell-nav-item" data-pane="notifications">Notifications</a>
       <a href="#api-tokens" class="bshell-nav-item" data-pane="api-tokens">API tokens</a>
       <a href="#passkeys" class="bshell-nav-item" data-pane="passkeys">Passkeys</a>
       {% if account_panes.is_some() %}
@@ -57,6 +58,25 @@
 
     <button type="submit" class="kf-btn kf-btn-success">Save settings</button>
   </form>
+  </div>
+
+  <div id="notifications" class="settings-pane" hidden>
+    <section class="settings-section">
+      <h2>Notifications</h2>
+      <p class="settings-hint">Choose which events add a notification to the bell. A change saves as you make it.</p>
+      <p id="notification-error" class="settings-hint" hidden></p>
+      {% for group in notification_groups %}
+      <fieldset class="notification-group">
+        <legend>{{ group.title }}</legend>
+        {% for choice in group.choices %}
+        <label class="notification-choice">
+          <input type="checkbox" class="notification-toggle" data-kind="{{ choice.kind }}"{% if choice.enabled %} checked{% endif %}>
+          {{ choice.label }} <span class="settings-hint">In-app</span>
+        </label>
+        {% endfor %}
+      </fieldset>
+      {% endfor %}
+    </section>
   </div>
 
   <div id="api-tokens" class="settings-pane">
@@ -183,6 +203,22 @@
       {% endif %}
     </div>
     {% if chrome.sign_out %}
+    <h3>Sessions</h3>
+    <p class="settings-hint">The browsers signed in to this account. A revoked browser is signed out on
+      its next request.</p>
+    <div class="bshell-scroll"><table class="bshell-table token-table" id="sessions-table">
+      <thead><tr><th>Browser</th><th>Logged in</th><th></th></tr></thead>
+      <tbody>
+        {% for session in sessions %}
+        <tr>
+          <td>{{ session.device }}{% if session.current %} <strong>[Your current session]</strong>{% endif %}</td>
+          <td>{{ session.logged_in }}</td>
+          <td>{% if !session.current %}<button type="button" class="kf-btn kf-btn-danger session-revoke" data-id="{{ session.id }}">Revoke</button>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    <p class="settings-hint" id="session-revoke-result" role="status" hidden></p>
     <h3>Other browsers</h3>
     <p class="settings-hint">End the session of every other browser signed in to this account.
       Removing a passkey does this too. API tokens keep working.</p>

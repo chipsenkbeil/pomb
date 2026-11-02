@@ -10,7 +10,7 @@ use super::{
     ENTRIES_BY_TASK, FIELD_DEFS, FIELDS_BY_BOARD, SCHEMA_VERSION, SWIMLANES, SWIMLANES_BY_BOARD,
     TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, USERS, has_legacy_attachment_table,
     index_in, link_event_target, named_in, owned_board_in, read_in, read_schema_version,
-    refuse_newer, rows_in,
+    redacted_history, refuse_newer, rows_in,
 };
 use crate::models::{
     AccountId, BoardAccess, BoardRow, BreakActivity, ColorRow, ColumnRow, FieldDefRow, Settings,
@@ -196,6 +196,28 @@ impl BoardSnapshot {
     /// Returns whether the archive may hold `event`, under the rule of [`Self::shows_link`].
     pub fn shows_event(&self, event: &TaskEvent) -> DbResult<bool> {
         link_event_target(event).map_or(Ok(true), |target| self.shows_link(target))
+    }
+
+    /// Returns whether column `id` sits on a board of the account outside the token's set.
+    fn column_outside_set(&self, id: &str) -> DbResult<bool> {
+        if matches!(self.boards, BoardAccess::All) {
+            return Ok(false);
+        }
+        let Some(column) = read_in::<ColumnRow>(&self.txn, COLUMNS, id)? else {
+            return Ok(false);
+        };
+        Ok(!self.boards.allows(&column.board_id)
+            && owned_board_in(&self.txn, &self.account, &column.board_id)?.is_some())
+    }
+
+    /// Returns the events of `history` the archive may hold, with the names and ids of a board
+    /// outside the token's set taken out of the moves from and to it.
+    pub fn visible_history(&self, history: Vec<TaskEvent>) -> DbResult<Vec<TaskEvent>> {
+        redacted_history(
+            history,
+            |event| self.shows_event(event),
+            |column| self.column_outside_set(column),
+        )
     }
 
     /// Returns whether bytes are stored for attachment `id`.

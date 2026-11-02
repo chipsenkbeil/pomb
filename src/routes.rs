@@ -1,3 +1,4 @@
+mod calendar_export;
 mod docs;
 mod export;
 mod multipart;
@@ -36,8 +37,10 @@ use utoipa::openapi::security::{
 };
 use utoipa::openapi::{ContentBuilder, OpenApi as OpenApiSpec, Ref, RefOr};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
+use uuid::Uuid;
 use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
 
+use self::calendar_export::{Format, Level, Range};
 use self::export::{ArchiveStream, TaskStream};
 use self::slot::{Slot, SlotBody, SlotGuard, WaitGuard};
 use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
@@ -49,17 +52,17 @@ use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn, TokenGrant};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
-    AdminActionOutcome, BoardDenied, Bound, ChildRef, ClaimOutcome, ClaimRequest,
+    AdminActionOutcome, BoardDenied, Bound, ChangeOutcome, ChildRef, ClaimOutcome, ClaimRequest,
     ColumnDeleteOutcome, ColumnKind, CommentWrite, DeviceAuthCreateOutcome, DeviceGrant,
-    DevicePoll, DuplicateAttachment, EventRead, FencedWrite, FieldCreateOutcome,
+    DevicePoll, DuplicateAttachment, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome,
     FirstPasskeyOutcome, InstanceDb, LargestUse, LinkAddOutcome, LinkDeleteOutcome, LinkReads,
     MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards, MoveOutcome, NO_LANE_POSITION,
     NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
     PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuotaExceeded, RecoverOutcome,
-    RegisterOutcome, RestoreOutcome, Revoked, SessionRefused, SwimlaneDeleteOutcome,
-    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, UmbrellaChange, UmbrellaPart,
-    UmbrellaRef, carry_fields, clean_labels, local_day, merge_metadata, push_change_event,
-    push_column_event, push_event,
+    RegisterOutcome, RestoreOutcome, Revoked, SessionEndOutcome, SessionListing, SessionRefused,
+    SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
+    SwimlaneUpdateOutcome, TaskContext, UmbrellaChange, UmbrellaPart, UmbrellaRef, carry_fields,
+    clean_labels, local_day, merge_metadata, push_change_event, push_column_event, push_event,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -108,9 +111,6 @@ pub fn router(state: AppState) -> Router {
     // Board History report page
     let router = router.route("/b/:board_id/board-history", get(board_history_page));
 
-    // Board Calendar report page
-    let router = router.route("/b/:board_id/calendar", get(calendar_page));
-
     // Board Monte Carlo forecasting report page
     let router = router.route("/b/:board_id/monte-carlo", get(monte_carlo_page));
 
@@ -120,6 +120,9 @@ pub fn router(state: AppState) -> Router {
         .route("/b/:board_id/time-in-column", get(time_in_column_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route("/api/search", get(search_cards))
+        .route("/api/notifications", get(list_notifications))
+        .route("/api/notifications/read", post(mark_all_notifications_read))
+        .route("/api/notifications/:id/read", post(mark_notification_read))
         .route(
             "/api/tasks/:id",
             get(get_task).patch(update_task).delete(delete_task),
@@ -127,11 +130,23 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks/:id/card", get(task_card))
         .route("/api/tasks/:id/modal", get(task_modal))
         .route("/api/tasks/:id/move", post(move_task))
+        .route("/api/boards/:id/tasks/bulk", post(bulk_tasks))
         .route("/api/tasks/:id/watch", post(watch_task))
         .route("/api/markdown/preview", post(markdown_preview))
         .route("/api/tasks/:id/checklist/:index", post(set_checklist_item))
         .route("/api/tasks/:id/time", post(log_time).get(get_task_time))
-        .route("/api/tasks/:id/subtasks", post(create_subtask))
+        .route(
+            "/api/tasks/:id/subtasks",
+            post(create_subtask).delete(delete_all_subtasks),
+        )
+        .route(
+            "/api/tasks/:id/subtasks/template",
+            post(save_subtask_template),
+        )
+        .route(
+            "/api/tasks/:id/subtasks/from-template",
+            post(add_subtasks_from_template),
+        )
         .route(
             "/api/tasks/:id/links",
             post(create_task_link).get(list_task_links),
@@ -145,6 +160,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/tasks/:id/subtasks/:sub_id",
             patch(update_subtask).delete(delete_subtask),
+        )
+        .route(
+            "/api/tasks/:id/subtasks/:sub_id/convert",
+            post(convert_subtask),
         );
 
     // Task extras: labels, comments, attachments, history
@@ -254,13 +273,14 @@ pub fn router(state: AppState) -> Router {
     // here.
     let router = router
         .route(
-            "/api/boards/:id/calendar-feed",
-            get(get_calendar_feed_link).post(create_calendar_feed_link),
+            "/api/boards/:id/calendar-feeds",
+            get(list_calendar_feeds).post(create_calendar_feed),
         )
         .route(
-            "/api/boards/:id/calendar-feed/reset",
-            post(reset_calendar_feed),
+            "/api/boards/:id/calendar-feeds/:feed_id",
+            delete(delete_calendar_feed),
         )
+        .route("/api/calendar-export", get(export_calendar))
         .route("/b/:board_id/settings/delete", get(board_delete_page))
         .route("/boards/new", get(new_board_page))
         .route("/boards/archived", get(archived_boards_page))
@@ -347,7 +367,9 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/auth/sessions/sign-out-others",
             post(sign_out_other_sessions),
-        );
+        )
+        .route("/api/v1/auth/sessions", get(list_sessions))
+        .route("/api/v1/auth/sessions/:id", delete(end_session));
 
     let router = router
         .route("/api/v1/backups", get(get_backups).post(run_backup))
@@ -657,25 +679,51 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/b/:board_id/cycle-lead", Board, No),
         (Method::GET, "/b/:board_id/due-date", Board, No),
         (Method::GET, "/b/:board_id/board-history", Board, No),
-        (Method::GET, "/b/:board_id/calendar", Board, No),
         (Method::GET, "/b/:board_id/monte-carlo", Board, No),
         (Method::GET, "/b/:board_id/time-estimate", Board, No),
         (Method::GET, "/b/:board_id/time-in-column", Board, No),
         (Method::POST, "/api/tasks", Account, Grows),
         (Method::GET, "/api/tasks", Account, No),
         (Method::GET, "/api/search", Account, No),
+        (Method::GET, "/api/notifications", AccountSession, No),
+        (
+            Method::POST,
+            "/api/notifications/read",
+            AccountSession,
+            Grows,
+        ),
+        (
+            Method::POST,
+            "/api/notifications/:id/read",
+            AccountSession,
+            Grows,
+        ),
         (Method::GET, "/api/tasks/:id", Task, No),
         (Method::PATCH, "/api/tasks/:id", Task, Grows),
         (Method::DELETE, "/api/tasks/:id", Task, Exempt),
         (Method::GET, "/api/tasks/:id/card", Task, No),
         (Method::GET, "/api/tasks/:id/modal", Task, No),
         (Method::POST, "/api/tasks/:id/move", Task, Grows),
+        (Method::POST, "/api/boards/:id/tasks/bulk", Board, Grows),
         (Method::POST, "/api/tasks/:id/watch", Task, Grows),
         (Method::POST, "/api/markdown/preview", Account, No),
         (Method::POST, "/api/tasks/:id/checklist/:index", Task, Grows),
         (Method::POST, "/api/tasks/:id/time", Task, Grows),
         (Method::GET, "/api/tasks/:id/time", Task, No),
         (Method::POST, "/api/tasks/:id/subtasks", Task, Grows),
+        (Method::DELETE, "/api/tasks/:id/subtasks", Task, Exempt),
+        (
+            Method::POST,
+            "/api/tasks/:id/subtasks/template",
+            Task,
+            Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/subtasks/from-template",
+            Task,
+            Grows,
+        ),
         (Method::POST, "/api/tasks/:id/links", Task, Grows),
         (Method::GET, "/api/tasks/:id/links", Task, No),
         (Method::PUT, "/api/tasks/:id/umbrella", Task, Grows),
@@ -700,6 +748,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             "/api/tasks/:id/subtasks/:sub_id",
             Task,
             Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/subtasks/:sub_id/convert",
+            Task,
+            Grows,
         ),
         (Method::GET, "/api/boards/:id/labels", Board, No),
         (Method::GET, "/api/boards/:id/events/wait", Board, No),
@@ -793,14 +847,15 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::DELETE, "/api/fields/:id", Entity, Exempt),
         (Method::GET, "/api/boards/:id/export-data", Board, No),
         (Method::GET, "/api/boards/:id/archive", Board, No),
-        (Method::GET, "/api/boards/:id/calendar-feed", Board, No),
-        (Method::POST, "/api/boards/:id/calendar-feed", Board, Grows),
+        (Method::GET, "/api/boards/:id/calendar-feeds", Board, No),
+        (Method::POST, "/api/boards/:id/calendar-feeds", Board, Grows),
         (
-            Method::POST,
-            "/api/boards/:id/calendar-feed/reset",
+            Method::DELETE,
+            "/api/boards/:id/calendar-feeds/:feed_id",
             Board,
-            Grows,
+            Exempt,
         ),
+        (Method::GET, "/api/calendar-export", Account, No),
         (Method::GET, "/b/:board_id/settings/delete", Board, No),
         (Method::GET, "/boards/new", Account, No),
         (Method::GET, "/boards/archived", Account, No),
@@ -891,6 +946,13 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (
             Method::POST,
             "/api/v1/auth/sessions/sign-out-others",
+            AccountSession,
+            Exempt,
+        ),
+        (Method::GET, "/api/v1/auth/sessions", AccountSession, No),
+        (
+            Method::DELETE,
+            "/api/v1/auth/sessions/:id",
             AccountSession,
             Exempt,
         ),
@@ -1832,6 +1894,8 @@ struct TaskView {
     /// Raw RFC3339 due date, if set. Rendered only as `data-due-at` on the card so client-side date
     /// filters can evaluate it.
     due_at: Option<String>,
+    /// "Oct 31 - Nov 7" rendering of the timeline, for the modal's Timeline field.
+    timeline_display: Option<String>,
     /// Task comments (KanbanFlow parity), oldest first.
     comments: Vec<CommentView>,
     /// How many comments the task holds, which a card marks without listing them.
@@ -2562,6 +2626,10 @@ impl TaskView {
             due_card: row.due_at.as_deref().and_then(format_due_card),
             time_kf: format_time_kf(row.total_minutes, row.estimate_hours),
             due_at: row.due_at.clone(),
+            timeline_display: format_timeline(
+                row.timeline_start.as_deref(),
+                row.timeline_end.as_deref(),
+            ),
 
             // Column card-property config is resolved in `from_card_in_board`;
             // standalone rows keep the `TaskCardDisplay` defaults.
@@ -2982,6 +3050,46 @@ fn done_display_key(
 fn parse_grouping_date(raw: &str) -> Option<chrono::NaiveDate> {
     let date = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok()?;
     (date.format("%Y-%m-%d").to_string() == raw).then_some(date)
+}
+
+/// Renders a timeline as "Oct 31 - Nov 7", or none unless both dates are valid.
+fn format_timeline(start: Option<&str>, end: Option<&str>) -> Option<String> {
+    let day = |raw: &str| parse_grouping_date(raw).map(|date| date.format("%b %-d").to_string());
+    Some(format!("{} - {}", day(start?)?, day(end?)?))
+}
+
+/// Checks a timeline's dates: each is written `YYYY-MM-DD`, both are given or neither is, and the
+/// end is not before the start.
+fn check_timeline(
+    start: Option<&str>,
+    end: Option<&str>,
+) -> Result<(Option<String>, Option<String>), AppError> {
+    let parse = |name: &str, raw: &str| {
+        parse_grouping_date(raw).ok_or_else(|| {
+            AppError::bad_request(format!("invalid {name} \"{raw}\": use YYYY-MM-DD"))
+        })
+    };
+    match (start, end) {
+        (None, None) => Ok((None, None)),
+        (Some(start), Some(end)) => {
+            let first = parse("timeline_start", start)?;
+            let last = parse("timeline_end", end)?;
+            if last < first {
+                return Err(AppError::bad_request(format!(
+                    "timeline_end \"{end}\" is before timeline_start \"{start}\""
+                )));
+            }
+            Ok((Some(start.to_string()), Some(end.to_string())))
+        }
+        _ => Err(AppError::bad_request(
+            "a timeline needs both timeline_start and timeline_end",
+        )),
+    }
+}
+
+/// Parses a timeline date from a request, where blank means none.
+fn timeline_input(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim).filter(|date| !date.is_empty())
 }
 
 /// The day a Done-column task groups under: its grouping-date override when set, else the local day
@@ -3550,6 +3658,10 @@ struct ModalTemplate {
     assigned_members: Vec<MemberView>,
     /// Name of the agent session the task is the responsibility of, if one is.
     responsible_session: Option<String>,
+    /// Id of the board the task sits on.
+    board_id: String,
+    /// Name of the board the task sits on.
+    board_name: String,
     /// Name of the task's current column (for the modal subtitle).
     column_name: String,
     /// "Jun 23" rendering of the task's created date.
@@ -3576,6 +3688,15 @@ struct ModalTemplate {
     relation_count: usize,
     /// The relation types a relation can be changed to, as the stored kind and its label.
     relation_kinds: &'static [(LinkKind, &'static str)],
+    /// The avatar chips of each subtask's members, by subtask id.
+    subtask_chips: HashMap<String, Vec<MemberChip>>,
+}
+
+impl ModalTemplate {
+    /// Returns the avatar chips of the members assigned to subtask `id`.
+    fn chips_of(&self, id: &str) -> &[MemberChip] {
+        self.subtask_chips.get(id).map_or(&[], Vec::as_slice)
+    }
 }
 
 /// One relation type with the rows listed under it in the Relations section.
@@ -3626,6 +3747,7 @@ const MINOR_HISTORY_KINDS: &[&str] = &[
     "subtask_renamed",
     "subtask_due_set",
     "subtask_due_cleared",
+    "subtask_members_updated",
     "attachment_added",
     "attachment_renamed",
     "attachment_deleted",
@@ -3651,6 +3773,7 @@ const HISTORY_KIND_LABELS: &[(&str, &str)] = &[
     ("members_updated", "Members"),
     ("responsible_updated", "Responsible"),
     ("grouping_date_updated", "Grouping date"),
+    ("timeline_updated", "Timeline"),
     ("subtask_added", "Subtask added"),
     ("subtask_deleted", "Subtask deleted"),
     ("subtask_done", "Subtask completed"),
@@ -3658,6 +3781,8 @@ const HISTORY_KIND_LABELS: &[(&str, &str)] = &[
     ("subtask_renamed", "Subtask"),
     ("subtask_due_set", "Subtask due date"),
     ("subtask_due_cleared", "Subtask due date"),
+    ("subtask_members_updated", "Subtask members"),
+    ("subtask_converted", "Subtask converted"),
     ("time_logged", "Time logged"),
     ("time_edited", "Time edited"),
     ("time_deleted", "Time deleted"),
@@ -4571,6 +4696,50 @@ fn new_passkey_row(
     })
 }
 
+/// Returns the name paired with the first marker that `agent` contains.
+fn first_marker(agent: &str, table: &[(&str, &'static str)]) -> Option<&'static str> {
+    table
+        .iter()
+        .find(|(marker, _)| agent.contains(marker))
+        .map(|(_, name)| *name)
+}
+
+/// Names the browser and system a request came from, from its `User-Agent`, or an empty string
+/// when the header is absent or names neither.
+fn device_label(headers: &HeaderMap) -> String {
+    let agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let browser = first_marker(
+        agent,
+        &[
+            ("Edg/", "Edge"),
+            ("OPR/", "Opera"),
+            ("Firefox/", "Firefox"),
+            ("Chrome/", "Chrome"),
+            ("Safari/", "Safari"),
+        ],
+    );
+    let system = first_marker(
+        agent,
+        &[
+            ("Android", "Android"),
+            ("iPhone", "iOS"),
+            ("iPad", "iOS"),
+            ("Windows", "Windows"),
+            ("Mac OS X", "macOS"),
+            ("CrOS", "ChromeOS"),
+            ("Linux", "Linux"),
+        ],
+    );
+    match (browser, system) {
+        (Some(browser), Some(system)) => format!("{browser} on {system}"),
+        (Some(name), None) | (None, Some(name)) => name.to_string(),
+        (None, None) => String::new(),
+    }
+}
+
 /// Opens a session for `user_id` and answers with its cookie, the page to open, the account's new
 /// `recovery_code`, if it got one, and what a recovery `revoked`. An account that is suspended or
 /// gone since the sign-in began gets the suspended answer and no session.
@@ -4581,7 +4750,7 @@ fn signed_in(
     recovery_code: Option<String>,
     revoked: Option<Revoked>,
 ) -> Result<Response, AppError> {
-    let token = match public.create_session(&AccountId::new(user_id)) {
+    let token = match public.create_session(&AccountId::new(user_id), &device_label(headers)) {
         Ok(token) => token,
         Err(error) if error.downcast_ref::<SessionRefused>().is_some() => {
             return Ok(auth::account_suspended());
@@ -4995,6 +5164,90 @@ async fn sign_out_other_sessions(
         .end_other_sessions(keep.as_deref())
         .map_err(AppError::from)?;
     Ok(Json(SessionsEnded { ended }))
+}
+
+/// One browser signed in to the account.
+#[derive(serde::Serialize, ToSchema)]
+struct SessionView {
+    /// The id that names this session.
+    id: String,
+    /// The browser and system of the sign-in, empty when unknown.
+    device: String,
+    /// RFC 3339 time of the sign-in.
+    created_at: String,
+    /// Whether this is the session that made the request.
+    current: bool,
+}
+
+impl From<SessionListing> for SessionView {
+    fn from(listing: SessionListing) -> Self {
+        Self {
+            id: listing.id,
+            device: listing.device,
+            created_at: listing.created_at,
+            current: listing.current,
+        }
+    }
+}
+
+/// Lists the browsers signed in to the account, newest first, and marks the one asking.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/sessions",
+    operation_id = "list_sessions",
+    tag = "Sign-in",
+    responses(
+        (status = 200, description = "The account's sessions, newest first", body = Vec<SessionView>),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_sessions(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<SessionView>>, AppError> {
+    require_cookie_auth(&user)?;
+    let current = auth::session_token_from_headers(&headers);
+    let sessions = account
+        .sessions(current.as_deref().map(SessionToken::new))
+        .map_err(AppError::from)?;
+    Ok(Json(sessions.into_iter().map(SessionView::from).collect()))
+}
+
+/// Signs one browser out of the account. The session asking stays, and sign out ends that one.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/auth/sessions/{id}",
+    operation_id = "end_session",
+    tag = "Sign-in",
+    params(("id" = String, Path, description = "Session id from `GET /api/v1/auth/sessions`")),
+    responses(
+        (status = 200, description = "Ended session id", body = RevokeResult),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "No such session"),
+        (status = 409, description = "It is the session making the request"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn end_session(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<RevokeResult>, AppError> {
+    require_cookie_auth(&user)?;
+    let current = auth::session_token_from_headers(&headers);
+    match account
+        .end_session(&id, current.as_deref().map(SessionToken::new))
+        .map_err(AppError::from)?
+    {
+        SessionEndOutcome::Ended => Ok(Json(RevokeResult { revoked: id })),
+        SessionEndOutcome::NotFound => Err(AppError::not_found("no such session")),
+        SessionEndOutcome::Current => {
+            Err(AppError::conflict("this is the session making the request"))
+        }
+    }
 }
 
 /// How long a passkey check lasts.
@@ -6510,6 +6763,12 @@ struct CreateTaskInput {
     due_at: Option<String>,
     /// Due-date repeat text, e.g. "every week", dropped without a due date.
     due_repeat: Option<String>,
+    /// First day of the task's timeline as `YYYY-MM-DD`. Needs `timeline_end`. Absent, null or blank
+    /// means no timeline.
+    timeline_start: Option<String>,
+    /// Last day of the task's timeline as `YYYY-MM-DD`, not before `timeline_start`. Needs
+    /// `timeline_start`. Absent, null or blank means no timeline.
+    timeline_end: Option<String>,
     /// Task description.
     description: Option<String>,
     /// Labels; trimmed, empties and duplicates dropped.
@@ -6818,6 +7077,11 @@ async fn create_task(
         .transpose()
         .map_err(AppError::bad_request)?;
 
+    let (timeline_start, timeline_end) = check_timeline(
+        timeline_input(input.timeline_start.as_deref()),
+        timeline_input(input.timeline_end.as_deref()),
+    )?;
+
     let field_defs = db
         .list_fields(&column.row().board_id)
         .map_err(AppError::from)?;
@@ -6844,44 +7108,13 @@ async fn create_task(
             .map(|lane| lane.id),
     };
 
-    let size = Size::from_i64(input.size.unwrap_or(1));
-
-    // An explicit color_id wins, validated against the board
-    // Else an explicit size keeps the legacy size coloring, else the board default
-    let (size, color_id) = match input.color_id.filter(|s| !s.is_empty()) {
-        Some(color_id) => {
-            let color = db
-                .color(&color_id)
-                .map_err(AppError::from)?
-                .filter(|color| color.row().board_id == column.row().board_id)
-                .ok_or_else(|| AppError::bad_request("unknown color"))?;
-            (
-                color_value_to_size(&color.row().value),
-                Some(color.row().id.clone()),
-            )
-        }
-        None => match input.size {
-            Some(_) => (size as i64, None),
-            None => match db
-                .default_color(&column.row().board_id)
-                .map_err(AppError::from)?
-            {
-                Some(color) => (color_value_to_size(&color.value), Some(color.id)),
-                None => (1, None),
-            },
-        },
-    };
-
-    // The board's "Position of new tasks", bottom by default
-    let at_top = db
-        .board(&column.row().board_id)
-        .map_err(AppError::from)?
-        .is_some_and(|board| board.row().config_bool("new_tasks_at_top"));
-    let placement = if at_top {
-        NewTaskPlacement::Top
-    } else {
-        NewTaskPlacement::Bottom
-    };
+    let (size, color_id) = new_task_color(
+        db,
+        &column.row().board_id,
+        input.color_id.as_deref(),
+        input.size,
+    )?;
+    let placement = new_task_placement(db, &column.row().board_id)?;
 
     // Validate the estimate before anything is written
     let estimate = input
@@ -6919,6 +7152,8 @@ async fn create_task(
             .filter(|s| !s.is_empty())
             .map(str::to_string);
     }
+    row.timeline_start = timeline_start;
+    row.timeline_end = timeline_end;
     if let Some(description) = input.description {
         row.description = description;
     }
@@ -6978,6 +7213,49 @@ async fn create_task(
         }
         .into_response())
     }
+}
+
+/// Returns the size and color slot a new task on board `board_id` takes. An explicit `requested`
+/// color wins and must belong to the board, else an explicit `size` keeps the size coloring, else
+/// the board default applies.
+fn new_task_color(
+    db: &AccountDb,
+    board_id: &str,
+    requested: Option<&str>,
+    size: Option<i64>,
+) -> Result<(i64, Option<String>), AppError> {
+    if let Some(color_id) = requested.filter(|id| !id.is_empty()) {
+        let color = db
+            .color(color_id)
+            .map_err(AppError::from)?
+            .filter(|color| color.row().board_id == board_id)
+            .ok_or_else(|| AppError::bad_request("unknown color"))?;
+        return Ok((
+            color_value_to_size(&color.row().value),
+            Some(color.row().id.clone()),
+        ));
+    }
+    if let Some(size) = size {
+        return Ok((Size::from_i64(size) as i64, None));
+    }
+    Ok(match db.default_color(board_id).map_err(AppError::from)? {
+        Some(color) => (color_value_to_size(&color.value), Some(color.id)),
+        None => (1, None),
+    })
+}
+
+/// Returns where a new task goes on board `board_id`: the board's "Position of new tasks", bottom
+/// by default.
+fn new_task_placement(db: &AccountDb, board_id: &str) -> Result<NewTaskPlacement, AppError> {
+    let at_top = db
+        .board(board_id)
+        .map_err(AppError::from)?
+        .is_some_and(|board| board.row().config_bool("new_tasks_at_top"));
+    Ok(if at_top {
+        NewTaskPlacement::Top
+    } else {
+        NewTaskPlacement::Bottom
+    })
 }
 
 /// Returns the id of swimlane `id` when it lies on the caller's board `board_id`, or the 400 an
@@ -7043,6 +7321,14 @@ enum ResponsibleInput {
     Session { name: String },
 }
 
+/// Refuses member ids that name an account other than the caller's.
+fn check_members(db: &AccountDb, ids: &[String]) -> Result<(), AppError> {
+    if ids.iter().any(|id| id != db.account_id().as_str()) {
+        return Err(AppError::bad_request("unknown member"));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize, ToSchema)]
 struct UpdateTaskInput {
     name: Option<String>,
@@ -7083,6 +7369,15 @@ struct UpdateTaskInput {
     /// leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
     due_repeat: Option<Option<String>>,
+    /// First day of the task's timeline as `YYYY-MM-DD`. The timeline needs both dates after the
+    /// request and its end may not be before its start, or the request is a 400. Null or an empty
+    /// string clears it, and absent leaves it unchanged. Clear a timeline by sending both dates
+    /// null.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    timeline_start: Option<Option<String>>,
+    /// Last day of the task's timeline as `YYYY-MM-DD`, with the rules of `timeline_start`.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    timeline_end: Option<Option<String>>,
     /// Mark the due date done/undone (KanbanFlow parity: checking the
     /// due-date item; the card renders "(Done)"). Absent leaves it
     /// unchanged.
@@ -7127,6 +7422,8 @@ impl UpdateTaskInput {
             estimate_hours,
             metadata,
             fields,
+            timeline_start,
+            timeline_end,
         } = self;
         (labels.is_some() || labels_add.is_some() || labels_remove.is_some())
             && name.is_none()
@@ -7143,6 +7440,8 @@ impl UpdateTaskInput {
             && estimate_hours.is_none()
             && metadata.is_none()
             && fields.is_none()
+            && timeline_start.is_none()
+            && timeline_end.is_none()
     }
 }
 
@@ -7381,6 +7680,24 @@ fn update_history(
             change,
         ));
     }
+    if after.timeline_start != before.timeline_start || after.timeline_end != before.timeline_end {
+        let value = |task: &TaskRow| {
+            Some(format!(
+                "{} to {}",
+                task.timeline_start.as_deref()?,
+                task.timeline_end.as_deref()?
+            ))
+        };
+        let detail = match value(after) {
+            Some(timeline) => format!("Set the timeline to {timeline}"),
+            None => "Cleared the timeline".to_string(),
+        };
+        let change = EventChange {
+            from: value(before),
+            to: value(after),
+        };
+        events.push(("timeline_updated", detail, change));
+    }
     events
 }
 
@@ -7516,10 +7833,8 @@ async fn update_task(
     let labels_remove = input.labels_remove.as_deref().map(clean_labels);
     let actor = user.actor();
 
-    if let Some(members) = &input.member_ids
-        && members.iter().any(|id| id != db.account_id().as_str())
-    {
-        return Err(AppError::bad_request("unknown member"));
+    if let Some(members) = &input.member_ids {
+        check_members(db, members)?;
     }
 
     // One write transaction runs every check that reads stored state
@@ -7630,6 +7945,17 @@ async fn update_task(
                 }
                 if let Some(date) = grouping_date {
                     task.grouping_date = date.map(str::to_string);
+                }
+                if input.timeline_start.is_some() || input.timeline_end.is_some() {
+                    let requested =
+                        |patch: &Option<Option<String>>, stored: &Option<String>| match patch {
+                            None => stored.clone(),
+                            Some(date) => timeline_input(date.as_deref()).map(str::to_string),
+                        };
+                    let start = requested(&input.timeline_start, &task.timeline_start);
+                    let end = requested(&input.timeline_end, &task.timeline_end);
+                    (task.timeline_start, task.timeline_end) =
+                        check_timeline(start.as_deref(), end.as_deref())?;
                 }
                 task.labels = patched_labels(
                     &task.labels,
@@ -8086,6 +8412,7 @@ async fn move_task(
         event,
         fence,
         enforce_wip: !query.force.unwrap_or(false),
+        batch: &[],
     };
     match db
         .move_task_logged(
@@ -8117,6 +8444,239 @@ async fn move_task(
     }
     let view = TaskView::from_row_in_board(db, task.board_id(), task.row(), &user.handle)?;
     Ok(TaskCardTemplate { task: view }.into_response())
+}
+
+/// The most tasks one bulk request names.
+const MAX_BULK_TASKS: usize = 500;
+
+/// What a bulk request does to every task it names.
+#[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum BulkTasksAction {
+    /// Moves the tasks into `column_id`, as `POST /api/tasks/{id}/move` does for one.
+    Move,
+    /// Gives the tasks the board color `color_id`, with the history event and size change a
+    /// single color update makes.
+    Color,
+    /// Adds the members in `add_member_ids` and removes those in `remove_member_ids`.
+    Members,
+    /// Removes every member from the tasks.
+    UnassignMembers,
+}
+
+/// The body of a bulk task request.
+#[derive(Deserialize, ToSchema)]
+struct BulkTasksInput {
+    /// The tasks to change, 1 to 500 distinct ids, all on the board in the path.
+    task_ids: Vec<String>,
+    /// What to do to every task in `task_ids`.
+    action: BulkTasksAction,
+    /// `move`: the target column, on any board of the account.
+    column_id: Option<String>,
+    /// `move`: the target swimlane on the target board. Without one each task keeps its lane, or
+    /// takes the target board's first lane when the column is on another board.
+    swimlane_id: Option<String>,
+    /// `move`: the index the first task takes among the target cell's other tasks, 0 when
+    /// absent. The next tasks follow it in the order of `task_ids`. An archiving column takes the
+    /// tasks at its end.
+    position: Option<f64>,
+    /// `color`: the color slot id on the board.
+    color_id: Option<String>,
+    /// `members`: user ids to add to each task.
+    add_member_ids: Option<Vec<String>>,
+    /// `members`: user ids to remove from each task.
+    remove_member_ids: Option<Vec<String>>,
+}
+
+/// The outcome of a bulk task request.
+#[derive(serde::Serialize, ToSchema)]
+struct BulkTasksResult {
+    /// How many tasks changed.
+    count: usize,
+}
+
+/// Changes several tasks of one board in one request. The change is all or nothing: when any task
+/// cannot change, none does. `color`, `members` and `unassign_members` write one history event
+/// per changed field on every task. `move` keeps the order of `task_ids`, logs the same history
+/// event a single move does, stamps and clears the Done time like it, and ignores the target
+/// column's WIP limit. It needs `tasks.write` alone.
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/tasks/bulk",
+    operation_id = "bulk_tasks",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = BulkTasksInput,
+    responses(
+        (status = 200, description = "Every task changed", body = BulkTasksResult),
+        (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, or a `members` change with no ids or an id that is not the account"),
+        (status = 404, description = "Board or task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn bulk_tasks(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<BulkTasksResult>, AppError> {
+    let db = &account;
+    let board = found(db.board(&id), "board not found")?;
+    let input: BulkTasksInput = parse_body(&headers, body).await?;
+    if input.task_ids.is_empty() || input.task_ids.len() > MAX_BULK_TASKS {
+        return Err(AppError::bad_request(format!(
+            "task_ids needs 1 to {MAX_BULK_TASKS} ids"
+        )));
+    }
+    let distinct: HashSet<&String> = input.task_ids.iter().collect();
+    if distinct.len() != input.task_ids.len() {
+        return Err(AppError::bad_request("task_ids repeats an id"));
+    }
+    let mut tasks = Vec::with_capacity(input.task_ids.len());
+    for task_id in &input.task_ids {
+        let task = found(db.task(task_id), "task not found")?;
+        if task.board_id() != board.row().id {
+            return Err(AppError::bad_request("a task is not on this board"));
+        }
+        ensure_unlocked(db, &user, task.board_id(), task.row())?;
+        tasks.push(task);
+    }
+
+    let actor = user.actor();
+    match input.action {
+        BulkTasksAction::Color => {
+            let color_id = input
+                .color_id
+                .as_deref()
+                .ok_or_else(|| AppError::bad_request("color needs color_id"))?;
+            let color = db
+                .color(color_id)
+                .map_err(AppError::from)?
+                .filter(|color| color.row().board_id == board.row().id)
+                .ok_or_else(|| AppError::bad_request("unknown color"))?;
+            bulk_change(db, &tasks, actor, |task, _| {
+                task.color_id = Some(color.row().id.clone());
+                task.size = color_value_to_size(&color.row().value);
+                Ok(())
+            })?;
+        }
+        BulkTasksAction::Members => {
+            let add = input.add_member_ids.unwrap_or_default();
+            let remove = input.remove_member_ids.unwrap_or_default();
+            if add.is_empty() && remove.is_empty() {
+                return Err(AppError::bad_request(
+                    "members needs add_member_ids or remove_member_ids",
+                ));
+            }
+            if add
+                .iter()
+                .chain(&remove)
+                .any(|member| member != db.account_id().as_str())
+            {
+                return Err(AppError::bad_request("unknown member"));
+            }
+            bulk_change(db, &tasks, actor, |task, _| {
+                task.set_members(merged_members(&task.member_ids, &add, &remove));
+                Ok(())
+            })?;
+        }
+        BulkTasksAction::UnassignMembers => {
+            bulk_change(db, &tasks, actor, |task, _| {
+                task.set_members(Vec::new());
+                Ok(())
+            })?;
+        }
+        BulkTasksAction::Move => {
+            let column_id = input
+                .column_id
+                .as_deref()
+                .ok_or_else(|| AppError::bad_request("move needs column_id"))?;
+            let column = db
+                .column(column_id)
+                .map_err(AppError::from)?
+                .ok_or_else(|| AppError::bad_request("unknown column"))?;
+            let swimlane_id = input
+                .swimlane_id
+                .filter(|lane| !lane.is_empty())
+                .map(|lane| lane_on_board(db, &lane, &column.row().board_id))
+                .transpose()?;
+            for task in &tasks {
+                if task.row().column_id != column.row().id {
+                    ensure_entry_allowed(db, column.row(), task.board_id(), task.row())?;
+                }
+            }
+            let position = if ColumnSettings::from_column(column.row()).archiving {
+                f64::from(u32::MAX)
+            } else {
+                input.position.unwrap_or(0.0)
+            };
+            match db
+                .move_tasks_logged(&tasks, &column, swimlane_id.as_deref(), position, actor)
+                .map_err(AppError::from)?
+            {
+                MoveOutcome::Moved => {}
+                MoveOutcome::NotFound => return Err(AppError::not_found("task not found")),
+                MoveOutcome::StaleFence | MoveOutcome::WipLimit { .. } => {
+                    return Err(AppError::conflict("the tasks could not be moved"));
+                }
+            }
+        }
+    }
+    Ok(Json(BulkTasksResult { count: tasks.len() }))
+}
+
+/// Runs `edit` on every task in one write and writes the history events of each change as a single
+/// update does. A task that cannot change leaves all unchanged.
+fn bulk_change<F>(
+    db: &AccountDb,
+    tasks: &[OwnedTask],
+    actor: Actor<'_>,
+    mut edit: F,
+) -> Result<(), AppError>
+where
+    F: FnMut(&mut TaskRow, &TaskContext) -> Result<(), AppError>,
+{
+    let users = db.list_users().map_err(AppError::from)?;
+    let outcome = db
+        .apply_tasks_change(tasks, actor, |task, context| {
+            let before = task.clone();
+            edit(task, context)?;
+            let size_from_color = before.color_id != task.color_id;
+            let events = update_history(
+                &before,
+                task,
+                &users,
+                &context.colors,
+                None,
+                size_from_color,
+            );
+            for (kind, detail, change) in events {
+                push_change_event(task, kind, detail, actor, change);
+            }
+            Ok(())
+        })
+        .map_err(AppError::from)?;
+    match outcome {
+        ChangeOutcome::Changed => Ok(()),
+        ChangeOutcome::Refused(error) => Err(error),
+        ChangeOutcome::NotFound => Err(AppError::not_found("task not found")),
+    }
+}
+
+/// Returns the members of a task after removing `remove` and then appending each of `add` it lacks.
+fn merged_members(current: &[String], add: &[String], remove: &[String]) -> Vec<String> {
+    let mut members: Vec<String> = current
+        .iter()
+        .filter(|member| !remove.contains(member))
+        .cloned()
+        .collect();
+    for member in add {
+        if !members.contains(member) {
+            members.push(member.clone());
+        }
+    }
+    members
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -8325,6 +8885,9 @@ async fn delete_task(
         .map_err(AppError::from)?;
     if !deleted {
         return Err(AppError::not_found("task not found"));
+    }
+    if let Err(error) = account.notify_task_deleted(&task, user.actor()) {
+        eprintln!("pomb: could not record the task deletion notification: {error}");
     }
     Ok(StatusCode::OK)
 }
@@ -8542,6 +9105,10 @@ struct TaskDetail {
     /// and a session is a name that stays on the task after its token expires.
     responsible: Option<Responsible>,
     grouping_date: Option<String>,
+    /// First day of the task's timeline as `YYYY-MM-DD`, or null when it has none.
+    timeline_start: Option<String>,
+    /// Last day of the task's timeline as `YYYY-MM-DD`, never before `timeline_start`, or null.
+    timeline_end: Option<String>,
     /// Watch flag: task More menu "Watch" (KanbanFlow parity).
     watched: bool,
     subtasks: Vec<SubtaskDetail>,
@@ -8686,6 +9253,8 @@ impl TaskDetail {
             member_ids: task.member_ids,
             responsible: task.responsible,
             grouping_date: task.grouping_date,
+            timeline_start: task.timeline_start,
+            timeline_end: task.timeline_end,
             watched: task.watched,
             subtasks: task.subtasks.iter().map(SubtaskDetail::from).collect(),
             labels: task.labels,
@@ -9168,6 +9737,8 @@ struct SubtaskDetail {
     /// Due date/time as RFC3339; null when the subtask has none.
     #[schema(required = true)]
     due_at: Option<String>,
+    /// Ids of the accounts the subtask is assigned to.
+    member_ids: Vec<String>,
 }
 
 impl From<&Subtask> for SubtaskDetail {
@@ -9177,6 +9748,7 @@ impl From<&Subtask> for SubtaskDetail {
             name: sub.name.clone(),
             done: sub.done,
             due_at: sub.due_at.clone(),
+            member_ids: sub.member_ids.clone(),
         }
     }
 }
@@ -9196,6 +9768,7 @@ impl Subtask {
     }
 }
 
+/// Request body that edits a subtask.
 #[derive(Deserialize, ToSchema)]
 struct UpdateSubtaskInput {
     name: Option<String>,
@@ -9204,6 +9777,22 @@ struct UpdateSubtaskInput {
     /// null or a blank string clears it; absent leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
     due_at: Option<Option<String>>,
+    /// Account ids the subtask is assigned to, replacing the current ones.
+    member_ids: Option<Vec<String>>,
+}
+
+/// Returns the history kind and detail for a subtask's members being replaced.
+#[must_use]
+fn subtask_members_event(
+    name: &str,
+    members: &[String],
+    users: &[UserRow],
+) -> (&'static str, String) {
+    let detail = match member_names(members, users) {
+        Some(names) => format!("Assigned subtask \"{name}\" to {names}"),
+        None => format!("Cleared the members of subtask \"{name}\""),
+    };
+    ("subtask_members_updated", detail)
 }
 
 /// Validate a subtask's requested due date against the task's board (a bare
@@ -9277,6 +9866,7 @@ async fn create_subtask(
         done: false,
         due_at,
         token_id: user.token_id.clone(),
+        member_ids: Vec::new(),
     };
     let entry_rule = entry_rule_of(&account, owned.board_id(), &owned.row().column_id)?;
 
@@ -9348,7 +9938,8 @@ async fn reorder_subtasks(
     ))
 }
 
-/// Renames a subtask or toggles its done flag.
+/// Renames a subtask, toggles its done flag, sets its due date or replaces its members. A field left
+/// out of the body stays unchanged.
 #[utoipa::path(
     patch,
     path = "/api/tasks/{id}/subtasks/{sub_id}",
@@ -9361,6 +9952,7 @@ async fn reorder_subtasks(
     request_body = UpdateSubtaskInput,
     responses(
         (status = 200, description = "The updated subtask", body = SubtaskDetail),
+        (status = 400, description = "An unknown member id"),
         (status = 404, description = "Task or subtask not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -9381,6 +9973,13 @@ async fn update_subtask(
         return Err(AppError::bad_request("subtask name is required"));
     }
     let requested_due = resolve_subtask_due(&account, &id, input.due_at.as_ref())?;
+    if let Some(members) = &input.member_ids {
+        check_members(&account, members)?;
+    }
+    let users = match &input.member_ids {
+        Some(_) => account.list_users().map_err(AppError::from)?,
+        None => Vec::new(),
+    };
 
     // The edit and its history event are one write, and an unknown subtask writes nothing
     let updated = account
@@ -9401,6 +10000,14 @@ async fn update_subtask(
             if let Some(due) = requested_due.clone() {
                 sub.due_at = due;
             }
+            let members_event = input
+                .member_ids
+                .as_ref()
+                .filter(|members| **members != sub.member_ids)
+                .map(|members| subtask_members_event(&sub.name, members, &users));
+            if let Some(members) = &input.member_ids {
+                sub.member_ids.clone_from(members);
+            }
             let sub = sub.clone();
             let event = match input.done {
                 Some(true) => Some((
@@ -9417,7 +10024,7 @@ async fn update_subtask(
                 )),
                 None => None,
             };
-            for (kind, detail) in event.into_iter().chain(due_event) {
+            for (kind, detail) in event.into_iter().chain(due_event).chain(members_event) {
                 push_event(task, kind, detail, user.actor());
             }
             (Some(sub), true)
@@ -9426,6 +10033,221 @@ async fn update_subtask(
         .flatten()
         .ok_or_else(|| AppError::not_found("task or subtask not found"))?;
     Ok(Json(SubtaskDetail::from(&updated)))
+}
+
+/// How the task a subtask becomes relates to the task it came from.
+#[derive(Copy, Clone, Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum ConvertRelation {
+    /// No link between the two tasks.
+    #[default]
+    None,
+    /// A `related` link between the two tasks.
+    Related,
+    /// The parent task is blocked by the new task.
+    ParentDependsOnNew,
+    /// The new task is blocked by the parent task.
+    ParentRequiredByNew,
+}
+
+/// Request body that converts a subtask into a task.
+#[derive(Deserialize, ToSchema)]
+struct ConvertSubtaskInput {
+    /// Color slot id of the board for the new task. Absent takes the board default.
+    color_id: Option<String>,
+    /// Account ids of the new task's members. Absent means none.
+    #[serde(default)]
+    member_ids: Vec<String>,
+    /// Labels of the new task. Absent means none.
+    #[serde(default)]
+    labels: Vec<String>,
+    /// Column of the parent's board the new task goes in. Absent takes the parent's column.
+    column_id: Option<String>,
+    /// How the new task relates to the parent: `none` (the default), `related`,
+    /// `parent_depends_on_new` (the parent is blocked by the new task) or `parent_required_by_new`
+    /// (the new task is blocked by the parent).
+    #[serde(default)]
+    relation: ConvertRelation,
+}
+
+/// Turns a subtask into a task of its own. The new task takes the subtask's name and due date and
+/// goes in the parent's swimlane, in the chosen column of the parent's board. The subtask leaves
+/// the parent, and the two tasks are linked as `relation` says. A token needs `tasks.write` and
+/// `subtasks.write`, `links.write` for any relation but `none`, and without `subtasks.delete` may
+/// convert only a subtask it created.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/subtasks/{sub_id}/convert",
+    operation_id = "convert_subtask",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("sub_id" = String, Path, description = "Subtask id"),
+    ),
+    request_body = ConvertSubtaskInput,
+    responses(
+        (status = 201, description = "The new task", body = TaskDetail),
+        (status = 400, description = "Unknown color or member, or a column on another board"),
+        (status = 403, description = "`permission_denied`: the token lacks `subtasks.write` or, for a relation, `links.write`, or lacks `subtasks.delete` and did not create the subtask. `card_locked`: the parent carries a locking label"),
+        (status = 404, description = "Task, subtask or column not found"),
+        (status = 422, description = "`column_rule`: the target column refuses the new task, or the parent's column refuses the parent without the subtask"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn convert_subtask(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path((id, sub_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, AppError> {
+    let input: ConvertSubtaskInput = parse_body(&headers, body).await?;
+    let db = &account;
+    let missing = "task or subtask not found";
+    let parent = found(db.task(&id), missing)?;
+    ensure_unlocked(db, &user, parent.board_id(), parent.row())?;
+    let sub = parent
+        .row()
+        .subtasks
+        .iter()
+        .find(|sub| sub.id == sub_id)
+        .cloned()
+        .ok_or_else(|| AppError::not_found(missing))?;
+    if !user.has(Permission::SubtasksWrite) {
+        return Err(AppError::permission_denied(Permission::SubtasksWrite));
+    }
+    if !matches!(input.relation, ConvertRelation::None) && !user.has(Permission::LinksWrite) {
+        return Err(AppError::permission_denied(Permission::LinksWrite));
+    }
+    if token_owner(&user, Permission::SubtasksDelete)
+        .is_some_and(|owner| owner.is_empty() || sub.token_id.as_deref() != Some(owner))
+    {
+        return Err(AppError::permission_denied(Permission::SubtasksDelete));
+    }
+    check_members(db, &input.member_ids)?;
+    let column_id = input
+        .column_id
+        .as_deref()
+        .filter(|column_id| !column_id.is_empty())
+        .unwrap_or(&parent.row().column_id);
+    let column = found(db.column(column_id), "column not found")?;
+    let board_id = column.row().board_id.clone();
+    if parent.board_id() != board_id {
+        return Err(AppError::bad_request("column is on another board"));
+    }
+    let (size, color_id) = new_task_color(db, &board_id, input.color_id.as_deref(), None)?;
+    let placement = new_task_placement(db, &board_id)?;
+    let actor = user.actor();
+
+    let mut row = AccountDb::new_task_row(
+        &column,
+        parent.row().swimlane_id.as_deref(),
+        &sub.name,
+        size,
+        color_id.as_deref(),
+    );
+    row.due_at = sub.due_at.clone();
+    row.labels = clean_labels(&input.labels);
+    row.set_members(input.member_ids.clone());
+    for def in db.list_fields(&board_id).map_err(AppError::from)? {
+        if let Some(default) = def.default.filter(|value| !value.is_null()) {
+            row.fields.insert(def.key, default);
+        }
+    }
+    ensure_entry_allowed(db, column.row(), &board_id, &row)?;
+    let parent_rule = entry_rule_of(db, parent.board_id(), &parent.row().column_id)?;
+    if let Some((column_name, rule)) = &parent_rule {
+        let mut without = parent.row().clone();
+        without.subtasks.retain(|held| held.id != sub_id);
+        ensure_not_worse(column_name, rule, parent.row(), &without)?;
+    }
+    let created = format!("Task created in {}", column.row().name);
+    push_column_event(&mut row, "created", created, actor, Some(&column.row().id));
+    let new_id = db
+        .insert_task_checked(&column, row, placement, actor)
+        .map_err(AppError::from)?
+        .map_err(AppError::bad_request)?;
+    let new_task = found(db.task(&new_id), "task vanished after create")?;
+    let link = match input.relation {
+        ConvertRelation::None => None,
+        ConvertRelation::Related => Some((&parent, LinkKind::Related, &new_task)),
+        ConvertRelation::ParentDependsOnNew => Some((&parent, LinkKind::BlockedBy, &new_task)),
+        ConvertRelation::ParentRequiredByNew => Some((&new_task, LinkKind::BlockedBy, &parent)),
+    };
+    let linked = match link {
+        None => Ok(()),
+        Some((holder, kind, target)) => {
+            let token_id = user.token_id.as_deref();
+            match db.add_task_link(holder, kind, target, token_id, actor) {
+                Ok(LinkAddOutcome::Added(_)) => Ok(()),
+                Ok(_) => Err(AppError::internal("the new task could not be linked")),
+                Err(error) => Err(AppError::from(error)),
+            }
+        }
+    };
+    if let Err(error) = linked {
+        return Err(undo_conversion(db, &new_task, actor, error));
+    }
+    let removal = db.apply_task_change(&parent, actor, |task| {
+        let Some(index) = task.subtasks.iter().position(|held| held.id == sub_id) else {
+            return (ConvertRemoval::Missing, false);
+        };
+        let held = &task.subtasks[index];
+        if held.name != sub.name || held.due_at != sub.due_at {
+            return (ConvertRemoval::Changed, false);
+        }
+        let before = task.clone();
+        let gone = task.subtasks.remove(index);
+        if let Some((column_name, rule)) = &parent_rule
+            && let Err(error) = ensure_not_worse(column_name, rule, &before, task)
+        {
+            return (ConvertRemoval::Refused(error), false);
+        }
+        let detail = format!("Converted subtask \"{}\" to a task", gone.name);
+        push_event(task, "subtask_converted", detail, actor);
+        (ConvertRemoval::Removed, true)
+    });
+    let failure = match removal {
+        Ok(Some(ConvertRemoval::Removed)) => None,
+        Ok(Some(ConvertRemoval::Changed)) => Some(AppError::conflict("subtask changed, retry")),
+        Ok(Some(ConvertRemoval::Refused(error))) => Some(error),
+        Ok(Some(ConvertRemoval::Missing) | None) => Some(AppError::not_found(missing)),
+        Err(error) => Some(AppError::from(error)),
+    };
+    if let Some(error) = failure {
+        return Err(undo_conversion(db, &new_task, actor, error));
+    }
+    let task = found(db.task(&new_id), "task vanished after create")?;
+    Ok((
+        StatusCode::CREATED,
+        Json(TaskDetail::load(db, task.into_row())?),
+    ))
+}
+
+/// Takes back the task a conversion made, links included, leaving nothing in the recycle bin, and
+/// returns `error`, or the failure of taking it back.
+fn undo_conversion(
+    db: &AccountDb,
+    created: &OwnedTask,
+    actor: Actor<'_>,
+    error: AppError,
+) -> AppError {
+    match db.discard_task(created, actor) {
+        Ok(_) => error,
+        Err(failure) => AppError::from(failure),
+    }
+}
+
+/// What removing the converted subtask from its parent found.
+enum ConvertRemoval {
+    /// The subtask was removed.
+    Removed,
+    /// The parent has no such subtask.
+    Missing,
+    /// The subtask's name or due date changed since the new task was made from it.
+    Changed,
+    /// The column rule of the parent refuses it without the subtask.
+    Refused(AppError),
 }
 
 /// The result of a subtask delete inside its task write.
@@ -9494,6 +10316,196 @@ async fn delete_subtask(
         SubtaskDelete::Missing => Err(AppError::not_found("task or subtask not found")),
         SubtaskDelete::NotOwner => Err(AppError::permission_denied(Permission::SubtasksDelete)),
     }
+}
+
+/// Removes every subtask from a task's checklist and logs one history event.
+#[utoipa::path(
+    delete,
+    path = "/api/tasks/{id}/subtasks",
+    operation_id = "delete_all_subtasks",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "All subtasks removed, or the task had none"),
+        (status = 403, description = "`card_locked`: the task carries a locking label"),
+        (status = 422, description = "`column_rule`: the task's column refuses the task without its subtasks"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_all_subtasks(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let owned = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    let entry_rule = entry_rule_of(&account, owned.board_id(), &owned.row().column_id)?;
+    account
+        .apply_task_change(&owned, user.actor(), |task| {
+            let count = task.subtasks.len();
+            if count == 0 {
+                return (Ok(()), false);
+            }
+            let before = task.clone();
+            task.subtasks.clear();
+            if let Some((column_name, rule)) = &entry_rule
+                && let Err(error) = ensure_not_worse(column_name, rule, &before, task)
+            {
+                return (Err(error), false);
+            }
+            let detail = format!("Deleted all {count} subtasks");
+            push_event(task, "subtask_deleted", detail, user.actor());
+            (Ok(()), true)
+        })
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))??;
+    Ok(StatusCode::OK)
+}
+
+/// The name to save a task's subtasks under.
+#[derive(Deserialize, ToSchema)]
+struct SaveSubtaskTemplateInput {
+    /// The template name. A template of the same name is replaced.
+    name: String,
+}
+
+/// Saves the task's current subtask names, in order, as a template in the account settings. Writes
+/// account settings, so it needs the settings permission.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/subtasks/template",
+    operation_id = "save_subtask_template",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = SaveSubtaskTemplateInput,
+    responses(
+        (status = 200, description = "The saved template", body = SubtaskTemplate),
+        (status = 400, description = "Template name is required, the task has no subtasks, or the account holds too many templates"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn save_subtask_template(
+    account: AccountDb,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<SubtaskTemplate>, AppError> {
+    let input: SaveSubtaskTemplateInput = parse_body(&headers, body).await?;
+    let owned = found(account.task(&id), "task not found")?;
+    let name = input.name.trim().to_string();
+    if name.is_empty() {
+        return Err(AppError::bad_request("template name is required"));
+    }
+    let subtasks: Vec<String> = owned
+        .row()
+        .subtasks
+        .iter()
+        .map(|sub| sub.name.clone())
+        .collect();
+    if subtasks.is_empty() {
+        return Err(AppError::bad_request("the task has no subtasks to save"));
+    }
+
+    let saved = account
+        .update_settings_with(|settings| {
+            match settings
+                .subtask_templates
+                .iter_mut()
+                .find(|template| template.name == name)
+            {
+                Some(existing) => {
+                    existing.subtasks = subtasks;
+                    existing.clone()
+                }
+                None => {
+                    let template = SubtaskTemplate {
+                        id: Uuid::new_v4().to_string(),
+                        name,
+                        subtasks,
+                    };
+                    settings.subtask_templates.push(template.clone());
+                    template
+                }
+            }
+        })
+        .map_err(AppError::from)?;
+    Ok(Json(saved))
+}
+
+/// The saved template to add to a task.
+#[derive(Deserialize, ToSchema)]
+struct AddSubtasksFromTemplateInput {
+    /// Id of a template in the account settings.
+    template_id: String,
+}
+
+/// Appends one new open subtask per name of a saved template to the task's checklist.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/subtasks/from-template",
+    operation_id = "add_subtasks_from_template",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = AddSubtasksFromTemplateInput,
+    responses(
+        (status = 200, description = "The created subtasks", body = Vec<SubtaskDetail>),
+        (status = 403, description = "`card_locked`: the task carries a locking label"),
+        (status = 404, description = "Task or template not found"),
+        (status = 422, description = "`column_rule`: the task's column refuses that many subtasks"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn add_subtasks_from_template(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Vec<SubtaskDetail>>, AppError> {
+    let input: AddSubtasksFromTemplateInput = parse_body(&headers, body).await?;
+    let owned = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    let entry_rule = entry_rule_of(&account, owned.board_id(), &owned.row().column_id)?;
+    let template = account
+        .settings()
+        .map_err(AppError::from)?
+        .subtask_templates
+        .into_iter()
+        .find(|template| template.id == input.template_id)
+        .ok_or_else(|| AppError::not_found("template not found"))?;
+    let created: Vec<Subtask> = template
+        .subtasks
+        .into_iter()
+        .map(|name| Subtask {
+            id: Uuid::new_v4().to_string(),
+            name,
+            done: false,
+            due_at: None,
+            token_id: user.token_id.clone(),
+            member_ids: Vec::new(),
+        })
+        .collect();
+
+    account
+        .apply_task_change(&owned, user.actor(), |task| {
+            let before = task.clone();
+            task.subtasks.extend(created.iter().cloned());
+            if let Some((column_name, rule)) = &entry_rule
+                && let Err(error) = ensure_not_worse(column_name, rule, &before, task)
+            {
+                return (Err(error), false);
+            }
+            for sub in &created {
+                let detail = format!("Added subtask \"{}\"", sub.name);
+                push_event(task, "subtask_added", detail, user.actor());
+            }
+            (Ok(()), !created.is_empty())
+        })
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))??;
+    Ok(Json(created.iter().map(SubtaskDetail::from).collect()))
 }
 
 #[derive(serde::Serialize, ToSchema)]
@@ -9571,7 +10583,8 @@ struct BoardEvent {
     /// The column the task sits in after the change. Null on `task_moved` on the board the task
     /// left for another board.
     column_id: Option<String>,
-    /// On `task_moved`, the column the task left. Absent on other kinds.
+    /// On `task_moved`, the column the task left. Absent on other kinds, and for a token limited
+    /// to some boards when that column sits on a board outside them.
     #[serde(skip_serializing_if = "Option::is_none")]
     from_column_id: Option<String>,
     /// On `comment_added`, the id of the comment. Absent on other kinds.
@@ -10801,8 +11814,8 @@ fn picker_candidates(
     terms: &search::Query,
 ) -> Result<LinkPickerTemplate, AppError> {
     let budget = std::time::Duration::from_secs(SEARCH_BUDGET_SECS);
-    let page = run_search(account, terms, MAX_SEARCH_LIMIT, budget)?;
-    let mut reads = account.link_reads().map_err(AppError::from)?;
+    let page = run_search(account, terms, usize::MAX, budget)?;
+    let mut reads = account.unrestricted_link_reads().map_err(AppError::from)?;
     let own_links = reads.task_links(id).map_err(AppError::from)?;
     let umbrella = reads.umbrella(&own_links).map_err(AppError::from)?;
     let excluded = match mode {
@@ -10917,6 +11930,29 @@ async fn task_card(
     Ok(TaskCardTemplate { task })
 }
 
+/// Returns the avatar chips of each subtask's members, by subtask id.
+#[must_use]
+fn subtask_member_chips(
+    subtasks: &[Subtask],
+    users: &[UserRow],
+) -> HashMap<String, Vec<MemberChip>> {
+    subtasks
+        .iter()
+        .filter(|sub| !sub.member_ids.is_empty())
+        .map(|sub| {
+            let chips = users
+                .iter()
+                .filter(|user| sub.member_ids.contains(&user.id))
+                .map(|user| MemberChip {
+                    initials: user_initials(&user.username),
+                    username: user.username.clone(),
+                })
+                .collect();
+            (sub.id.clone(), chips)
+        })
+        .collect()
+}
+
 /// Render the task-detail modal: editable fields, timer, time entries.
 async fn task_modal(
     State(state): State<AppState>,
@@ -10967,10 +12003,9 @@ async fn task_modal(
         .responsible
         .as_ref()
         .and_then(Responsible::member_id);
-    let assigned_members: Vec<MemberView> = db
-        .list_users()
-        .map_err(AppError::from)?
-        .into_iter()
+    let users = db.list_users().map_err(AppError::from)?;
+    let assigned_members: Vec<MemberView> = users
+        .iter()
         .filter(|user| task.member_ids.iter().any(|m| m == &user.id))
         .map(|user| MemberView {
             username: user.username.clone(),
@@ -10982,15 +12017,24 @@ async fn task_modal(
         Some(Responsible::Session { name }) => Some(name.clone()),
         _ => None,
     };
+    let subtask_chips = subtask_member_chips(&row.row().subtasks, &users);
     let board_id = column
         .as_ref()
         .map(|c| c.row().board_id.clone())
         .unwrap_or_default();
+    let board_name = db
+        .board(&board_id)
+        .map_err(AppError::from)?
+        .map(|board| board.row().name.clone())
+        .unwrap_or_default();
     let groups = relation_groups(db, &board_id, &id)?;
     Ok(ModalTemplate {
+        board_id,
+        board_name,
         relation_count: groups.iter().map(|group| group.rows.len()).sum(),
         relation_groups: groups,
         relation_kinds: RELATION_KINDS,
+        subtask_chips,
         task,
         is_done,
         assigned_members,
@@ -11484,33 +12528,6 @@ async fn board_history_page(
     let board = found(account.board(&board_id), "board not found")?.into_row();
     let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(BoardHistoryTemplate {
-        board_id: board.id,
-        board_name: board.name,
-        chrome,
-    })
-}
-
-/// Calendar report page: tasks laid out by due date on a month grid (KanbanFlow's Calendar: "a
-/// better overview of when your tasks are due", filterable by user, color, labels, swimlane).
-/// Renders client-side from the shared export-data dataset.
-#[derive(Template)]
-#[template(path = "calendar.html")]
-struct CalendarTemplate {
-    board_id: String,
-    board_name: String,
-    /// Top bar data.
-    chrome: ShellChrome,
-}
-
-async fn calendar_page(
-    State(state): State<AppState>,
-    account: AccountDb,
-    Extension(user): Extension<AuthUser>,
-    Path(board_id): Path<String>,
-) -> Result<CalendarTemplate, AppError> {
-    let board = found(account.board(&board_id), "board not found")?.into_row();
-    let chrome = shell_chrome(&state, &account, &user.username)?;
-    Ok(CalendarTemplate {
         board_id: board.id,
         board_name: board.name,
         chrome,
@@ -12443,7 +13460,7 @@ struct UpdateColumnInput {
 )]
 async fn update_column(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -12475,6 +13492,11 @@ async fn update_column(
     };
     if !db.update_column(&column, &patch).map_err(AppError::from)? {
         return Err(AppError::not_found("column not found"));
+    }
+    if let Some(name) = name.filter(|name| *name != column.row().name)
+        && let Err(error) = db.notify_column_renamed(&column, name, user.actor())
+    {
+        eprintln!("pomb: could not record the column rename notification: {error}");
     }
     Ok(StatusCode::OK)
 }
@@ -12534,7 +13556,7 @@ async fn move_column(
 )]
 async fn delete_column(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let db = &account;
@@ -12542,7 +13564,12 @@ async fn delete_column(
     // The last-column and task checks run inside the delete
     let column = found(db.column(&id), "column not found")?;
     match db.delete_column(&column).map_err(AppError::from)? {
-        ColumnDeleteOutcome::Deleted => Ok(StatusCode::OK),
+        ColumnDeleteOutcome::Deleted => {
+            if let Err(error) = account.notify_column_deleted(&column, user.actor()) {
+                eprintln!("pomb: could not record the column deletion notification: {error}");
+            }
+            Ok(StatusCode::OK)
+        }
         ColumnDeleteOutcome::NotFound => Err(AppError::not_found("column not found")),
         ColumnDeleteOutcome::RefusedLast => Err(AppError::bad_request(
             "cannot delete the board's last column",
@@ -13088,12 +14115,13 @@ async fn board_archive(
 //
 // The feed URL's token is a bearer secret for the board's due dates
 // 1. Token: 32 CSPRNG bytes in base64url, generated server-side only
-// 2. Storage: the board's config bag (`calendar_feed_token`), never serialized to clients
-// 3. The raw token leaves only through the authenticated link endpoints
-// 4. Only POST creates the token, and a GET never writes
+// 2. Storage: the board's config bag (`calendar_feed_secrets`, one entry per named feed), never
+//    serialized to clients or archived
+// 3. The raw token leaves only through the authenticated feed endpoints
+// 4. Only POST creates a feed, and a GET never writes
 // 5. `GET /api/calendar-feed/:token` is unauthenticated since calendar clients lack cookies
 // 6. An unknown token is a 404
-// 7. `POST .../reset` rotates the token at once
+// 7. `DELETE .../calendar-feeds/:feed_id` revokes that feed's token at once, leaving the others
 // 8. The payload is minimal: no comments, history, members or user data, and no ids beyond the stable UID
 // 9. Headers: `text/calendar`, `X-Robots-Tag: noindex`, private caching so pollers spare the DB
 
@@ -13262,109 +14290,282 @@ fn build_ical_feed(
     out
 }
 
-/// View model for the calendar-feed link endpoints. The client builds absolute `https://` /
-/// `webcal://` URLs from `path` with `window.location.origin`, so the server never needs to know
+/// A calendar feed of a board, as the feed endpoints list it. The client builds absolute `https://`
+/// / `webcal://` URLs from `path` with `window.location.origin`, so the server never needs to know
 /// its public host.
 #[derive(Serialize, ToSchema)]
-struct CalendarFeedLink {
-    /// Null from GET when the board has no feed token yet.
-    path: Option<String>,
+struct CalendarFeedView {
+    /// The feed's id, which the delete endpoint names.
+    id: String,
+    /// The name the owner gave the feed.
+    label: String,
+    /// The path of the feed's iCal URL, which holds its bearer token.
+    path: String,
+}
+
+impl CalendarFeedView {
+    fn new(feed: &BoardFeed) -> Self {
+        Self {
+            id: feed.id.clone(),
+            label: feed.label.clone(),
+            path: calendar_feed_path(&feed.token),
+        }
+    }
+}
+
+/// The calendar feeds of a board, oldest first.
+#[derive(Serialize, ToSchema)]
+struct CalendarFeedList {
+    /// Each feed of the board.
+    feeds: Vec<CalendarFeedView>,
+}
+
+/// Request body of `POST /api/boards/{id}/calendar-feeds`.
+#[derive(Deserialize, ToSchema)]
+struct CalendarFeedInput {
+    /// The name of the feed, 1 to 100 characters.
+    label: String,
 }
 
 fn calendar_feed_path(token: &str) -> String {
     format!("/api/calendar-feed/{token}.ics")
 }
 
-/// Ensures the board has a calendar-feed token, generating one on first call. Concurrent first
-/// calls all get the same token.
-fn ensure_feed_token(db: &AccountDb, board: &OwnedBoard) -> Result<String, AppError> {
-    db.ensure_board_config_string(board, "calendar_feed_token", &generate_feed_token())
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))
-}
-
-/// Returns the board's iCal feed link, or a null `path` when none has been created. Read-only,
-/// since creating the token is a POST. Authenticated, and together with
-/// `POST /api/boards/{id}/calendar-feed` the only endpoints that reveal the raw bearer token.
+/// Lists the board's calendar feeds, each with its label and iCal path. Read-only. Authenticated,
+/// and together with `POST /api/boards/{id}/calendar-feeds` the only endpoint that reveals a raw
+/// bearer token.
 #[utoipa::path(
     get,
-    path = "/api/boards/{id}/calendar-feed",
-    operation_id = "get_calendar_feed_link",
+    path = "/api/boards/{id}/calendar-feeds",
+    operation_id = "list_calendar_feeds",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id")),
     responses(
-        (status = 200, description = "iCal feed link (path null when none exists)", body = CalendarFeedLink),
+        (status = 200, description = "The board's calendar feeds", body = CalendarFeedList),
         (status = 401, description = "Missing or invalid credentials"),
         (status = 404, description = "Board not found"),
     ),
 )]
-async fn get_calendar_feed_link(
+async fn list_calendar_feeds(
     account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
-) -> Result<Json<CalendarFeedLink>, AppError> {
+) -> Result<Json<CalendarFeedList>, AppError> {
     let board = found(account.board(&id), "board not found")?;
-    Ok(Json(CalendarFeedLink {
-        path: board.row().feed_token().as_deref().map(calendar_feed_path),
+    Ok(Json(CalendarFeedList {
+        feeds: board
+            .row()
+            .feeds()
+            .iter()
+            .map(CalendarFeedView::new)
+            .collect(),
     }))
 }
 
-/// Returns the board's iCal feed link, creating the token on first call. Authenticated.
+/// Creates a calendar feed with its own label and its own bearer token, so the board can hold
+/// several, and returns it. A board holds at most 20 feeds. Authenticated.
 #[utoipa::path(
     post,
-    path = "/api/boards/{id}/calendar-feed",
-    operation_id = "create_calendar_feed_link",
+    path = "/api/boards/{id}/calendar-feeds",
+    operation_id = "create_calendar_feed",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id")),
+    request_body = CalendarFeedInput,
     responses(
-        (status = 200, description = "iCal feed link", body = CalendarFeedLink),
+        (status = 200, description = "The new calendar feed", body = CalendarFeedView),
+        (status = 400, description = "Invalid input: an empty or over-long label, or the board holds 20 feeds already"),
         (status = 401, description = "Missing or invalid credentials"),
         (status = 404, description = "Board not found"),
     ),
 )]
-async fn create_calendar_feed_link(
+async fn create_calendar_feed(
     account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
-) -> Result<Json<CalendarFeedLink>, AppError> {
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<CalendarFeedView>, AppError> {
+    let input: CalendarFeedInput = parse_body(&headers, body).await?;
     let board = found(account.board(&id), "board not found")?;
-    let token = ensure_feed_token(&account, &board)?;
-    Ok(Json(CalendarFeedLink {
-        path: Some(calendar_feed_path(&token)),
-    }))
+    let label = input.label.trim();
+    if label.is_empty() {
+        return Err(AppError::bad_request("feed label is required"));
+    }
+    TextCap::FEED_LABEL
+        .check(label)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    match account
+        .add_board_feed(&board, label, &generate_feed_token())
+        .map_err(AppError::from)?
+    {
+        FeedAdd::Added(feed) => Ok(Json(CalendarFeedView::new(&feed))),
+        FeedAdd::Full => Err(AppError::bad_request(format!(
+            "a board holds at most {MAX_BOARD_FEEDS} calendar feeds"
+        ))),
+        FeedAdd::NoBoard => Err(AppError::not_found("board not found")),
+    }
 }
 
-/// Rotates the board's iCal feed token. The old feed URL stops working immediately. Authenticated.
+/// Deletes a calendar feed. Its iCal URL stops serving at once. Authenticated.
 #[utoipa::path(
-    post,
-    path = "/api/boards/{id}/calendar-feed/reset",
-    operation_id = "reset_calendar_feed_link",
+    delete,
+    path = "/api/boards/{id}/calendar-feeds/{feed_id}",
+    operation_id = "delete_calendar_feed",
     tag = "Boards",
-    params(("id" = String, Path, description = "Board id")),
+    params(
+        ("id" = String, Path, description = "Board id"),
+        ("feed_id" = String, Path, description = "Calendar feed id"),
+    ),
     responses(
-        (status = 200, description = "New iCal feed link", body = CalendarFeedLink),
+        (status = 200, description = "Feed deleted"),
         (status = 401, description = "Missing or invalid credentials"),
-        (status = 404, description = "Board not found"),
+        (status = 404, description = "Board or feed not found"),
     ),
 )]
-async fn reset_calendar_feed(
+async fn delete_calendar_feed(
     account: AccountDb,
     Extension(_user): Extension<AuthUser>,
-    Path(id): Path<String>,
-) -> Result<Json<CalendarFeedLink>, AppError> {
+    Path((id, feed_id)): Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
     let board = found(account.board(&id), "board not found")?;
-    let token = generate_feed_token();
-    let mut updates = serde_json::Map::new();
-    updates.insert(
-        "calendar_feed_token".to_string(),
-        serde_json::Value::String(token.clone()),
-    );
-    account
-        .set_board_config(&board, &updates)
-        .map_err(AppError::from)?;
-    Ok(Json(CalendarFeedLink {
-        path: Some(calendar_feed_path(&token)),
-    }))
+    if account
+        .remove_board_feed(&board, &feed_id)
+        .map_err(AppError::from)?
+    {
+        Ok(StatusCode::OK)
+    } else {
+        Err(AppError::not_found("feed not found"))
+    }
+}
+
+/// Query of `GET /api/calendar-export`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct CalendarExportQuery {
+    /// Comma-separated ids of the boards to export, at most 20.
+    boards: String,
+    /// `xlsx` (the default) or `csv`.
+    format: Option<String>,
+    /// The first due day to include, `YYYY-MM-DD`. Open when absent.
+    from: Option<String>,
+    /// The last due day to include, `YYYY-MM-DD`. Open when absent.
+    to: Option<String>,
+    /// `all` (the default), `task` (the due dates of tasks) or `subtask` (those of subtasks).
+    #[serde(rename = "type")]
+    level: Option<String>,
+}
+
+/// Most boards one calendar export names.
+const MAX_EXPORT_BOARDS: usize = 20;
+
+/// Parses the optional `YYYY-MM-DD` query value `name`.
+fn export_day(name: &str, value: Option<&str>) -> Result<Option<chrono::NaiveDate>, AppError> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                .map_err(|_| AppError::bad_request(format!("{name} must be a YYYY-MM-DD date")))
+        })
+        .transpose()
+}
+
+/// Downloads the due dates of the named boards that fall between `from` and `to`, as an Excel
+/// workbook or a CSV file with the columns Board, Level, Task, Subtask, Column, Due date and
+/// Repeat, one row per due date. The stored due dates are exported, not the instances a repeat
+/// would add. The server builds 3 whole-board responses at once, 1 for each account, and one that
+/// waits more than 10 seconds gets 503 `busy`.
+#[utoipa::path(
+    get,
+    path = "/api/calendar-export",
+    operation_id = "export_calendar",
+    tag = "Boards",
+    params(CalendarExportQuery),
+    responses(
+        (status = 200, description = "The due dates, as an Excel workbook or CSV"),
+        (status = 400, description = "Invalid input: no board, more than 20, an unknown format or type, or a date that is not `YYYY-MM-DD` or a range that ends before it starts"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "A board was not found"),
+        (status = 503, description = "`busy`: the server is sending its limit of whole-board reads, or this account is, and this one waited more than 10 seconds for its turn"),
+    ),
+)]
+async fn export_calendar(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Query(query): Query<CalendarExportQuery>,
+) -> Result<Response, AppError> {
+    let format = match query.format.as_deref() {
+        None | Some("") => Format::Xlsx,
+        Some(name) => Format::parse(name)
+            .ok_or_else(|| AppError::bad_request("format must be xlsx or csv"))?,
+    };
+    let level = match query.level.as_deref() {
+        None | Some("") => Level::All,
+        Some(name) => Level::parse(name)
+            .ok_or_else(|| AppError::bad_request("type must be all, task or subtask"))?,
+    };
+    let range = Range {
+        from: export_day("from", query.from.as_deref())?,
+        to: export_day("to", query.to.as_deref())?,
+    };
+    if range.from.zip(range.to).is_some_and(|(from, to)| to < from) {
+        return Err(AppError::bad_request("to must not be before from"));
+    }
+    let mut ids: Vec<&str> = Vec::new();
+    for id in query
+        .boards
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if ids.is_empty() || ids.len() > MAX_EXPORT_BOARDS {
+        return Err(AppError::bad_request(format!(
+            "name 1 to {MAX_EXPORT_BOARDS} boards"
+        )));
+    }
+    let mut boards = Vec::new();
+    for id in ids {
+        let board = found(account.board(id), "board not found")?;
+        boards.push((board.row().id.clone(), board.row().name.clone()));
+    }
+    let slot = match Slot::Board(account.account_id().as_str())
+        .acquire(&state)
+        .await
+    {
+        Ok(slot) => slot,
+        Err(busy) => return Ok(*busy),
+    };
+    let reader = account.clone();
+    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<String>>, String> {
+        let mut rows = vec![calendar_export::header_row()];
+        for (id, name) in &boards {
+            let columns = reader.list_columns(id).map_err(|error| error.to_string())?;
+            let tasks = reader.board_tasks(id).map_err(|error| error.to_string())?;
+            calendar_export::due_rows(&mut rows, name, &columns, &tasks, level, range);
+        }
+        Ok(rows)
+    })
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .map_err(AppError::internal)?;
+    let bytes = match format {
+        Format::Xlsx => calendar_export::xlsx_bytes(&rows),
+        Format::Csv => calendar_export::csv_bytes(&rows),
+    };
+    let name = format!("due-dates.{}", format.extension());
+    Ok((
+        StatusCode::OK,
+        [
+            (CONTENT_TYPE, format.content_type().to_string()),
+            (CONTENT_DISPOSITION, attachment_disposition(&name)),
+        ],
+        SlotBody::wrap(Bytes::from(bytes), slot),
+    )
+        .into_response())
 }
 
 /// Serves the iCal feed. PUBLIC by design: calendar clients cannot do cookie auth, so the
@@ -14783,6 +15984,9 @@ async fn delete_board_api(
             AppError::from(e)
         }
     })?;
+    if let Err(error) = account.notify_board_deleted(&board, user.actor()) {
+        eprintln!("pomb: could not record the board deletion notification: {error}");
+    }
     Ok(Json(serde_json::json!({ "deleted": id })))
 }
 
@@ -15937,14 +17141,81 @@ async fn setup_page(State(state): State<AppState>, public: PublicDb) -> Result<R
 
 // ---- Settings ----
 
+/// One In-app checkbox of the Notifications pane.
+struct NotificationChoice {
+    /// The kind's name, as `muted_notifications` lists it.
+    kind: &'static str,
+    /// The checkbox text.
+    label: &'static str,
+    /// Whether the kind is on for the account.
+    enabled: bool,
+}
+
+/// A group of events on the Notifications pane.
+struct NotificationGroup {
+    /// The group's heading.
+    title: &'static str,
+    /// The group's checkboxes.
+    choices: Vec<NotificationChoice>,
+}
+
+/// An event of the Notifications pane with its checkbox text.
+type Event = (NotificationKind, &'static str);
+
+impl NotificationGroup {
+    /// Returns the groups of events with each one on unless `muted` holds it.
+    fn all(muted: &[NotificationKind]) -> Vec<Self> {
+        const GROUPS: [(&str, &[Event]); 3] = [
+            (
+                "Task",
+                &[
+                    (NotificationKind::TaskAssigned, "Assigned to me"),
+                    (NotificationKind::CommentAdded, "Comment added"),
+                    (NotificationKind::TaskMoved, "Task moved"),
+                    (NotificationKind::TaskDeleted, "Task deleted"),
+                ],
+            ),
+            (
+                "Column",
+                &[
+                    (NotificationKind::ColumnRenamed, "Column renamed"),
+                    (NotificationKind::ColumnDeleted, "Column deleted"),
+                ],
+            ),
+            (
+                "Board",
+                &[(NotificationKind::BoardDeleted, "Board deleted")],
+            ),
+        ];
+        GROUPS
+            .iter()
+            .map(|(title, events)| Self {
+                title,
+                choices: events
+                    .iter()
+                    .map(|(kind, label)| NotificationChoice {
+                        kind: kind.as_str(),
+                        label,
+                        enabled: !muted.contains(kind),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+}
+
 #[derive(Template)]
 #[template(path = "settings.html")]
 struct SettingsTemplate {
     settings: Settings,
+    /// The events of the Notifications pane, grouped.
+    notification_groups: Vec<NotificationGroup>,
     saved: bool,
     tokens: Vec<ApiTokenListItem>,
     /// Registered passkeys, oldest first.
     passkeys: Vec<PasskeyListItem>,
+    /// The browsers signed in to the account, newest first.
+    sessions: Vec<SessionListItem>,
     /// Whether a public URL with a DNS name lets the owner add passkeys.
     passkeys_available: bool,
     /// Longest passkey label, in characters.
@@ -16004,6 +17275,18 @@ struct PasskeyListItem {
     created: String,
     /// The last sign-in date, or "never".
     last_used: String,
+}
+
+/// Session row for the settings page, with a human-readable date.
+struct SessionListItem {
+    /// The id that names this session.
+    id: String,
+    /// The browser and system of the sign-in.
+    device: String,
+    /// The sign-in date and minute, in UTC.
+    logged_in: String,
+    /// Whether this is the session viewing the page.
+    current: bool,
 }
 
 /// What the Backups pane of the settings page shows.
@@ -16167,6 +17450,24 @@ async fn settings_page(
                 .unwrap_or_else(|| "never".to_string()),
         })
         .collect();
+    let current = auth::session_token_from_headers(&headers);
+    let sessions = account
+        .sessions(current.as_deref().map(SessionToken::new))
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|session| SessionListItem {
+            id: session.id,
+            device: if session.device.is_empty() {
+                "Unknown browser".to_string()
+            } else {
+                session.device
+            },
+            logged_in: chrono::DateTime::parse_from_rfc3339(&session.created_at)
+                .map(|at| at.format("%Y-%m-%d %H:%M UTC").to_string())
+                .unwrap_or_else(|_| "unknown".to_string()),
+            current: session.current,
+        })
+        .collect();
     let chrome = shell_chrome(&state, &account, &user.username)?;
     let multi = state.is_multi();
     let backups = match &instance {
@@ -16196,10 +17497,12 @@ async fn settings_page(
     Ok(SettingsTemplate {
         chrome,
         board_id: String::new(),
+        notification_groups: NotificationGroup::all(&settings.muted_notifications),
         settings,
         saved: query.contains_key("saved"),
         tokens,
         passkeys,
+        sessions,
         passkeys_available: state.sign_in.relying_party().is_some(),
         max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
         backups,
@@ -16279,6 +17582,8 @@ async fn settings_submit(
         break_activities: current.break_activities,
         favorite_boards: current.favorite_boards,
         modal_folded_groups: current.modal_folded_groups,
+        muted_notifications: current.muted_notifications,
+        subtask_templates: current.subtask_templates,
     };
     account.update_settings(&settings).map_err(AppError::from)?;
     Ok(Redirect::to("/settings?saved=1").into_response())
@@ -16299,7 +17604,20 @@ async fn api_settings(
     account: AccountDb,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<Settings>, AppError> {
-    Ok(Json(account.settings().map_err(AppError::from)?))
+    let settings = account.settings().map_err(AppError::from)?;
+    Ok(Json(without_hidden_favorites(&account, settings)?))
+}
+
+/// Returns `settings` without the favourite boards outside the token's set.
+fn without_hidden_favorites(
+    account: &AccountDb,
+    mut settings: Settings,
+) -> Result<Settings, AppError> {
+    let hidden = account
+        .boards_outside_set(&settings.favorite_boards)
+        .map_err(AppError::from)?;
+    settings.favorite_boards.retain(|id| !hidden.contains(id));
+    Ok(settings)
 }
 
 /// Serves the settings as JSON for the timer JavaScript. The body matches `GET /api/settings`, and
@@ -16347,9 +17665,19 @@ struct SettingsUpdate {
     /// Keys of the task dialog sidebar folds: `panel` for the whole sidebar, so the description
     /// fills the dialog, `details`, `edit-fields`, `metadata`, and `fields:` followed by the field
     /// group name for a custom field group, and `children-done` for hiding the done children in the
-    /// Children tab. Replaces the whole list. Entries are trimmed, blanks and repeats dropped, at
-    /// most 64 kept, each at most 200 characters.
+    /// Children tab. Replaces the whole list. Entries are trimmed, and blanks and repeats are
+    /// dropped. A list past 64 entries, or an entry past 200 characters, is refused with 400.
     modal_folded_groups: Option<Vec<String>>,
+    /// Notification kinds to turn off: none of them is recorded for the account afterwards.
+    /// Replaces the whole list, and repeats are dropped.
+    muted_notifications: Option<Vec<NotificationKind>>,
+    /// Subtask templates saved from a task's checklist. Replaces the whole list.
+    ///
+    /// Entries are cleaned: names trimmed, templates with a blank name or no subtask names
+    /// dropped, blank subtask names dropped, a repeated template name dropped after its first,
+    /// and an id kept only when it names a stored template not yet kept, else regenerated. A list
+    /// past 50 templates, or a template past 200 subtask names, is refused with 400.
+    subtask_templates: Option<Vec<SubtaskTemplate>>,
 }
 
 /// Updates the app settings. Only the fields present change.
@@ -16440,17 +17768,27 @@ async fn api_update_settings(
             .collect();
     }
     if let Some(favorites) = patch.favorite_boards {
-        let mut seen = std::collections::HashSet::new();
+        let hidden = account
+            .boards_outside_set(&settings.favorite_boards)
+            .map_err(AppError::from)?;
+        let reachable: HashSet<String> = account
+            .list_boards()
+            .map_err(AppError::from)?
+            .into_iter()
+            .map(|board| board.id)
+            .collect();
+        let mut seen = HashSet::new();
         let mut kept = Vec::new();
         for id in favorites {
             let id = id.trim().to_string();
             if id.is_empty() || !seen.insert(id.clone()) {
                 continue;
             }
-            if account.board_exists(&id).map_err(AppError::from)? {
+            if reachable.contains(&id) {
                 kept.push(id);
             }
         }
+        kept.extend(hidden);
         settings.favorite_boards = kept;
     }
     if let Some(groups) = patch.modal_folded_groups {
@@ -16461,8 +17799,47 @@ async fn api_update_settings(
             .filter(|group| !group.is_empty() && seen.insert(group.clone()))
             .collect();
     }
+    if let Some(muted) = patch.muted_notifications {
+        settings.muted_notifications = NotificationKind::ALL
+            .into_iter()
+            .filter(|kind| muted.contains(kind))
+            .collect();
+    }
+    if let Some(templates) = patch.subtask_templates {
+        let stored: HashSet<String> = settings
+            .subtask_templates
+            .iter()
+            .map(|template| template.id.clone())
+            .collect();
+        let mut seen_names = HashSet::new();
+        let mut seen_ids = HashSet::new();
+        settings.subtask_templates = templates
+            .into_iter()
+            .filter_map(|mut template| {
+                template.name = template.name.trim().to_string();
+                template.subtasks = template
+                    .subtasks
+                    .into_iter()
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty())
+                    .collect();
+                if template.name.is_empty()
+                    || template.subtasks.is_empty()
+                    || !seen_names.insert(template.name.clone())
+                {
+                    return None;
+                }
+                let kept = stored.contains(&template.id) && seen_ids.insert(template.id.clone());
+                if !kept {
+                    template.id = Uuid::new_v4().to_string();
+                    seen_ids.insert(template.id.clone());
+                }
+                Some(template)
+            })
+            .collect();
+    }
     account.update_settings(&settings).map_err(AppError::from)?;
-    Ok(Json(settings))
+    Ok(Json(without_hidden_favorites(&account, settings)?))
 }
 
 // ---- Agent API tokens ----
@@ -18424,6 +19801,210 @@ async fn timer_today(
     Ok(Json(entries))
 }
 
+/// Most notifications `GET /api/notifications` returns in one page.
+const MAX_NOTIFICATIONS_LIMIT: usize = 100;
+
+/// Notifications `GET /api/notifications` returns when it gives no `limit`.
+const DEFAULT_NOTIFICATIONS_LIMIT: usize = 20;
+
+/// Parameters of `GET /api/notifications`.
+#[derive(Default, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct NotificationsQuery {
+    /// The `next_before` of the previous page. Absent starts at the newest notification.
+    #[param(value_type = Option<i64>)]
+    before: Option<String>,
+    /// Most notifications to return, from 1 to 100, default 20.
+    #[param(value_type = Option<i64>)]
+    limit: Option<String>,
+}
+
+impl NotificationsQuery {
+    /// Parses raw query pairs, refusing a repeated parameter.
+    fn from_pairs(pairs: Vec<(String, String)>) -> Result<Self, AppError> {
+        refuse_repeats(&pairs, &["before", "limit"])?;
+        let mut query = Self::default();
+        for (key, value) in pairs {
+            match key.as_str() {
+                "before" => query.before = Some(value),
+                "limit" => query.limit = Some(value),
+                _ => {}
+            }
+        }
+        Ok(query)
+    }
+}
+
+/// One notification of the signed-in account.
+#[derive(serde::Serialize, ToSchema)]
+struct NotificationView {
+    /// Identifies the notification for `POST /api/notifications/{id}/read` and as a cursor.
+    id: u64,
+    /// What happened.
+    kind: NotificationKind,
+    /// The board it happened on.
+    board_id: String,
+    /// The board's name when it happened.
+    board_name: String,
+    /// The task it happened to, null for a column or board event.
+    task_id: Option<String>,
+    /// The task's name when it happened.
+    task_name: Option<String>,
+    /// The column a moved task went to, or the name of a renamed or deleted column, otherwise null.
+    detail: Option<String>,
+    /// The username, `api-token` or `system` of whoever made the change.
+    actor: String,
+    /// How the change's author authenticated.
+    actor_kind: ActorKind,
+    /// Name of the API token that made the change, or null.
+    token_name: Option<String>,
+    /// When it happened, as RFC3339.
+    created_at: String,
+    /// Whether the account has read it.
+    read: bool,
+}
+
+/// A page of the signed-in account's notifications.
+#[derive(serde::Serialize, ToSchema)]
+struct NotificationPageView {
+    /// The notifications, newest first.
+    items: Vec<NotificationView>,
+    /// Pass as `before` for the next page, null on the last page.
+    next_before: Option<u64>,
+    /// How many notifications the account has not read, across every page.
+    unread: u64,
+}
+
+/// How many notifications the signed-in account has not read.
+#[derive(serde::Serialize, ToSchema)]
+struct UnreadView {
+    /// How many notifications are still unread.
+    unread: u64,
+}
+
+/// Lists the signed-in account's notifications, newest first.
+///
+/// A notification says that someone else changed something the account follows. The account was
+/// made a member of a task. A task it is a member of or watches got a comment, moved or was
+/// deleted. A column was renamed or deleted, or a board was deleted. Only changes made with an API
+/// token notify, and the account's own changes in the browser never do. An account sees only its
+/// own notifications, and keeps its newest 500. Needs the browser session.
+#[utoipa::path(
+    get,
+    path = "/api/notifications",
+    operation_id = "list_notifications",
+    tag = "Notifications",
+    params(NotificationsQuery),
+    responses(
+        (status = 200, description = "A page of notifications, newest first, with the unread count", body = NotificationPageView),
+        (status = 400, description = "`invalid_request`: a `before` that is not a notification id, or a `limit` outside 1 to 100"),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_notifications(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Query(pairs): Query<Vec<(String, String)>>,
+) -> Result<Json<NotificationPageView>, AppError> {
+    require_cookie_auth(&user)?;
+    let query = NotificationsQuery::from_pairs(pairs)?;
+    let limit = parse_limit(
+        query.limit.as_deref(),
+        DEFAULT_NOTIFICATIONS_LIMIT,
+        MAX_NOTIFICATIONS_LIMIT,
+    )?;
+    let before = query
+        .before
+        .as_deref()
+        .map(|raw| {
+            raw.parse::<u64>()
+                .map_err(|_| AppError::bad_request(format!("invalid before \"{raw}\"")))
+        })
+        .transpose()?;
+    let page = account
+        .notifications(before, limit)
+        .map_err(AppError::from)?;
+    Ok(Json(NotificationPageView {
+        items: page
+            .items
+            .into_iter()
+            .map(|(id, row)| NotificationView {
+                id,
+                kind: row.kind,
+                board_id: row.board_id,
+                board_name: row.board_name,
+                task_id: row.task_id,
+                task_name: row.task_name,
+                detail: row.detail,
+                actor: row.actor,
+                actor_kind: row.actor_kind,
+                token_name: row.token_name,
+                created_at: row.created_at,
+                read: row.read,
+            })
+            .collect(),
+        next_before: page.next_before,
+        unread: page.unread as u64,
+    }))
+}
+
+/// Marks one of the signed-in account's notifications read. Needs the browser session.
+#[utoipa::path(
+    post,
+    path = "/api/notifications/{id}/read",
+    operation_id = "mark_notification_read",
+    tag = "Notifications",
+    params(("id" = u64, Path, description = "Notification id")),
+    responses(
+        (status = 200, description = "The notification is read, and the body holds the count still unread", body = UnreadView),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "The account has no such notification"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn mark_notification_read(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<UnreadView>, AppError> {
+    require_cookie_auth(&user)?;
+    let unread = id
+        .parse::<u64>()
+        .ok()
+        .map(|seq| account.mark_notification_read(seq))
+        .transpose()
+        .map_err(AppError::from)?
+        .flatten()
+        .ok_or_else(|| AppError::not_found("notification not found"))?;
+    Ok(Json(UnreadView {
+        unread: unread as u64,
+    }))
+}
+
+/// Marks every notification of the signed-in account read. Needs the browser session.
+#[utoipa::path(
+    post,
+    path = "/api/notifications/read",
+    operation_id = "mark_all_notifications_read",
+    tag = "Notifications",
+    responses(
+        (status = 200, description = "Every notification is read, so the unread count is 0", body = UnreadView),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn mark_all_notifications_read(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<UnreadView>, AppError> {
+    require_cookie_auth(&user)?;
+    account
+        .mark_all_notifications_read()
+        .map_err(AppError::from)?;
+    Ok(Json(UnreadView { unread: 0 }))
+}
+
 // ---- Generated OpenAPI ----
 
 /// Adds the `bearerAuth` HTTP bearer security scheme for the `pomb_...` API tokens and the
@@ -18656,7 +20237,15 @@ passed, never merely on the due date. Subtask `due_at` takes the same forms.
 and a repeat sent for a task with no due date is dropped. `due_target_column_id` names the column
 the task should reach by its due date, a column on the task's board. Sending one for a task with
 no due date is a 400, and clearing `due_at`, deleting that column or moving the task to another
-board clears it. `due_done` marks the due date done and is ignored without a due date."#;
+board clears it. `due_done` marks the due date done and is ignored without a due date.
+
+### Timeline
+
+`timeline_start` and `timeline_end` are the first and last day of a task's timeline, each written
+`YYYY-MM-DD` and both null when the task has none. A timeline needs both dates, and an end before
+the start, a date written any other way or only one date is a 400 that changes nothing. A request
+that sends one date is checked against the stored other one. Send both as null or an empty string
+to clear the timeline. Changing it writes a `timeline_updated` history event."#;
 
 /// Concept prose for the `Claims` tag.
 const CLAIMS_DOC: &str = r#"A claim is a lease on one task that tells other agents the task is taken. Claims are advisory:
@@ -19023,11 +20612,15 @@ them, which the Backups section of the settings page calls after a confirmation.
         update_task,
         delete_task,
         move_task,
+        bulk_tasks,
         get_task_time,
         log_time,
         watch_task,
         set_checklist_item,
         create_subtask,
+        delete_all_subtasks,
+        save_subtask_template,
+        add_subtasks_from_template,
         reorder_subtasks,
         create_task_link,
         change_task_umbrella,
@@ -19038,6 +20631,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         release_claim,
         update_subtask,
         delete_subtask,
+        convert_subtask,
         list_board_labels,
         wait_for_board_events,
         create_comment,
@@ -19092,9 +20686,10 @@ them, which the Backups section of the settings page calls after a confirmation.
         board_export_data,
         board_archive,
         import_board,
-        get_calendar_feed_link,
-        create_calendar_feed_link,
-        reset_calendar_feed,
+        list_calendar_feeds,
+        create_calendar_feed,
+        delete_calendar_feed,
+        export_calendar,
         serve_calendar_feed,
         create_board,
         save_board_as_template,
@@ -19134,9 +20729,14 @@ them, which the Backups section of the settings page calls after a confirmation.
         update_admin_settings,
         start_passkey_registration,
         register_passkey,
+        list_notifications,
+        mark_notification_read,
+        mark_all_notifications_read,
         list_passkeys,
         remove_passkey,
         sign_out_other_sessions,
+        list_sessions,
+        end_session,
         start_reauth,
         finish_reauth,
         get_backups,
@@ -19180,11 +20780,15 @@ them, which the Backups section of the settings page calls after a confirmation.
             InspectTokenResponse,
             RevokeResult,
             SessionsEnded,
+            SessionView,
             ReauthView,
             Settings,
             CreateTaskInput,
             UpdateTaskInput,
             MoveTaskInput,
+            BulkTasksInput,
+            BulkTasksAction,
+            BulkTasksResult,
             WatchTaskInput,
             WatchTaskResponse,
             ChecklistInput,
@@ -19195,7 +20799,12 @@ them, which the Backups section of the settings page calls after a confirmation.
             CreateSubtaskInput,
             ReorderSubtasksInput,
             UpdateSubtaskInput,
+            ConvertSubtaskInput,
+            ConvertRelation,
             SubtaskDetail,
+            SaveSubtaskTemplateInput,
+            AddSubtasksFromTemplateInput,
+            SubtaskTemplate,
             CreateCommentInput,
             EditCommentInput,
             UploadAttachmentInput,
@@ -19272,6 +20881,10 @@ them, which the Backups section of the settings page calls after a confirmation.
             AdminSettingsInput,
             AdminSettingsView,
             RegistrationMode,
+            NotificationKind,
+            NotificationView,
+            NotificationPageView,
+            UnreadView,
             PasskeyView,
             BackupsView,
             BackupSettings,
@@ -19312,6 +20925,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         (name = "Columns", description = "Board columns"),
         (name = "Swimlanes", description = "Board swimlanes"),
         (name = "Settings", description = "App settings"),
+        (name = "Notifications", description = "Notifications of the signed-in account"),
         (name = "Tokens", description = TOKENS_DOC),
         (name = "Sign-in", description = SIGN_IN_DOC),
         (name = "Accounts", description = ACCOUNTS_DOC),
@@ -19334,6 +20948,9 @@ mod backup_tests;
 mod bin_tests;
 
 #[cfg(test)]
+mod bulk_tests;
+
+#[cfg(test)]
 mod events_tests;
 
 #[cfg(test)]
@@ -19347,6 +20964,9 @@ mod limits_tests;
 
 #[cfg(test)]
 mod multi_tests;
+
+#[cfg(test)]
+mod notifications_tests;
 
 #[cfg(test)]
 mod passkey_tests;
@@ -19378,14 +20998,14 @@ mod tests {
         TimerSession, UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed,
         csv_field, entry_badge, estimate_hours_to_size, format_added, format_due, format_due_card,
         format_entry_duration, format_estimate_hours, format_pomodori, format_relative_day,
-        format_time_kf, generate_feed_token, history_kind_label, ical_escape, ical_fold,
-        is_overdue, log_timer_session, normalize_due_input, normalize_estimate_hours,
+        format_time_kf, format_timeline, generate_feed_token, history_kind_label, ical_escape,
+        ical_fold, is_overdue, log_timer_session, normalize_due_input, normalize_estimate_hours,
         parse_manual_range, parse_repeat_cadence, router, timer_status_view, version_info,
     };
     use crate::db::{BootstrapToken, Db, NewTimeEntry};
     use crate::models::{
         AccountId, Actor, ActorKind, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, FeedTask,
-        SECONDS_PER_DAY, TaskRow,
+        MAX_BOARD_FEEDS, SECONDS_PER_DAY, TaskRow,
     };
     use crate::{AppState, auth, markdown};
 
@@ -19500,10 +21120,10 @@ mod tests {
         let colors = text("/api/boards/{id}/colors");
         assert!(colors.contains("Read-only"), "{colors}");
         assert!(!colors.contains("Backfills"), "{colors}");
-        let feed = text("/api/boards/{id}/calendar-feed");
+        let feed = text("/api/boards/{id}/calendar-feeds");
         assert!(!feed.contains("below"), "{feed}");
         assert!(
-            feed.contains("POST /api/boards/{id}/calendar-feed"),
+            feed.contains("POST /api/boards/{id}/calendar-feeds"),
             "{feed}"
         );
     }
@@ -19631,6 +21251,7 @@ mod tests {
             done,
             due_at: None,
             token_id: None,
+            member_ids: Vec::new(),
         };
         assert!(!folds_done_subtasks(&[sub(true), sub(false), sub(false)]));
         assert!(folds_done_subtasks(&[
@@ -20098,6 +21719,8 @@ mod tests {
             responsible: None,
             watched: false,
             grouping_date: None,
+            timeline_start: None,
+            timeline_end: None,
             column_entered_at: None,
             comments: Vec::new(),
             attachments: Vec::new(),
@@ -20302,7 +21925,7 @@ mod tests {
         )
         .expect("connect");
         let user_id = db.create_user("admin").expect("create user");
-        let token = db.create_session(&user_id).expect("session");
+        let token = db.create_session(&user_id, "").expect("session");
         let board_id = db.create_board(&user_id, "KF-221").expect("board");
         let col_wip = db.create_column(&board_id, "Wip", Some(3)).expect("column");
         let col_done = db.create_column(&board_id, "Done", None).expect("column");
@@ -20627,7 +22250,10 @@ mod tests {
         let path = dir.path().join("kf420-test.redb");
         let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
         let user_id = db.create_user("admin").expect("create user");
-        let cookie = format!("session={}", db.create_session(&user_id).expect("session"));
+        let cookie = format!(
+            "session={}",
+            db.create_session(&user_id, "").expect("session")
+        );
         let board_id = db.create_board(&user_id, "KF-420").expect("board");
         let app = super::router(crate::AppState::new(db.clone(), None, passkey_mode()));
         Kf420Fixture {
@@ -20762,67 +22388,147 @@ mod tests {
         assert!(!html.contains(r#"value="last-30" selected"#));
     }
 
-    /// Reading the calendar feed link never writes, even cross-site, and only a same-origin POST
-    /// creates the token.
+    /// Listing the calendar feeds never writes, even cross-site, and only a same-origin POST
+    /// creates one.
     #[tokio::test]
-    async fn calendar_feed_get_should_never_write() {
+    async fn calendar_feed_list_should_never_write() {
         let fx = kf420_fixture();
-        let uri = format!("/api/boards/{}/calendar-feed", fx.board_id);
+        let uri = format!("/api/boards/{}/calendar-feeds", fx.board_id);
         let before = fx.file();
         for method in ["GET", "HEAD"] {
             let response = fx.send(method, &uri, "cross-site").await;
             assert_eq!(response.status(), axum::http::StatusCode::OK, "{method}");
         }
         let response = fx.send("GET", &uri, "same-origin").await;
-        assert_eq!(json_body(response).await["path"], serde_json::Value::Null);
+        assert_eq!(json_body(response).await["feeds"], serde_json::json!([]));
         let response = fx.send("POST", &uri, "cross-site").await;
         assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
         assert!(fx.file() == before, "no request so far may write");
-        let board = fx.db.board(&fx.board_id).expect("get").expect("board");
-        assert!(board.feed_token().is_none());
 
-        let response = fx.send("POST", &uri, "same-origin").await;
+        let response = fx.post_json(&uri, r#"{"label":"Phone"}"#).await;
         assert_eq!(response.status(), axum::http::StatusCode::OK);
-        let created = json_body(response).await["path"].clone();
-        assert!(created.as_str().is_some_and(|path| path.ends_with(".ics")));
-        let response = fx.send("POST", &uri, "same-origin").await;
-        assert_eq!(json_body(response).await["path"], created, "POST reuses it");
+        let created = json_body(response).await;
+        assert_eq!(created["label"], "Phone");
+        assert!(
+            created["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with(".ics"))
+        );
         let after = fx.file();
         let response = fx.send("GET", &uri, "cross-site").await;
-        assert_eq!(json_body(response).await["path"], created);
+        assert_eq!(
+            json_body(response).await["feeds"],
+            serde_json::json!([created])
+        );
         assert!(fx.file() == after, "GET wrote to the database");
     }
 
-    /// 12 concurrent first POSTs for a board's feed link all hand out the one token that is stored,
-    /// and that feed serves.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_first_feed_links_should_share_one_token() {
-        let fx = std::sync::Arc::new(kf420_fixture());
-        let uri = format!("/api/boards/{}/calendar-feed", fx.board_id);
-        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(12));
-        let handles: Vec<_> = (0..12)
-            .map(|_| {
-                let (fx, uri) = (std::sync::Arc::clone(&fx), uri.clone());
-                let barrier = std::sync::Arc::clone(&barrier);
-                tokio::spawn(async move {
-                    barrier.wait().await;
-                    let response = fx.send("POST", &uri, "same-origin").await;
-                    assert_eq!(response.status(), axum::http::StatusCode::OK);
-                    json_body(response).await["path"]
-                        .as_str()
-                        .expect("path")
-                        .to_string()
-                })
-            })
-            .collect();
-        let mut paths = std::collections::HashSet::new();
-        for handle in handles {
-            paths.insert(handle.await.expect("request task"));
+    /// A board holds several feeds, each with its own label and URL, and deleting one stops only
+    /// its URL.
+    #[tokio::test]
+    async fn board_should_hold_several_named_feeds_each_revocable() {
+        let fx = kf420_fixture();
+        let uri = format!("/api/boards/{}/calendar-feeds", fx.board_id);
+        let mut feeds = Vec::new();
+        for label in ["Phone", "Laptop"] {
+            let response = fx
+                .post_json(&uri, &format!(r#"{{"label":"{label}"}}"#))
+                .await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK, "{label}");
+            feeds.push(json_body(response).await);
         }
-        assert_eq!(paths.len(), 1, "{paths:?}");
-        let path = paths.into_iter().next().expect("one path");
-        let response = fx.send("GET", &path, "cross-site").await;
-        assert_eq!(response.status(), axum::http::StatusCode::OK, "{path}");
+        assert_ne!(feeds[0]["path"], feeds[1]["path"]);
+        assert_ne!(feeds[0]["id"], feeds[1]["id"]);
+        let response = fx.send("GET", &uri, "same-origin").await;
+        let listed = json_body(response).await;
+        assert_eq!(listed["feeds"], serde_json::json!(feeds));
+        for feed in &feeds {
+            let path = feed["path"].as_str().expect("path");
+            let response = fx.send("GET", path, "cross-site").await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK, "{path}");
+        }
+
+        let gone = format!("{uri}/{}", feeds[0]["id"].as_str().expect("id"));
+        let response = fx.send("DELETE", &gone, "same-origin").await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let response = fx.send("DELETE", &gone, "same-origin").await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let response = fx
+            .send(
+                "GET",
+                feeds[0]["path"].as_str().expect("path"),
+                "cross-site",
+            )
+            .await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let response = fx
+            .send(
+                "GET",
+                feeds[1]["path"].as_str().expect("path"),
+                "cross-site",
+            )
+            .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let response = fx.send("GET", &uri, "same-origin").await;
+        assert_eq!(
+            json_body(response).await["feeds"],
+            serde_json::json!([feeds[1]])
+        );
+    }
+
+    /// A feed needs a label of 1 to 100 characters, and a board holds at most 20 feeds.
+    #[tokio::test]
+    async fn feed_creation_should_refuse_a_bad_label_and_a_full_board() {
+        let fx = kf420_fixture();
+        let uri = format!("/api/boards/{}/calendar-feeds", fx.board_id);
+        for label in ["", "   ", &"x".repeat(101)] {
+            let response = fx
+                .post_json(&uri, &format!(r#"{{"label":"{label}"}}"#))
+                .await;
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::BAD_REQUEST,
+                "{label:?}"
+            );
+        }
+        for n in 0..MAX_BOARD_FEEDS {
+            let response = fx
+                .post_json(&uri, &format!(r#"{{"label":"Feed {n}"}}"#))
+                .await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK, "feed {n}");
+        }
+        let response = fx.post_json(&uri, r#"{"label":"One more"}"#).await;
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// A board's older single feed token still serves, shows in the list as a feed, and deleting
+    /// it revokes the URL.
+    #[tokio::test]
+    async fn legacy_feed_token_should_keep_serving_and_be_deletable() {
+        let fx = kf420_fixture();
+        let mut updates = serde_json::Map::new();
+        updates.insert("calendar_feed_token".to_string(), "old-token".into());
+        fx.db
+            .set_board_config(&fx.board_id, &updates)
+            .expect("config");
+        let response = fx
+            .send("GET", "/api/calendar-feed/old-token.ics", "cross-site")
+            .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let uri = format!("/api/boards/{}/calendar-feeds", fx.board_id);
+        let response = fx.send("GET", &uri, "same-origin").await;
+        let listed = json_body(response).await;
+        assert_eq!(
+            listed["feeds"][0]["path"],
+            "/api/calendar-feed/old-token.ics"
+        );
+        let gone = format!("{uri}/{}", listed["feeds"][0]["id"].as_str().expect("id"));
+        let response = fx.send("DELETE", &gone, "same-origin").await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let response = fx
+            .send("GET", "/api/calendar-feed/old-token.ics", "cross-site")
+            .await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
     /// Deleting a task (or its board) stops a timer running on it, and a status read never writes,
@@ -20982,7 +22688,10 @@ mod tests {
         )
         .expect("connect");
         let user_id = db.create_user("admin").expect("create user");
-        let cookie = format!("session={}", db.create_session(&user_id).expect("session"));
+        let cookie = format!(
+            "session={}",
+            db.create_session(&user_id, "").expect("session")
+        );
         let board_id = db.create_board(&user_id, "KF-422").expect("board");
         let column_id = db.create_column(&board_id, "Wip", Some(3)).expect("column");
         let app = super::router(crate::AppState::new(db.clone(), None, passkey_mode()));
@@ -23017,7 +24726,10 @@ mod tests {
         )
         .expect("connect");
         let user_id = db.create_user("admin").expect("create user");
-        let cookie = format!("session={}", db.create_session(&user_id).expect("session"));
+        let cookie = format!(
+            "session={}",
+            db.create_session(&user_id, "").expect("session")
+        );
         let board_id = db.create_board(&user_id, "KF-391").expect("board");
         let column_id = db.create_column(&board_id, "Todo", None).expect("column");
         let task_id = db
@@ -23166,6 +24878,158 @@ mod tests {
         send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
         let (_, page) = send(&fx, "GET", &board, None).await;
         assert_eq!(page.matches("done-group-label\">Today<").count(), 1);
+    }
+
+    /// A timeline is set at creation, read back on the task and the board export, changed by a
+    /// PATCH that sends both dates, and cleared by sending both as null or empty.
+    #[tokio::test]
+    async fn task_api_should_read_and_write_a_timeline() {
+        let (_dir, fx) = kf221_fixture();
+        let (status, task) = create_task_json(
+            &fx,
+            serde_json::json!({"timeline_start": "2026-10-31", "timeline_end": "2026-11-07"}),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CREATED, "{task}");
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        let detail = get_json(&fx, &uri).await;
+        assert_eq!(detail["timeline_start"], "2026-10-31");
+        assert_eq!(detail["timeline_end"], "2026-11-07");
+
+        let patch =
+            serde_json::json!({"timeline_start": "2026-11-01", "timeline_end": "2026-11-01"});
+        let (status, _) = send(&fx, "PATCH", &uri, Some(patch)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let detail = get_json(&fx, &uri).await;
+        assert_eq!(detail["timeline_start"], "2026-11-01");
+        assert_eq!(detail["timeline_end"], "2026-11-01");
+
+        let export = get_json(&fx, &format!("/api/boards/{}/export-data", fx.board_id)).await;
+        let exported = &export["tasks"][0];
+        assert_eq!(exported["timeline_start"], "2026-11-01");
+        assert_eq!(exported["timeline_end"], "2026-11-01");
+
+        let patch = serde_json::json!({"timeline_end": "2026-11-09"});
+        let (status, _) = send(&fx, "PATCH", &uri, Some(patch)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let detail = get_json(&fx, &uri).await;
+        assert_eq!(
+            detail["timeline_start"], "2026-11-01",
+            "an absent date stays"
+        );
+        assert_eq!(detail["timeline_end"], "2026-11-09");
+
+        for clear in [serde_json::Value::Null, serde_json::json!("")] {
+            let set =
+                serde_json::json!({"timeline_start": "2026-11-01", "timeline_end": "2026-11-09"});
+            send(&fx, "PATCH", &uri, Some(set)).await;
+            let patch = serde_json::json!({"timeline_start": clear, "timeline_end": clear});
+            let (status, _) = send(&fx, "PATCH", &uri, Some(patch)).await;
+            assert_eq!(status, axum::http::StatusCode::OK, "{clear}");
+            let detail = get_json(&fx, &uri).await;
+            assert!(
+                detail["timeline_start"].is_null(),
+                "{clear} clears the start"
+            );
+            assert!(detail["timeline_end"].is_null(), "{clear} clears the end");
+        }
+    }
+
+    /// POST and PATCH answer 400 for an end before the start, a lone date or a non-date, and the
+    /// task keeps its stored timeline.
+    #[tokio::test]
+    async fn task_api_should_reject_a_timeline_end_before_the_start() {
+        let (_dir, fx) = kf221_fixture();
+        let backwards =
+            serde_json::json!({"timeline_start": "2026-11-07", "timeline_end": "2026-10-31"});
+        let mut body = serde_json::json!({"name": "Backwards"});
+        body.as_object_mut()
+            .expect("object")
+            .extend(backwards.as_object().expect("object").clone());
+        let (status, created) = create_task_json(&fx, body).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{created}");
+        let lone = serde_json::json!({"timeline_start": "2026-11-07"});
+        let (status, created) = create_task_json(&fx, lone).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{created}");
+        let export = get_json(&fx, &format!("/api/boards/{}/export-data", fx.board_id)).await;
+        assert!(
+            export["tasks"].as_array().expect("tasks").is_empty(),
+            "a refused create stores no task"
+        );
+
+        let (_, task) = create_task_json(
+            &fx,
+            serde_json::json!({"timeline_start": "2026-10-31", "timeline_end": "2026-11-07"}),
+        )
+        .await;
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        for bad in [
+            backwards,
+            serde_json::json!({"timeline_end": "2026-10-30"}),
+            serde_json::json!({"timeline_start": "2026-11-08"}),
+            serde_json::json!({"timeline_start": null}),
+            serde_json::json!({"timeline_start": "2026-10-1", "timeline_end": "2026-11-07"}),
+            serde_json::json!({"timeline_start": "soon", "timeline_end": "2026-11-07"}),
+            serde_json::json!({"name": "Renamed", "timeline_end": "2026-10-30"}),
+        ] {
+            let (status, text) = send(&fx, "PATCH", &uri, Some(bad.clone())).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{bad}: {text}");
+        }
+        let detail = get_json(&fx, &uri).await;
+        assert_eq!(detail["timeline_start"], "2026-10-31");
+        assert_eq!(detail["timeline_end"], "2026-11-07");
+        assert_eq!(detail["name"], "Task", "a refused patch changes nothing");
+    }
+
+    /// A timeline change writes a "Timeline" history event, and clearing it writes another.
+    #[tokio::test]
+    async fn timeline_change_should_write_a_history_event() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        let (_, history) = send(&fx, "GET", &format!("{uri}/history-view"), None).await;
+        assert!(!history.contains(">Timeline<"), "{history}");
+
+        let set = serde_json::json!({"timeline_start": "2026-10-31", "timeline_end": "2026-11-07"});
+        send(&fx, "PATCH", &uri, Some(set)).await;
+        let (_, history) = send(&fx, "GET", &format!("{uri}/history-view"), None).await;
+        assert!(history.contains(">Timeline<"), "{history}");
+        assert!(
+            history.contains("Set the timeline to 2026-10-31 to 2026-11-07"),
+            "{history}"
+        );
+
+        let clear = serde_json::json!({"timeline_start": null, "timeline_end": null});
+        send(&fx, "PATCH", &uri, Some(clear)).await;
+        let (_, history) = send(&fx, "GET", &format!("{uri}/history-view"), None).await;
+        assert!(history.contains("Cleared the timeline"), "{history}");
+    }
+
+    /// The task modal shows the timeline as "Oct 31 - Nov 7" next to Color, or an Add link.
+    #[tokio::test]
+    async fn task_modal_should_show_the_timeline() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        let (_, modal) = send(&fx, "GET", &format!("{uri}/modal"), None).await;
+        assert!(modal.contains("data-tm-act=\"add-timeline\""), "{modal}");
+        assert!(!modal.contains("data-tm-act=\"edit-timeline\""), "{modal}");
+
+        let set = serde_json::json!({"timeline_start": "2026-10-31", "timeline_end": "2026-11-07"});
+        send(&fx, "PATCH", &uri, Some(set)).await;
+        let (_, modal) = send(&fx, "GET", &format!("{uri}/modal"), None).await;
+        assert!(modal.contains("data-tm-act=\"edit-timeline\""), "{modal}");
+        assert!(modal.contains("<strong>Oct 31 - Nov 7</strong>"), "{modal}");
+    }
+
+    #[test]
+    fn format_timeline_should_render_month_and_day() {
+        assert_eq!(
+            format_timeline(Some("2026-10-31"), Some("2026-11-07")).as_deref(),
+            Some("Oct 31 - Nov 7")
+        );
+        assert_eq!(format_timeline(Some("2026-10-31"), None), None);
+        assert_eq!(format_timeline(Some("soon"), Some("2026-11-07")), None);
     }
 
     /// A task's grouping_date decides its Done-column group (newest group first), null and "" both
@@ -23517,7 +25381,10 @@ mod tests {
         let path = dir.path().join("xboard.redb");
         let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
         let user_id = db.create_user("admin").expect("user");
-        let cookie = format!("session={}", db.create_session(&user_id).expect("session"));
+        let cookie = format!(
+            "session={}",
+            db.create_session(&user_id, "").expect("session")
+        );
         let from = db.create_board(&user_id, "From").expect("from board");
         let to = db.create_board(&user_id, "To").expect("to board");
         db.ensure_default_swimlane(&from).expect("from lane");
@@ -23589,7 +25456,7 @@ mod tests {
         )
         .expect("connect");
         let user_id = db.create_user("admin").expect("create user");
-        let token = db.create_session(&user_id).expect("session");
+        let token = db.create_session(&user_id, "").expect("session");
         let board_id = db.create_board(&user_id, "KF-223").expect("board");
         db.ensure_default_swimlane(&board_id).expect("lane");
         let lane = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();

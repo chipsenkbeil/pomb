@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use super::bin::txn_bin_usage;
 use super::entries::{txn_index_entry, txn_refuse_entry, txn_unindex_entry};
 use super::events::txn_record_events;
+use super::notifications::txn_record_task_notifications;
 use super::{
     ACCOUNT_USAGE, BOARDS, Bound, COLUMNS, Db, DbResult, FIELD_DEFS, MAX_FIELD_DEF_ROW_BYTES,
     MAX_TASK_ROW_BYTES, QuotaExceeded, Rows, SWIMLANES, Store, TASK_COLORS, TASKS, TEMPLATES,
@@ -293,7 +294,8 @@ fn refuse_past_quota(quotas: &Quotas, after: u64, allowance: u64) -> DbResult<()
 }
 
 /// Stores `task` through the open tasks table `tasks`, inside an open write transaction, counts
-/// the change in the row's size against its owner, and records the board events the change makes.
+/// the change in the row's size against its owner, and records the board events and the
+/// notifications the change makes.
 ///
 /// Unless `over` is [`OverQuota::Allow`], the write is refused when text that differs from the
 /// stored row is past its cap, when it adds subtasks past the subtask quota, when it grows the row
@@ -332,7 +334,8 @@ pub(super) fn txn_store_task(
         }
     }
     tasks.insert(task.id.as_str(), raw.as_slice())?;
-    txn_record_events(txn, before.as_ref(), task, actor)
+    txn_record_events(txn, before.as_ref(), task, actor)?;
+    txn_record_task_notifications(txn, before.as_ref(), task, actor)
 }
 
 /// Refuses a write of `task`, which takes `bytes` stored and replaces the stored row `before`
@@ -571,7 +574,7 @@ mod tests {
     };
     use crate::models::{
         AccountId, Actor, BIN_RETENTION_DAYS, FieldColumn, FieldKind, FieldOwner, InstanceMode,
-        SECONDS_PER_DAY,
+        LinkKind, SECONDS_PER_DAY,
     };
 
     /// An open database with its admin and a member with one column.
@@ -743,6 +746,45 @@ mod tests {
             .expect("purge");
         assert_counts_match(&fx.db);
         assert!(stored(&fx.db, &fx.member) < held);
+    }
+
+    #[test]
+    fn discarding_a_task_should_leave_no_bin_row_link_file_or_usage() {
+        let fx = fixture();
+        let parent = fx
+            .db
+            .create_task(&fx.column, None, "Parent", 1, None)
+            .expect("parent");
+        let task = fx
+            .db
+            .create_task(&fx.column, None, "Task", 1, None)
+            .expect("task");
+        fx.db
+            .add_task_link(&parent, LinkKind::BlockedBy, &task, None, Actor::SYSTEM)
+            .expect("link");
+        let file = fx
+            .db
+            .add_attachment(
+                &task,
+                "a.bin",
+                "application/octet-stream",
+                &[7; 2048],
+                Actor::SYSTEM,
+            )
+            .expect("attach")
+            .expect("task")
+            .id;
+        let held = stored(&fx.db, &fx.member);
+
+        assert!(fx.db.discard_task(&task, Actor::SYSTEM).expect("discard"));
+
+        assert_counts_match(&fx.db);
+        assert!(stored(&fx.db, &fx.member) < held);
+        assert!(fx.db.task(&task).expect("read").is_none());
+        assert!(fx.db.binned_tasks(&fx.board).expect("bin").is_empty());
+        assert_eq!(fx.db.read_attachment_data(&file).expect("read"), None);
+        let kept = fx.db.task(&parent).expect("read").expect("parent");
+        assert!(kept.links.is_empty(), "{:?}", kept.links);
     }
 
     #[test]

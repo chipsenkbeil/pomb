@@ -339,7 +339,7 @@ fn single_server() -> (tempfile::TempDir, axum::Router, String) {
     let path = dir.path().join("single.redb");
     let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
     let admin = db.ensure_owner("admin").expect("admin");
-    let session = db.create_session(&admin.account_id()).expect("session");
+    let session = db.create_session(&admin.account_id(), "").expect("session");
     let app = router(AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits()));
     (dir, app, format!("session={session}"))
 }

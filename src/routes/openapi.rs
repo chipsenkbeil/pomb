@@ -205,13 +205,18 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "create_invite",
             "delete_account",
             "delete_member_account",
+            "end_session",
             "finish_reauth",
             "get_backups",
             "inspect_api_token",
             "list_accounts",
             "list_api_tokens",
             "list_invites",
+            "list_notifications",
             "list_passkeys",
+            "list_sessions",
+            "mark_all_notifications_read",
+            "mark_notification_read",
             "regenerate_recovery_code",
             "register_passkey",
             "remove_passkey",
@@ -256,7 +261,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        26
+        31
     );
 }
 
@@ -576,7 +581,7 @@ fn spec_should_name_the_permission_each_operation_needs() {
     };
     for (method, path, permission) in [
         ("get", "/api/boards", "boards.read"),
-        ("get", "/api/boards/{id}/calendar-feed", "feeds.manage"),
+        ("get", "/api/boards/{id}/calendar-feeds", "feeds.manage"),
         ("post", "/api/tasks", "tasks.write"),
         ("post", "/api/tasks/{id}/claim", "tasks.write"),
         ("post", "/api/timer/stop", "time.write"),
@@ -588,6 +593,17 @@ fn spec_should_name_the_permission_each_operation_needs() {
         ("patch", "/api/columns/{id}", "columns.edit"),
         ("delete", "/api/tasks/{id}", "tasks.bin"),
         ("put", "/api/tasks/{id}/subtasks/order", "subtasks.write"),
+        ("delete", "/api/tasks/{id}/subtasks", "subtasks.delete"),
+        (
+            "post",
+            "/api/tasks/{id}/subtasks/{sub_id}/convert",
+            "tasks.write",
+        ),
+        (
+            "post",
+            "/api/tasks/{id}/subtasks/template",
+            "settings.write",
+        ),
     ] {
         assert_eq!(
             permission_of(method, path).as_deref(),

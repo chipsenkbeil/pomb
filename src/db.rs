@@ -24,6 +24,7 @@ mod files;
 mod import;
 mod instance;
 mod membership;
+mod notifications;
 mod prune;
 mod public;
 mod snapshot;
@@ -74,6 +75,7 @@ pub use self::membership::{
     AccountAction, AccountDeleteOutcome, AccountSummary, AdminActionOutcome, ModeSwitch,
     NewAccount, RecoverOutcome, RegisterOutcome, Revoked,
 };
+pub use self::notifications::{Change, NotificationPage};
 pub use self::public::PublicDb;
 pub use self::snapshot::{BoardSnapshot, OfflineDb};
 pub use self::store::{Store, WriteTxn};
@@ -93,12 +95,12 @@ use crate::disk::{DiskGuard, MIB};
 use crate::limit::{Limits, TrustProxy};
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
-    AuthScope, BackupSettings, BackupStatus, BinRow, BoardAccess, BoardRow, BoardTemplateRow,
-    ColorRow, ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange, FieldDefRow,
-    InstanceMode, InstanceSettings, LaneLimit, LinkKind, PasskeyRow, Quota, Quotas,
-    RecoveryCodeRow, Responsible, SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment,
-    TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TextCap, TimeEntryRow,
-    UnnamedFiles, UserRow, standard_color,
+    AuthScope, BackupSettings, BackupStatus, BinRow, BoardAccess, BoardFeed, BoardRow,
+    BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange,
+    FieldDefRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS, PasskeyRow,
+    Quota, Quotas, RecoveryCodeRow, Responsible, SessionRow, Settings, Subtask, SwimlaneRow,
+    TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TextCap,
+    TimeEntryRow, UnnamedFiles, UserRow, standard_color,
 };
 use crate::permissions::Permission;
 use crate::rules;
@@ -520,6 +522,19 @@ pub struct MoveGuards<'a> {
     /// Refuse a move into another column that already holds its
     /// `wip_limit` of tasks.
     pub enforce_wip: bool,
+    /// Tasks of the same batch still waiting to move, which the target cell does not count as siblings.
+    pub batch: &'a [String],
+}
+
+/// Typed outcome for [`Db::apply_tasks_change`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangeOutcome<E> {
+    /// Every task changed and the write committed.
+    Changed,
+    /// The change refused a task with this error, and no task changed.
+    Refused(E),
+    /// A task is missing, and no task changed.
+    NotFound,
 }
 
 /// Typed outcome for [`Db::move_task_logged`].
@@ -676,6 +691,10 @@ const BOARD_EVENTS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("boa
 /// board id -> events written to it in the write transaction that is open, which its commit empties
 /// and wakes the waiters of. No committed file holds a row.
 const EVENT_WAKEUPS: TableDefinition<'_, &str, u64> = TableDefinition::new("event_wakeups");
+/// Notifications keyed by account id and sequence number, each a JSON
+/// [`crate::models::NotificationRow`]. The account's oldest go past
+/// [`notifications::MAX_NOTIFICATIONS_PER_ACCOUNT`], and all of them go with the account.
+const NOTIFICATIONS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("notifications");
 /// Schema stamp table; never rename it, or older binaries read the file as unstamped.
 const META: TableDefinition<'_, &str, u64> = TableDefinition::new("meta");
 /// Key of the stamp in [`META`]; never rename it, or older binaries read the file as unstamped.
@@ -1063,8 +1082,54 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// set keeps what it holds. The new stamp makes a version-40 binary refuse a file whose tokens name
 /// a permission it cannot read.
 ///
+/// Version 42 adds, over version 41, the table `notifications`: the notifications of each account,
+/// keyed by account id and a sequence number. The new stamp makes a version-41 binary refuse a
+/// file whose notifications it would not carry.
+///
+/// Version 43 adds, over version 42 (additive, read from older rows through a serde default):
+///
+/// 1. `Settings`: `muted_notifications`, the notification kinds the account turned off.
+///
+/// The upgrade rewrites no row, so a settings row from before the upgrade mutes nothing. The new
+/// stamp makes a version-42 binary refuse a file whose muted kinds it would drop on its next
+/// settings save.
+///
+/// Version 44 adds, over version 43 (additive, read from older rows through a serde default):
+///
+/// 1. `SessionRow`: `device`, the browser and system the sign-in came from.
+///
+/// The upgrade rewrites no row, and a session from before the upgrade lists with no device. The new
+/// stamp makes a version-43 binary refuse a file whose session devices it would drop when the
+/// session next proves a passkey.
+///
+/// Version 45 adds, over version 44 (additive, read from older rows through a serde default):
+///
+/// 1. `Settings`: `subtask_templates`, the `SubtaskTemplate` lists the account saved from a task's
+///    checklist.
+///
+/// The upgrade rewrites no row, so a settings row from before the upgrade reads with no templates.
+/// The new stamp makes a version-44 binary refuse a file whose templates it would drop on its next
+/// settings save.
+///
+/// Version 46 adds, over version 45 (additive, read from older rows through a serde default):
+///
+/// 1. `Subtask`: `member_ids`, the accounts the subtask is assigned to.
+///
+/// The upgrade rewrites no row, so a subtask from before the upgrade reads with no members. The new
+/// stamp makes a version-45 binary refuse a file whose subtask members it would drop on its next
+/// task save.
+///
+/// Version 47 adds, over version 46 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskRow`: `timeline_start` and `timeline_end`, the `YYYY-MM-DD` dates of the task's
+///    timeline.
+///
+/// The upgrade rewrites no row, so a task from before the upgrade reads with no timeline. The new
+/// stamp makes a version-46 binary refuse a file whose timelines it would drop on its next task
+/// save.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 41;
+pub const SCHEMA_VERSION: u64 = 47;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1112,6 +1177,12 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "f75a9c9915d6d30c0b9c993ac692a4fda73791567e2f9aa5e6141148e0f0bf58",
     "4e1f16f2b36fd538dafa78b67abdd1d5c12604fe05197c96ab704aa012546e60",
     "84022fd6ae049ea9d06a5553e35138162da957d9f3bd8d9eced680b2b4fe8a43",
+    "22060e6823907660475897626e746d3db173b03a1ae289189d0bac80dba7f518",
+    "9d9039c7758077a04f2148449d03a240efc9e1e3d633d36616162e75d5bba321",
+    "0b5be92bc9fe59e49d4d1ca853b70d0d0202facc703ccd2c1320cbabc8697ad8",
+    "2ce540a842bd9249b7b1db25e17f46db4c5a5105727824f30ac420364e872b75",
+    "757ce6aa7b7c347045a6218e97b4cbd8fd5249c56ddcd3c4cd1944eb33aead37",
+    "8cba50eda37aff485e68c7212080d4b38b49bea36208334927f3fd9af718c036",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1863,6 +1934,17 @@ const PASSKEYS_BY_USER: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("passkeys_by_user");
 /// hex SHA-256 of a calendar-feed token -> id of the board it names.
 const FEED_TOKENS: TableDefinition<'_, &str, &str> = TableDefinition::new("feed_tokens");
+
+/// What adding a calendar feed to a board did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FeedAdd {
+    /// The board holds the feed now.
+    Added(BoardFeed),
+    /// The board already holds [`MAX_BOARD_FEEDS`].
+    Full,
+    /// No board has that id.
+    NoBoard,
+}
 /// base64url credential id -> id of the passkey that holds it.
 const PASSKEYS_BY_CREDENTIAL: TableDefinition<'_, &str, &str> =
     TableDefinition::new("passkeys_by_credential");
@@ -2269,6 +2351,17 @@ fn read_one<T: DeserializeOwned>(
         Some(guard) => Ok(Some(serde_json::from_slice(guard.value())?)),
         None => Ok(None),
     }
+}
+
+/// Returns the stored settings, or the defaults when none were saved.
+fn settings_or_default(stored: Option<Settings>) -> Settings {
+    let mut settings = stored.unwrap_or_default();
+
+    // An empty reasons list renders an empty "Why did you stop?" menu, so restore the defaults
+    if settings.interrupt_reasons.is_empty() {
+        settings.interrupt_reasons = Settings::default().interrupt_reasons;
+    }
+    settings
 }
 
 /// Write one JSON row inside an open write transaction.
@@ -3005,6 +3098,80 @@ fn link_event_detail(
     wrap(&format!("{kind} \"{name}\" ({id})"))
 }
 
+/// Returns whether an event of `kind` puts the task in a column.
+fn puts_in_column(kind: &str) -> bool {
+    matches!(kind, "created" | "moved" | "restored")
+}
+
+/// Returns `event`, which put the task in a column on a board outside the token's set, without
+/// the names and ids of that board.
+fn redact_placed_outside(mut event: TaskEvent) -> TaskEvent {
+    event.detail = match event.kind.as_str() {
+        "created" => "Created on another board",
+        "restored" => "Restored on another board",
+        _ => "Moved to another board",
+    }
+    .to_string();
+    event.column_id = None;
+    event.from = None;
+    event.to = None;
+    event
+}
+
+/// Returns the `moved` event `event`, which took the task from a board outside the token's set,
+/// without the names of that board.
+fn redact_left_outside(mut event: TaskEvent) -> TaskEvent {
+    event.detail = "Moved from another board".to_string();
+    event.from = None;
+    event
+}
+
+/// Returns the `deleted` event `event`, which took the task off a board outside the token's set,
+/// without the names of that board.
+fn redact_deleted_outside(mut event: TaskEvent) -> TaskEvent {
+    event.detail = "Deleted from another board".to_string();
+    event
+}
+
+/// Returns the events of `history` that `shows` lets through, with the names and ids of a board
+/// outside the token's set taken out of the events that put the task in a column on it or took it
+/// from it. `outside` tells whether a column sits on such a board.
+fn redacted_history(
+    history: impl IntoIterator<Item = TaskEvent>,
+    mut shows: impl FnMut(&TaskEvent) -> DbResult<bool>,
+    mut outside: impl FnMut(&str) -> DbResult<bool>,
+) -> DbResult<Vec<TaskEvent>> {
+    let mut visible = Vec::new();
+    let mut left_outside = false;
+    for event in history {
+        if !shows(&event)? {
+            continue;
+        }
+        let column = event
+            .column_id
+            .clone()
+            .filter(|_| puts_in_column(&event.kind));
+        let Some(column) = column else {
+            visible.push(if left_outside && event.kind == "deleted" {
+                redact_deleted_outside(event)
+            } else {
+                event
+            });
+            continue;
+        };
+        let here = outside(&column)?;
+        visible.push(if here {
+            redact_placed_outside(event)
+        } else if left_outside && event.kind == "moved" {
+            redact_left_outside(event)
+        } else {
+            event
+        });
+        left_outside = here;
+    }
+    Ok(visible)
+}
+
 /// Returns the last word of a link event's detail: the id of the task it names, or a word no id
 /// matches when the other task is gone. Any other event names none.
 fn link_event_target(event: &TaskEvent) -> Option<&str> {
@@ -3124,9 +3291,9 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<St
         boards.remove(id)?;
         mmap_remove(txn, BOARDS_BY_OWNER, &board.owner_id, id)?;
         txn.open_table(BOARD_ACTIVITY)?.remove(id)?;
-        if let Some(token) = board.feed_token() {
-            txn.open_table(FEED_TOKENS)?
-                .remove(feed_token_key(&token).as_str())?;
+        let mut feed_tokens = txn.open_table(FEED_TOKENS)?;
+        for feed in board.feeds() {
+            feed_tokens.remove(feed_token_key(&feed.token).as_str())?;
         }
         let mut columns = txn.open_table(COLUMNS)?;
         for column_id in &column_ids {
@@ -3535,20 +3702,22 @@ fn feed_token_key(raw: &str) -> String {
 }
 
 /// Stores `board` under its id, inside an open write transaction, keeping [`FEED_TOKENS`] in step
-/// with its calendar-feed token, and counts the change in its size against its owner.
+/// with its calendar-feed tokens, and counts the change in its size against its owner.
 fn txn_store_board(txn: &WriteTransaction, board: &BoardRow, over: OverQuota) -> DbResult<()> {
-    let held = read_in::<BoardRow>(txn, BOARDS, &board.id)?.and_then(|held| held.feed_token());
+    let held: Vec<String> = read_in::<BoardRow>(txn, BOARDS, &board.id)?
+        .map(|held| held.feeds().into_iter().map(|feed| feed.token).collect())
+        .unwrap_or_default();
     txn_store_owned(txn, BOARDS, &board.id, board, over)?;
-    let token = board.feed_token();
-    if held == token {
+    let tokens: Vec<String> = board.feeds().into_iter().map(|feed| feed.token).collect();
+    if held == tokens {
         return Ok(());
     }
-    let mut tokens = txn.open_table(FEED_TOKENS)?;
-    if let Some(held) = held {
-        tokens.remove(feed_token_key(&held).as_str())?;
+    let mut index = txn.open_table(FEED_TOKENS)?;
+    for token in held.iter().filter(|token| !tokens.contains(token)) {
+        index.remove(feed_token_key(token).as_str())?;
     }
-    if let Some(token) = token {
-        tokens.insert(feed_token_key(&token).as_str(), board.id.as_str())?;
+    for token in tokens.iter().filter(|token| !held.contains(token)) {
+        index.insert(feed_token_key(token).as_str(), board.id.as_str())?;
     }
     Ok(())
 }
@@ -3559,8 +3728,8 @@ fn txn_reindex_feed_tokens(txn: &WriteTransaction) -> DbResult<()> {
     let mut tokens = txn.open_table(FEED_TOKENS)?;
     tokens.retain(|_, _| false)?;
     for board in &boards {
-        if let Some(token) = board.feed_token() {
-            tokens.insert(feed_token_key(&token).as_str(), board.id.as_str())?;
+        for feed in board.feeds() {
+            tokens.insert(feed_token_key(&feed.token).as_str(), board.id.as_str())?;
         }
     }
     Ok(())
@@ -3849,6 +4018,63 @@ impl fmt::Display for SessionRefused {
 }
 
 impl Error for SessionRefused {}
+
+/// A session cookie value, which hashes to the key its session is stored under.
+#[derive(Copy, Clone)]
+pub struct SessionToken<'a>(&'a str);
+
+impl<'a> SessionToken<'a> {
+    /// Wraps the cookie value `raw`.
+    pub fn new(raw: &'a str) -> Self {
+        Self(raw)
+    }
+
+    /// Returns the key the session is stored under.
+    fn key(self) -> String {
+        hash_session_token(self.0)
+    }
+}
+
+impl fmt::Debug for SessionToken<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SessionToken(..)")
+    }
+}
+
+/// Longest device label a session keeps, in characters.
+const MAX_SESSION_DEVICE_CHARS: usize = 100;
+
+/// Characters of a session's key that name it in the sessions list.
+const SESSION_PUBLIC_ID_CHARS: usize = 16;
+
+/// One session in the sessions list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionListing {
+    /// The name that ends this session, a prefix of the session's key.
+    pub id: String,
+    /// The browser and system the sign-in came from, empty when unknown.
+    pub device: String,
+    /// RFC 3339 time of the sign-in.
+    pub created_at: String,
+    /// Whether the request asking is this session.
+    pub current: bool,
+}
+
+/// What ending one listed session did.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SessionEndOutcome {
+    /// The session ended.
+    Ended,
+    /// The account has no such session.
+    NotFound,
+    /// It is the session asking, which stays.
+    Current,
+}
+
+/// Returns the part of a session's key that names it in the sessions list.
+fn session_public_id(key: &str) -> &str {
+    key.get(..SESSION_PUBLIC_ID_CHARS).unwrap_or(key)
+}
 
 /// Most API tokens one account may hold, the admin's included.
 pub const MAX_API_TOKENS_PER_ACCOUNT: usize = 50;
@@ -4689,6 +4915,7 @@ impl Db {
             txn.open_multimap_table(DEVICES_BY_EXPIRY)?;
             txn.open_table(BOARD_EVENTS)?;
             txn.open_table(EVENT_WAKEUPS)?;
+            txn.open_table(NOTIFICATIONS)?;
         }
         txn.commit()?;
         compact(&mut db, path);
@@ -5148,6 +5375,54 @@ impl Db {
         Ok(ended)
     }
 
+    /// Lists the sessions of `user`, newest first, marking the one of the cookie `current`.
+    pub fn list_sessions(
+        &self,
+        user: &AccountId,
+        current: Option<SessionToken<'_>>,
+    ) -> DbResult<Vec<SessionListing>> {
+        let current = current.map(SessionToken::key);
+        let mut listing = Vec::new();
+        for key in mmap_get(&self.db, SESSIONS_BY_USER, user.as_str())? {
+            if let Some(row) = read_one::<SessionRow>(&self.db, SESSIONS, &key)? {
+                listing.push(SessionListing {
+                    id: session_public_id(&key).to_string(),
+                    device: row.device,
+                    created_at: row.created_at,
+                    current: current.as_deref() == Some(key.as_str()),
+                });
+            }
+        }
+        listing.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(listing)
+    }
+
+    /// Ends the session of `user` that the listing names `id`, unless it is the one of the cookie
+    /// `current`.
+    pub fn end_session(
+        &self,
+        user: &AccountId,
+        id: &str,
+        current: Option<SessionToken<'_>>,
+    ) -> DbResult<SessionEndOutcome> {
+        let current = current.map(SessionToken::key);
+        let txn = self.db.begin_write()?;
+        let found = txn_mmap_get(&txn, SESSIONS_BY_USER, user.as_str())?
+            .into_iter()
+            .find(|key| session_public_id(key) == id);
+        let outcome = match found {
+            None => SessionEndOutcome::NotFound,
+            Some(key) if current.as_deref() == Some(key.as_str()) => SessionEndOutcome::Current,
+            Some(key) => {
+                txn.open_table(SESSIONS)?.remove(key.as_str())?;
+                mmap_remove(&txn, SESSIONS_BY_USER, user.as_str(), &key)?;
+                SessionEndOutcome::Ended
+            }
+        };
+        txn.commit()?;
+        Ok(outcome)
+    }
+
     /// Ends every session older than [`SESSION_MAX_AGE_SECONDS`] at `now`, and returns how many
     /// it ended.
     pub fn prune_sessions(&self, now: i64) -> DbResult<u64> {
@@ -5162,13 +5437,14 @@ impl Db {
     ///
     /// Refuses, with [`SessionRefused`], an account that is absent or suspended when the write
     /// begins.
-    pub fn create_session(&self, user: &AccountId) -> DbResult<String> {
+    pub fn create_session(&self, user: &AccountId, device: &str) -> DbResult<String> {
         let token = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let row = SessionRow {
             user_id: user.as_str().to_string(),
             created_at: now.clone(),
             verified_at: Some(now),
+            device: device.chars().take(MAX_SESSION_DEVICE_CHARS).collect(),
         };
         let txn = self.db.begin_write()?;
         let refused = txn_read_one::<UserRow>(&txn, USERS, user.as_str())?
@@ -5432,8 +5708,8 @@ impl Db {
         read_one(&self.db, BOARDS, id)
     }
 
-    /// Finds the board whose calendar-feed bearer token is `raw`. The token lives in the board's
-    /// opaque config bag, which is never serialized to clients.
+    /// Finds the board one of whose calendar feeds has the bearer token `raw`. The tokens live in
+    /// the board's opaque config bag, which is never serialized to clients.
     pub fn board_by_feed_token(&self, raw: &str) -> DbResult<Option<BoardRow>> {
         let txn = self.read()?;
         let Some(id) = txn
@@ -5446,8 +5722,9 @@ impl Db {
         let board = read_in::<BoardRow>(&txn, BOARDS, &id)?;
         Ok(board.filter(|board| {
             board
-                .feed_token()
-                .is_some_and(|token| constant_time_eq(token.as_bytes(), raw.as_bytes()))
+                .feeds()
+                .iter()
+                .any(|feed| constant_time_eq(feed.token.as_bytes(), raw.as_bytes()))
         }))
     }
 
@@ -5543,31 +5820,47 @@ impl Db {
         Ok(())
     }
 
-    /// Stores `candidate` under `key` in a board's config bag unless the key already holds a
-    /// string, in one transaction. Returns the stored string, or None when the board is unknown.
-    pub fn ensure_board_config_string(
-        &self,
-        id: &str,
-        key: &str,
-        candidate: &str,
-    ) -> DbResult<Option<String>> {
+    /// Adds a calendar feed with `label` and the bearer token `token` to a board, in one
+    /// transaction, unless the board already holds [`MAX_BOARD_FEEDS`].
+    pub fn add_board_feed(&self, id: &str, label: &str, token: &str) -> DbResult<FeedAdd> {
+        TextCap::FEED_LABEL.check(label)?;
         let txn = self.db.begin_write()?;
         let Some(mut row) = txn_read_one::<BoardRow>(&txn, BOARDS, id)? else {
-            return Ok(None);
+            return Ok(FeedAdd::NoBoard);
         };
-        let mut cfg: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(&row.config_json).unwrap_or_default();
-        if let Some(existing) = cfg.get(key).and_then(serde_json::Value::as_str) {
-            return Ok(Some(existing.to_string()));
+        let mut feeds = row.feeds();
+        if feeds.len() >= MAX_BOARD_FEEDS {
+            return Ok(FeedAdd::Full);
         }
-        cfg.insert(
-            key.to_string(),
-            serde_json::Value::String(candidate.to_string()),
-        );
-        row.config_json = serde_json::to_string(&cfg)?;
+        let feed = BoardFeed {
+            id: uuid::Uuid::new_v4().to_string(),
+            label: label.to_string(),
+            token: token.to_string(),
+        };
+        feeds.push(feed.clone());
+        row.config_json = row.config_with_feeds(&feeds);
         txn_store_board(&txn, &row, OverQuota::Allow)?;
         txn.commit()?;
-        Ok(Some(candidate.to_string()))
+        Ok(FeedAdd::Added(feed))
+    }
+
+    /// Removes the calendar feed `feed_id` from a board, so its URL stops serving at once, in one
+    /// transaction. Returns false when the board has no such feed.
+    pub fn remove_board_feed(&self, id: &str, feed_id: &str) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        let Some(mut row) = txn_read_one::<BoardRow>(&txn, BOARDS, id)? else {
+            return Ok(false);
+        };
+        let mut feeds = row.feeds();
+        let before = feeds.len();
+        feeds.retain(|feed| feed.id != feed_id);
+        if feeds.len() == before {
+            return Ok(false);
+        }
+        row.config_json = row.config_with_feeds(&feeds);
+        txn_store_board(&txn, &row, OverQuota::Allow)?;
+        txn.commit()?;
+        Ok(true)
     }
 
     /// All boards, ordered by position (then id for stability).
@@ -6857,6 +7150,8 @@ impl Db {
                 member_ids: Vec::new(),
                 responsible: None,
                 grouping_date: None,
+                timeline_start: None,
+                timeline_end: None,
                 watched: false,
                 labels: task
                     .get("labels")
@@ -6997,6 +7292,8 @@ impl Db {
             member_ids: Vec::new(),
             responsible: None,
             grouping_date: None,
+            timeline_start: None,
+            timeline_end: None,
             watched: false,
             labels: Vec::new(),
             due_at: None,
@@ -7154,6 +7451,7 @@ impl Db {
             done: false,
             due_at: None,
             token_id: None,
+            member_ids: Vec::new(),
         };
         let added = sub.clone();
         let found = mutate_task(&self.db, task_id, |task| {
@@ -8419,6 +8717,35 @@ impl Db {
         })
     }
 
+    /// Runs `f` on each of `ids` in one write transaction and stores every row with `updated_at`
+    /// stamped. The first task `f` refuses ends the run with its error and writes nothing, and a
+    /// missing task does the same.
+    pub fn apply_tasks_change<E, F>(
+        &self,
+        ids: &[String],
+        actor: Actor<'_>,
+        mut f: F,
+    ) -> DbResult<ChangeOutcome<E>>
+    where
+        F: FnMut(&mut TaskRow, &TaskContext) -> Result<(), E>,
+    {
+        let txn = self.db.begin_write()?;
+        for id in ids {
+            let mut tbl = txn.open_table(TASKS)?;
+            let Some(mut task) = task_in(&tbl, id)? else {
+                return Ok(ChangeOutcome::NotFound);
+            };
+            let context = task_context_in(&txn, &task)?;
+            if let Err(error) = f(&mut task, &context) {
+                return Ok(ChangeOutcome::Refused(error));
+            }
+            task.updated_at = Some(Utc::now().to_rfc3339());
+            txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
+        }
+        txn.commit()?;
+        Ok(ChangeOutcome::Changed)
+    }
+
     fn change_task<R, F>(
         &self,
         task_id: &str,
@@ -8663,10 +8990,69 @@ impl Db {
         actor: Actor<'_>,
     ) -> DbResult<MoveOutcome> {
         let txn = self.db.begin_write()?;
-        let Some(task) = txn_read_one::<TaskRow>(&txn, TASKS, id)? else {
+        let outcome = Self::move_in(&txn, id, column_id, swimlane_id, position, guards, actor)?;
+        if outcome == MoveOutcome::Moved {
+            txn.commit()?;
+        }
+        Ok(outcome)
+    }
+
+    /// Moves every task in `ids` into one cell, the first at `position` and each next one right
+    /// after the one before, so the tasks keep the order given. The moves share one write
+    /// transaction: when any task is missing, none moves. A move to another column logs the same
+    /// `moved` event a single move does, and the target column's WIP limit does not block.
+    pub fn move_tasks_logged(
+        &self,
+        ids: &[String],
+        column_id: &str,
+        swimlane_id: Option<&str>,
+        position: f64,
+        actor: Actor<'_>,
+    ) -> DbResult<MoveOutcome> {
+        let txn = self.db.begin_write()?;
+        for (offset, id) in ids.iter().enumerate() {
+            let Some(task) = txn_read_one::<TaskRow>(&txn, TASKS, id)? else {
+                return Ok(MoveOutcome::NotFound);
+            };
+            let target: ColumnRow = txn_read_one(&txn, COLUMNS, column_id)?
+                .ok_or_else(|| format!("unknown column: {column_id}"))?;
+            let source: Option<ColumnRow> = txn_read_one(&txn, COLUMNS, &task.column_id)?;
+            let detail = (task.column_id != column_id).then(|| {
+                let from = source
+                    .as_ref()
+                    .map_or("a column", |column| column.name.as_str());
+                format!("Moved from {from} to {}", target.name)
+            });
+            let guards = MoveGuards {
+                event: detail.as_deref(),
+                batch: &ids[offset + 1..],
+                ..MoveGuards::default()
+            };
+            let at = position + offset as f64;
+            let outcome = Self::move_in(&txn, id, column_id, swimlane_id, at, guards, actor)?;
+            if outcome != MoveOutcome::Moved {
+                return Ok(outcome);
+            }
+        }
+        txn.commit()?;
+        Ok(MoveOutcome::Moved)
+    }
+
+    /// Moves one task inside the caller's write transaction, which the caller commits when the
+    /// outcome is [`MoveOutcome::Moved`] and drops otherwise.
+    fn move_in(
+        txn: &WriteTransaction,
+        id: &str,
+        column_id: &str,
+        swimlane_id: Option<&str>,
+        position: f64,
+        guards: MoveGuards<'_>,
+        actor: Actor<'_>,
+    ) -> DbResult<MoveOutcome> {
+        let Some(task) = txn_read_one::<TaskRow>(txn, TASKS, id)? else {
             return Ok(MoveOutcome::NotFound);
         };
-        let target: ColumnRow = txn_read_one(&txn, COLUMNS, column_id)?
+        let target: ColumnRow = txn_read_one(txn, COLUMNS, column_id)?
             .ok_or_else(|| format!("unknown column: {column_id}"))?;
         if !task.fence_allows(guards.fence) {
             return Ok(MoveOutcome::StaleFence);
@@ -8680,7 +9066,7 @@ impl Db {
             target.wip_limit,
             old_column_id != column_id,
         ) {
-            let count = txn_mmap_get(&txn, TASKS_BY_COLUMN, column_id)?
+            let count = txn_mmap_get(txn, TASKS_BY_COLUMN, column_id)?
                 .iter()
                 .filter(|task_id| task_id.as_str() != id)
                 .count();
@@ -8689,7 +9075,7 @@ impl Db {
             }
         }
 
-        let old_column: Option<ColumnRow> = txn_read_one(&txn, COLUMNS, &old_column_id)?;
+        let old_column: Option<ColumnRow> = txn_read_one(txn, COLUMNS, &old_column_id)?;
         let was_done = old_column
             .as_ref()
             .map(|column| column.is_done)
@@ -8706,14 +9092,14 @@ impl Db {
             .as_ref()
             .is_some_and(|column| column.board_id != target.board_id);
         if crosses_boards {
-            let held = txn_board_task_count(&txn, &target.board_id)?;
-            txn_refuse_board_over_quota(&txn, &target.board_id, Quota::TasksPerBoard, held + 1)?;
+            let held = txn_board_task_count(txn, &target.board_id)?;
+            txn_refuse_board_over_quota(txn, &target.board_id, Quota::TasksPerBoard, held + 1)?;
         }
         let new_swimlane_id = match swimlane_id {
             Some(lane) => Some(lane.to_string()),
             None if crosses_boards => {
                 let mut lanes: Vec<SwimlaneRow> =
-                    txn_indexed_rows(&txn, SWIMLANES_BY_BOARD, &target.board_id, SWIMLANES)?;
+                    txn_indexed_rows(txn, SWIMLANES_BY_BOARD, &target.board_id, SWIMLANES)?;
                 lanes.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
                 lanes.into_iter().next().map(|lane| lane.id)
             }
@@ -8721,12 +9107,12 @@ impl Db {
         };
         let cell_changed =
             column_id != old_column_id || new_swimlane_id.as_deref() != old_swimlane_id.as_deref();
-        let before = blocked_states(&txn, &blocked_dependents(&txn, &[id.to_string()])?)?;
+        let before = blocked_states(txn, &blocked_dependents(txn, &[id.to_string()])?)?;
 
         // Custom field values only travel to a board that defines the same
         // key and accepts the value.
         let target_fields = if crosses_boards {
-            board_fields_in(&txn, &target.board_id)?
+            board_fields_in(txn, &target.board_id)?
         } else {
             Vec::new()
         };
@@ -8736,8 +9122,8 @@ impl Db {
         let color_id = match task.color_id.as_deref() {
             Some(color_id) if crosses_boards => {
                 let value =
-                    txn_read_one::<ColorRow>(&txn, TASK_COLORS, color_id)?.map(|color| color.value);
-                let colors = txn_board_colors(&txn, &target.board_id)?;
+                    txn_read_one::<ColorRow>(txn, TASK_COLORS, color_id)?.map(|color| color.value);
+                let colors = txn_board_colors(txn, &target.board_id)?;
                 colors
                     .iter()
                     .find(|color| Some(&color.value) == value.as_ref())
@@ -8749,8 +9135,8 @@ impl Db {
 
         // Explicit index insertion: the target cell's other tasks keep their relative order and the
         // moved task lands exactly at the client-sent index.
-        let mut siblings = txn_cell_tasks(&txn, column_id, new_swimlane_id.as_deref())?;
-        siblings.retain(|sibling| sibling.id != id);
+        let mut siblings = txn_cell_tasks(txn, column_id, new_swimlane_id.as_deref())?;
+        siblings.retain(|sibling| sibling.id != id && !guards.batch.contains(&sibling.id));
         let at = (position.round() as i64).clamp(0, siblings.len() as i64) as usize;
         let mut moved = TaskRow {
             column_id: column_id.to_string(),
@@ -8806,12 +9192,12 @@ impl Db {
         }
 
         if column_id != old_column_id {
-            mmap_remove(&txn, TASKS_BY_COLUMN, &old_column_id, id)?;
-            mmap_insert(&txn, TASKS_BY_COLUMN, column_id, id)?;
+            mmap_remove(txn, TASKS_BY_COLUMN, &old_column_id, id)?;
+            mmap_insert(txn, TASKS_BY_COLUMN, column_id, id)?;
         }
         {
             let mut tbl = txn.open_table(TASKS)?;
-            txn_store_task(&txn, &mut tbl, &moved, OverQuota::Refuse, actor)?;
+            txn_store_task(txn, &mut tbl, &moved, OverQuota::Refuse, actor)?;
             for (index, mut sibling) in siblings.into_iter().enumerate() {
                 let dense = (if index >= at { index + 1 } else { index }) as f64;
                 if sibling.position == dense {
@@ -8819,14 +9205,13 @@ impl Db {
                 }
                 sibling.position = dense;
                 sibling.updated_at = Some(Utc::now().to_rfc3339());
-                txn_store_task(&txn, &mut tbl, &sibling, OverQuota::Allow, actor)?;
+                txn_store_task(txn, &mut tbl, &sibling, OverQuota::Allow, actor)?;
             }
         }
         if cell_changed {
-            txn_renumber_cell(&txn, &old_column_id, old_swimlane_id.as_deref())?;
+            txn_renumber_cell(txn, &old_column_id, old_swimlane_id.as_deref())?;
         }
-        bump_flipped(&txn, &before)?;
-        txn.commit()?;
+        bump_flipped(txn, &before)?;
         Ok(MoveOutcome::Moved)
     }
 
@@ -9022,14 +9407,25 @@ impl Db {
     /// `account`'s settings; defaults when never saved.
     pub fn settings(&self, account: &AccountId) -> DbResult<Settings> {
         let stored: Option<Settings> = read_one(&self.db, ACCOUNT_SETTINGS, account.as_str())?;
-        let mut settings = stored.unwrap_or_default();
+        Ok(settings_or_default(stored))
+    }
 
-        // Backfill KanbanFlow's verbatim interruption reasons for databases whose settings predate
-        // them (empty list would render an empty "Why did you stop?" menu).
-        if settings.interrupt_reasons.is_empty() {
-            settings.interrupt_reasons = Settings::default().interrupt_reasons;
-        }
-        Ok(settings)
+    /// Edits `account`'s settings with `edit` in one write, holding the same caps as
+    /// [`Db::update_settings`], and returns what `edit` returns.
+    pub fn update_settings_with<R>(
+        &self,
+        account: &AccountId,
+        edit: impl FnOnce(&mut Settings) -> R,
+    ) -> DbResult<R> {
+        let txn = self.db.begin_write()?;
+        txn_refuse_stranded(&txn, account)?;
+        let stored = txn_read_one::<Settings>(&txn, ACCOUNT_SETTINGS, account.as_str())?;
+        let mut settings = settings_or_default(stored.clone());
+        let edited = edit(&mut settings);
+        settings.check_caps(stored.as_ref())?;
+        write_one(&txn, ACCOUNT_SETTINGS, account.as_str(), &settings)?;
+        txn.commit()?;
+        Ok(edited)
     }
 
     /// Stores `account`'s settings.
@@ -10024,8 +10420,8 @@ mod feed_token_tests {
             db.board(&board_id)
                 .expect("get board")
                 .expect("board exists")
-                .feed_token()
-                .is_none()
+                .feeds()
+                .is_empty()
         );
         assert!(db.board_by_feed_token("nope").expect("lookup").is_none());
 
@@ -10034,7 +10430,7 @@ mod feed_token_tests {
             .board(&board_id)
             .expect("get board")
             .expect("board exists");
-        assert_eq!(board.feed_token().as_deref(), Some("tok123"));
+        assert_eq!(board.feeds()[0].token, "tok123");
 
         let found = db
             .board_by_feed_token("tok123")
@@ -10058,6 +10454,92 @@ mod feed_token_tests {
         db.delete_board(&other).expect("delete board");
         assert!(db.board_by_feed_token("tok789").expect("lookup").is_none());
         assert!(db.board_by_feed_token("tok456").expect("lookup").is_some());
+    }
+
+    #[test]
+    fn feeds_should_resolve_by_their_own_token_until_removed() {
+        let (_dir, db) = test_db();
+        let board_id = db
+            .create_board(&AccountId::ownerless(), "Work")
+            .expect("create board");
+        let FeedAdd::Added(phone) = db.add_board_feed(&board_id, "Phone", "tok-a").expect("add")
+        else {
+            panic!("the feed was not added");
+        };
+        let FeedAdd::Added(laptop) = db
+            .add_board_feed(&board_id, "Laptop", "tok-b")
+            .expect("add")
+        else {
+            panic!("the feed was not added");
+        };
+        assert_ne!(phone.id, laptop.id);
+        for token in ["tok-a", "tok-b"] {
+            let found = db.board_by_feed_token(token).expect("lookup");
+            assert_eq!(
+                found.map(|board| board.id),
+                Some(board_id.clone()),
+                "{token}"
+            );
+        }
+        let labels: Vec<String> = db
+            .board(&board_id)
+            .expect("get")
+            .expect("board")
+            .feeds()
+            .into_iter()
+            .map(|feed| feed.label)
+            .collect();
+        assert_eq!(labels, ["Phone", "Laptop"]);
+
+        assert!(db.remove_board_feed(&board_id, &phone.id).expect("remove"));
+        assert!(!db.remove_board_feed(&board_id, &phone.id).expect("again"));
+        assert!(db.board_by_feed_token("tok-a").expect("lookup").is_none());
+        assert!(db.board_by_feed_token("tok-b").expect("lookup").is_some());
+    }
+
+    #[test]
+    fn adding_a_feed_should_stop_at_the_board_limit() {
+        let (_dir, db) = test_db();
+        let board_id = db
+            .create_board(&AccountId::ownerless(), "Work")
+            .expect("create board");
+        for n in 0..MAX_BOARD_FEEDS {
+            let added = db
+                .add_board_feed(&board_id, "Feed", &format!("tok-{n}"))
+                .expect("add");
+            assert!(matches!(added, FeedAdd::Added(_)), "feed {n}");
+        }
+        let full = db
+            .add_board_feed(&board_id, "Feed", "tok-over")
+            .expect("add");
+        assert_eq!(full, FeedAdd::Full);
+        assert!(
+            db.board_by_feed_token("tok-over")
+                .expect("lookup")
+                .is_none()
+        );
+        let missing = db.add_board_feed("nope", "Feed", "tok-x").expect("add");
+        assert_eq!(missing, FeedAdd::NoBoard);
+    }
+
+    #[test]
+    fn deleting_a_board_should_revoke_all_its_feeds() {
+        let (_dir, db) = test_db();
+        let board_id = db
+            .create_board(&AccountId::ownerless(), "Work")
+            .expect("create board");
+        db.create_board(&AccountId::ownerless(), "Other")
+            .expect("create board");
+        db.add_board_feed(&board_id, "Phone", "tok-a").expect("add");
+        db.add_board_feed(&board_id, "Laptop", "tok-b")
+            .expect("add");
+        db.delete_board(&board_id).expect("delete board");
+        for token in ["tok-a", "tok-b"] {
+            assert!(
+                db.board_by_feed_token(token).expect("lookup").is_none(),
+                "{token}"
+            );
+        }
     }
 
     #[test]
@@ -11445,8 +11927,9 @@ mod schema_fingerprint_tests {
 
     use super::*;
     use crate::models::{
-        BoardEventRow, BreakActivity, DiskLimits, FieldColumn, InviteRow, PruneSettings,
-        PruneStatus, Quotas, RateLimits, RegistrationMode, Responsible, TimerMode,
+        BoardEventRow, BreakActivity, DiskLimits, FieldColumn, InviteRow, NotificationRow,
+        PruneSettings, PruneStatus, Quotas, RateLimits, RegistrationMode, Responsible,
+        SubtaskTemplate, TimerMode,
     };
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
@@ -11749,6 +12232,7 @@ mod schema_fingerprint_tests {
             shape::<BinRow>("BinRow"),
             shape::<BoardAccess>("BoardAccess"),
             shape::<BoardEventRow>("BoardEventRow"),
+            shape::<BoardFeed>("BoardFeed"),
             shape::<BoardRow>("BoardRow"),
             shape::<BoardTemplateRow>("BoardTemplateRow"),
             shape::<BreakActivity>("BreakActivity"),
@@ -11761,6 +12245,7 @@ mod schema_fingerprint_tests {
             shape::<AccountStatus>("AccountStatus"),
             shape::<InstanceSettings>("InstanceSettings"),
             shape::<InviteRow>("InviteRow"),
+            shape::<NotificationRow>("NotificationRow"),
             shape::<PasskeyRow>("PasskeyRow"),
             shape::<PruneSettings>("PruneSettings"),
             shape::<PruneStatus>("PruneStatus"),
@@ -11773,6 +12258,7 @@ mod schema_fingerprint_tests {
             shape::<Settings>("Settings"),
             shape::<LaneLimit>("LaneLimit"),
             shape::<Subtask>("Subtask"),
+            shape::<SubtaskTemplate>("SubtaskTemplate"),
             shape::<SwimlaneRow>("SwimlaneRow"),
             shape::<TaskAttachment>("TaskAttachment"),
             shape::<TaskComment>("TaskComment"),
@@ -11812,6 +12298,7 @@ mod schema_fingerprint_tests {
             table(ACCOUNT_USAGE),
             table(BOARD_EVENTS),
             table(EVENT_WAKEUPS),
+            table(NOTIFICATIONS),
             table(FEED_TOKENS),
             table(PASSKEYS_BY_CREDENTIAL),
             multimap(TOKENS_BY_ACCOUNT),
@@ -12341,6 +12828,7 @@ mod session_tests {
             user_id: account.as_str().to_string(),
             created_at: started.to_rfc3339(),
             verified_at: None,
+            device: String::new(),
         };
         let txn = db.db.begin_write().expect("write");
         let key = hash_session_token(&token);
@@ -12395,7 +12883,7 @@ mod session_tests {
     #[test]
     fn prune_sessions_should_end_only_the_expired_ones() {
         let (_dir, db, account) = open();
-        let fresh = db.create_session(&account).expect("session");
+        let fresh = db.create_session(&account, "").expect("session");
         let expired = session_aged(&db, &account, MAX_AGE + 1);
         let now = Utc::now().timestamp();
         assert_eq!(db.prune_sessions(now).expect("prune"), 1);
@@ -12409,9 +12897,9 @@ mod session_tests {
     fn end_other_sessions_should_keep_the_current_one_and_other_accounts() {
         let (_dir, db, account) = open();
         let other = db.create_user("bob").expect("member");
-        let current = db.create_session(&account).expect("session");
-        let elsewhere = db.create_session(&account).expect("session");
-        let theirs = db.create_session(&other).expect("session");
+        let current = db.create_session(&account, "").expect("session");
+        let elsewhere = db.create_session(&account, "").expect("session");
+        let theirs = db.create_session(&other, "").expect("session");
         assert_eq!(
             db.end_other_sessions(&account, Some(&current))
                 .expect("end"),
@@ -12423,9 +12911,107 @@ mod session_tests {
     }
 
     #[test]
+    fn list_sessions_should_name_each_device_and_mark_only_the_current_one() {
+        let (_dir, db, account) = open();
+        let other = db.create_user("bob").expect("member");
+        let phone = db
+            .create_session(&account, "Safari on iOS")
+            .expect("session");
+        let desk = db
+            .create_session(&account, "Firefox on Linux")
+            .expect("session");
+        db.create_session(&other, "Chrome on Windows")
+            .expect("session");
+        let long = "x".repeat(MAX_SESSION_DEVICE_CHARS + 50);
+        let capped = db.create_session(&account, &long).expect("session");
+
+        let listed = db
+            .list_sessions(&account, Some(SessionToken::new(&desk)))
+            .expect("list");
+        assert_eq!(listed.len(), 3);
+        let current: Vec<&SessionListing> = listed.iter().filter(|row| row.current).collect();
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].device, "Firefox on Linux");
+        assert!(listed.iter().any(|row| row.device == "Safari on iOS"));
+        assert!(listed.iter().all(|row| row.device != "Chrome on Windows"));
+        assert!(
+            listed
+                .iter()
+                .any(|row| row.device.chars().count() == MAX_SESSION_DEVICE_CHARS)
+        );
+        let ids = listed.iter().map(|row| row.id.as_str());
+        for token in [&phone, &desk, &capped] {
+            assert!(ids.clone().all(|id| !token.starts_with(id)));
+            assert!(ids.clone().all(|id| id.len() == SESSION_PUBLIC_ID_CHARS));
+        }
+        assert!(
+            db.list_sessions(&account, None)
+                .expect("list")
+                .iter()
+                .all(|row| !row.current)
+        );
+    }
+
+    #[test]
+    fn end_session_should_end_only_the_named_session_of_that_account() {
+        let (_dir, db, account) = open();
+        let other = db.create_user("bob").expect("member");
+        let current = db
+            .create_session(&account, "Firefox on Linux")
+            .expect("session");
+        let elsewhere = db
+            .create_session(&account, "Safari on iOS")
+            .expect("session");
+        let theirs = db
+            .create_session(&other, "Chrome on Windows")
+            .expect("session");
+        let id_of = |owner: &AccountId, device: &str| {
+            db.list_sessions(owner, None)
+                .expect("list")
+                .into_iter()
+                .find(|row| row.device == device)
+                .expect("row")
+                .id
+        };
+        let elsewhere_id = id_of(&account, "Safari on iOS");
+        let current_id = id_of(&account, "Firefox on Linux");
+        let theirs_id = id_of(&other, "Chrome on Windows");
+
+        assert_eq!(
+            db.end_session(&account, &theirs_id, Some(SessionToken::new(&current)))
+                .expect("end"),
+            SessionEndOutcome::NotFound
+        );
+        assert_eq!(
+            db.end_session(&account, &current_id, Some(SessionToken::new(&current)))
+                .expect("end"),
+            SessionEndOutcome::Current
+        );
+        assert_eq!(
+            db.end_session(&account, &elsewhere_id, Some(SessionToken::new(&current)))
+                .expect("end"),
+            SessionEndOutcome::Ended
+        );
+        assert_eq!(
+            db.end_session(&account, &elsewhere_id, Some(SessionToken::new(&current)))
+                .expect("end"),
+            SessionEndOutcome::NotFound
+        );
+        assert_eq!(
+            db.end_session(&account, "", Some(SessionToken::new(&current)))
+                .expect("end"),
+            SessionEndOutcome::NotFound
+        );
+        assert!(stored(&db, &current));
+        assert!(!stored(&db, &elsewhere));
+        assert!(stored(&db, &theirs));
+        assert_eq!(indexed(&db, &account), [hash_session_token(&current)]);
+    }
+
+    #[test]
     fn session_is_fresh_should_hold_for_the_window_after_a_passkey_check() {
         let (_dir, db, account) = open();
-        let created = db.create_session(&account).expect("session");
+        let created = db.create_session(&account, "").expect("session");
         let unverified = session_aged(&db, &account, 0);
         let now = Utc::now().timestamp();
         assert!(db.session_is_fresh(&created, now).expect("read"));
@@ -12445,7 +13031,7 @@ mod session_tests {
     fn sessions_table_should_hold_no_raw_cookie_value() {
         let (_dir, db, account) = open();
         let tokens = [
-            db.create_session(&account).expect("session"),
+            db.create_session(&account, "").expect("session"),
             session_aged(&db, &account, 0),
         ];
         let rows = session_rows(&db);
@@ -12466,8 +13052,8 @@ mod session_tests {
     #[test]
     fn delete_session_should_end_only_the_session_of_that_cookie() {
         let (_dir, db, account) = open();
-        let ended = db.create_session(&account).expect("session");
-        let kept = db.create_session(&account).expect("session");
+        let ended = db.create_session(&account, "").expect("session");
+        let kept = db.create_session(&account, "").expect("session");
         db.delete_session(&ended).expect("delete");
         assert!(!stored(&db, &ended));
         assert!(stored(&db, &kept));
@@ -12477,14 +13063,16 @@ mod session_tests {
     fn create_session_should_refuse_a_suspended_account() {
         let (_dir, db, _admin) = open();
         let member = db.create_user("bob").expect("member");
-        let before = db.create_session(&member).expect("session");
+        let before = db.create_session(&member, "").expect("session");
         let outcome = db
             .apply_account_action(member.as_str(), AccountAction::Suspend)
             .expect("suspend");
         assert!(matches!(outcome, AdminActionOutcome::Done(_)));
         assert!(!stored(&db, &before));
 
-        let refusal = db.create_session(&member).expect_err("suspended account");
+        let refusal = db
+            .create_session(&member, "")
+            .expect_err("suspended account");
         assert!(refusal.downcast_ref::<SessionRefused>().is_some());
         assert!(session_rows(&db).is_empty());
     }
@@ -12498,7 +13086,7 @@ mod session_tests {
         })
         .expect("pend");
         let token = db
-            .create_session(&member)
+            .create_session(&member, "")
             .expect("a pending account signs in");
         assert!(stored(&db, &token));
     }
@@ -12507,7 +13095,7 @@ mod session_tests {
     fn create_session_should_refuse_an_absent_account() {
         let (_dir, db, _admin) = open();
         let ghost = AccountId::new("ghost");
-        let refusal = db.create_session(&ghost).expect_err("absent account");
+        let refusal = db.create_session(&ghost, "").expect_err("absent account");
         assert!(refusal.downcast_ref::<SessionRefused>().is_some());
         assert!(session_rows(&db).is_empty());
     }
@@ -12516,7 +13104,7 @@ mod session_tests {
     fn create_session_should_stay_gone_after_a_suspension_and_unsuspend() {
         let (_dir, db, _admin) = open();
         let member = db.create_user("bob").expect("member");
-        let before = db.create_session(&member).expect("session");
+        let before = db.create_session(&member, "").expect("session");
         for action in [AccountAction::Suspend, AccountAction::Unsuspend] {
             let outcome = db
                 .apply_account_action(member.as_str(), action)
@@ -12536,7 +13124,7 @@ mod session_tests {
             std::thread::scope(|scope| {
                 scope.spawn(|| {
                     barrier.wait();
-                    let _ = db.create_session(&member);
+                    let _ = db.create_session(&member, "");
                 });
                 barrier.wait();
                 let outcome = db
@@ -12550,7 +13138,7 @@ mod session_tests {
                 .expect("unsuspend");
             assert!(matches!(outcome, AdminActionOutcome::Done(_)));
             assert!(session_rows(&db).is_empty());
-            db.create_session(&member)
+            db.create_session(&member, "")
                 .expect("an active account signs in");
             db.end_other_sessions(&member, None).expect("end");
         }
@@ -12567,7 +13155,7 @@ mod session_tests {
         let (account, session) = {
             let db = Db::connect(path).expect("connect");
             let account = db.create_user("admin").expect("admin");
-            let session = db.create_session(&account).expect("session");
+            let session = db.create_session(&account, "").expect("session");
             let (record, _) = new_api_token_record(&account, "bot", AuthScope::Read, None);
             db.create_api_token(&record).expect("token");
             let passkey = PasskeyRow {

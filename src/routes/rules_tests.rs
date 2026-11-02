@@ -48,7 +48,10 @@ impl Fixture {
         let owner = db.create_user("alice").expect("alice");
         let (record, token) = new_api_token_record(&owner, "agent", AuthScope::Admin, None);
         db.create_api_token(&record).expect("token");
-        let cookie = format!("session={}", db.create_session(&owner).expect("session"));
+        let cookie = format!(
+            "session={}",
+            db.create_session(&owner, "").expect("session")
+        );
         let board = db.create_board(&owner, "Rules").expect("board");
         let backlog = db.create_column(&board, "Backlog", None).expect("backlog");
         let ready = db.create_column(&board, "Ready", None).expect("ready");
@@ -328,6 +331,30 @@ mod entry {
     }
 
     #[tokio::test]
+    async fn bulk_move_should_refuse_the_group_when_one_task_breaks_the_entry_rule() {
+        let fx = Fixture::new();
+        fx.require_sections(&fx.ready, &["Done when"]).await;
+        let ok = fx.task(&fx.backlog, json!({"description": SECTION})).await;
+        let bad = fx.task(&fx.backlog, json!({})).await;
+        let uri = format!("/api/boards/{}/tasks/bulk", fx.board);
+        let body = json!({"task_ids": [ok, bad], "action": "move", "column_id": fx.ready});
+        for who in [Who::Session, Who::Token] {
+            let (status, text) = fx.json(who, "POST", &uri, body.clone()).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{who:?}: {text}");
+            assert!(text.contains("Done when"), "{who:?}: {text}");
+        }
+        let (status, text) = fx
+            .json(
+                Who::Token,
+                "POST",
+                &uri,
+                json!({"task_ids": [ok], "action": "move", "column_id": fx.ready}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
     async fn move_within_a_column_should_not_check_the_entry_rule() {
         let fx = Fixture::new();
         let id = fx.task(&fx.ready, json!({})).await;
@@ -476,6 +503,11 @@ mod locked {
             ("DELETE", task.clone(), Body::Empty),
             (
                 "POST",
+                format!("/api/boards/{}/tasks/bulk", fx.board),
+                Body::Json(json!({"task_ids": [ids.task], "action": "unassign_members"})),
+            ),
+            (
+                "POST",
                 format!("{task}/watch"),
                 Body::Json(json!({"watched": true})),
             ),
@@ -505,6 +537,17 @@ mod locked {
                 Body::Json(json!({"done": true})),
             ),
             ("DELETE", format!("{task}/subtasks/nope"), Body::Empty),
+            ("DELETE", format!("{task}/subtasks"), Body::Empty),
+            (
+                "POST",
+                format!("{task}/subtasks/from-template"),
+                Body::Json(json!({"template_id": "nope"})),
+            ),
+            (
+                "POST",
+                format!("{task}/subtasks/nope/convert"),
+                Body::Json(json!({})),
+            ),
             (
                 "POST",
                 format!("{task}/comments"),
@@ -841,6 +884,174 @@ mod stored {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
         assert_eq!(parse(&text)["code"], "column_rule");
         assert!(text.contains("at least 1 outcomes"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn delete_all_subtasks_should_hold_the_outcome_minimum_of_the_column() {
+        let fx = Fixture::new();
+        let id = fx.task(&fx.ready, json!({})).await;
+        let subtasks = format!("/api/tasks/{id}/subtasks");
+        let (status, text) = fx
+            .json(Who::Session, "POST", &subtasks, json!({"name": "One"}))
+            .await;
+        assert!(status.is_success(), "{text}");
+        let rules = json!({"columns": {fx.ready.clone(): {"outcomes_min": 1}}});
+        assert_eq!(fx.put_rules(rules).await, StatusCode::OK);
+
+        let (status, text) = fx.call(Who::Token, "DELETE", &subtasks, Body::Empty).await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+        assert_eq!(parse(&text)["code"], "column_rule");
+    }
+
+    #[tokio::test]
+    async fn adding_from_a_template_should_hold_the_outcome_maximum_of_the_column() {
+        let fx = Fixture::new();
+        let source = fx.task(&fx.backlog, json!({})).await;
+        let source_subtasks = format!("/api/tasks/{source}/subtasks");
+        for name in ["One", "Two"] {
+            let (status, text) = fx
+                .json(
+                    Who::Session,
+                    "POST",
+                    &source_subtasks,
+                    json!({"name": name}),
+                )
+                .await;
+            assert!(status.is_success(), "{text}");
+        }
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "POST",
+                &format!("{source_subtasks}/template"),
+                json!({"name": "Pair"}),
+            )
+            .await;
+        assert!(status.is_success(), "{text}");
+        let template = parse(&text)["id"]
+            .as_str()
+            .expect("template id")
+            .to_string();
+        let target = fx.task(&fx.ready, json!({})).await;
+        let rules = json!({"columns": {fx.ready.clone(): {"outcomes_max": 1}}});
+        assert_eq!(fx.put_rules(rules).await, StatusCode::OK);
+
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "POST",
+                &format!("/api/tasks/{target}/subtasks/from-template"),
+                json!({"template_id": template}),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+        assert!(text.contains("at most 1 outcomes"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn convert_should_refuse_a_new_task_the_target_column_refuses() {
+        let fx = Fixture::new();
+        let id = fx.task(&fx.backlog, json!({})).await;
+        let subtasks = format!("/api/tasks/{id}/subtasks");
+        let (_, text) = fx
+            .json(Who::Session, "POST", &subtasks, json!({"name": "One"}))
+            .await;
+        let one = parse(&text)["id"].as_str().expect("subtask id").to_string();
+        fx.require_sections(&fx.ready, &["Done when"]).await;
+
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "POST",
+                &format!("{subtasks}/{one}/convert"),
+                json!({"column_id": fx.ready}),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+        assert!(text.contains("Done when"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn convert_should_keep_the_subtask_and_leave_no_task_when_the_parent_column_needs_it() {
+        let fx = Fixture::new();
+        let id = fx.task(&fx.ready, json!({})).await;
+        let subtasks = format!("/api/tasks/{id}/subtasks");
+        let (_, text) = fx
+            .json(Who::Session, "POST", &subtasks, json!({"name": "One"}))
+            .await;
+        let one = parse(&text)["id"].as_str().expect("subtask id").to_string();
+        let rules = json!({"columns": {fx.ready.clone(): {"outcomes_min": 1}}});
+        assert_eq!(fx.put_rules(rules).await, StatusCode::OK);
+
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "POST",
+                &format!("{subtasks}/{one}/convert"),
+                json!({"column_id": fx.backlog}),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+        assert!(text.contains("at least 1 outcomes"), "{text}");
+        let (_, text) = fx
+            .call(
+                Who::Session,
+                "GET",
+                &format!("/api/tasks?board_id={}", fx.board),
+                Body::Empty,
+            )
+            .await;
+        assert!(!text.contains("\"name\":\"One\""), "{text}");
+        let (_, text) = fx
+            .call(
+                Who::Session,
+                "GET",
+                &format!("/api/tasks/{id}"),
+                Body::Empty,
+            )
+            .await;
+        assert_eq!(parse(&text)["subtasks"][0]["id"], one.as_str(), "{text}");
+        let (status, text) = fx
+            .call(
+                Who::Session,
+                "GET",
+                &format!("/api/boards/{}/bin", fx.board),
+                Body::Empty,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(!text.contains("\"name\":\"One\""), "{text}");
+    }
+
+    #[tokio::test]
+    async fn convert_should_fill_the_field_defaults_of_the_board() {
+        let fx = Fixture::new();
+        let uri = format!("/api/boards/{}/fields", fx.board);
+        let owner = json!({"key": "owner", "label": "Owner", "kind": "text", "default": "alice"});
+        let (status, text) = fx.json(Who::Session, "POST", &uri, owner).await;
+        assert!(status.is_success(), "{text}");
+        let id = fx.task(&fx.backlog, json!({})).await;
+        let subtasks = format!("/api/tasks/{id}/subtasks");
+        let (_, text) = fx
+            .json(Who::Session, "POST", &subtasks, json!({"name": "One"}))
+            .await;
+        let one = parse(&text)["id"].as_str().expect("subtask id").to_string();
+
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "POST",
+                &format!("{subtasks}/{one}/convert"),
+                json!({}),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::CREATED, "{text}");
+        assert_eq!(parse(&text)["fields"]["owner"], "alice", "{text}");
     }
 
     #[tokio::test]

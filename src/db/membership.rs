@@ -3,6 +3,7 @@ use redb::{ReadableTable, ReadableTableMetadata, WriteTransaction};
 use serde::de::DeserializeOwned;
 
 use super::activity::txn_mark_boards_used;
+use super::notifications::txn_remove_notifications;
 use super::usage::OverQuota;
 use super::{
     ACCOUNT_SETTINGS, ACCOUNT_USAGE, ACTIVE_TIMER, ACTIVITY, API_TOKENS, BOARDS_BY_OWNER,
@@ -195,8 +196,8 @@ where
 
 /// Deletes `user` and every row it owns inside an open write transaction: its boards with
 /// everything in them, templates, time entries, tokens, device requests, sessions, passkeys,
-/// recovery code, invites, settings, timer, activity and handle. Returns the ids of its
-/// attachments, whose files the caller deletes once the transaction commits.
+/// recovery code, invites, settings, timer, notifications, activity and handle. Returns the ids of
+/// its attachments, whose files the caller deletes once the transaction commits.
 pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbResult<Vec<String>> {
     let id = user.id.as_str();
     let mut attachment_ids = Vec::new();
@@ -234,6 +235,7 @@ pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbRe
     }
     txn.open_table(ACTIVITY)?.remove(id)?;
     txn.open_table(ACCOUNT_USAGE)?.remove(id)?;
+    txn_remove_notifications(txn, id)?;
     txn.open_table(USERNAMES)?.remove(user.username.as_str())?;
     Ok(attachment_ids)
 }
@@ -847,7 +849,7 @@ mod tests {
         let now = Utc::now().timestamp();
         let (token, _) = new_api_token_record(&fx.member, "agent", AuthScope::Read, None);
         fx.db.create_api_token(&token).expect("token");
-        fx.db.create_session(&fx.member).expect("session");
+        fx.db.create_session(&fx.member, "").expect("session");
         let request = DeviceAuthRow {
             device_code_hash: "indexed-device".to_string(),
             user_code: "BCDFGHJK".to_string(),
@@ -880,6 +882,7 @@ mod tests {
         let decoy_session = SessionRow {
             user_id: member.to_string(),
             created_at: Utc::now().to_rfc3339(),
+            device: String::new(),
             verified_at: None,
         };
         let decoy_device = DeviceAuthRow {

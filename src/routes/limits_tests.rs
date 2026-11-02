@@ -38,9 +38,10 @@ use crate::limit::Limits;
 use crate::models::{
     AccountId, ActiveTimer, Actor, ActorKind, AuthScope, BIN_RETENTION_DAYS, BoardAccess, Cap,
     DiskLimits, InstanceMode, InstanceSettings, LinkKind, PruneSettings, Quota, Quotas, RateLimits,
-    SECONDS_PER_DAY, TaskCard, TaskClaim, TextCap, TimerMode,
+    SECONDS_PER_DAY, SubtaskTemplate, TaskCard, TaskClaim, TextCap, TimerMode,
 };
 use crate::passkey::CeremoniesFull;
+use crate::permissions::Permission;
 
 /// Free space of a disk with room to spare, in MiB.
 const ROOMY_MIB: u64 = 100_000;
@@ -127,7 +128,10 @@ impl Fixture {
         let admin = db.create_user("admin").expect("admin");
         let member = db.create_user("bob").expect("member");
         let cookie = |account: &AccountId| {
-            format!("session={}", db.create_session(account).expect("session"))
+            format!(
+                "session={}",
+                db.create_session(account, "").expect("session")
+            )
         };
         let bearer = |account: &AccountId| {
             let (record, raw) = new_api_token_record(account, "agent", AuthScope::Admin, None);
@@ -1562,6 +1566,501 @@ async fn sidebar_folds_should_persist_clean_and_stay_with_their_account() {
     assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
     let stored = fx.db.settings(&fx.member).expect("settings");
     assert!(stored.modal_folded_groups.is_empty());
+}
+
+impl Fixture {
+    /// Adds a subtask named `name` to `task` as the member and returns its id.
+    async fn add_subtask(&self, task: &str, name: &str) -> String {
+        let reply = self
+            .member(
+                "POST",
+                &format!("/api/tasks/{task}/subtasks"),
+                Some(json!({"name": name})),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        reply.body["id"].as_str().expect("id").to_string()
+    }
+
+    /// Saves `task`'s subtasks as the member's template `name` and returns the reply.
+    async fn save_template_named(&self, task: &str, name: &str) -> Reply {
+        let uri = format!("/api/tasks/{task}/subtasks/template");
+        self.member("POST", &uri, Some(json!({"name": name}))).await
+    }
+
+    /// Returns a member task holding one subtask, saved as `count` templates named `T0`, `T1`...
+    async fn task_with_templates(&self, count: usize) -> String {
+        let (_, task) = self.member_task();
+        self.add_subtask(&task, "Step").await;
+        for n in 0..count {
+            let saved = self.save_template_named(&task, &format!("T{n}")).await;
+            assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+        }
+        task
+    }
+
+    /// Deletes every subtask of `task` as the member.
+    async fn delete_all_subtasks(&self, task: &str) -> Reply {
+        let uri = format!("/api/tasks/{task}/subtasks");
+        self.member("DELETE", &uri, None).await
+    }
+
+    /// Replaces the member's subtask templates with `templates` and returns the saved list.
+    async fn put_templates(&self, templates: Value) -> Vec<Value> {
+        let body = json!({"subtask_templates": templates});
+        let saved = self.member("PUT", "/api/settings", Some(body)).await;
+        assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+        saved.body["subtask_templates"]
+            .as_array()
+            .expect("list")
+            .clone()
+    }
+
+    /// Returns the member's subtask templates as stored.
+    fn member_templates(&self) -> Vec<SubtaskTemplate> {
+        self.db
+            .settings(&self.member)
+            .expect("settings")
+            .subtask_templates
+    }
+}
+
+/// Returns the history details of `kind` on `task`.
+fn history_details(fx: &Fixture, task: &str, kind: &str) -> Vec<String> {
+    let row = fx.db.task(task).expect("read").expect("task");
+    row.history
+        .into_iter()
+        .filter(|event| event.kind == kind)
+        .map(|event| event.detail)
+        .collect()
+}
+
+#[tokio::test]
+async fn save_subtask_template_should_store_current_subtask_names_under_the_name() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    fx.add_subtask(&task, "Build").await;
+    fx.add_subtask(&task, "Ship").await;
+    let uri = format!("/api/tasks/{task}/subtasks/template");
+
+    let saved = fx
+        .member("POST", &uri, Some(json!({"name": " Release "})))
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    assert_eq!(saved.body["name"], "Release");
+    assert_eq!(saved.body["subtasks"], json!(["Build", "Ship"]));
+    assert!(!saved.body["id"].as_str().expect("id").is_empty());
+
+    let own = fx.member("GET", "/api/settings", None).await;
+    assert_eq!(own.body["subtask_templates"], json!([saved.body]));
+}
+
+#[tokio::test]
+async fn save_subtask_template_should_replace_a_template_of_the_same_name() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    fx.add_subtask(&task, "Build").await;
+    let uri = format!("/api/tasks/{task}/subtasks/template");
+    let first = fx
+        .member("POST", &uri, Some(json!({"name": "Release"})))
+        .await;
+
+    fx.add_subtask(&task, "Announce").await;
+    let replaced = fx
+        .member("POST", &uri, Some(json!({"name": "Release"})))
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    assert_eq!(replaced.body["id"], first.body["id"]);
+    let templates = fx.member_templates();
+    assert_eq!(templates.len(), 1);
+    assert_eq!(templates[0].subtasks, ["Build", "Announce"]);
+}
+
+#[tokio::test]
+async fn save_subtask_template_should_refuse_a_task_without_subtasks() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let refused = fx.save_template_named(&task, "Release").await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert!(fx.member_templates().is_empty());
+}
+
+#[tokio::test]
+async fn save_subtask_template_should_refuse_a_blank_name() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    fx.add_subtask(&task, "Build").await;
+    for name in ["  ", ""] {
+        let refused = fx.save_template_named(&task, name).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    }
+    assert!(fx.member_templates().is_empty());
+}
+
+#[tokio::test]
+async fn save_subtask_template_should_answer_404_for_an_unknown_task() {
+    let fx = Fixture::multi();
+    let missing = fx.save_template_named("nope", "Release").await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.body);
+}
+
+#[tokio::test]
+async fn save_subtask_template_should_keep_the_template_with_its_account() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    fx.add_subtask(&task, "Build").await;
+    let uri = format!("/api/tasks/{task}/subtasks/template");
+    fx.member("POST", &uri, Some(json!({"name": "Release"})))
+        .await;
+
+    let other = fx.admin("GET", "/api/settings", None).await;
+    assert_eq!(other.body["subtask_templates"], json!([]));
+}
+
+#[tokio::test]
+async fn save_subtask_template_should_refuse_a_template_past_the_cap() {
+    let max = items_of(TextCap::SUBTASK_TEMPLATES);
+    let fx = Fixture::multi();
+    let task = fx.task_with_templates(max).await;
+    let refused = fx.save_template_named(&task, "Over").await;
+    assert_too_long(&refused, "subtask_templates", &format!("{max} entries"));
+    assert_eq!(fx.member_templates().len(), max);
+}
+
+#[tokio::test]
+async fn save_subtask_template_should_replace_a_template_at_the_cap() {
+    let max = items_of(TextCap::SUBTASK_TEMPLATES);
+    let fx = Fixture::multi();
+    let task = fx.task_with_templates(max).await;
+    let replaced = fx.save_template_named(&task, "T3").await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    assert_eq!(fx.member_templates().len(), max);
+}
+
+#[tokio::test]
+async fn delete_all_subtasks_should_write_nothing_for_a_task_without_subtasks() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let before = history_details(&fx, &task, "subtask_deleted");
+    let removed = fx.delete_all_subtasks(&task).await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(history_details(&fx, &task, "subtask_deleted"), before);
+    assert!(before.is_empty());
+}
+
+#[tokio::test]
+async fn delete_all_subtasks_should_remove_every_subtask() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    for name in ["One", "Two", "Three"] {
+        fx.add_subtask(&task, name).await;
+    }
+    let removed = fx.delete_all_subtasks(&task).await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    let stored = fx.db.task(&task).expect("read").expect("task");
+    assert!(stored.subtasks.is_empty());
+}
+
+#[tokio::test]
+async fn delete_all_subtasks_should_log_one_event() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    for name in ["One", "Two", "Three"] {
+        fx.add_subtask(&task, name).await;
+    }
+    fx.delete_all_subtasks(&task).await;
+    assert_eq!(
+        history_details(&fx, &task, "subtask_deleted"),
+        ["Deleted all 3 subtasks"]
+    );
+}
+
+#[tokio::test]
+async fn delete_all_subtasks_should_answer_404_for_an_unknown_task() {
+    let fx = Fixture::multi();
+    let missing = fx.delete_all_subtasks("nope").await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.body);
+}
+
+/// Saves the member's `source` subtasks as template `name` and returns its id.
+async fn save_template(fx: &Fixture, source: &str, name: &str) -> String {
+    let saved = fx
+        .member(
+            "POST",
+            &format!("/api/tasks/{source}/subtasks/template"),
+            Some(json!({"name": name})),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    saved.body["id"].as_str().expect("id").to_string()
+}
+
+#[tokio::test]
+async fn add_subtasks_from_template_should_append_names_to_another_task() {
+    let fx = Fixture::multi();
+    let (_, source) = fx.member_task();
+    let (_, target) = fx.member_task();
+    fx.add_subtask(&source, "Build").await;
+    fx.add_subtask(&source, "Ship").await;
+    let template_id = save_template(&fx, &source, "Release").await;
+    fx.add_subtask(&target, "Existing").await;
+
+    let uri = format!("/api/tasks/{target}/subtasks/from-template");
+    let added = fx
+        .member("POST", &uri, Some(json!({"template_id": template_id})))
+        .await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.body);
+    let created = added.body.as_array().expect("subtasks");
+    assert_eq!(created.len(), 2);
+    assert_eq!(created[0]["name"], "Build");
+    assert_eq!(created[1]["name"], "Ship");
+    assert!(created.iter().all(|sub| sub["done"] == false));
+
+    let stored = fx.db.task(&target).expect("read").expect("task");
+    let names: Vec<&str> = stored.subtasks.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Existing", "Build", "Ship"]);
+    assert_eq!(
+        stored.subtasks[1].id,
+        created[0]["id"].as_str().expect("id")
+    );
+}
+
+#[tokio::test]
+async fn add_subtasks_from_template_should_log_one_added_event_per_name() {
+    let fx = Fixture::multi();
+    let (_, source) = fx.member_task();
+    let (_, target) = fx.member_task();
+    fx.add_subtask(&source, "Build").await;
+    fx.add_subtask(&source, "Ship").await;
+    let template_id = save_template(&fx, &source, "Release").await;
+
+    let uri = format!("/api/tasks/{target}/subtasks/from-template");
+    let added = fx
+        .member("POST", &uri, Some(json!({"template_id": template_id})))
+        .await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.body);
+    assert_eq!(
+        history_details(&fx, &target, "subtask_added"),
+        ["Added subtask \"Build\"", "Added subtask \"Ship\""]
+    );
+}
+
+#[tokio::test]
+async fn add_subtasks_from_template_should_answer_404_for_an_unknown_or_foreign_template() {
+    let fx = Fixture::multi();
+    let (_, source) = fx.member_task();
+    let (_, target) = fx.member_task();
+    fx.add_subtask(&source, "Build").await;
+    let template_id = save_template(&fx, &source, "Release").await;
+
+    let uri = format!("/api/tasks/{target}/subtasks/from-template");
+    let unknown = fx
+        .member("POST", &uri, Some(json!({"template_id": "nope"})))
+        .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.body);
+    assert!(
+        fx.db
+            .task(&target)
+            .expect("read")
+            .expect("task")
+            .subtasks
+            .is_empty()
+    );
+
+    let (_, theirs) = fx.board(&fx.admin, "Theirs");
+    let their_task = fx
+        .db
+        .create_task(&theirs, None, "Task", 1, None)
+        .expect("task");
+    let their_uri = format!("/api/tasks/{their_task}/subtasks/from-template");
+    let foreign = fx
+        .admin(
+            "POST",
+            &their_uri,
+            Some(json!({"template_id": template_id})),
+        )
+        .await;
+    assert_eq!(foreign.status, StatusCode::NOT_FOUND, "{}", foreign.body);
+    assert!(
+        fx.db
+            .task(&their_task)
+            .expect("read")
+            .expect("task")
+            .subtasks
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn add_subtasks_from_template_should_refuse_names_over_the_subtask_quota() {
+    const LIMIT: u32 = 3;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        subtasks_per_task: LIMIT,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, source) = fx.member_task();
+    let (_, target) = fx.member_task();
+    for name in ["A", "B"] {
+        fx.add_subtask(&source, name).await;
+        fx.add_subtask(&target, name).await;
+    }
+    let template_id = save_template(&fx, &source, "Pair").await;
+    let refused = fx
+        .member(
+            "POST",
+            &format!("/api/tasks/{target}/subtasks/from-template"),
+            Some(json!({"template_id": template_id})),
+        )
+        .await;
+    assert_quota(&refused, Quota::SubtasksPerTask, LIMIT);
+    let stored = fx.db.task(&target).expect("read").expect("task");
+    assert_eq!(stored.subtasks.len(), 2, "a refused template adds none");
+}
+
+#[tokio::test]
+async fn put_settings_should_clean_subtask_templates() {
+    let fx = Fixture::multi();
+    let saved = fx
+        .put_templates(json!([
+            {"id": "", "name": " Release ", "subtasks": [" Build ", "", "Ship"]},
+            {"id": "", "name": "Review", "subtasks": ["Read"]},
+            {"id": "", "name": "Release", "subtasks": ["Other"]},
+            {"id": "", "name": "   ", "subtasks": ["x"]},
+            {"id": "", "name": "Empty", "subtasks": ["  "]},
+        ]))
+        .await;
+    assert_eq!(saved.len(), 2, "{saved:?}");
+    assert_eq!(saved[0]["name"], "Release");
+    assert_eq!(saved[0]["subtasks"], json!(["Build", "Ship"]));
+    assert_eq!(saved[1]["name"], "Review");
+}
+
+#[tokio::test]
+async fn put_settings_should_keep_subtask_templates_on_an_unrelated_patch() {
+    let fx = Fixture::multi();
+    let saved = fx
+        .put_templates(json!([{"id": "", "name": "One", "subtasks": ["a"]}]))
+        .await;
+    let unrelated = fx
+        .member(
+            "PUT",
+            "/api/settings",
+            Some(json!({"pomodoro_minutes": 30})),
+        )
+        .await;
+    assert_eq!(unrelated.body["subtask_templates"], json!(saved));
+}
+
+#[tokio::test]
+async fn put_settings_should_clear_subtask_templates_on_an_empty_list() {
+    let fx = Fixture::multi();
+    fx.put_templates(json!([{"id": "", "name": "One", "subtasks": ["a"]}]))
+        .await;
+    let cleared = fx.put_templates(json!([])).await;
+    assert!(cleared.is_empty());
+    assert!(fx.member_templates().is_empty());
+}
+
+#[tokio::test]
+async fn put_settings_should_generate_ids_for_new_subtask_templates() {
+    let fx = Fixture::multi();
+    let saved = fx
+        .put_templates(json!([
+            {"id": "chosen", "name": "One", "subtasks": ["a"]},
+            {"id": "chosen", "name": "Two", "subtasks": ["b"]},
+        ]))
+        .await;
+    assert_ne!(saved[0]["id"], "chosen");
+    assert_ne!(saved[1]["id"], "chosen");
+    assert_ne!(saved[0]["id"], saved[1]["id"]);
+}
+
+#[tokio::test]
+async fn put_settings_should_keep_a_stored_subtask_template_id() {
+    let fx = Fixture::multi();
+    let stored = fx
+        .put_templates(json!([{"id": "", "name": "One", "subtasks": ["a"]}]))
+        .await;
+    let kept = stored[0]["id"].clone();
+    let resaved = fx
+        .put_templates(json!([
+            {"id": kept, "name": "One", "subtasks": ["a"]},
+            {"id": kept, "name": "Two", "subtasks": ["b"]},
+        ]))
+        .await;
+    assert_eq!(resaved[0]["id"], kept, "a stored id is kept once");
+    assert_ne!(resaved[1]["id"], kept);
+}
+
+#[tokio::test]
+async fn subtask_template_caps_should_refuse_each_list_past_its_cap() {
+    let max_templates = items_of(TextCap::SUBTASK_TEMPLATES);
+    let max_names = items_of(TextCap::SUBTASK_TEMPLATE_NAMES);
+    let fx = Fixture::multi();
+    let many: Vec<Value> = (0..=max_templates)
+        .map(|n| json!({"id": "", "name": format!("T{n}"), "subtasks": ["x"]}))
+        .collect();
+    let names: Vec<String> = (0..=max_names).map(|n| format!("s{n}")).collect();
+    let cases = [
+        (
+            json!({"subtask_templates": many}),
+            "subtask_templates",
+            format!("{max_templates} entries"),
+        ),
+        (
+            json!({"subtask_templates": [{"id": "", "name": "T", "subtasks": names}]}),
+            "subtask_templates.subtasks",
+            format!("{max_names} entries"),
+        ),
+    ];
+    for (body, field, cap) in cases {
+        let refused = fx.member("PUT", "/api/settings", Some(body)).await;
+        assert_too_long(&refused, field, &cap);
+    }
+    assert!(fx.member_templates().is_empty());
+}
+
+#[tokio::test]
+async fn subtask_template_caps_should_accept_names_at_the_cap() {
+    let max_names = items_of(TextCap::SUBTASK_TEMPLATE_NAMES);
+    let fx = Fixture::multi();
+    let names: Vec<String> = (0..max_names).map(|n| format!("s{n}")).collect();
+    let saved = fx
+        .put_templates(json!([{"id": "", "name": "T", "subtasks": names}]))
+        .await;
+    assert_eq!(saved.len(), 1);
+}
+
+#[tokio::test]
+async fn subtask_template_caps_should_refuse_each_text_past_its_cap() {
+    let fx = Fixture::multi();
+    let cases = [
+        (
+            json!({"subtask_templates": [{"id": "", "name": past(TextCap::TEMPLATE_NAME), "subtasks": ["x"]}]}),
+            "name",
+            format!("{} characters", chars_of(TextCap::TEMPLATE_NAME)),
+        ),
+        (
+            json!({"subtask_templates": [{"id": "", "name": "T", "subtasks": [past(TextCap::SUBTASK_NAME)]}]}),
+            "subtask name",
+            format!("{} characters", chars_of(TextCap::SUBTASK_NAME)),
+        ),
+    ];
+    for (body, field, cap) in cases {
+        let refused = fx.member("PUT", "/api/settings", Some(body)).await;
+        assert_too_long(&refused, field, &cap);
+    }
+    assert!(fx.member_templates().is_empty());
+}
+
+/// Returns the most entries `cap` allows.
+fn items_of(cap: TextCap) -> usize {
+    let Cap::Items(max) = cap.cap else {
+        panic!("{} is not an entry cap", cap.field);
+    };
+    max
 }
 
 /// Returns the most characters `cap` allows.
@@ -4041,7 +4540,7 @@ async fn calendar_feeds_should_hold_their_own_slot_apart_from_the_owner_board_pa
     let fx = Fixture::multi();
     let (board, _) = fx.board(&fx.member, "Board");
     fx.db
-        .ensure_board_config_string(&board, "calendar_feed_token", TOKEN)
+        .add_board_feed(&board, "Feed", TOKEN)
         .expect("feed token");
     let feed = format!("/api/calendar-feed/{TOKEN}.ics");
     let page = format!("/b/{board}");
@@ -4076,7 +4575,7 @@ async fn calendar_feeds_should_take_a_board_slot_after_their_token_checks() {
     let fx = Fixture::multi();
     let (board, _) = fx.board(&fx.member, "Board");
     fx.db
-        .ensure_board_config_string(&board, "calendar_feed_token", TOKEN)
+        .add_board_feed(&board, "Feed", TOKEN)
         .expect("feed token");
     let mut full = Vec::new();
     for _ in 0..AppState::BOARDS_AT_ONCE {
@@ -4474,8 +4973,15 @@ async fn board_pages_should_hide_an_empty_claim_role() {
 /// Turns on the calendar feed of `board` with the session `cookie` and returns its path.
 async fn feed_path(fx: &Fixture, board: &str, cookie: &str) -> String {
     let session = [("cookie", cookie)];
-    let uri = format!("/api/boards/{board}/calendar-feed");
-    let link = call(&fx.app, "POST", &uri, &session, None).await;
+    let uri = format!("/api/boards/{board}/calendar-feeds");
+    let link = call(
+        &fx.app,
+        "POST",
+        &uri,
+        &session,
+        Some(json!({"label": "Feed"})),
+    )
+    .await;
     assert_eq!(link.status, StatusCode::OK, "{}", link.body);
     link.body["path"].as_str().expect("feed path").to_string()
 }
@@ -4517,18 +5023,33 @@ async fn calendar_feeds_should_take_their_board_owners_feed_slot() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn calendar_feeds_should_refuse_a_token_rotated_while_they_wait() {
+async fn calendar_feeds_should_refuse_a_token_deleted_while_they_wait() {
     let fx = Fixture::multi();
     let (board, _) = fx.board(&fx.member, "Board");
-    let feed = feed_path(&fx, &board, &fx.member_cookie).await;
+    let session = [("cookie", fx.member_cookie.as_str())];
+    let uri = format!("/api/boards/{board}/calendar-feeds");
+    let created = call(
+        &fx.app,
+        "POST",
+        &uri,
+        &session,
+        Some(json!({"label": "Feed"})),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.body);
+    let feed = created.body["path"]
+        .as_str()
+        .expect("feed path")
+        .to_string();
+    let feed_id = created.body["id"].as_str().expect("feed id").to_string();
     let held = get_public(&fx, &feed).await;
     assert_eq!(held.status(), StatusCode::OK);
     let app = fx.app.clone();
-    let uri = feed.clone();
+    let target = feed.clone();
     let waiting = tokio::spawn(async move {
         app.oneshot(
             Request::builder()
-                .uri(&uri)
+                .uri(&target)
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -4537,10 +5058,9 @@ async fn calendar_feeds_should_refuse_a_token_rotated_while_they_wait() {
     });
     settle().await;
 
-    let session = [("cookie", fx.member_cookie.as_str())];
-    let reset = format!("/api/boards/{board}/calendar-feed/reset");
-    let rotated = call(&fx.app, "POST", &reset, &session, None).await;
-    assert_eq!(rotated.status, StatusCode::OK, "{}", rotated.body);
+    let revoke = format!("{uri}/{feed_id}");
+    let revoked = call(&fx.app, "DELETE", &revoke, &session, None).await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
     drop(held);
     let reply = waiting.await.expect("feed request");
     assert_eq!(reply.status(), StatusCode::NOT_FOUND);
@@ -4595,4 +5115,426 @@ async fn token_create_should_refuse_a_board_of_another_account() {
     );
     let unknown = mint(json!(["no-such-board"])).await;
     assert_eq!(unknown.status, refused.status);
+}
+
+struct Convertible {
+    board: String,
+    column: String,
+    other_column: String,
+    task: String,
+    subtask: String,
+}
+
+impl Fixture {
+    async fn convertible(&self) -> Convertible {
+        let (board, column) = self.board(&self.member, "Board");
+        let other_column = self
+            .db
+            .create_column(&board, "Doing", None)
+            .expect("column");
+        let task = self
+            .db
+            .create_task(&column, None, "Task", 1, None)
+            .expect("task");
+        let subtask = self.add_subtask(&task, "Step").await;
+        Convertible {
+            board,
+            column,
+            other_column,
+            task,
+            subtask,
+        }
+    }
+
+    async fn convert(&self, setup: &Convertible, body: Value) -> Reply {
+        let uri = format!(
+            "/api/tasks/{}/subtasks/{}/convert",
+            setup.task, setup.subtask
+        );
+        self.member("POST", &uri, Some(body)).await
+    }
+
+    async fn convert_with(&self, setup: &Convertible, relation: &str) -> String {
+        let reply = self.convert(setup, json!({"relation": relation})).await;
+        assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+        reply.body["id"].as_str().expect("id").to_string()
+    }
+}
+
+impl Fixture {
+    async fn assigned_subtask(&self) -> (String, String, Reply) {
+        let (_, task) = self.member_task();
+        let sub = self.add_subtask(&task, "Step").await;
+        let uri = format!("/api/tasks/{task}/subtasks/{sub}");
+        let body = json!({"member_ids": [self.member.as_str()]});
+        let reply = self.member("PATCH", &uri, Some(body)).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        (task, sub, reply)
+    }
+}
+
+#[tokio::test]
+async fn update_subtask_should_return_the_members() {
+    let fx = Fixture::multi();
+    let (_, _, updated) = fx.assigned_subtask().await;
+    assert_eq!(updated.body["member_ids"], json!([fx.member.as_str()]));
+}
+
+#[tokio::test]
+async fn update_subtask_should_store_the_members() {
+    let fx = Fixture::multi();
+    let (task, _, _) = fx.assigned_subtask().await;
+    let stored = fx.db.task(&task).expect("read").expect("task");
+    assert_eq!(stored.subtasks[0].member_ids, [fx.member.as_str()]);
+}
+
+#[tokio::test]
+async fn update_subtask_should_record_a_members_event() {
+    let fx = Fixture::multi();
+    let (task, _, _) = fx.assigned_subtask().await;
+    assert_eq!(
+        history_details(&fx, &task, "subtask_members_updated").len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn update_subtask_should_refuse_an_unknown_member() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let sub = fx.add_subtask(&task, "Step").await;
+    let uri = format!("/api/tasks/{task}/subtasks/{sub}");
+
+    let refused = fx
+        .member(
+            "PATCH",
+            &uri,
+            Some(json!({"member_ids": [fx.admin.as_str()]})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    let stored = fx.db.task(&task).expect("read").expect("task");
+    assert!(stored.subtasks[0].member_ids.is_empty());
+}
+
+impl Fixture {
+    async fn convert_styled(&self, setup: &Convertible) -> (String, Reply) {
+        let colors = self.db.list_colors(&setup.board).expect("colors");
+        let color = colors[1].id.clone();
+        let body = json!({
+            "color_id": color,
+            "member_ids": [self.member.as_str()],
+            "labels": ["bug", "ui"],
+            "relation": "none",
+        });
+        let converted = self.convert(setup, body).await;
+        assert_eq!(converted.status, StatusCode::CREATED, "{}", converted.body);
+        (color, converted)
+    }
+}
+
+#[tokio::test]
+async fn convert_subtask_should_name_the_task_after_the_subtask() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let (_, converted) = fx.convert_styled(&setup).await;
+    assert_eq!(converted.body["name"], "Step");
+}
+
+#[tokio::test]
+async fn convert_subtask_should_take_the_chosen_color() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let (color, converted) = fx.convert_styled(&setup).await;
+    assert_eq!(converted.body["color_id"], color);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_take_the_chosen_members() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let (_, converted) = fx.convert_styled(&setup).await;
+    assert_eq!(converted.body["member_ids"], json!([fx.member.as_str()]));
+}
+
+#[tokio::test]
+async fn convert_subtask_should_take_the_chosen_labels() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let (_, converted) = fx.convert_styled(&setup).await;
+    assert_eq!(converted.body["labels"], json!(["bug", "ui"]));
+}
+
+#[tokio::test]
+async fn convert_subtask_should_put_the_task_in_the_target_column() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let body = json!({"column_id": setup.other_column});
+
+    let converted = fx.convert(&setup, body).await;
+    assert_eq!(converted.status, StatusCode::CREATED, "{}", converted.body);
+    assert_eq!(converted.body["column_id"], setup.other_column);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_default_to_the_column_of_the_parent() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+
+    let converted = fx.convert(&setup, json!({})).await;
+    assert_eq!(converted.status, StatusCode::CREATED, "{}", converted.body);
+    assert_eq!(converted.body["column_id"], setup.column);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_carry_the_due_date_of_the_subtask() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let uri = format!("/api/tasks/{}/subtasks/{}", setup.task, setup.subtask);
+    let dated = fx
+        .member(
+            "PATCH",
+            &uri,
+            Some(json!({"due_at": "2030-05-01T10:00:00Z"})),
+        )
+        .await;
+    assert_eq!(dated.status, StatusCode::OK, "{}", dated.body);
+
+    let converted = fx.convert(&setup, json!({})).await;
+    assert_eq!(converted.status, StatusCode::CREATED, "{}", converted.body);
+    assert_eq!(converted.body["due_at"], dated.body["due_at"]);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_remove_the_subtask_from_the_parent() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+
+    fx.convert_with(&setup, "none").await;
+    let parent = fx.db.task(&setup.task).expect("read").expect("task");
+    assert!(parent.subtasks.is_empty());
+}
+
+#[tokio::test]
+async fn convert_subtask_should_record_a_converted_event() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+
+    fx.convert_with(&setup, "none").await;
+    assert_eq!(
+        history_details(&fx, &setup.task, "subtask_converted"),
+        ["Converted subtask \"Step\" to a task"]
+    );
+}
+
+#[tokio::test]
+async fn convert_subtask_should_link_nothing_for_the_none_relation() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+
+    fx.convert_with(&setup, "none").await;
+    let parent = fx.db.task(&setup.task).expect("read").expect("task");
+    assert!(parent.links.is_empty());
+}
+
+#[tokio::test]
+async fn convert_subtask_should_relate_the_new_task_to_the_parent() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+
+    let new_id = fx.convert_with(&setup, "related").await;
+    let parent = fx.db.task(&setup.task).expect("read").expect("task");
+    assert_eq!(parent.links.len(), 1);
+    assert_eq!(parent.links[0].kind, LinkKind::Related);
+    assert_eq!(parent.links[0].target_id, new_id);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_block_the_parent_by_the_new_task() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+
+    let new_id = fx.convert_with(&setup, "parent_depends_on_new").await;
+    let parent = fx.db.task(&setup.task).expect("read").expect("task");
+    assert_eq!(parent.links.len(), 1);
+    assert_eq!(parent.links[0].kind, LinkKind::BlockedBy);
+    assert_eq!(parent.links[0].target_id, new_id);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_block_the_new_task_by_the_parent() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+
+    let new_id = fx.convert_with(&setup, "parent_required_by_new").await;
+    let created = fx.db.task(&new_id).expect("read").expect("task");
+    assert_eq!(created.links.len(), 1);
+    assert_eq!(created.links[0].kind, LinkKind::BlockedBy);
+    assert_eq!(created.links[0].target_id, setup.task);
+    let parent = fx.db.task(&setup.task).expect("read").expect("task");
+    assert!(parent.links.is_empty());
+}
+
+#[tokio::test]
+async fn convert_subtask_should_refuse_a_subtask_of_another_task() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let other = fx
+        .db
+        .create_task(&setup.column, None, "Other", 1, None)
+        .expect("task");
+    let foreign = fx.add_subtask(&other, "Theirs").await;
+    let uri = format!("/api/tasks/{}/subtasks/{foreign}/convert", setup.task);
+
+    let refused = fx.member("POST", &uri, Some(json!({}))).await;
+    assert_eq!(refused.status, StatusCode::NOT_FOUND, "{}", refused.body);
+    let held = fx.db.task(&other).expect("read").expect("task");
+    assert_eq!(held.subtasks.len(), 1);
+    assert_eq!(fx.db.board_tasks(&setup.board).expect("tasks").len(), 2);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_refuse_a_column_of_another_account() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let (_, theirs) = fx.board(&fx.admin, "Theirs");
+
+    let refused = fx.convert(&setup, json!({"column_id": theirs})).await;
+    assert_eq!(refused.status, StatusCode::NOT_FOUND, "{}", refused.body);
+    let parent = fx.db.task(&setup.task).expect("read").expect("task");
+    assert_eq!(parent.subtasks.len(), 1);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_refuse_an_unknown_member() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+
+    let refused = fx
+        .convert(&setup, json!({"member_ids": [fx.admin.as_str()]}))
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    let parent = fx.db.task(&setup.task).expect("read").expect("task");
+    assert_eq!(parent.subtasks.len(), 1);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_respect_the_task_quota() {
+    const LIMIT: u32 = 1;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        tasks_per_board: LIMIT,
+        ..Quotas::default()
+    })
+    .await;
+    let setup = fx.convertible().await;
+
+    let refused = fx.convert(&setup, json!({})).await;
+    assert_quota(&refused, Quota::TasksPerBoard, LIMIT);
+    let parent = fx.db.task(&setup.task).expect("read").expect("task");
+    assert_eq!(parent.subtasks.len(), 1);
+    assert_eq!(fx.db.board_tasks(&setup.board).expect("tasks").len(), 1);
+}
+
+impl Fixture {
+    fn token_lacking(&self, lacking: &[Permission]) -> String {
+        let (mut record, raw) =
+            new_api_token_record(&self.member, "limited", AuthScope::Admin, None);
+        for permission in lacking {
+            record.permissions.remove(permission);
+        }
+        self.db.create_api_token(&record).expect("token");
+        format!("Bearer {raw}")
+    }
+
+    async fn with_token(&self, authorization: &str, method: &str, uri: &str, body: Value) -> Reply {
+        let auth = [("authorization", authorization)];
+        call(&self.app, method, uri, &auth, Some(body)).await
+    }
+
+    async fn convert_as(&self, authorization: &str, setup: &Convertible, body: Value) -> Reply {
+        let uri = format!(
+            "/api/tasks/{}/subtasks/{}/convert",
+            setup.task, setup.subtask
+        );
+        self.with_token(authorization, "POST", &uri, body).await
+    }
+
+    fn assert_unconverted(&self, setup: &Convertible) {
+        let parent = self.db.task(&setup.task).expect("read").expect("task");
+        assert_eq!(parent.subtasks.len(), 1);
+        assert_eq!(self.db.board_tasks(&setup.board).expect("tasks").len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn convert_subtask_should_refuse_a_token_without_subtasks_write() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let token = fx.token_lacking(&[Permission::SubtasksWrite]);
+
+    let refused = fx.convert_as(&token, &setup, json!({})).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(refused.code.as_deref(), Some("permission_denied"));
+    fx.assert_unconverted(&setup);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_refuse_a_relation_to_a_token_without_links_write() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let token = fx.token_lacking(&[Permission::LinksWrite]);
+
+    for relation in ["related", "parent_depends_on_new", "parent_required_by_new"] {
+        let refused = fx
+            .convert_as(&token, &setup, json!({"relation": relation}))
+            .await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+        assert_eq!(refused.code.as_deref(), Some("permission_denied"));
+    }
+    fx.assert_unconverted(&setup);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_accept_no_relation_from_a_token_without_links_write() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let token = fx.token_lacking(&[Permission::LinksWrite]);
+
+    let converted = fx
+        .convert_as(&token, &setup, json!({"relation": "none"}))
+        .await;
+    assert_eq!(converted.status, StatusCode::CREATED, "{}", converted.body);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_refuse_a_foreign_subtask_to_a_token_without_subtasks_delete() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let token = fx.token_lacking(&[Permission::SubtasksDelete]);
+
+    let refused = fx.convert_as(&token, &setup, json!({})).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(refused.code.as_deref(), Some("permission_denied"));
+    fx.assert_unconverted(&setup);
+}
+
+#[tokio::test]
+async fn convert_subtask_should_accept_a_subtask_the_token_made_without_subtasks_delete() {
+    let fx = Fixture::multi();
+    let setup = fx.convertible().await;
+    let token = fx.token_lacking(&[Permission::SubtasksDelete]);
+    let uri = format!("/api/tasks/{}/subtasks", setup.task);
+    let made = fx
+        .with_token(&token, "POST", &uri, json!({"name": "Mine"}))
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    let own = Convertible {
+        subtask: made.body["id"].as_str().expect("id").to_string(),
+        ..setup
+    };
+
+    let converted = fx.convert_as(&token, &own, json!({})).await;
+    assert_eq!(converted.status, StatusCode::CREATED, "{}", converted.body);
+    assert_eq!(converted.body["name"], "Mine");
 }

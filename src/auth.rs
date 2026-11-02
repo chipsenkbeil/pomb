@@ -777,7 +777,6 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/b/:board_id/board-history",
         Permission::BoardsRead,
     ),
-    (Method::GET, "/b/:board_id/calendar", Permission::BoardsRead),
     (
         Method::GET,
         "/b/:board_id/monte-carlo",
@@ -843,6 +842,17 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (Method::GET, "/device", Permission::SettingsRead),
     (Method::GET, "/api/tasks", Permission::TasksRead),
     (Method::GET, "/api/search", Permission::TasksRead),
+    (Method::GET, "/api/notifications", Permission::SettingsRead),
+    (
+        Method::POST,
+        "/api/notifications/read",
+        Permission::SettingsWrite,
+    ),
+    (
+        Method::POST,
+        "/api/notifications/:id/read",
+        Permission::SettingsWrite,
+    ),
     (Method::POST, "/api/tasks", Permission::TasksWrite),
     (Method::GET, "/api/tasks/:id", Permission::TasksRead),
     (Method::PATCH, "/api/tasks/:id", Permission::TasksWrite),
@@ -853,6 +863,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (Method::GET, "/api/tasks/:id/card", Permission::TasksRead),
     (Method::GET, "/api/tasks/:id/modal", Permission::TasksRead),
     (Method::POST, "/api/tasks/:id/move", Permission::TasksWrite),
+    (
+        Method::POST,
+        "/api/boards/:id/tasks/bulk",
+        Permission::TasksWrite,
+    ),
     (Method::POST, "/api/tasks/:id/watch", Permission::TasksWrite),
     (
         Method::POST,
@@ -865,6 +880,21 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::POST,
         "/api/tasks/:id/subtasks",
+        Permission::SubtasksWrite,
+    ),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/subtasks",
+        Permission::SubtasksDelete,
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/subtasks/template",
+        Permission::SettingsWrite,
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/subtasks/from-template",
         Permission::SubtasksWrite,
     ),
     (
@@ -881,6 +911,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         Method::DELETE,
         "/api/tasks/:id/subtasks/:sub_id",
         Permission::SubtasksWrite,
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/subtasks/:sub_id/convert",
+        Permission::TasksWrite,
     ),
     (Method::GET, "/api/tasks/:id/links", Permission::TasksRead),
     (Method::POST, "/api/tasks/:id/links", Permission::LinksWrite),
@@ -1025,19 +1060,20 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     ),
     (
         Method::GET,
-        "/api/boards/:id/calendar-feed",
+        "/api/boards/:id/calendar-feeds",
         Permission::FeedsManage,
     ),
     (
         Method::POST,
-        "/api/boards/:id/calendar-feed",
+        "/api/boards/:id/calendar-feeds",
         Permission::FeedsManage,
     ),
     (
-        Method::POST,
-        "/api/boards/:id/calendar-feed/reset",
+        Method::DELETE,
+        "/api/boards/:id/calendar-feeds/:feed_id",
         Permission::FeedsManage,
     ),
+    (Method::GET, "/api/calendar-export", Permission::BoardsRead),
     (Method::GET, "/api/time/entries/:id", Permission::TimeRead),
     (Method::PUT, "/api/time/entries/:id", Permission::TimeEdit),
     (
@@ -1193,6 +1229,16 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::POST,
         "/api/v1/auth/sessions/sign-out-others",
+        Permission::SettingsWrite,
+    ),
+    (
+        Method::GET,
+        "/api/v1/auth/sessions",
+        Permission::SettingsRead,
+    ),
+    (
+        Method::DELETE,
+        "/api/v1/auth/sessions/:id",
         Permission::SettingsWrite,
     ),
     (Method::GET, "/api/v1/backups", Permission::SettingsRead),
@@ -1710,17 +1756,17 @@ mod tests {
     const OLD_ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
         (
             Method::GET,
-            "/api/boards/:id/calendar-feed",
+            "/api/boards/:id/calendar-feeds",
             AuthScope::Admin,
         ),
         (
             Method::POST,
-            "/api/boards/:id/calendar-feed",
+            "/api/boards/:id/calendar-feeds",
             AuthScope::Admin,
         ),
         (
-            Method::POST,
-            "/api/boards/:id/calendar-feed/reset",
+            Method::DELETE,
+            "/api/boards/:id/calendar-feeds/:feed_id",
             AuthScope::Admin,
         ),
         (Method::POST, "/api/tasks", AuthScope::Work),
@@ -1728,6 +1774,7 @@ mod tests {
         (Method::DELETE, "/api/tasks/:id", AuthScope::Provision),
         (Method::POST, "/api/bin/:id/restore", AuthScope::Work),
         (Method::POST, "/api/tasks/:id/move", AuthScope::Work),
+        (Method::POST, "/api/boards/:id/tasks/bulk", AuthScope::Work),
         (Method::POST, "/api/tasks/:id/watch", AuthScope::Work),
         (
             Method::POST,
@@ -1737,6 +1784,17 @@ mod tests {
         (Method::POST, "/api/markdown/preview", AuthScope::Read),
         (Method::POST, "/api/tasks/:id/time", AuthScope::Work),
         (Method::POST, "/api/tasks/:id/subtasks", AuthScope::Work),
+        (Method::DELETE, "/api/tasks/:id/subtasks", AuthScope::Admin),
+        (
+            Method::POST,
+            "/api/tasks/:id/subtasks/template",
+            AuthScope::Admin,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/subtasks/from-template",
+            AuthScope::Work,
+        ),
         (
             Method::PUT,
             "/api/tasks/:id/subtasks/order",
@@ -1750,6 +1808,11 @@ mod tests {
         (
             Method::DELETE,
             "/api/tasks/:id/subtasks/:sub_id",
+            AuthScope::Work,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/subtasks/:sub_id/convert",
             AuthScope::Work,
         ),
         (Method::POST, "/api/tasks/:id/links", AuthScope::Work),
@@ -1870,6 +1933,11 @@ mod tests {
             "/api/v1/auth/sessions/sign-out-others",
             AuthScope::Admin,
         ),
+        (
+            Method::DELETE,
+            "/api/v1/auth/sessions/:id",
+            AuthScope::Admin,
+        ),
         (Method::POST, "/api/v1/backups", AuthScope::Admin),
         (
             Method::POST,
@@ -1956,11 +2024,11 @@ mod tests {
             Some(Permission::BoardsDelete)
         );
         assert_eq!(
-            permission(Method::GET, "/api/boards/:id/calendar-feed"),
+            permission(Method::GET, "/api/boards/:id/calendar-feeds"),
             Some(Permission::FeedsManage)
         );
         assert_eq!(
-            permission(Method::HEAD, "/api/boards/{id}/calendar-feed"),
+            permission(Method::HEAD, "/api/boards/{id}/calendar-feeds"),
             Some(Permission::FeedsManage)
         );
     }

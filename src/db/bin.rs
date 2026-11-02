@@ -143,52 +143,82 @@ fn restore_lane(
     Ok(first.map(|lane| lane.id))
 }
 
+/// Moves the task `id` into the recycle bin in `txn` and returns its row, or [`None`] when the
+/// task is unknown.
+fn bin_task_in(txn: &WriteTransaction, id: &str, actor: Actor<'_>) -> DbResult<Option<BinRow>> {
+    let Some(mut task) = txn_read_one::<TaskRow>(txn, TASKS, id)? else {
+        return Ok(None);
+    };
+    let Some(column) = read_in::<ColumnRow>(txn, COLUMNS, &task.column_id)? else {
+        return Ok(None);
+    };
+    let owner = task_owner_in(txn, id)?.unwrap_or_default();
+    let entry_ids = txn_mmap_get(txn, ENTRIES_BY_TASK, id)?;
+    let freed = txn_task_bytes(txn, &[id.to_string()])?;
+    unlink_deleted_tasks(txn, &[id.to_string()])?;
+    txn_count_usage(txn, &owner, 0, freed)?;
+    let mut entries = Vec::new();
+    {
+        txn.open_table(TASKS)?.remove(id)?;
+        mmap_remove(txn, TASKS_BY_COLUMN, &task.column_id, id)?;
+        let mut table = txn.open_table(TIME_ENTRIES)?;
+        for entry_id in &entry_ids {
+            entries.extend(txn_remove_entry(txn, &mut table, entry_id)?);
+            mmap_remove(txn, ENTRIES_BY_TASK, id, entry_id)?;
+        }
+    }
+    txn_clear_timer_if(txn, &owner, |task_id| task_id == id)?;
+    task.links.clear();
+    task.claim = None;
+    let detail = format!("Task {} was deleted from column {}", task.name, column.name);
+    push_event(&mut task, "deleted", detail, actor);
+    let row = BinRow {
+        task,
+        entries,
+        board_id: column.board_id.clone(),
+        account_id: owner.clone(),
+        column_name: column.name,
+        deleted_by: actor.name.to_string(),
+        deleted_at: chrono::Utc::now().timestamp(),
+    };
+    txn_count_usage(txn, &owner, bin_bytes(&row)?, 0)?;
+    write_one(txn, BIN, id, &row)?;
+    mmap_insert(txn, BIN_BY_BOARD, &column.board_id, id)?;
+    Ok(Some(row))
+}
+
+/// Takes `row` out of the recycle bin in `txn` and its bytes off its account.
+fn unbin_in(txn: &WriteTransaction, row: &BinRow) -> DbResult<()> {
+    txn_count_usage(txn, &row.account_id, 0, bin_bytes(row)?)?;
+    txn.open_table(BIN)?.remove(row.task.id.as_str())?;
+    mmap_remove(txn, BIN_BY_BOARD, &row.board_id, &row.task.id)?;
+    Ok(())
+}
+
 impl Db {
     /// Moves a task, its time entries and its attachments into the recycle bin and takes it off
     /// the board, off every link to or from it and off the timer when it runs on it. Nothing is
     /// deleted: the task and its files stay until it is restored or [`crate::models::BIN_RETENTION_DAYS`] pass.
-    /// Returns false when the task is unknown.
+    /// Returns `false` when the task is unknown.
     pub fn delete_task(&self, id: &str, actor: Actor<'_>) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
-        let Some(mut task) = txn_read_one::<TaskRow>(&txn, TASKS, id)? else {
+        if bin_task_in(&txn, id, actor)?.is_none() {
             return Ok(false);
-        };
-        let Some(column) = read_in::<ColumnRow>(&txn, COLUMNS, &task.column_id)? else {
-            return Ok(false);
-        };
-        let owner = task_owner_in(&txn, id)?.unwrap_or_default();
-        let entry_ids = txn_mmap_get(&txn, ENTRIES_BY_TASK, id)?;
-        let freed = txn_task_bytes(&txn, &[id.to_string()])?;
-        unlink_deleted_tasks(&txn, &[id.to_string()])?;
-        txn_count_usage(&txn, &owner, 0, freed)?;
-        let mut entries = Vec::new();
-        {
-            txn.open_table(TASKS)?.remove(id)?;
-            mmap_remove(&txn, TASKS_BY_COLUMN, &task.column_id, id)?;
-            let mut table = txn.open_table(TIME_ENTRIES)?;
-            for entry_id in &entry_ids {
-                entries.extend(txn_remove_entry(&txn, &mut table, entry_id)?);
-                mmap_remove(&txn, ENTRIES_BY_TASK, id, entry_id)?;
-            }
         }
-        txn_clear_timer_if(&txn, &owner, |task_id| task_id == id)?;
-        task.links.clear();
-        task.claim = None;
-        let detail = format!("Task {} was deleted from column {}", task.name, column.name);
-        push_event(&mut task, "deleted", detail, actor);
-        let row = BinRow {
-            task,
-            entries,
-            board_id: column.board_id.clone(),
-            account_id: owner.clone(),
-            column_name: column.name,
-            deleted_by: actor.name.to_string(),
-            deleted_at: chrono::Utc::now().timestamp(),
-        };
-        txn_count_usage(&txn, &owner, bin_bytes(&row)?, 0)?;
-        write_one(&txn, BIN, id, &row)?;
-        mmap_insert(&txn, BIN_BY_BOARD, &column.board_id, id)?;
         txn.commit()?;
+        Ok(true)
+    }
+
+    /// Removes a task its own creation takes back, with whatever reached it meanwhile, leaving
+    /// nothing in the recycle bin. Returns `false` when the task is unknown.
+    pub fn discard_task(&self, id: &str, actor: Actor<'_>) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        let Some(row) = bin_task_in(&txn, id, actor)? else {
+            return Ok(false);
+        };
+        unbin_in(&txn, &row)?;
+        txn.commit()?;
+        self.files.remove(&attachment_ids_of(&row));
         Ok(true)
     }
 
@@ -333,10 +363,8 @@ impl Db {
         }
         let mut attachment_ids = Vec::new();
         for row in &rows {
-            txn_count_usage(&txn, &row.account_id, 0, bin_bytes(row)?)?;
             attachment_ids.extend(attachment_ids_of(row));
-            txn.open_table(BIN)?.remove(row.task.id.as_str())?;
-            mmap_remove(&txn, BIN_BY_BOARD, &row.board_id, &row.task.id)?;
+            unbin_in(&txn, row)?;
         }
         txn.commit()?;
         self.files.remove(&attachment_ids);

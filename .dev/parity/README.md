@@ -85,7 +85,7 @@ list sort it first. Anything else that depends on server ordering has to be
 made repeatable the same way, or two same-build servers will differ.
 
 `dev regress` also runs `dev parity overflow`, which loads the board (with and
-without a task modal open), settings, calendar and the report pages of the
+without a task modal open), settings and the report pages of the
 candidate at 390 px wide and fails when `documentElement.scrollWidth`
 exceeds the viewport, naming the elements that stick out.
 

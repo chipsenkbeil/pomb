@@ -1253,7 +1253,7 @@ async fn migrated_owner_should_see_the_recovery_banner_until_it_creates_a_code()
     let owner = instance.db.create_user("Chip").expect("owner");
     let cookie = format!(
         "session={}",
-        instance.db.create_session(&owner).expect("session")
+        instance.db.create_session(&owner, "").expect("session")
     );
     let shown = get(&instance.app, "/settings", &cookie).await;
     assert!(
@@ -1839,9 +1839,9 @@ async fn suspend_should_revoke_sessions_and_tokens() {
     let feed = call(
         &app,
         "POST",
-        &format!("/api/boards/{}/calendar-feed", boards[0].id),
+        &format!("/api/boards/{}/calendar-feeds", boards[0].id),
         &[("cookie", &fx.member)],
-        None,
+        Some(serde_json::json!({"label": "Feed"})),
     )
     .await;
     assert_eq!(feed.status, StatusCode::OK, "{}", feed.body);
@@ -2293,9 +2293,9 @@ async fn unsuspend_should_keep_the_calendar_feed_working() {
     let feed = call(
         app,
         "POST",
-        &format!("/api/boards/{board}/calendar-feed"),
+        &format!("/api/boards/{board}/calendar-feeds"),
         &[("cookie", &fx.member)],
-        None,
+        Some(serde_json::json!({"label": "Feed"})),
     )
     .await;
     assert_eq!(feed.status, StatusCode::OK, "{}", feed.body);

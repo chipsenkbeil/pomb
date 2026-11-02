@@ -14,14 +14,16 @@ use tokio::sync::watch;
 
 use super::{
     AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardSnapshot,
-    COLUMNS, ClaimOutcome, ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind,
-    ColumnPatch, CommentWrite, Db, DbResult, DeviceGrant, EventRead, FIELD_DEFS, FencedWrite,
-    FieldCreateOutcome, Incoming, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, MoveGuards,
-    MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, PurgeOutcome, RestoreOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome,
-    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES,
-    TaskContext, TemplateDeleteOutcome, UmbrellaChange, first_board, index_in, link_event_target,
-    links_blocked_in, no_signed_in_account, owns_board_in, read_in,
+    COLUMNS, Change, ChangeOutcome, ClaimOutcome, ClaimRequest, ColorDeleteOutcome,
+    ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Db, DbResult, DeviceGrant,
+    EventRead, FIELD_DEFS, FeedAdd, FencedWrite, FieldCreateOutcome, Incoming, LINKS_BY_TARGET,
+    LinkAddOutcome, LinkDeleteOutcome, MoveGuards, MoveOutcome, NewComment, NewTaskPlacement,
+    NewTimeEntry, NotificationPage, PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome,
+    RestoreOutcome, Rows, SWIMLANES, SessionEndOutcome, SessionListing, SessionToken,
+    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS,
+    TASKS, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome, UmbrellaChange, first_board, index_in,
+    link_event_target, links_blocked_in, no_signed_in_account, owns_board_in, read_in,
+    redacted_history,
 };
 use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission,
@@ -232,6 +234,8 @@ pub struct LinkReads {
     account: AccountId,
     /// The boards found among the account's.
     access: BoardAccess,
+    /// Whether reading a task on a board records that the board was used.
+    record_use: bool,
     /// What links read of each task, by task id, absent for a missing task or another account's.
     heads: HashMap<String, Option<TaskHead>>,
     /// The board each column sits on, by column id, absent for another account's.
@@ -274,8 +278,10 @@ impl LinkReads {
                 if self.access.allows(&column.board_id)
                     && owns_board_in(&self.txn, &self.account, &column.board_id)? =>
             {
-                self.db
-                    .touch_board(&column.board_id, Utc::now().timestamp());
+                if self.record_use {
+                    self.db
+                        .touch_board(&column.board_id, Utc::now().timestamp());
+                }
                 Some(column.board_id)
             }
             _ => None,
@@ -353,6 +359,16 @@ impl LinkReads {
             }
             _ => Ok(true),
         }
+    }
+
+    /// Returns whether column `id` sits on a board of the account that lies outside the token's
+    /// set.
+    fn column_outside_set(&mut self, id: &str) -> DbResult<bool> {
+        let Some(column) = read_in::<ColumnRow>(&self.txn, COLUMNS, id)? else {
+            return Ok(false);
+        };
+        Ok(!self.access.allows(&column.board_id)
+            && owns_board_in(&self.txn, &self.account, &column.board_id)?)
     }
 
     /// Returns the children named by the `child` links among `links`, in link order. A child the
@@ -688,6 +704,11 @@ impl AccountDb {
         self.db.update_settings(&self.account, settings)
     }
 
+    /// Edits the account's settings with `edit` in one write and returns what `edit` returns.
+    pub fn update_settings_with<R>(&self, edit: impl FnOnce(&mut Settings) -> R) -> DbResult<R> {
+        self.db.update_settings_with(&self.account, edit)
+    }
+
     /// Returns board `id` when the account owns it.
     pub fn board(&self, id: &str) -> DbResult<Option<OwnedBoard>> {
         let txn = self.db.read()?;
@@ -729,6 +750,25 @@ impl AccountDb {
     /// Returns whether the account owns board `id`.
     pub fn board_exists(&self, id: &str) -> DbResult<bool> {
         Ok(self.board(id)?.is_some())
+    }
+
+    /// Returns the ids among `boards` that name a board of the account outside the token's set,
+    /// which a handle with no set never has.
+    pub fn boards_outside_set(&self, boards: &[String]) -> DbResult<Vec<String>> {
+        if !self.restricted() {
+            return Ok(Vec::new());
+        }
+        let owned: HashSet<String> = self
+            .db
+            .owner_boards(&self.account)?
+            .into_iter()
+            .map(|board| board.id)
+            .collect();
+        Ok(boards
+            .iter()
+            .filter(|id| owned.contains(*id) && !self.boards.allows(id))
+            .cloned()
+            .collect())
     }
 
     /// Returns the account's boards in the token's set, ordered by position (then id for
@@ -803,15 +843,20 @@ impl AccountDb {
         self.db.set_board_config(&board.row().id, updates)
     }
 
-    /// Stores `candidate` under `key` in a board's config bag unless it holds a string already.
-    pub fn ensure_board_config_string(
+    /// Adds a calendar feed named `label` with the bearer token `token` to a board.
+    pub fn add_board_feed(
         &self,
         board: &OwnedBoard,
-        key: &str,
-        candidate: &str,
-    ) -> DbResult<Option<String>> {
-        self.db
-            .ensure_board_config_string(&board.row().id, key, candidate)
+        label: &str,
+        token: &str,
+    ) -> DbResult<FeedAdd> {
+        self.db.add_board_feed(&board.row().id, label, token)
+    }
+
+    /// Removes a calendar feed from a board, so its URL stops serving at once. Returns false when
+    /// the board has no such feed.
+    pub fn remove_board_feed(&self, board: &OwnedBoard, feed_id: &str) -> DbResult<bool> {
+        self.db.remove_board_feed(&board.row().id, feed_id)
     }
 
     /// Deletes a board and everything in it, refusing the account's only or last unarchived board.
@@ -899,7 +944,8 @@ impl AccountDb {
     }
 
     /// Returns the events of `board` after cursor `after` whose kind is in `kinds`, at most
-    /// `limit` of them.
+    /// `limit` of them. A move from a board outside the token's set does not name the column it
+    /// left.
     pub fn board_events(
         &self,
         board: &OwnedBoard,
@@ -907,7 +953,20 @@ impl AccountDb {
         kinds: &[EventKind],
         limit: usize,
     ) -> DbResult<EventRead> {
-        self.db.board_events(&board.row().id, after, kinds, limit)
+        let mut read = self.db.board_events(&board.row().id, after, kinds, limit)?;
+        if let (EventRead::Page(page), true) = (&mut read, self.restricted()) {
+            let mut reads = self.link_reads()?;
+            for (_, event) in &mut page.events {
+                let outside = match event.from_column_id.as_deref() {
+                    Some(column) => reads.column_outside_set(column)?,
+                    None => false,
+                };
+                if outside {
+                    event.from_column_id = None;
+                }
+            }
+        }
+        Ok(read)
     }
 
     /// Returns the cursor of the newest event of `board`, or 0 when it has none.
@@ -1264,11 +1323,46 @@ impl AccountDb {
         )
     }
 
+    /// Runs `f` on each of `tasks` in one write transaction, writing nothing when it refuses one
+    /// or one is missing.
+    pub fn apply_tasks_change<E, F>(
+        &self,
+        tasks: &[OwnedTask],
+        actor: Actor<'_>,
+        f: F,
+    ) -> DbResult<ChangeOutcome<E>>
+    where
+        F: FnMut(&mut TaskRow, &TaskContext) -> Result<(), E>,
+    {
+        let ids: Vec<String> = tasks.iter().map(|task| task.row().id.clone()).collect();
+        self.db.apply_tasks_change(&ids, actor, f)
+    }
+
+    /// Moves `tasks` into `column` in the order given, all in one write transaction: when any
+    /// task is missing, none moves.
+    pub fn move_tasks_logged(
+        &self,
+        tasks: &[OwnedTask],
+        column: &OwnedColumn,
+        swimlane_id: Option<&str>,
+        position: f64,
+        actor: Actor<'_>,
+    ) -> DbResult<MoveOutcome> {
+        let ids: Vec<String> = tasks.iter().map(|task| task.row().id.clone()).collect();
+        self.db
+            .move_tasks_logged(&ids, &column.row().id, swimlane_id, position, actor)
+    }
+
     /// Moves a task, its time entries and its attachments into the recycle bin and drops its
     /// links.
     pub fn delete_task(&self, task: &OwnedTask, actor: Actor<'_>) -> DbResult<bool> {
         self.check_links_granted(&task.row().id)?;
         self.db.delete_task(&task.row().id, actor)
+    }
+
+    /// Removes a task its own creation takes back, leaving nothing in the recycle bin.
+    pub fn discard_task(&self, task: &OwnedTask, actor: Actor<'_>) -> DbResult<bool> {
+        self.db.discard_task(&task.row().id, actor)
     }
 
     /// Returns the deleted tasks in the recycle bin of `board`, newest deletion first.
@@ -1302,6 +1396,52 @@ impl AccountDb {
         actor: Actor<'_>,
     ) -> DbResult<RestoreOutcome> {
         self.db.restore_task(binned.id(), now, actor)
+    }
+
+    /// Notifies the account that `actor` deleted `task`, which is gone from the board by now.
+    pub fn notify_task_deleted(&self, task: &OwnedTask, actor: Actor<'_>) -> DbResult<()> {
+        self.db.notify(Change::TaskDeleted(task.row()), actor)
+    }
+
+    /// Notifies the account that `actor` renamed `column` to `name`.
+    pub fn notify_column_renamed(
+        &self,
+        column: &OwnedColumn,
+        name: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<()> {
+        let change = Change::ColumnRenamed {
+            column: column.row(),
+            name,
+        };
+        self.db.notify(change, actor)
+    }
+
+    /// Notifies the account that `actor` deleted `column`.
+    pub fn notify_column_deleted(&self, column: &OwnedColumn, actor: Actor<'_>) -> DbResult<()> {
+        self.db.notify(Change::ColumnDeleted(column.row()), actor)
+    }
+
+    /// Notifies the account that `actor` deleted `board`.
+    pub fn notify_board_deleted(&self, board: &OwnedBoard, actor: Actor<'_>) -> DbResult<()> {
+        self.db.notify(Change::BoardDeleted(board.row()), actor)
+    }
+
+    /// Returns up to `limit` of the account's notifications, newest first, older than the
+    /// sequence number `before` when given.
+    pub fn notifications(&self, before: Option<u64>, limit: usize) -> DbResult<NotificationPage> {
+        self.db.notifications(&self.account, before, limit)
+    }
+
+    /// Marks one of the account's notifications read and returns how many remain unread, or
+    /// [`None`] when the account has no such notification.
+    pub fn mark_notification_read(&self, seq: u64) -> DbResult<Option<usize>> {
+        self.db.mark_notification_read(&self.account, seq)
+    }
+
+    /// Marks every notification of the account read.
+    pub fn mark_all_notifications_read(&self) -> DbResult<()> {
+        self.db.mark_all_notifications_read(&self.account)
     }
 
     /// Reorders a task's subtasks to the given id sequence.
@@ -1379,13 +1519,24 @@ impl AccountDb {
     /// Returns the events of `history` the token may read.
     pub fn visible_history(&self, history: &[TaskEvent]) -> DbResult<Vec<TaskEvent>> {
         let mut reads = self.link_reads()?;
-        let mut visible = Vec::new();
+        let restricted = self.restricted();
+        let mut shown = Vec::new();
         for event in history {
             if reads.shows_event(event)? {
-                visible.push(event.clone());
+                shown.push(event.clone());
             }
         }
-        Ok(visible)
+        redacted_history(
+            shown,
+            |_| Ok(true),
+            |column| {
+                if restricted {
+                    reads.column_outside_set(column)
+                } else {
+                    Ok(false)
+                }
+            },
+        )
     }
 
     /// Returns a task's links as seen from it, without a link to a task outside the token's set.
@@ -1437,6 +1588,17 @@ impl AccountDb {
         Ok(move |links: &[TaskLink]| reads.blocked(links))
     }
 
+    /// Returns [`LinkReads`] that find every task of the account, whatever the token's set, and
+    /// record no board as used. Only the ids of what they find may leave the server, for a check
+    /// that a link the token asks for would be refused.
+    pub fn unrestricted_link_reads(&self) -> DbResult<LinkReads> {
+        Ok(LinkReads {
+            access: BoardAccess::All,
+            record_use: false,
+            ..self.link_reads()?
+        })
+    }
+
     /// Returns the reads of linked tasks for one request, see [`LinkReads`].
     pub fn link_reads(&self) -> DbResult<LinkReads> {
         Ok(LinkReads {
@@ -1444,6 +1606,7 @@ impl AccountDb {
             db: self.db.clone(),
             account: self.account.clone(),
             access: self.boards.clone(),
+            record_use: true,
             heads: HashMap::new(),
             boards: HashMap::new(),
             board_names: HashMap::new(),
@@ -1884,6 +2047,21 @@ impl AccountDb {
     /// session of the account except `keep`.
     pub fn delete_passkey(&self, id: &str, keep: Option<&str>) -> DbResult<PasskeyDeleteOutcome> {
         self.db.delete_passkey(&self.account, id, keep)
+    }
+
+    /// Lists the account's sessions, newest first, marking the one of the cookie `current`.
+    pub fn sessions(&self, current: Option<SessionToken<'_>>) -> DbResult<Vec<SessionListing>> {
+        self.db.list_sessions(&self.account, current)
+    }
+
+    /// Ends the account's session named `id` in the sessions list, unless it is the one of the
+    /// cookie `current`.
+    pub fn end_session(
+        &self,
+        id: &str,
+        current: Option<SessionToken<'_>>,
+    ) -> DbResult<SessionEndOutcome> {
+        self.db.end_session(&self.account, id, current)
     }
 
     /// Ends every session of the account except `keep`, and returns how many it ended.

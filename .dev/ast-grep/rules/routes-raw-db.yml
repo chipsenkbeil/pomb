@@ -11,10 +11,12 @@ ignores:
   - src/routes/agentctl_tests.rs
   - src/routes/backup_tests.rs
   - src/routes/bin_tests.rs
+  - src/routes/bulk_tests.rs
   - src/routes/events_tests.rs
   - src/routes/import_tests.rs
   - src/routes/limits_tests.rs
   - src/routes/multi_tests.rs
+  - src/routes/notifications_tests.rs
   - src/routes/openapi.rs
   - src/routes/passkey_tests.rs
   - src/routes/prune_tests.rs

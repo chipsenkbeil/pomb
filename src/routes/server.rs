@@ -487,7 +487,7 @@ async fn bootstrap_token_should_be_limited_on_its_own_bucket() {
 async fn session_should_stay_served_past_the_bearer_burst() {
     let (_dir, db) = open_db();
     let user = db.owner().expect("lookup").expect("admin");
-    let session = db.create_session(&user.account_id()).expect("session");
+    let session = db.create_session(&user.account_id(), "").expect("session");
     let cookie = format!("session={session}");
     let app =
         router(AppState::new(db, None, passkey_mode()).with_limits(ManualClock::new().limits()));
@@ -694,7 +694,7 @@ async fn sign_in_should_refuse_the_eleventh_post_from_one_ip_in_a_minute() {
 async fn settings_should_show_the_skill_install_line_for_this_server() {
     let (_dir, db) = open_db();
     let user = db.owner().expect("lookup").expect("admin");
-    let session = db.create_session(&user.account_id()).expect("session");
+    let session = db.create_session(&user.account_id(), "").expect("session");
     let cookie = format!("session={session}");
     let app = router(AppState::new(db, None, passkey_mode()));
     let page = send_as(&app, "GET", "/settings", &[("cookie", &cookie)], None, "").await;

@@ -51,7 +51,10 @@ impl Fixture {
         let admin = db.create_user("admin").expect("admin");
         let member = db.create_user("bob").expect("member");
         let cookie = |account: &AccountId| {
-            format!("session={}", db.create_session(account).expect("session"))
+            format!(
+                "session={}",
+                db.create_session(account, "").expect("session")
+            )
         };
         let (record, raw) = new_api_token_record(&member, "agent", AuthScope::Admin, None);
         db.create_api_token(&record).expect("token");
@@ -171,8 +174,15 @@ async fn calendar_feed_reads_should_count_as_use() {
     let fx = Fixture::new();
     let board = fx.board_used_at("Feed", now());
     let cookie = [("cookie", fx.member_cookie.as_str())];
-    let uri = format!("/api/boards/{board}/calendar-feed");
-    let feed = call(&fx.app, "POST", &uri, &cookie, None).await;
+    let uri = format!("/api/boards/{board}/calendar-feeds");
+    let feed = call(
+        &fx.app,
+        "POST",
+        &uri,
+        &cookie,
+        Some(json!({"label": "Feed"})),
+    )
+    .await;
     assert_eq!(feed.status, StatusCode::OK, "{}", feed.body);
     let path = feed.body["path"].as_str().expect("feed path").to_string();
     let start = now();

@@ -426,6 +426,27 @@
     }
     window.addEventListener('hashchange', showPane);
     showPane();
+    var toggles = document.querySelectorAll('.notification-toggle');
+    var notificationError = document.getElementById('notification-error');
+    toggles.forEach(function (toggle) {
+      toggle.addEventListener('change', function () {
+        var muted = [];
+        toggles.forEach(function (other) { if (!other.checked) muted.push(other.dataset.kind); });
+        notificationError.hidden = true;
+        fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ muted_notifications: muted })
+        }).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+        }).catch(function (ex) {
+          toggle.checked = !toggle.checked;
+          notificationError.textContent = 'Could not save the notification setting: ' + ex.message;
+          notificationError.hidden = false;
+        });
+      });
+    });
     var form = document.getElementById('token-create-form');
     var err = document.getElementById('token-error');
     function showError(msg) { err.textContent = msg; err.hidden = false; }
@@ -666,6 +687,14 @@
         });
         document.getElementById('confirm-dialog').hidden = false;
         fresh.focus();
+      });
+    });
+    document.querySelectorAll('.session-revoke').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var result = document.getElementById('session-revoke-result');
+        jsonRequest('DELETE', '/api/v1/auth/sessions/' + encodeURIComponent(btn.dataset.id))
+          .then(function () { btn.closest('tr').remove(); })
+          .catch(failed(result, 'Could not revoke the session: '));
       });
     });
     var signOutOthers = document.getElementById('sign-out-others');

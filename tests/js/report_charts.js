@@ -150,6 +150,18 @@ check('Esc with the task modal open stays on the report', reportEscapeHref(), nu
 currentDocument = pageWith({});
 check('Esc on another page does not navigate', reportEscapeHref(), null);
 
+var times = CycleLeadPage.computeTimes([
+  { id: 'a', name: 'Moved late', created_at: '2026-01-01T09:00:00Z', completed_at: '2026-01-09T09:00:00Z',
+    history: [{ kind: 'moved', created_at: '2026-01-07T09:00:00Z' }, { kind: 'moved', created_at: '2026-01-05T09:00:00Z' }, { kind: 'created', created_at: '2026-01-02T09:00:00Z' }] },
+  { id: 'b', name: 'Never moved', created_at: '2026-01-01T09:00:00Z', completed_at: '2026-01-09T09:00:00Z', history: [] },
+  { id: 'c', name: 'Moved before creation', created_at: '2026-01-03T09:00:00Z', completed_at: '2026-01-09T09:00:00Z',
+    history: [{ kind: 'moved', created_at: '2026-01-02T09:00:00Z' }] }
+]);
+check('cycle time starts at the first move', [times[0].cycle, times[0].lead], [4, 8]);
+check('cycle time starts at the first move, in the dot', times[0].fromAt, { cycle: Date.parse('2026-01-05T09:00:00Z'), lead: Date.parse('2026-01-01T09:00:00Z') });
+check('a task that never moved starts its cycle at creation', [times[1].cycle, times[1].lead], [8, 8]);
+check('a move dated before creation starts the cycle at creation', [times[2].cycle, times[2].lead], [6, 6]);
+
 var shellPage = { dataset: { boardId: 'abc' }, querySelector: function (sel) { return sel === '.bshell-report' ? {} : null; } };
 currentDocument = pageWith({ '.board-settings-page[data-board-id]': shellPage });
 check('a report page resolves its board for the modal', modalBoardId(), 'abc');

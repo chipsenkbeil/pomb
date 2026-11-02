@@ -108,7 +108,7 @@ catalog! {
     TimeDelete, "time.delete", "time", Admin, "Delete a time entry.";
     SettingsRead, "settings.read", "settings", Read, "Read the account settings.";
     SettingsWrite, "settings.write", "settings", Admin, "Change the account settings.";
-    FeedsManage, "feeds.manage", "feeds", Admin, "Get, create and reset a board's calendar feed link.";
+    FeedsManage, "feeds.manage", "feeds", Admin, "List, create and delete a board's calendar feeds.";
 }
 
 /// A named set of permissions, each holding everything the one before it holds.

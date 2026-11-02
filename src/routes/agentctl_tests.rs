@@ -33,7 +33,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let path = dir.path().join("agentctl.redb");
     let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
     let user_id = db.create_user("admin").expect("create user");
-    let session = db.create_session(&user_id).expect("session");
+    let session = db.create_session(&user_id, "").expect("session");
     let (record, read_token) = new_api_token_record(&user_id, "reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
     let board_id = db.create_board(&user_id, "Agentctl").expect("board");
@@ -5152,7 +5152,7 @@ async fn a_work_token_should_do_the_task_workflow_and_nothing_structural() {
         ),
         (
             "GET",
-            format!("/api/boards/{}/calendar-feed", fx.board_id),
+            format!("/api/boards/{}/calendar-feeds", fx.board_id),
             "feeds.manage",
         ),
     ] {
@@ -10333,6 +10333,95 @@ async fn deleting_a_task_linked_only_inside_the_set_should_work() {
 }
 
 #[tokio::test]
+async fn the_board_page_should_hold_the_calendar_dialog_with_its_top_bar() {
+    let (_dir, fx) = fixture();
+    let (status, html) = request(
+        &fx,
+        As::Admin,
+        "GET",
+        &format!("/b/{}", fx.board_id),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let dialog = &html[html
+        .find("id=\"calendar-dialog\"")
+        .expect("calendar dialog")..];
+    let dialog = &dialog[..dialog.find("id=\"calendar-grid\"").expect("grid")];
+    for id in [
+        "calendar-filter-toggle",
+        "calendar-feed-toggle",
+        "calendar-export",
+        "calendar-title",
+        "calendar-settings",
+        "calendar-prev",
+        "calendar-next",
+        "calendar-today",
+        "calendar-filter-panel",
+        "calendar-user-filter",
+        "calendar-swimlane-filter",
+        "calendar-boards-toggle",
+        "calendar-boards-list",
+        "calendar-feed-label",
+        "calendar-feed-generate",
+        "calendar-feed-list",
+        "calendar-export-panel",
+        "calendar-export-format",
+        "calendar-export-from",
+        "calendar-export-to",
+        "calendar-export-type",
+        "calendar-export-run",
+        "calendar-settings-panel",
+        "calendar-first-day",
+        "calendar-show-repeats",
+    ] {
+        assert!(dialog.contains(&format!("id=\"{id}\"")), "{id}");
+    }
+    assert!(dialog.contains("<option value=\"__unassigned__\">Unassigned</option>"));
+    assert!(!dialog.contains("id=\"calendar-export\" class=\"cal-tool\" disabled"));
+    assert!(!dialog.contains("aria-label=\"Calendar settings\" disabled"));
+    assert!(dialog.contains("id=\"calendar-close\" class=\"cal-icon\" data-close-dialog"));
+    assert!(dialog.contains("class=\"dlg-overlay cal-overlay\" hidden"));
+}
+
+#[tokio::test]
+async fn the_calendar_should_no_longer_be_a_page() {
+    let (_dir, fx) = fixture();
+    let (status, _) = request(
+        &fx,
+        As::Admin,
+        "GET",
+        &format!("/b/{}/calendar", fx.board_id),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let app = include_str!("../../static/app.js");
+    assert!(!app.contains("+ '/calendar';"));
+    assert!(app.contains("CalendarPage.open(boardId());"));
+}
+
+#[test]
+fn the_calendar_grid_should_have_fixed_rows_and_scroll_inside_the_dialog() {
+    let css = include_str!("../../static/style.css");
+    let rule = |selector: &str| {
+        let rest = &css[css.find(selector).expect(selector)..];
+        &rest[..rest.find('}').expect("end")]
+    };
+    let grid = rule(".calendar-grid {");
+    assert!(grid.contains("repeat(7, minmax(0, 1fr))"));
+    assert!(grid.contains("grid-auto-rows: 120px"));
+    assert!(grid.contains("grid-template-rows: 28px"));
+    assert!(rule(".log-custom-fields input {").contains("min-width: 0"));
+    assert!(rule(".cal-scroll {").contains("overflow: auto"));
+    assert!(rule(".cal-day {").contains("height: 120px"));
+    assert!(rule(".cal-day.cal-today {").contains("outline: 2px solid #f97316"));
+    assert!(rule(".cal-dialog {").contains("height: 100%"));
+}
+
+#[tokio::test]
 async fn the_modal_should_offer_claim_with_a_lease_choice_on_an_unclaimed_task() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Free"})).await;
@@ -10512,6 +10601,374 @@ async fn a_board_limited_token_should_never_see_the_board_names_of_linked_cards_
     for hidden in ["Ops", "Remote child", "Remote umbrella"] {
         assert!(!html.contains(hidden), "{hidden}: {html}");
     }
+}
+
+#[tokio::test]
+async fn the_task_modal_should_name_its_own_board() {
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let other_board = board["id"].as_str().expect("board id").to_string();
+    let (_, columns) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{other_board}/columns"),
+        None,
+    )
+    .await;
+    let other_column = columns[0]["id"].as_str().expect("column").to_string();
+    let here = create(&fx, json!({"column_id": fx.col_todo, "name": "Here"})).await;
+    let there = create(&fx, json!({"column_id": other_column, "name": "There"})).await;
+
+    let html = modal_html(&fx, &there).await;
+    let own = format!(r#"data-board-id="{other_board}" data-board-name="Ops""#);
+    assert!(html.contains(&own), "{html}");
+    let html = modal_html(&fx, &here).await;
+    let own = format!(
+        r#"data-board-id="{}" data-board-name="Agentctl""#,
+        fx.board_id
+    );
+    assert!(html.contains(&own), "{html}");
+}
+
+#[tokio::test]
+async fn the_link_picker_should_list_admissible_cards_past_the_first_hundred_hits() {
+    let (_dir, fx) = fixture();
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Umbrella"})).await;
+    for n in 1..=100 {
+        let kid = create(
+            &fx,
+            json!({"column_id": fx.col_todo, "name": format!("Kid {n:03}")}),
+        )
+        .await;
+        assert_eq!(link(&fx, &kid, "parent", &umbrella).await.0, StatusCode::OK);
+    }
+    let last = create(&fx, json!({"column_id": fx.col_done, "name": "Zed"})).await;
+
+    assert_eq!(
+        picker_ids(&fx, &card, "mode=child").await,
+        vec![umbrella, last],
+        "the cards that already have an umbrella do not use up the search cap"
+    );
+}
+
+#[tokio::test]
+async fn a_board_limited_token_should_not_be_offered_cards_the_server_refuses_to_link() {
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let hidden_board = board["id"].as_str().expect("board id").to_string();
+    let (_, columns) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{hidden_board}/columns"),
+        None,
+    )
+    .await;
+    let hidden_column = columns[0]["id"].as_str().expect("column").to_string();
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let free = create(&fx, json!({"column_id": fx.col_todo, "name": "Free"})).await;
+    let held = create(&fx, json!({"column_id": fx.col_todo, "name": "Held"})).await;
+    let below = create(&fx, json!({"column_id": fx.col_todo, "name": "Below"})).await;
+    let secret_umbrella = create(
+        &fx,
+        json!({"column_id": hidden_column, "name": "Secret umbrella"}),
+    )
+    .await;
+    let secret_middle = create(
+        &fx,
+        json!({"column_id": hidden_column, "name": "Secret middle"}),
+    )
+    .await;
+    assert_eq!(
+        link(&fx, &held, "parent", &secret_umbrella).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        link(&fx, &card, "child", &secret_middle).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        link(&fx, &secret_middle, "child", &below).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        link(&fx, &card, "parent", &below).await.0,
+        StatusCode::BAD_REQUEST,
+        "the server refuses a cycle through the hidden board"
+    );
+    assert_eq!(
+        link(&fx, &card, "child", &held).await.0,
+        StatusCode::BAD_REQUEST,
+        "the server refuses a child that has an umbrella"
+    );
+
+    let (mut record, limited) = new_api_token_record(&fx.user_id, "limited", AuthScope::Read, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+
+    let html = limited_picker(&fx, &limited, &card, "child").await;
+    assert!(html.contains(&free), "{html}");
+    for refused in [&held, &below] {
+        assert!(
+            !html.contains(refused.as_str()),
+            "a card whose umbrella is hidden is not offered as a child: {html}"
+        );
+    }
+    let html = limited_picker(&fx, &limited, &card, "parent").await;
+    assert!(html.contains(&free), "{html}");
+    assert!(
+        !html.contains(&below),
+        "a card under a hidden child is not offered as an umbrella: {html}"
+    );
+    assert!(!html.contains("Secret"), "{html}");
+    assert!(!html.contains("Ops"), "{html}");
+
+    let uri = format!("/api/tasks/{card}/link-picker?mode=child");
+    let (_, owner_html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert!(
+        owner_html.contains(&secret_umbrella),
+        "the account owner still sees the cards the hidden board holds: {owner_html} held={held} below={below} middle={secret_middle} free={free}"
+    );
+}
+
+async fn limited_picker(fx: &Fixture, token: &str, card: &str, mode: &str) -> String {
+    let uri = format!("/api/tasks/{card}/link-picker?mode={mode}");
+    let (status, html) = request(fx, As::Bearer(token), "GET", &uri, None, false).await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    html
+}
+
+#[test]
+fn the_phone_board_bar_should_give_the_title_room_by_dropping_the_menu_label() {
+    let css = include_str!("../../static/style.css");
+    let at = css
+        .find("@media (max-width: 639px) {\n  body:has(> .board-layout")
+        .expect("phone media block");
+    let phone = &css[at..];
+    let phone = &phone[..phone.find("\n}\n").expect("end of the media block")];
+    let menu = &phone[phone.find("#board-menu-btn {").expect("menu button rule")..];
+    let menu = &menu[..menu.find('}').expect("end")];
+    assert!(menu.contains("width: 34px"), "{menu}");
+    let at = phone
+        .find("#board-menu-btn .menu-label {")
+        .expect("label rule");
+    let label = &phone[at..];
+    let label = &label[..label.find('}').expect("end")];
+    assert!(label.contains("display: none"), "{label}");
+}
+
+#[tokio::test]
+async fn a_restricted_token_should_keep_favourites_it_cannot_see() {
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let hidden = board["id"].as_str().expect("board id").to_string();
+    let favourites = |settings: &Value| settings["favorite_boards"].clone();
+    let (status, saved) = call(
+        &fx,
+        "PUT",
+        "/api/settings",
+        Some(json!({"favorite_boards": [hidden, fx.board_id]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+
+    let (mut record, limited) =
+        new_api_token_record(&fx.user_id, "limited", AuthScope::Admin, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+    let bearer = |method: &'static str, body: Option<Value>| {
+        let limited = limited.clone();
+        let fx = &fx;
+        async move {
+            let (status, text) = request(
+                fx,
+                As::Bearer(&limited),
+                method,
+                "/api/settings",
+                body,
+                true,
+            )
+            .await;
+            (
+                status,
+                serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)),
+            )
+        }
+    };
+
+    let (status, read) = bearer("GET", None).await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(favourites(&read), json!([fx.board_id]));
+    assert!(!read.to_string().contains(&hidden), "{read}");
+
+    let (status, echoed) = bearer("PUT", Some(json!({"favorite_boards": [fx.board_id]}))).await;
+    assert_eq!(status, StatusCode::OK, "{echoed}");
+    assert_eq!(favourites(&echoed), json!([fx.board_id]));
+    let (status, sent) = bearer(
+        "PUT",
+        Some(json!({"favorite_boards": [hidden, fx.board_id]})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an id outside the set is ignored: {sent}"
+    );
+    assert_eq!(favourites(&sent), json!([fx.board_id]));
+
+    let (_, owner) = call(&fx, "GET", "/api/settings", None).await;
+    assert_eq!(
+        favourites(&owner),
+        json!([fx.board_id, hidden]),
+        "the account keeps the favourite the token cannot see"
+    );
+
+    let (status, cleared) = bearer("PUT", Some(json!({"favorite_boards": []}))).await;
+    assert_eq!(status, StatusCode::OK, "{cleared}");
+    let (_, owner) = call(&fx, "GET", "/api/settings", None).await;
+    assert_eq!(favourites(&owner), json!([hidden]));
+}
+
+#[tokio::test]
+async fn a_restricted_token_should_not_read_the_board_a_task_was_binned_and_restored_on() {
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let hidden = board["id"].as_str().expect("board id").to_string();
+    let body = json!({"board_id": hidden, "name": "SecretColumn"});
+    let (_, column) = call(&fx, "POST", "/api/columns", Some(body)).await;
+    let secret = column["id"].as_str().expect("column id").to_string();
+    let task = create(&fx, json!({"column_id": secret, "name": "Traveller"})).await;
+    let (status, text) = call(&fx, "DELETE", &format!("/api/tasks/{task}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let uri = format!("/api/bin/{task}/restore");
+    let (status, text) = call(&fx, "POST", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let moved = json!({"column_id": fx.col_todo, "position": 0});
+    let uri = format!("/api/tasks/{task}/move?force=true");
+    let (status, text) = call(&fx, "POST", &uri, Some(moved)).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    let (mut record, limited) = new_api_token_record(&fx.user_id, "limited", AuthScope::Read, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&limited),
+        "GET",
+        &format!("/api/tasks/{task}/history-view"),
+        None,
+        false,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(!text.contains("SecretColumn"), "{text}");
+    assert!(!text.contains(&secret), "{text}");
+    assert!(text.contains("Deleted from another board"), "{text}");
+    assert!(text.contains("Restored on another board"), "{text}");
+}
+
+#[tokio::test]
+async fn a_restricted_token_should_not_read_the_names_of_a_board_outside_its_set() {
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let hidden = board["id"].as_str().expect("board id").to_string();
+    let body = json!({"board_id": hidden, "name": "SecretColumn"});
+    let (_, column) = call(&fx, "POST", "/api/columns", Some(body)).await;
+    let secret = column["id"].as_str().expect("column id").to_string();
+    let task = create(&fx, json!({"column_id": secret, "name": "Traveller"})).await;
+    for target in [&fx.col_todo, &secret, &fx.col_todo, &fx.col_done] {
+        let moved = json!({"column_id": target, "position": 0});
+        let uri = format!("/api/tasks/{task}/move?force=true");
+        let (status, text) = call(&fx, "POST", &uri, Some(moved)).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    let (mut record, limited) = new_api_token_record(&fx.user_id, "limited", AuthScope::Read, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+    let bearer = |uri: String| {
+        let limited = limited.clone();
+        let fx = &fx;
+        async move {
+            let (status, text) = request(fx, As::Bearer(&limited), "GET", &uri, None, false).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {text}");
+            text
+        }
+    };
+
+    let view = bearer(format!("/api/tasks/{task}/history-view")).await;
+    let export = bearer(format!("/api/tasks/{task}/history-export?all=1")).await;
+    for text in [&view, &export] {
+        assert!(!text.contains("SecretColumn"), "{text}");
+        assert!(!text.contains(&secret), "{text}");
+        assert!(text.contains("Moved from another board"), "{text}");
+        assert!(text.contains("Moved to another board"), "{text}");
+        assert!(text.contains("Created on another board"), "{text}");
+        assert!(
+            text.contains("Shipped"),
+            "a move inside the set keeps its names: {text}"
+        );
+    }
+    let (_, seen) = request(
+        &fx,
+        As::Admin,
+        "GET",
+        &format!("/api/tasks/{task}/history-view"),
+        None,
+        false,
+    )
+    .await;
+    assert!(seen.contains("SecretColumn"), "{seen}");
+
+    let uri = format!("/api/boards/{}/events/wait?after=0&timeout=0", fx.board_id);
+    let events = bearer(uri.clone()).await;
+    assert!(events.contains(&task), "{events}");
+    assert!(!events.contains(&secret), "{events}");
+    let (_, owner) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert!(owner.contains(&secret), "{owner}");
+}
+
+#[tokio::test]
+async fn a_restricted_token_archive_should_not_hold_the_names_of_a_board_outside_its_set() {
+    use std::io::Read;
+
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let hidden = board["id"].as_str().expect("board id").to_string();
+    let body = json!({"board_id": hidden, "name": "SecretColumn"});
+    let (_, column) = call(&fx, "POST", "/api/columns", Some(body)).await;
+    let secret = column["id"].as_str().expect("column id").to_string();
+    let task = create(&fx, json!({"column_id": secret, "name": "Traveller"})).await;
+    for target in [&fx.col_todo, &secret, &fx.col_todo] {
+        let moved = json!({"column_id": target, "position": 0});
+        let uri = format!("/api/tasks/{task}/move?force=true");
+        let (status, text) = call(&fx, "POST", &uri, Some(moved)).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    let (mut record, limited) = new_api_token_record(&fx.user_id, "limited", AuthScope::Read, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+    let request = axum::http::Request::builder()
+        .uri(format!("/api/boards/{}/archive", fx.board_id))
+        .header("authorization", format!("Bearer {limited}"))
+        .body(axum::body::Body::empty())
+        .expect("request");
+    let response = fx.app.clone().oneshot(request).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK);
+    let gzipped = axum::body::to_bytes(response.into_body(), 16 << 20)
+        .await
+        .expect("body");
+    let mut tar = Vec::new();
+    flate2::read::GzDecoder::new(&gzipped[..])
+        .read_to_end(&mut tar)
+        .expect("valid gzip");
+    let text = String::from_utf8_lossy(&tar);
+    assert!(text.contains("Traveller"), "the task is in the archive");
+    assert!(text.contains("Moved from another board"), "{text}");
+    assert!(!text.contains("SecretColumn"), "{text}");
+    assert!(!text.contains(&secret), "{text}");
 }
 
 #[tokio::test]
