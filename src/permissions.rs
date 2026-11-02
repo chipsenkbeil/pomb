@@ -109,6 +109,7 @@ catalog! {
     SettingsRead, "settings.read", "settings", Read, "Read the account settings.";
     SettingsWrite, "settings.write", "settings", Admin, "Change the account settings.";
     FeedsManage, "feeds.manage", "feeds", Admin, "List, create and delete a board's calendar feeds.";
+    WebhooksManage, "webhooks.manage", "webhooks", Admin, "List, create, change and delete a board's webhooks, which send its events to other servers.";
 }
 
 /// A named set of permissions, each holding everything the one before it holds.
@@ -171,7 +172,7 @@ mod tests {
 
     use super::*;
 
-    const NAMES: [&str; 43] = [
+    const NAMES: [&str; 44] = [
         "boards.read",
         "boards.create",
         "boards.configure",
@@ -215,6 +216,7 @@ mod tests {
         "settings.read",
         "settings.write",
         "feeds.manage",
+        "webhooks.manage",
     ];
 
     fn held(preset: Preset) -> HashSet<&'static str> {
@@ -334,6 +336,7 @@ mod tests {
             "time.edit",
             "settings.write",
             "feeds.manage",
+            "webhooks.manage",
         ] {
             assert!(held(Preset::Admin).contains(name), "{name}");
             assert!(!held(Preset::Lead).contains(name), "{name}");

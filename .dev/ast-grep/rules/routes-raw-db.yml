@@ -10,7 +10,9 @@ ignores:
   - src/routes/access_tests.rs
   - src/routes/agentctl_tests.rs
   - src/routes/backup_tests.rs
+  - src/routes/board_history_tests.rs
   - src/routes/bin_tests.rs
+  - src/routes/boards_tests.rs
   - src/routes/bulk_tests.rs
   - src/routes/events_tests.rs
   - src/routes/import_tests.rs
@@ -24,6 +26,7 @@ ignores:
   - src/routes/search_tests.rs
   - src/routes/rules_tests.rs
   - src/routes/server.rs
+  - src/routes/webhook_tests.rs
 rule:
   any:
     - kind: field_expression

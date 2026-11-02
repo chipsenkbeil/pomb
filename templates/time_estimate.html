@@ -5,10 +5,19 @@
 {% block shell_body %}
 <p class="settings-hint">
   Estimated workload on <strong>{{ board_name }}</strong>: summed time
-  estimates by color and column. Spot unrealistic workloads before they slip.
+  estimates by the group you pick and column. Spot unrealistic workloads before they slip.
 </p>
-<div id="time-estimate-table" class="bshell-scroll"></div>
-<p id="time-estimate-status" class="settings-hint" role="status"></p>
+<div class="mc-layout">
+  {% include "_report_breakdown.html" %}
+  <section class="mc-results" aria-label="Time estimate results">
+    <div id="time-estimate-table" class="bshell-scroll"></div>
+    <p id="time-estimate-status" class="settings-hint" role="status"></p>
+    <div class="report-export">
+      <button type="button" id="te-export-human" class="kf-btn">Export Excel (human readable)</button>
+      <button type="button" id="te-export-seconds" class="kf-btn">Export Excel (total seconds)</button>
+    </div>
+  </section>
+</div>
 {% endblock %}
 {% block shell_scripts %}
 <div hidden data-page-init="TimeEstimatePage" data-board-id="{{ board_id }}"></div>

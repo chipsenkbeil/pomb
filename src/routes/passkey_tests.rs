@@ -219,7 +219,7 @@ fn passkey_app(db: Db) -> (axum::Router, String) {
     (router(AppState::new(db, None, sign_in)), code)
 }
 
-fn none_mode(public_url: Option<&str>) -> SignIn {
+pub(super) fn none_mode(public_url: Option<&str>) -> SignIn {
     SignIn::new(AuthChoice::Chosen(AuthMode::None), "127.0.0.1", public_url).expect("none mode")
 }
 

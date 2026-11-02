@@ -13,36 +13,88 @@
 <div class="mc-layout">
   <section class="mc-settings settings-form" aria-label="Forecast settings">
     <h2>Settings</h2>
-    <label>Task count
-      <input type="number" id="mc-task-count" value="10" min="1" max="10000">
-    </label>
+    <div class="mc-count">
+      <label>Task count
+        <button type="button" id="mc-task-count" class="kf-btn" aria-haspopup="dialog">Set task count</button>
+      </label>
+      <div id="mc-count-pop" class="mc-pop" role="dialog" aria-label="Task count" hidden>
+        <label class="check-label"><input type="radio" name="mc-count-mode" id="mc-count-mode-fixed" checked> Fixed count</label>
+        <input type="number" id="mc-count-fixed" min="1" max="10000" aria-label="Fixed task count">
+        <label class="check-label"><input type="radio" name="mc-count-mode" id="mc-count-mode-board"> Count tasks on board (current count: <span id="mc-count-current">0</span>)</label>
+        <label>Column
+          <select id="mc-count-column"><option value="">Any open column</option></select>
+        </label>
+        <label>User
+          <select id="mc-count-user"><option value="">Any user</option></select>
+        </label>
+        <label>Color
+          <select id="mc-count-color"><option value="">Any color</option></select>
+        </label>
+        <label>Label
+          <select id="mc-count-label"><option value="">Any label</option></select>
+        </label>
+        <button type="button" id="mc-count-done" class="kf-btn">Done</button>
+      </div>
+    </div>
     <label>Start date
-      <input type="date" id="mc-start-date">
+      <input type="text" id="mc-start-date" value="Today" autocomplete="off">
     </label>
     <label>Period
       <select id="mc-period">
         <option value="30">Last 30 days</option>
         <option value="60">Last 60 days</option>
         <option value="90" selected>Last 90 days</option>
+        <option value="6m">Last 6 months</option>
+        <option value="12m">Last 12 months</option>
+        <option value="custom">Custom</option>
       </select>
     </label>
+    <div id="mc-custom" hidden>
+      <label>From
+        <input type="date" id="mc-from">
+      </label>
+      <label>To
+        <input type="date" id="mc-to">
+      </label>
+    </div>
     <label>Target column
       <select id="mc-target-column"></select>
     </label>
     <label class="check-label"><input type="checkbox" id="mc-more"> Show more options</label>
-    <label id="mc-sims-wrap" hidden>Simulations
-      <input type="number" id="mc-sims" value="1000" min="100" max="10000" step="100">
-    </label>
+    <div id="mc-more-wrap" hidden>
+      <label>User
+        <select id="mc-user"><option value="">Any user</option></select>
+      </label>
+      <label>Color
+        <select id="mc-color"><option value="">Any color</option></select>
+      </label>
+      <label>Label
+        <select id="mc-label"><option value="">Any label</option></select>
+      </label>
+    </div>
     <button type="button" id="mc-run" class="kf-btn kf-btn-success">Run forecast</button>
   </section>
 
   <section class="mc-results" aria-label="Forecast results">
     <h2>Forecast</h2>
+    <div id="mc-getting-started" class="mc-getting-started">
+      <h3>Getting started</h3>
+      <ol>
+        <li>Enter how many tasks you want to complete.</li>
+        <li>Pick the day you start, or leave it on Today.</li>
+        <li>Choose the period of history to sample and the column that counts as done.</li>
+        <li>Run the forecast to see the dates by probability.</li>
+      </ol>
+    </div>
     <p id="mc-headline" class="mc-headline settings-hint">Run the forecast to see when your tasks will be completed.</p>
     <div id="mc-forecast-lines" class="mc-forecast-lines"></div>
-    <h3>Monte Carlo chart</h3>
+    <div id="mc-export" class="report-export" hidden>
+      <button type="button" id="mc-export-pdf" class="kf-btn">Export PDF</button>
+      <button type="button" id="mc-export-xlsx" class="kf-btn">Export Excel</button>
+    </div>
+    <h3 id="mc-chart-title" hidden>Monte Carlo chart</h3>
     <div id="mc-chart" role="img" aria-label="Monte Carlo forecast chart"></div>
-    <h3>Throughput basis</h3>
+    <h3 id="mc-basis-title" hidden>Throughput basis</h3>
     <div id="mc-basis" role="img" aria-label="Historical throughput chart"></div>
     <p id="mc-status" class="settings-hint" role="status"></p>
   </section>

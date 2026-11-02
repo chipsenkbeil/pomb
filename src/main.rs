@@ -47,6 +47,7 @@ mod routes;
 mod rules;
 mod search;
 mod taskjson;
+mod webhook;
 
 use std::fmt;
 use std::future::IntoFuture;
@@ -549,6 +550,7 @@ async fn serve(
     tokio::spawn(backup::run_schedule(db.clone(), state.backups.clone()));
     tokio::spawn(run_upkeep(db.clone()));
     tokio::spawn(state.disk.clone().run_sampler());
+    tokio::spawn(webhook::Dispatcher::new(db.clone(), webhook::is_public_address).run());
     let app = routes::router(state.with_public_url(config.public_url));
     println!(
         "pomb listening on http://{} with {mode} in {} mode (database: {})",

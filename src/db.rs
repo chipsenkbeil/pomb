@@ -18,6 +18,7 @@
 mod account;
 mod activity;
 mod bin;
+mod dispatch;
 mod entries;
 mod events;
 mod files;
@@ -25,6 +26,7 @@ mod import;
 mod instance;
 mod membership;
 mod notifications;
+mod outbox;
 mod prune;
 mod public;
 mod snapshot;
@@ -32,6 +34,7 @@ mod store;
 #[cfg(test)]
 mod support;
 mod usage;
+mod webhooks;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
@@ -65,6 +68,7 @@ pub use self::account::{
 use self::activity::Activity;
 use self::bin::txn_remove_board_bin;
 pub use self::bin::{PurgeOutcome, RestoreOutcome};
+pub use self::dispatch::Delivery;
 use self::entries::txn_reindex_entries;
 use self::events::txn_remove_events;
 pub use self::events::{EventRead, MAX_EVENTS_PER_BOARD};
@@ -76,6 +80,7 @@ pub use self::membership::{
     NewAccount, RecoverOutcome, RegisterOutcome, Revoked,
 };
 pub use self::notifications::{Change, NotificationPage};
+use self::outbox::txn_remove_webhook_outbox;
 pub use self::public::PublicDb;
 pub use self::snapshot::{BoardSnapshot, OfflineDb};
 pub use self::store::{Store, WriteTxn};
@@ -85,6 +90,7 @@ use self::usage::{
     txn_count_usage, txn_recount_usage, txn_refuse_over_bytes, txn_remove_entry, txn_remove_owned,
     txn_rows_bytes, txn_store_entry, txn_store_owned, txn_store_task, txn_task_bytes,
 };
+pub use self::webhooks::{NewWebhook, WebhookColumnMissing, WebhookPatch};
 use crate::api_error::{ErrorCode, coded_response};
 use crate::auth::{
     REAUTH_WINDOW_SECS, SESSION_MAX_AGE_SECONDS, SignIn, api_token_digest, api_token_last4,
@@ -100,10 +106,11 @@ use crate::models::{
     FieldDefRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS, PasskeyRow,
     Quota, Quotas, RecoveryCodeRow, Responsible, SessionRow, Settings, Subtask, SwimlaneRow,
     TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TextCap,
-    TimeEntryRow, UnnamedFiles, UserRow, standard_color,
+    TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, standard_color,
 };
 use crate::permissions::Permission;
 use crate::rules;
+use crate::webhook::{Prober, is_public_address};
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -191,6 +198,20 @@ pub enum TemplateDeleteOutcome {
     NotFound,
     RefusedBuiltIn,
 }
+
+/// What a board copy takes of the source board's tasks.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CopyTasks {
+    /// No tasks: the copy starts empty.
+    None,
+    /// The first [`BOARD_COPY_TASK_CAP`] tasks, with their members and responsible actor.
+    Keep,
+    /// The first [`BOARD_COPY_TASK_CAP`] tasks, with no members and no responsible actor.
+    ClearMembers,
+}
+
+/// Most tasks a board copy takes from its source.
+pub const BOARD_COPY_TASK_CAP: usize = 200;
 
 /// Sort position of a task whose swimlane is missing, which puts it after every lane.
 pub const NO_LANE_POSITION: i64 = 9999;
@@ -1128,8 +1149,21 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// stamp makes a version-46 binary refuse a file whose timelines it would drop on its next task
 /// save.
 ///
+/// Version 48 adds, over version 47, the tables `webhooks` holding `WebhookRow` and
+/// `webhook_outbox` holding `OutboxRow`, and the multimaps `webhooks_by_board` and
+/// `webhook_outbox_by_hook`. The upgrade rewrites no row, and the new stamp makes a version-47
+/// binary refuse a file whose webhooks and queued webhook events it would not know.
+///
+/// Version 49 adds, over version 48 (additive, read from older rows through a serde default):
+///
+/// 1. `ColumnRow`: `watchers`, the ids of the accounts that watch the column.
+///
+/// The upgrade rewrites no row, so a column from before the upgrade reads with no watchers. The
+/// new stamp makes a version-48 binary refuse a file whose column watches it would drop on its
+/// next column save.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 47;
+pub const SCHEMA_VERSION: u64 = 49;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1183,6 +1217,8 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "2ce540a842bd9249b7b1db25e17f46db4c5a5105727824f30ac420364e872b75",
     "757ce6aa7b7c347045a6218e97b4cbd8fd5249c56ddcd3c4cd1944eb33aead37",
     "8cba50eda37aff485e68c7212080d4b38b49bea36208334927f3fd9af718c036",
+    "4e1a40189f58839e0e92f8a51bc0115a07240857c74b8bb5d9dffef5af426f49",
+    "e2ad6d69293caa30bf33daed53023dc102e27126a581e713d256da0250ebdc22",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1889,6 +1925,10 @@ fn ensure_schema_version(db: &Database, path: &str, repaired: bool) -> DbResult<
 const DEVICE_AUTHS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("device_auths");
 /// field id -> [`FieldDefRow`].
 const FIELD_DEFS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("field_defs");
+/// webhook id -> `WebhookRow`.
+const WEBHOOKS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("webhooks");
+/// delivery key -> [`OutboxRow`].
+const WEBHOOK_OUTBOX: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("webhook_outbox");
 /// passkey id -> [`PasskeyRow`].
 const PASSKEYS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("passkeys");
 
@@ -1908,6 +1948,12 @@ const COLORS_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
 /// board id -> field id for [`FieldDefRow`] rows.
 const FIELDS_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("fields_by_board");
+/// board id -> webhook id for `WebhookRow` rows.
+const WEBHOOKS_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("webhooks_by_board");
+/// webhook id -> delivery key for [`OutboxRow`] rows.
+const WEBHOOK_OUTBOX_BY_HOOK: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("webhook_outbox_by_hook");
 /// board id -> id of each deleted task in its recycle bin.
 const BIN_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("recycle_bin_by_board");
@@ -2039,6 +2085,8 @@ pub struct AppState {
     /// The OpenAPI document as JSON, with the public URL as its server, built on its first
     /// request.
     pub openapi: Arc<OnceLock<String>>,
+    /// Runs the host lookups and test requests of the webhook settings.
+    pub prober: Prober,
 }
 
 /// The permits of each account that asked for one, by kind and account id.
@@ -2128,6 +2176,7 @@ impl AppState {
             account_slots: Arc::default(),
             settings_gate: Arc::new(Mutex::new(())),
             openapi: Arc::default(),
+            prober: Prober::new(is_public_address),
         }
     }
 
@@ -2160,6 +2209,14 @@ impl AppState {
         self.limits.apply(&stored.limits);
         self.disk.apply(&stored.disk);
         Ok(stored)
+    }
+
+    /// Replaces the prober, to reach a local server or another resolver.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_prober(mut self, prober: Prober) -> Self {
+        self.prober = prober;
+        self
     }
 
     /// Replaces the request limits, to run them on another clock. They follow the same numbers.
@@ -3257,15 +3314,19 @@ fn other_active_board_exists(txn: &WriteTransaction, owner: &str, except: &str) 
 }
 
 /// Removes `board` and everything in it inside an open write transaction: columns, swimlanes,
-/// tasks, time entries, task colors and fields, and its owner's active timer when it runs on one
-/// of its tasks. Returns the ids of its attachments, whose files the caller deletes once the
-/// transaction commits.
+/// tasks, time entries, task colors, fields and webhooks with their queued events, and its
+/// owner's active timer when it runs on one of its tasks. Returns the ids of its attachments,
+/// whose files the caller deletes once the transaction commits.
 fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<String>> {
     let id = board.id.as_str();
     let column_ids = txn_mmap_get(txn, COLUMNS_BY_BOARD, id)?;
     let swimlane_ids = txn_mmap_get(txn, SWIMLANES_BY_BOARD, id)?;
     let color_ids = txn_mmap_get(txn, COLORS_BY_BOARD, id)?;
     let field_ids = txn_mmap_get(txn, FIELDS_BY_BOARD, id)?;
+    let webhook_ids = txn_mmap_get(txn, WEBHOOKS_BY_BOARD, id)?;
+    for webhook_id in &webhook_ids {
+        txn_remove_webhook_outbox(txn, webhook_id)?;
+    }
     let mut task_ids: Vec<String> = Vec::new();
     let mut entry_ids: Vec<String> = Vec::new();
     for column_id in &column_ids {
@@ -3279,7 +3340,8 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<St
         + txn_rows_bytes(txn, COLUMNS, &column_ids)?
         + txn_rows_bytes(txn, SWIMLANES, &swimlane_ids)?
         + txn_rows_bytes(txn, TASK_COLORS, &color_ids)?
-        + txn_rows_bytes(txn, FIELD_DEFS, &field_ids)?;
+        + txn_rows_bytes(txn, FIELD_DEFS, &field_ids)?
+        + txn_rows_bytes(txn, WEBHOOKS, &webhook_ids)?;
     let mut attachment_ids = txn_attachment_ids(txn, &task_ids)?;
     unlink_deleted_tasks(txn, &task_ids)?;
     txn_prune_token_sets(txn, &board.owner_id, id)?;
@@ -3314,6 +3376,11 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<St
         for field_id in &field_ids {
             fields.remove(field_id.as_str())?;
             mmap_remove(txn, FIELDS_BY_BOARD, id, field_id)?;
+        }
+        let mut webhooks = txn.open_table(WEBHOOKS)?;
+        for webhook_id in &webhook_ids {
+            webhooks.remove(webhook_id.as_str())?;
+            mmap_remove(txn, WEBHOOKS_BY_BOARD, id, webhook_id)?;
         }
         let mut tasks = txn.open_table(TASKS)?;
         let mut entries = txn.open_table(TIME_ENTRIES)?;
@@ -3895,6 +3962,8 @@ pub enum Bound {
     EntriesPerDay,
     /// The passkeys one account may hold, [`MAX_PASSKEYS_PER_ACCOUNT`].
     Passkeys,
+    /// The webhooks one board may hold, [`MAX_WEBHOOKS_PER_BOARD`].
+    WebhooksPerBoard,
 }
 
 impl Bound {
@@ -3920,6 +3989,7 @@ impl Bound {
             Self::TemplateRowBytes => "bytes in one saved template",
             Self::EntriesPerDay => "time entries started per day",
             Self::Passkeys => "passkeys per account",
+            Self::WebhooksPerBoard => "webhooks per board",
         }
     }
 }
@@ -4081,6 +4151,9 @@ pub const MAX_API_TOKENS_PER_ACCOUNT: usize = 50;
 
 /// Most passkeys one account may hold, the admin's included.
 pub const MAX_PASSKEYS_PER_ACCOUNT: usize = 10;
+
+/// Most webhooks one board may hold.
+pub const MAX_WEBHOOKS_PER_BOARD: usize = 20;
 
 /// Most bytes one task's stored row may take, so reading or rewriting a task stays cheap.
 pub const MAX_TASK_ROW_BYTES: usize = 1_048_576;
@@ -4390,6 +4463,7 @@ fn txn_insert_column(
         collapsed: false,
         config_json: "{}".to_string(),
         former_names: Vec::new(),
+        watchers: Vec::new(),
     };
     txn_store_owned(txn, COLUMNS, &id, &row, over)?;
     mmap_insert(txn, COLUMNS_BY_BOARD, board_id, &id)?;
@@ -4756,12 +4830,23 @@ fn main_swimlane_entry(lane_id: &str) -> serde_json::Map<String, serde_json::Val
 #[derive(Debug, Default)]
 pub struct ColumnPatch<'a> {
     pub name: Option<&'a str>,
+    /// Starts or stops one account's watch of the column.
+    pub watch: Option<ColumnWatch<'a>>,
     /// `Some(None)` clears the WIP limit.
     pub wip_limit: Option<Option<i64>>,
     pub is_done: Option<bool>,
     pub description: Option<&'a str>,
     pub collapsed: Option<bool>,
     pub config_json: Option<&'a str>,
+}
+
+/// A change to whether one account watches a column.
+#[derive(Copy, Clone, Debug)]
+pub struct ColumnWatch<'a> {
+    /// The id of the account.
+    pub account: &'a str,
+    /// Whether the account watches the column afterwards.
+    pub watched: bool,
 }
 
 /// Swimlane fields one update may change. `None` leaves a field alone.
@@ -4893,6 +4978,10 @@ impl Db {
             txn.open_table(DEVICE_AUTHS)?;
             txn.open_table(PASSKEYS)?;
             txn.open_multimap_table(FIELDS_BY_BOARD)?;
+            txn.open_table(WEBHOOKS)?;
+            txn.open_multimap_table(WEBHOOKS_BY_BOARD)?;
+            txn.open_table(WEBHOOK_OUTBOX)?;
+            txn.open_multimap_table(WEBHOOK_OUTBOX_BY_HOOK)?;
             txn.open_multimap_table(BOARDS_BY_OWNER)?;
             txn.open_table(ACCOUNT_SETTINGS)?;
             txn.open_table(RECOVERY_CODES)?;
@@ -5989,6 +6078,13 @@ impl Db {
             if let Some(collapsed) = patch.collapsed {
                 column.collapsed = collapsed;
             }
+            if let Some(watch) = patch.watch {
+                column.watchers.retain(|watcher| watcher != watch.account);
+                if watch.watched {
+                    column.watchers.push(watch.account.to_string());
+                    TextCap::COLUMN_WATCHERS.check_count(&column.watchers)?;
+                }
+            }
             if let Some(config_json) = patch.config_json {
                 TextCap::CONFIG.check(config_json)?;
                 column.config_json = config_json.to_string();
@@ -6163,6 +6259,15 @@ impl Db {
             if lane.limits.iter().any(|limit| limit.column_id == id) {
                 lane.limits.retain(|limit| limit.column_id != id);
                 txn_store_owned(&txn, SWIMLANES, &lane.id, &lane, OverQuota::Allow)?;
+            }
+        }
+        for mut hook in
+            txn_indexed_rows::<WebhookRow>(&txn, WEBHOOKS_BY_BOARD, &column.board_id, WEBHOOKS)?
+        {
+            if hook.column_id.as_deref() == Some(id) {
+                hook.column_id = None;
+                hook.enabled = false;
+                txn_store_owned(&txn, WEBHOOKS, &hook.id, &hook, OverQuota::Allow)?;
             }
         }
         txn_remove_owned::<ColumnRow>(&txn, COLUMNS, id)?;
@@ -6718,7 +6823,11 @@ impl Db {
         if !self.board_exists(board_id)? {
             return Ok(None);
         }
-        let snapshot = self.write_template_snapshot(board_id, &self.board_task_ids(board_id)?)?;
+        let snapshot = self.write_template_snapshot(
+            board_id,
+            &self.board_task_ids(board_id)?,
+            CopyTasks::ClearMembers,
+        )?;
         let mut row = BoardTemplateRow {
             id: Uuid::new_v4().to_string(),
             name: name.to_string(),
@@ -6740,9 +6849,15 @@ impl Db {
     }
 
     /// Returns the template snapshot of board `board_id` with the tasks `task_ids` names, in that
-    /// order, skipping any that are gone. The snapshot is written one task at a time and refused
-    /// with [`QuotaExceeded`] once it passes [`MAX_TEMPLATE_ROW_BYTES`].
-    fn write_template_snapshot(&self, board_id: &str, task_ids: &[String]) -> DbResult<Vec<u8>> {
+    /// order, skipping any that are gone, with their members and responsible actor when `tasks`
+    /// is [`CopyTasks::Keep`]. The snapshot is written one task at a time and refused with [`QuotaExceeded`] once
+    /// it passes [`MAX_TEMPLATE_ROW_BYTES`].
+    fn write_template_snapshot(
+        &self,
+        board_id: &str,
+        task_ids: &[String],
+        tasks: CopyTasks,
+    ) -> DbResult<Vec<u8>> {
         let colors: Vec<serde_json::Value> = self
             .list_colors(board_id)?
             .iter()
@@ -6827,7 +6942,13 @@ impl Db {
             let Some(task) = self.task(task_id)? else {
                 continue;
             };
-            let task = serde_json::json!({
+            let mut subtasks = task.subtasks.clone();
+            if tasks != CopyTasks::Keep {
+                for subtask in &mut subtasks {
+                    subtask.member_ids.clear();
+                }
+            }
+            let mut entry = serde_json::json!({
                 "name": task.name,
                 "description": task.description,
                 "size": task.size,
@@ -6853,19 +6974,61 @@ impl Db {
                     .as_deref()
                     .and_then(|id| column_indexes.get(id)),
                 "estimate_hours": task.estimate_hours,
-                "subtasks": task.subtasks,
+                "subtasks": subtasks,
                 "labels": task.labels,
             });
+            if tasks == CopyTasks::Keep {
+                entry["member_ids"] = serde_json::json!(task.member_ids);
+                entry["responsible"] = serde_json::json!(task.responsible);
+            }
             if wrote_task {
                 snapshot.push(b',');
             }
-            serde_json::to_writer(&mut snapshot, &task)?;
+            serde_json::to_writer(&mut snapshot, &entry)?;
             wrote_task = true;
             refuse_template_past(&snapshot)?;
         }
         snapshot.extend_from_slice(b"]}");
         refuse_template_past(&snapshot)?;
         Ok(snapshot)
+    }
+
+    /// Builds a new board named `name` for `owner` that copies board `source_id`: its colors,
+    /// columns with their limits, swimlanes and due time, and the tasks `tasks` names, all in one
+    /// write transaction. Returns `None` when the source is unknown.
+    pub fn copy_board_by(
+        &self,
+        owner: &AccountId,
+        source_id: &str,
+        name: &str,
+        tasks: CopyTasks,
+        joining_token: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<Option<String>> {
+        if !self.board_exists(source_id)? {
+            return Ok(None);
+        }
+        let mut task_ids = match tasks {
+            CopyTasks::None => Vec::new(),
+            CopyTasks::Keep | CopyTasks::ClearMembers => self.board_task_ids(source_id)?,
+        };
+        task_ids.truncate(BOARD_COPY_TASK_CAP);
+        let snapshot = self.write_template_snapshot(source_id, &task_ids, tasks)?;
+        let snapshot: serde_json::Value = serde_json::from_slice(&snapshot)?;
+        let txn = self.db.begin_write()?;
+        let board_id = Self::build_from_template(
+            &txn,
+            owner,
+            &snapshot,
+            name,
+            joining_token,
+            OverQuota::Refuse,
+            actor,
+        )?;
+        let held = txn_board_task_count(&txn, &board_id)?;
+        txn_refuse_board_over_quota(&txn, &board_id, Quota::TasksPerBoard, held)?;
+        txn.commit()?;
+        Ok(Some(board_id))
     }
 
     /// Builds a new board for `owner` from a template snapshot: board row, its colors,
@@ -7147,8 +7310,13 @@ impl Db {
                     .get("subtasks")
                     .and_then(|value| serde_json::from_value::<Vec<Subtask>>(value.clone()).ok())
                     .unwrap_or_default(),
-                member_ids: Vec::new(),
-                responsible: None,
+                member_ids: task
+                    .get("member_ids")
+                    .and_then(|value| serde_json::from_value(value.clone()).ok())
+                    .unwrap_or_default(),
+                responsible: task
+                    .get("responsible")
+                    .and_then(|value| serde_json::from_value(value.clone()).ok()),
                 grouping_date: None,
                 timeline_start: None,
                 timeline_end: None,
@@ -9697,7 +9865,7 @@ mod template_repeat_tests {
             .create_task(&column, None, "Kept", 1, None)
             .expect("task");
         let snapshot = db
-            .write_template_snapshot(&board, &["gone".to_string(), kept])
+            .write_template_snapshot(&board, &["gone".to_string(), kept], CopyTasks::ClearMembers)
             .expect("snapshot");
         let snapshot: serde_json::Value = serde_json::from_slice(&snapshot).expect("valid JSON");
         let tasks = snapshot["tasks"].as_array().expect("tasks");
@@ -11928,8 +12096,8 @@ mod schema_fingerprint_tests {
     use super::*;
     use crate::models::{
         BoardEventRow, BreakActivity, DiskLimits, FieldColumn, InviteRow, NotificationRow,
-        PruneSettings, PruneStatus, Quotas, RateLimits, RegistrationMode, Responsible,
-        SubtaskTemplate, TimerMode,
+        OutboxRow, PruneSettings, PruneStatus, Quotas, RateLimits, RegistrationMode, Responsible,
+        SubtaskTemplate, TimerMode, WebhookEvent,
     };
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
@@ -12253,6 +12421,7 @@ mod schema_fingerprint_tests {
             shape::<RateLimits>("RateLimits"),
             shape::<RecoveryCodeRow>("RecoveryCodeRow"),
             shape::<RegistrationMode>("RegistrationMode"),
+            shape::<OutboxRow>("OutboxRow"),
             shape::<Responsible>("Responsible"),
             shape::<SessionRow>("SessionRow"),
             shape::<Settings>("Settings"),
@@ -12267,6 +12436,8 @@ mod schema_fingerprint_tests {
             shape::<TimeEntryRow>("TimeEntryRow"),
             shape::<TimerMode>("TimerMode"),
             shape::<UserRow>("UserRow"),
+            shape::<WebhookEvent>("WebhookEvent"),
+            shape::<WebhookRow>("WebhookRow"),
         ];
 
         let mut tables = vec![
@@ -12287,6 +12458,8 @@ mod schema_fingerprint_tests {
             table(TEMPLATE_SNAPSHOTS),
             table(META),
             table(FIELD_DEFS),
+            table(WEBHOOKS),
+            table(WEBHOOK_OUTBOX),
             table(DEVICE_AUTHS),
             table(PASSKEYS),
             table(ACCOUNT_SETTINGS),
@@ -12319,6 +12492,8 @@ mod schema_fingerprint_tests {
             multimap(ENTRIES_BY_TASK),
             multimap(COLORS_BY_BOARD),
             multimap(FIELDS_BY_BOARD),
+            multimap(WEBHOOKS_BY_BOARD),
+            multimap(WEBHOOK_OUTBOX_BY_HOOK),
             multimap(LINKS_BY_TARGET),
             multimap(BIN_BY_BOARD),
         ];

@@ -8,22 +8,22 @@ use axum::extract::{FromRequestParts, MatchedPath};
 use axum::http::request::Parts;
 use axum::response::Response;
 use chrono::{Local, Utc};
-use redb::ReadTransaction;
+use redb::{ReadTransaction, ReadableTable};
 use serde::de::DeserializeOwned;
 use tokio::sync::watch;
 
 use super::{
     AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardSnapshot,
     COLUMNS, Change, ChangeOutcome, ClaimOutcome, ClaimRequest, ColorDeleteOutcome,
-    ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Db, DbResult, DeviceGrant,
-    EventRead, FIELD_DEFS, FeedAdd, FencedWrite, FieldCreateOutcome, Incoming, LINKS_BY_TARGET,
-    LinkAddOutcome, LinkDeleteOutcome, MoveGuards, MoveOutcome, NewComment, NewTaskPlacement,
-    NewTimeEntry, NotificationPage, PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome,
-    RestoreOutcome, Rows, SWIMLANES, SessionEndOutcome, SessionListing, SessionToken,
-    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS,
-    TASKS, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome, UmbrellaChange, first_board, index_in,
-    link_event_target, links_blocked_in, no_signed_in_account, owns_board_in, read_in,
-    redacted_history,
+    ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, CopyTasks, Db, DbResult,
+    DeviceGrant, EventRead, FIELD_DEFS, FeedAdd, FencedWrite, FieldCreateOutcome, Incoming,
+    LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, MoveGuards, MoveOutcome, NewComment,
+    NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage, PasskeyAddOutcome,
+    PasskeyDeleteOutcome, PurgeOutcome, Reads, RestoreOutcome, Rows, SWIMLANES, SessionEndOutcome,
+    SessionListing, SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
+    SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome,
+    UmbrellaChange, WEBHOOKS, WebhookPatch, first_board, index_in, link_event_target,
+    links_blocked_in, no_signed_in_account, owns_board_in, read_in, redacted_history,
 };
 use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission,
@@ -33,6 +33,7 @@ use crate::models::{
     BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, EventKind, FieldDefRow, LinkKind,
     PasskeyRow, PruneNotice, RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskBrief,
     TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
+    WebhookRow,
 };
 use crate::permissions::Permission;
 
@@ -87,6 +88,9 @@ pub type OwnedColor = Owned<ColorRow>;
 
 /// A custom field on a board the bound account owns.
 pub type OwnedField = Owned<FieldDefRow>;
+
+/// A webhook on a board the bound account owns.
+pub type OwnedWebhook = Owned<WebhookRow>;
 
 /// A time entry the bound account logged.
 pub type OwnedEntry = Owned<TimeEntryRow>;
@@ -1175,6 +1179,25 @@ impl AccountDb {
             .save_board_as_template(&self.account, &board.row().id, name, description)
     }
 
+    /// Builds a new board for the account that copies `source`, which joins the set of the token
+    /// behind the handle. The tasks it starts with are `actor`'s.
+    pub fn copy_board(
+        &self,
+        source: &OwnedBoard,
+        name: &str,
+        tasks: CopyTasks,
+        actor: Actor<'_>,
+    ) -> DbResult<Option<String>> {
+        self.db.copy_board_by(
+            &self.account,
+            &source.row().id,
+            name,
+            tasks,
+            self.joining_token(),
+            actor,
+        )
+    }
+
     /// Builds a new board for the account from a template, which joins the set of the token behind
     /// the handle. The tasks it starts with are `actor`'s.
     pub fn apply_template(
@@ -1215,6 +1238,37 @@ impl AccountDb {
             board_id: column.board_id,
         };
         Ok(Some(task))
+    }
+
+    /// Returns the board and id of the one task of the account whose id starts with `prefix`, or
+    /// [`None`] when none or several do. A task on a board outside the token's set is refused with
+    /// [`BoardDenied`].
+    pub fn task_by_prefix(&self, prefix: &str) -> DbResult<Option<(String, String)>> {
+        let txn = self.db.read()?;
+        let tasks = txn.rows(TASKS)?;
+        let mut found = None;
+        for entry in tasks.range(prefix..)? {
+            let (key, value) = entry?;
+            if !key.value().starts_with(prefix) {
+                break;
+            }
+            let head: TaskHead = serde_json::from_slice(value.value())?;
+            let Some(column) = read_in::<ColumnRow>(&txn, COLUMNS, &head.column_id)? else {
+                continue;
+            };
+            let board_id = column.board_id;
+            if !owns_board_in(&txn, &self.account, &board_id)? {
+                continue;
+            }
+            if found.replace((board_id, key.value().to_owned())).is_some() {
+                return Ok(None);
+            }
+        }
+        if let Some((board_id, _)) = &found {
+            self.check_granted(board_id)?;
+            self.mark_used(board_id);
+        }
+        Ok(found)
     }
 
     /// Returns what links read of task `id`, with the board it sits on, when the account owns
@@ -1802,6 +1856,39 @@ impl AccountDb {
     /// Deletes a field and its value on every task of its board.
     pub fn delete_field(&self, field: &OwnedField) -> DbResult<bool> {
         self.db.delete_field(&field.row().id)
+    }
+
+    /// Returns webhook `id` when the account owns its board.
+    pub fn webhook(&self, id: &str) -> DbResult<Option<OwnedWebhook>> {
+        self.on_owned_board(WEBHOOKS, id, |hook: &WebhookRow| &hook.board_id)
+    }
+
+    /// Returns a board's webhooks, oldest first, and none for another account's board.
+    pub fn list_webhooks(&self, board_id: &str) -> DbResult<Vec<WebhookRow>> {
+        self.on_own_board(board_id, || self.db.list_webhooks(board_id))
+    }
+
+    /// Stores a new webhook on a board, and refuses it while the board holds the most it may.
+    pub fn create_webhook(&self, board: &OwnedBoard, hook: NewWebhook) -> DbResult<WebhookRow> {
+        let hook = NewWebhook {
+            board_id: board.row().id.clone(),
+            ..hook
+        };
+        self.db.create_webhook(hook)
+    }
+
+    /// Applies a patch to a webhook and returns it as stored.
+    pub fn update_webhook(
+        &self,
+        hook: &OwnedWebhook,
+        patch: WebhookPatch,
+    ) -> DbResult<Option<WebhookRow>> {
+        self.db.update_webhook(&hook.row().id, patch)
+    }
+
+    /// Deletes a webhook.
+    pub fn delete_webhook(&self, hook: &OwnedWebhook) -> DbResult<bool> {
+        self.db.delete_webhook(&hook.row().id)
     }
 
     /// Returns time entry `id` when the account logged it, refusing one on a task outside the

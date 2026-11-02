@@ -1,3 +1,4 @@
+mod board_history;
 mod calendar_export;
 mod docs;
 mod export;
@@ -5,6 +6,7 @@ mod multipart;
 mod slot;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,7 +40,7 @@ use utoipa::openapi::security::{
 use utoipa::openapi::{ContentBuilder, OpenApi as OpenApiSpec, Ref, RefOr};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 use uuid::Uuid;
-use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
+use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential, Url};
 
 use self::calendar_export::{Format, Level, Range};
 use self::export::{ArchiveStream, TaskStream};
@@ -53,15 +55,16 @@ use crate::backup::{BackupFile, RunError};
 use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
     AdminActionOutcome, BoardDenied, Bound, ChangeOutcome, ChildRef, ClaimOutcome, ClaimRequest,
-    ColumnDeleteOutcome, ColumnKind, CommentWrite, DeviceAuthCreateOutcome, DeviceGrant,
-    DevicePoll, DuplicateAttachment, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome,
-    FirstPasskeyOutcome, InstanceDb, LargestUse, LinkAddOutcome, LinkDeleteOutcome, LinkReads,
-    MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards, MoveOutcome, NO_LANE_POSITION,
-    NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
-    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuotaExceeded, RecoverOutcome,
-    RegisterOutcome, RestoreOutcome, Revoked, SessionEndOutcome, SessionListing, SessionRefused,
-    SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
-    SwimlaneUpdateOutcome, TaskContext, UmbrellaChange, UmbrellaPart, UmbrellaRef, carry_fields,
+    ColumnDeleteOutcome, ColumnKind, ColumnWatch, CommentWrite, CopyTasks, DeviceAuthCreateOutcome,
+    DeviceGrant, DevicePoll, DuplicateAttachment, EventRead, FeedAdd, FencedWrite,
+    FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LargestUse, LinkAddOutcome,
+    LinkDeleteOutcome, LinkReads, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards,
+    MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement,
+    NewTimeEntry, NewWebhook, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome,
+    PublicDb, PurgeOutcome, QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome,
+    Revoked, SessionEndOutcome, SessionListing, SessionRefused, SessionToken,
+    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext,
+    UmbrellaChange, UmbrellaPart, UmbrellaRef, WebhookColumnMissing, WebhookPatch, carry_fields,
     clean_labels, local_day, merge_metadata, push_change_event, push_column_event, push_event,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
@@ -73,7 +76,8 @@ use crate::passkey::{
 };
 use crate::permissions::{Permission, Preset};
 use crate::rules::{self, ColumnRules, EntryRule};
-use crate::{AppState, markdown, search};
+use crate::webhook::{HostCheck, ProbeError};
+use crate::{AppState, markdown, search, webhook};
 
 /// Build the full router. The auth middleware layer is added *before*
 /// `/login` and `/setup` are registered, so those two stay public.
@@ -129,6 +133,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/tasks/:id/card", get(task_card))
         .route("/api/tasks/:id/modal", get(task_modal))
+        .route("/t/:id", get(task_link_page))
         .route("/api/tasks/:id/move", post(move_task))
         .route("/api/boards/:id/tasks/bulk", post(bulk_tasks))
         .route("/api/tasks/:id/watch", post(watch_task))
@@ -256,10 +261,25 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/fields/:id",
             patch(update_board_field).delete(delete_board_field),
+        )
+        .route(
+            "/api/boards/:id/webhooks",
+            post(create_board_webhook).get(list_board_webhooks),
+        )
+        .route(
+            "/api/webhooks/:id",
+            patch(update_webhook).delete(delete_webhook),
+        )
+        .route("/api/webhooks/:id/secret", get(get_webhook_secret))
+        .route("/api/boards/:id/webhooks/test-dns", post(test_webhook_dns))
+        .route(
+            "/api/boards/:id/webhooks/test-request",
+            post(test_webhook_request),
         );
 
     // Board export dataset for the Export report
     let router = router.route("/api/boards/:id/export-data", get(board_export_data));
+    let router = router.route("/api/boards/:id/history", get(board_history_rows));
     let router = router.route("/api/boards/:id/archive", get(board_archive));
 
     let router = router.route(
@@ -322,6 +342,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/b/:board_id/settings/api-webhooks",
             get(board_settings_api_page),
+        )
+        .route(
+            "/b/:board_id/settings/api-webhooks/new",
+            get(board_settings_webhook_new_page),
+        )
+        .route(
+            "/b/:board_id/settings/api-webhooks/:webhook_id",
+            get(board_settings_webhook_edit_page),
         )
         .route(
             "/b/:board_id/settings/add-from-email",
@@ -703,6 +731,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::DELETE, "/api/tasks/:id", Task, Exempt),
         (Method::GET, "/api/tasks/:id/card", Task, No),
         (Method::GET, "/api/tasks/:id/modal", Task, No),
+        (Method::GET, "/t/:id", Task, No),
         (Method::POST, "/api/tasks/:id/move", Task, Grows),
         (Method::POST, "/api/boards/:id/tasks/bulk", Board, Grows),
         (Method::POST, "/api/tasks/:id/watch", Task, Grows),
@@ -845,7 +874,25 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/api/boards/:id/fields", Board, No),
         (Method::PATCH, "/api/fields/:id", Entity, Grows),
         (Method::DELETE, "/api/fields/:id", Entity, Exempt),
+        (Method::POST, "/api/boards/:id/webhooks", Board, Grows),
+        (Method::GET, "/api/boards/:id/webhooks", Board, No),
+        (Method::PATCH, "/api/webhooks/:id", Entity, Grows),
+        (Method::DELETE, "/api/webhooks/:id", Entity, Exempt),
+        (Method::GET, "/api/webhooks/:id/secret", Entity, No),
+        (
+            Method::POST,
+            "/api/boards/:id/webhooks/test-dns",
+            Board,
+            Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/boards/:id/webhooks/test-request",
+            Board,
+            Exempt,
+        ),
         (Method::GET, "/api/boards/:id/export-data", Board, No),
+        (Method::GET, "/api/boards/:id/history", Board, No),
         (Method::GET, "/api/boards/:id/archive", Board, No),
         (Method::GET, "/api/boards/:id/calendar-feeds", Board, No),
         (Method::POST, "/api/boards/:id/calendar-feeds", Board, Grows),
@@ -880,6 +927,18 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/b/:board_id/settings/advanced", Board, No),
         (Method::GET, "/b/:board_id/settings/fields", Board, No),
         (Method::GET, "/b/:board_id/settings/api-webhooks", Board, No),
+        (
+            Method::GET,
+            "/b/:board_id/settings/api-webhooks/new",
+            Board,
+            No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/settings/api-webhooks/:webhook_id",
+            Board,
+            No,
+        ),
         (
             Method::GET,
             "/b/:board_id/settings/add-from-email",
@@ -1232,6 +1291,9 @@ impl From<Box<dyn std::error::Error>> for AppError {
         if let Some(refusal) = error.downcast_ref::<QuotaExceeded>() {
             return (*refusal).into();
         }
+        if error.downcast_ref::<WebhookColumnMissing>().is_some() {
+            return Self::bad_request(error.to_string());
+        }
         if let Some(duplicate) = error.downcast_ref::<DuplicateAttachment>() {
             return Self::conflict(duplicate.to_string()).with_code(ErrorCode::DuplicateAttachment);
         }
@@ -1301,6 +1363,8 @@ struct TaskNameItem {
     name: String,
     /// The board the task's column belongs to.
     board_id: String,
+    /// Path that opens the card in the browser, `/t/{id}`.
+    url: String,
     /// RFC3339 time the task entered its current column.
     column_entered_at: String,
 }
@@ -1346,6 +1410,9 @@ struct TaskSummaryPage {
     /// Pass as `cursor` to read the next page. Null on the last page.
     next_cursor: Option<String>,
 }
+
+/// Shortest task id prefix `/t/{id}` looks up, so a guess cannot walk the task table.
+const TASK_PREFIX_MIN_LEN: usize = 6;
 
 /// Page size when a list request gives no `limit`.
 const DEFAULT_PAGE_LIMIT: usize = 200;
@@ -1930,6 +1997,9 @@ struct TaskView {
     claim_fence: Option<u64>,
     /// True while a required "user" custom field is empty (card badge).
     fields_incomplete: bool,
+    /// The values of the dropdown custom fields as a JSON object, rendered as the card's
+    /// `data-filter-fields` attribute so the board filter can match them.
+    filter_fields_json: String,
 }
 
 /// Represents where an archiving column places a card.
@@ -2256,6 +2326,24 @@ fn required_fields(db: &AccountDb, board_id: &str) -> Result<Vec<FieldDefRow>, A
         .map_err(AppError::from)?
         .into_iter()
         .filter(|def| def.owner == FieldOwner::User && def.required)
+        .collect())
+}
+
+/// Returns the dropdown custom fields of `board_id`, in board order.
+fn select_field_defs(db: &AccountDb, board_id: &str) -> Result<Vec<FieldDefRow>, AppError> {
+    Ok(db
+        .list_fields(board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .filter(|def| def.kind == FieldKind::Select)
+        .collect())
+}
+
+/// Returns the keys of the dropdown custom fields of `board_id`.
+fn select_field_keys(db: &AccountDb, board_id: &str) -> Result<HashSet<String>, AppError> {
+    Ok(select_field_defs(db, board_id)?
+        .into_iter()
+        .map(|def| def.key)
         .collect())
 }
 
@@ -2661,6 +2749,8 @@ impl TaskView {
                 })
                 .unwrap_or_default(),
             fields_incomplete: false,
+            filter_fields_json: serde_json::to_string(&row.fields)
+                .unwrap_or_else(|_| "{}".to_string()),
         }
     }
 
@@ -2677,7 +2767,9 @@ impl TaskView {
         let required = required_fields(db, board_id)?;
         let incomplete = fields_incomplete(&required, &row.fields);
         let mut reads = db.link_reads().map_err(AppError::from)?;
-        let card = TaskCard::from(row);
+        let mut card = TaskCard::from(row);
+        let select_keys = select_field_keys(db, board_id)?;
+        card.fields.retain(|key, _| select_keys.contains(key));
         let mut view = Self::from_card_in_board(db, &mut reads, board_id, &card, incomplete)?
             .with_full(row, handle);
         let links = reads.task_links(&row.id).map_err(AppError::from)?;
@@ -3348,6 +3440,10 @@ fn place_overdue_strips(bands: &mut [BandView], heads: &[ColumnHead], hide_swiml
 
 /// Column header data: id, name, task count, optional WIP limit, done flag.
 #[derive(Clone, Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one column state the board template reads"
+)]
 struct ColumnHead {
     id: String,
     name: String,
@@ -3361,6 +3457,8 @@ struct ColumnHead {
     /// overdue task(s)" indicator.
     overdue_count: usize,
     is_done: bool,
+    /// Whether the viewing account watches the column.
+    watched: bool,
     /// Opaque column-dialog settings bag, for the Edit column dialog.
     config_json: String,
     /// The header badge, absent for Column sum "None" (KanbanFlow shows no count there), the task
@@ -3448,6 +3546,8 @@ struct ColumnListItem {
     wip_limit: Option<i64>,
     /// Whether tasks moved here count as Done.
     is_done: bool,
+    /// Whether the calling account watches the column.
+    watched: bool,
 }
 
 /// One board template, shaped `{ "id", "name", "description", "built_in" }`.
@@ -3494,8 +3594,22 @@ struct BoardTemplate {
     legend_visible: bool,
     /// The board's "Due date time" ("HH:MM"), the due dialog's time for a new due date.
     due_time: String,
+    /// The user ids a task added in the dialog starts with, comma separated.
+    default_member_ids: String,
     /// Registered users, one filter User option each.
     members: Vec<MemberDetail>,
+    /// The board's dropdown custom fields, one filter select each.
+    filter_fields: Vec<FilterField>,
+}
+
+/// A dropdown custom field as the board filter offers it.
+struct FilterField {
+    /// The field's key, sent as the select's `data-field-key`.
+    key: String,
+    /// The label shown above the select.
+    label: String,
+    /// The dropdown choices, in field order.
+    options: Vec<String>,
 }
 
 impl BoardTemplate {
@@ -4134,13 +4248,14 @@ fn board_template(
     // Every task is read as a card, one at a time, and keeps no field the page does not render.
     // Cards sort by position within their cell, the board order.
     let required = required_fields(db, &board_id)?;
+    let select_keys = select_field_keys(db, &board_id)?;
     let mut incomplete: HashSet<String> = HashSet::new();
     let mut tasks: Vec<TaskCard> = Vec::new();
     db.visit_board_cards(&board_id, |mut card| {
         if fields_incomplete(&required, &card.fields) {
             incomplete.insert(card.id.clone());
         }
-        card.fields = serde_json::Map::new();
+        card.fields.retain(|key, _| select_keys.contains(key));
         tasks.push(card);
         Ok(())
     })
@@ -4194,6 +4309,7 @@ fn board_template(
                 over_limit,
                 overdue_count,
                 is_done: col.is_done,
+                watched: col.watched_by(db.account_id().as_str()),
                 config_json: col.config_json.clone(),
                 sum_label: match ColumnSettings::from_column(col).sum {
                     ColumnSum::EstimatedHours => Some(format_column_hours(estimate_total)),
@@ -4315,6 +4431,10 @@ fn board_template(
         new_tasks_at_top,
         legend_visible,
         due_time,
+        default_member_ids: board
+            .row()
+            .default_member_ids(db.account_id().as_str())
+            .join(","),
         colors: db
             .list_colors(&board_id)
             .map_err(AppError::from)?
@@ -4323,6 +4443,14 @@ fn board_template(
             .map(ColorView::from)
             .collect(),
         chrome,
+        filter_fields: select_field_defs(db, &board_id)?
+            .into_iter()
+            .map(|def| FilterField {
+                key: def.key,
+                label: def.label,
+                options: def.options,
+            })
+            .collect(),
         members: db
             .list_users()
             .map_err(AppError::from)?
@@ -6773,6 +6901,9 @@ struct CreateTaskInput {
     description: Option<String>,
     /// Labels; trimmed, empties and duplicates dropped.
     labels: Option<Vec<String>>,
+    /// User ids of the task's members, from `GET /api/members`. The first becomes responsible.
+    /// Absent gives the board's default member, and an empty list gives none.
+    member_ids: Option<Vec<String>>,
     /// Custom field values by key, checked as Fields describes. A field with a default that is not
     /// given starts at its default.
     #[serde(default, deserialize_with = "de_opt_opt")]
@@ -6833,6 +6964,7 @@ async fn list_tasks(
         db.visit_board_tasks(&board_id, |task: TaskName| {
             items.push(TaskNameItem {
                 column_entered_at: task.column_entered_at.unwrap_or(task.created_at),
+                url: task_url(&task.id),
                 id: task.id,
                 name: task.name,
                 board_id: board_id.clone(),
@@ -7159,6 +7291,24 @@ async fn create_task(
     }
     if let Some(labels) = input.labels.as_deref() {
         row.labels = clean_labels(labels);
+    }
+    match &input.member_ids {
+        Some(member_ids) => {
+            check_members(db, member_ids)?;
+            row.set_members(clean_labels(member_ids));
+        }
+        None => {
+            let board = found(db.board(&column.row().board_id), "board not found")?;
+            let defaults = board.row().default_member_ids(db.account_id().as_str());
+            if check_members(db, &defaults).is_ok() {
+                row.set_members(defaults);
+                if !board.row().default_member_responsible()
+                    && matches!(row.responsible, Some(Responsible::Member { .. }))
+                {
+                    row.responsible = None;
+                }
+            }
+        }
     }
     for (key, value) in field_values {
         if !value.is_null() {
@@ -9082,6 +9232,8 @@ async fn restore_task(
 #[derive(serde::Serialize, ToSchema)]
 struct TaskDetail {
     id: String,
+    /// Path that opens the card in the browser, `/t/{id}`.
+    url: String,
     name: String,
     description: String,
     /// Hex SHA-256 of `description`, which `POST /api/tasks/{id}/checklist/{index}` expects as its
@@ -9242,6 +9394,7 @@ impl TaskDetail {
             description_hash: markdown::hash(&task.description),
             updated_at: task.last_updated().to_string(),
             column_entered_at: task.column_entered_at().to_string(),
+            url: task_url(&task.id),
             id: task.id,
             name: task.name,
             description: task.description,
@@ -11953,6 +12106,28 @@ fn subtask_member_chips(
         .collect()
 }
 
+/// Returns the path that opens task `id` in the browser.
+fn task_url(id: &str) -> String {
+    format!("/t/{id}")
+}
+
+/// Redirects `/t/{id}`, where `id` is a task id or a prefix of one, to the card open on its
+/// board. A prefix that is too short, matches no task of the account or matches two answers the
+/// same 404.
+async fn task_link_page(account: AccountDb, Path(id): Path<String>) -> Result<Redirect, AppError> {
+    let shaped = id.len() >= TASK_PREFIX_MIN_LEN
+        && id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f' | b'-'));
+    let found = if shaped {
+        account.task_by_prefix(&id).map_err(AppError::from)?
+    } else {
+        None
+    };
+    let (board_id, task_id) = found.ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(Redirect::to(&format!("/b/{board_id}#task-{task_id}")))
+}
+
 /// Render the task-detail modal: editable fields, timer, time entries.
 async fn task_modal(
     State(state): State<AppState>,
@@ -12515,6 +12690,10 @@ async fn due_date_page(
 struct BoardHistoryTemplate {
     board_id: String,
     board_name: String,
+    /// The `(value, label)` of each event group the Event filter offers.
+    event_groups: Vec<(&'static str, &'static str)>,
+    /// The `(value, label)` of each property the Property filter offers.
+    properties: Vec<(&'static str, &'static str)>,
     /// Top bar data.
     chrome: ShellChrome,
 }
@@ -12530,6 +12709,8 @@ async fn board_history_page(
     Ok(BoardHistoryTemplate {
         board_id: board.id,
         board_name: board.name,
+        event_groups: board_history::event_groups(),
+        properties: board_history::changed_properties(),
         chrome,
     })
 }
@@ -13435,6 +13616,9 @@ struct UpdateColumnInput {
     description: Option<String>,
     /// Collapse/expand the column on the board.
     collapsed: Option<bool>,
+    /// Watch (true) or unwatch (false) the column for the calling account. The flag is the
+    /// account's own, and other accounts keep theirs.
+    watched: Option<bool>,
     /// Settings bag for the column dialog, sent as a string of valid JSON. The keys with an effect
     /// are `sorting` (`none`, `due`, `color`, `name`, `created` or `added`) for the order of the
     /// column's tasks, `column_sum` (`none`, `count` or `hours`) for the header badge, and
@@ -13443,7 +13627,7 @@ struct UpdateColumnInput {
 }
 
 /// Renames a column, sets or clears its WIP limit, flips its done flag, and updates its
-/// description, collapsed state, and settings bag.
+/// description, collapsed state, the calling account's watch and settings bag.
 #[utoipa::path(
     patch,
     path = "/api/columns/{id}",
@@ -13488,6 +13672,10 @@ async fn update_column(
         is_done: input.is_done,
         description: input.description.as_deref().map(str::trim),
         collapsed: input.collapsed,
+        watch: input.watched.map(|watched| ColumnWatch {
+            account: db.account_id().as_str(),
+            watched,
+        }),
         config_json: input.config_json.as_deref(),
     };
     if !db.update_column(&column, &patch).map_err(AppError::from)? {
@@ -13920,6 +14108,8 @@ struct ExportColumnRef {
     id: String,
     name: String,
     former_names: Vec<String>,
+    /// Whether a task that reaches the column is done.
+    is_done: bool,
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
@@ -13956,6 +14146,7 @@ fn build_board_export_data(
                 id: c.id.clone(),
                 name: c.name.clone(),
                 former_names: c.former_names.clone(),
+                is_done: c.is_done,
             })
             .collect(),
         swimlanes: swimlanes
@@ -14038,6 +14229,191 @@ async fn board_export_data(
     let body = TaskStream::wrap(&head, account.clone(), ids)
         .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(([(CONTENT_TYPE, "application/json")], body).into_response())
+}
+
+/// Query of `GET /api/boards/{id}/history`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct BoardHistoryQuery {
+    /// `json` (the default), `xlsx` or `csv`.
+    format: Option<String>,
+    /// Keeps one kind of event: `created`, `deleted`, `restored`, `changed`, `comment`,
+    /// `relation` or `attachment`. All when absent.
+    event: Option<String>,
+    /// Keeps one kind of change, such as `moved` or `labels_updated`. All when absent.
+    property: Option<String>,
+    /// Keeps the rows of one user. All when absent.
+    user: Option<String>,
+    /// The first instant to keep, RFC 3339. Open when absent.
+    from: Option<String>,
+    /// The first instant to leave out, RFC 3339. Open when absent.
+    to: Option<String>,
+    /// `newest` (the default) or `oldest` first.
+    order: Option<String>,
+}
+
+/// Parses the optional RFC 3339 query value `name`.
+fn history_instant(name: &str, value: Option<&str>) -> Result<Option<DateTime<Utc>>, AppError> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            DateTime::parse_from_rfc3339(value)
+                .map(|at| at.to_utc())
+                .map_err(|_| AppError::bad_request(format!("{name} must be an RFC 3339 time")))
+        })
+        .transpose()
+}
+
+/// Returns the non-empty query value `value`.
+fn history_choice(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.is_empty())
+}
+
+impl BoardHistoryQuery {
+    /// Returns the filter the query names, or the error for a value that names none.
+    fn filter(&self) -> Result<board_history::Filter, AppError> {
+        let event = history_choice(self.event.clone())
+            .map(|name| {
+                board_history::Group::parse(&name).ok_or_else(|| {
+                    AppError::bad_request(
+                        "event must be created, deleted, restored, changed, comment, relation or attachment",
+                    )
+                })
+            })
+            .transpose()?;
+        let order = match self.order.as_deref() {
+            None | Some("") => board_history::Order::Newest,
+            Some(name) => board_history::Order::parse(name)
+                .ok_or_else(|| AppError::bad_request("order must be newest or oldest"))?,
+        };
+        let filter = board_history::Filter {
+            event,
+            property: history_choice(self.property.clone()),
+            user: history_choice(self.user.clone()),
+            from: history_instant("from", self.from.as_deref())?,
+            to: history_instant("to", self.to.as_deref())?,
+            order,
+        };
+        if filter
+            .from
+            .zip(filter.to)
+            .is_some_and(|(from, to)| to < from)
+        {
+            return Err(AppError::bad_request("to must not be before from"));
+        }
+        Ok(filter)
+    }
+}
+
+/// Reads the rows of `board` that `filter` passes, leaving out the tasks in its recycle bin that
+/// `now` (Unix seconds) finds past their retention.
+fn load_history_page(
+    reader: &AccountDb,
+    board: &OwnedBoard,
+    filter: &board_history::Filter,
+    now: i64,
+) -> Result<board_history::HistoryPage, String> {
+    let mut live = Vec::new();
+    for task in reader
+        .board_tasks(&board.row().id)
+        .map_err(|e| e.to_string())?
+    {
+        let events = reader
+            .visible_history(&task.history)
+            .map_err(|e| e.to_string())?;
+        live.push((task, events));
+    }
+    let mut binned = Vec::new();
+    for row in reader.binned_tasks(board).map_err(|e| e.to_string())? {
+        if now < row.expires_at() {
+            let events = reader
+                .visible_history(&row.task.history)
+                .map_err(|e| e.to_string())?;
+            binned.push((row, events));
+        }
+    }
+    Ok(board_history::page(&live, &binned, filter))
+}
+
+/// Returns the history of the board: one row for each event of its tasks, its comments and the
+/// tasks in its recycle bin, with the user, the task, the kind of event, what happened and, when a
+/// value changed, the old and the new value. `event`, `property`, `user`, `from`, `to` and `order`
+/// narrow and sort the rows. A task's rows exclude the events a token may not read.
+/// `format=xlsx` or `format=csv` downloads the same rows as a file.
+/// The server builds 3 whole-board responses at once, 1 for each account, and one that waits more
+/// than 10 seconds gets 503 `busy`.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/history",
+    operation_id = "get_board_history",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id"), BoardHistoryQuery),
+    responses(
+        (status = 200, description = "The history rows and the users who made them, or an Excel workbook or CSV file", body = board_history::HistoryPage),
+        (status = 400, description = "Invalid input: an unknown format, event or order, or a time that is not RFC 3339 or a range that ends before it starts"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
+        (status = 503, description = "`busy`: the server is sending its limit of whole-board reads, or this account is, and this one waited more than 10 seconds for its turn"),
+    ),
+)]
+async fn board_history_rows(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    Query(query): Query<BoardHistoryQuery>,
+) -> Result<Response, AppError> {
+    let format = match query.format.as_deref() {
+        None | Some("" | "json") => None,
+        Some(name) => Some(
+            Format::parse(name)
+                .ok_or_else(|| AppError::bad_request("format must be json, xlsx or csv"))?,
+        ),
+    };
+    let filter = query.filter()?;
+    let board = found(account.board(&id), "board not found")?;
+    let slot = match Slot::Board(account.account_id().as_str())
+        .acquire(&state)
+        .await
+    {
+        Ok(slot) => slot,
+        Err(busy) => return Ok(*busy),
+    };
+    let reader = account.clone();
+    let page = tokio::task::spawn_blocking(move || {
+        load_history_page(&reader, &board, &filter, Utc::now().timestamp())
+    })
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .map_err(AppError::internal)?;
+    let (content_type, bytes, file) = match format {
+        None => (
+            "application/json; charset=utf-8",
+            serde_json::to_vec(&page).map_err(|error| AppError::internal(error.to_string()))?,
+            None,
+        ),
+        Some(format) => {
+            let cells = board_history::export_cells(&page);
+            let bytes = match format {
+                Format::Xlsx => calendar_export::xlsx_bytes(&cells, "History"),
+                Format::Csv => calendar_export::csv_bytes(&cells),
+            };
+            let file = format!("board-history.{}", format.extension());
+            (format.content_type(), bytes, Some(file))
+        }
+    };
+    let mut response = (
+        StatusCode::OK,
+        [(CONTENT_TYPE, content_type.to_string())],
+        SlotBody::wrap(Bytes::from(bytes), slot),
+    )
+        .into_response();
+    if let Some(file) = file
+        && let Ok(value) = HeaderValue::from_str(&attachment_disposition(&file))
+    {
+        response.headers_mut().insert(CONTENT_DISPOSITION, value);
+    }
+    Ok(response)
 }
 
 /// Downloads the whole board as a gzipped tar archive, saved as `<board name>.tar.gz`, that a
@@ -14553,7 +14929,7 @@ async fn export_calendar(
     .map_err(|error| AppError::internal(error.to_string()))?
     .map_err(AppError::internal)?;
     let bytes = match format {
-        Format::Xlsx => calendar_export::xlsx_bytes(&rows),
+        Format::Xlsx => calendar_export::xlsx_bytes(&rows, "Due dates"),
         Format::Csv => calendar_export::csv_bytes(&rows),
     };
     let name = format!("due-dates.{}", format.extension());
@@ -14647,24 +15023,20 @@ async fn list_board_columns(
 
 /// Returns a board's columns in board order as list items.
 fn board_columns(db: &AccountDb, board_id: &str) -> Result<Vec<ColumnListItem>, AppError> {
+    let account = db.account_id().as_str();
     let columns = db
         .list_columns(board_id)
         .map_err(AppError::from)?
         .into_iter()
-        .map(ColumnListItem::from)
-        .collect();
-    Ok(columns)
-}
-
-impl From<ColumnRow> for ColumnListItem {
-    fn from(column: ColumnRow) -> Self {
-        Self {
+        .map(|column| ColumnListItem {
+            watched: column.watched_by(account),
             id: column.id,
             name: column.name,
             wip_limit: column.wip_limit,
             is_done: column.is_done,
-        }
-    }
+        })
+        .collect();
+    Ok(columns)
 }
 
 /// One swimlane in `GET /api/boards/{id}`.
@@ -14745,6 +15117,8 @@ async fn get_board_detail(
 #[derive(serde::Serialize, ToSchema)]
 struct TaskSummary {
     id: String,
+    /// Path that opens the card in the browser, `/t/{id}`.
+    url: String,
     name: String,
     column_id: String,
     swimlane_id: Option<String>,
@@ -14778,6 +15152,7 @@ impl TaskSummary {
             claim: task.live_claim().cloned(),
             updated_at: task.last_updated().to_string(),
             column_entered_at: task.column_entered_at().to_string(),
+            url: task_url(&task.id),
             id: task.id,
             name: task.name,
             column_id: task.column_id,
@@ -15743,6 +16118,523 @@ async fn delete_board_field(
     }
 }
 
+/// A webhook as the API returns it, without its secret.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct WebhookView {
+    /// The webhook's id.
+    id: String,
+    /// The board the webhook belongs to.
+    board_id: String,
+    /// The name the settings show.
+    name: String,
+    /// The `http` or `https` URL the webhook calls.
+    url: String,
+    /// The events the webhook receives, each once.
+    events: Vec<WebhookEvent>,
+    /// The one column whose events the webhook receives, or null for every column.
+    column_id: Option<String>,
+    /// Whether the webhook receives events.
+    enabled: bool,
+    /// RFC3339.
+    created_at: String,
+}
+
+impl From<WebhookRow> for WebhookView {
+    fn from(row: WebhookRow) -> Self {
+        Self {
+            id: row.id,
+            board_id: row.board_id,
+            name: row.name,
+            url: row.url,
+            events: row.events,
+            column_id: row.column_id,
+            enabled: row.enabled,
+            created_at: row.created_at,
+        }
+    }
+}
+
+/// A webhook just created, with the secret that signs its deliveries. No other response carries
+/// the secret.
+#[derive(Clone, serde::Serialize, ToSchema)]
+struct CreatedWebhookView {
+    #[serde(flatten)]
+    webhook: WebhookView,
+    /// 64 lowercase hex characters, returned only by this response.
+    secret: String,
+}
+
+impl fmt::Debug for CreatedWebhookView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreatedWebhookView")
+            .field("webhook", &self.webhook)
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
+impl From<WebhookRow> for CreatedWebhookView {
+    fn from(row: WebhookRow) -> Self {
+        let secret = row.secret.clone();
+        Self {
+            webhook: WebhookView::from(row),
+            secret,
+        }
+    }
+}
+
+/// The body that registers a webhook.
+#[derive(Deserialize, ToSchema)]
+struct CreateWebhookInput {
+    /// Required, 1 to 100 characters once trimmed.
+    #[schema(value_type = String, required = true)]
+    name: Option<String>,
+    /// Required, an `http` or `https` URL of at most 2048 characters without a username or
+    /// password.
+    #[schema(value_type = String, required = true)]
+    url: Option<String>,
+    /// Required, one or more events with repeats dropped.
+    #[schema(value_type = Vec<WebhookEvent>, required = true)]
+    events: Option<Vec<WebhookEvent>>,
+    /// A column of this board. Absent or null receives the events of every column. Deleting the
+    /// column clears the filter and disables the webhook.
+    column_id: Option<String>,
+    /// Defaults to true.
+    enabled: Option<bool>,
+}
+
+/// The body that changes a webhook, where an absent field stays as it is.
+#[derive(Deserialize, ToSchema)]
+struct UpdateWebhookInput {
+    /// The new name, 1 to 100 characters once trimmed.
+    name: Option<String>,
+    /// The new `http` or `https` URL.
+    url: Option<String>,
+    /// Replaces the whole list.
+    events: Option<Vec<WebhookEvent>>,
+    /// Null clears the filter so every column's events arrive.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    column_id: Option<Option<String>>,
+    /// False disables the webhook without deleting it.
+    enabled: Option<bool>,
+}
+
+/// Returns the value of a required body field, or a 400 naming the field.
+fn required<T>(value: Option<T>, name: &str) -> Result<T, AppError> {
+    value.ok_or_else(|| AppError::bad_request(format!("{name} is required")))
+}
+
+/// Returns a webhook name trimmed, or a 400 when it is empty or past its cap.
+fn check_webhook_name(name: &str) -> Result<String, AppError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::bad_request("name is required"));
+    }
+    TextCap::WEBHOOK_NAME.check(name)?;
+    Ok(name.to_string())
+}
+
+/// Returns a webhook URL as the server stores it, or a 400 when it is not an `http` or `https`
+/// URL with a host and no credentials.
+fn check_webhook_url(raw: &str) -> Result<String, AppError> {
+    let raw = raw.trim();
+    TextCap::WEBHOOK_URL.check(raw)?;
+    let url = Url::parse(raw).map_err(|_| AppError::bad_request("url is not a valid URL"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(AppError::bad_request("url must use http or https"));
+    }
+    if url.host_str().is_none() {
+        return Err(AppError::bad_request("url needs a host"));
+    }
+    if url
+        .host_str()
+        .is_some_and(|host| !webhook::is_public_host(host))
+    {
+        return Err(AppError::bad_request(
+            "url must name a public host, not a loopback, private or link-local address",
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(AppError::bad_request(
+            "url must not carry a username or password",
+        ));
+    }
+    let normalized = url.to_string();
+    TextCap::WEBHOOK_URL.check(&normalized)?;
+    Ok(normalized)
+}
+
+/// Returns the events without repeats, or a 400 when there are none.
+fn check_webhook_events(events: Vec<WebhookEvent>) -> Result<Vec<WebhookEvent>, AppError> {
+    if events.is_empty() {
+        return Err(AppError::bad_request("events needs at least one event"));
+    }
+    let mut checked: Vec<WebhookEvent> = Vec::new();
+    for event in events {
+        if !checked.contains(&event) {
+            checked.push(event);
+        }
+    }
+    Ok(checked)
+}
+
+/// Returns `column_id` when it names a column of board `board_id` the account owns, or a 400.
+fn check_webhook_column(
+    account: &AccountDb,
+    board_id: &str,
+    column_id: String,
+) -> Result<String, AppError> {
+    let column = account.column(&column_id).map_err(AppError::from)?;
+    match column {
+        Some(column) if column.row().board_id == board_id => Ok(column_id),
+        _ => Err(AppError::bad_request(
+            "column_id is not a column of this board",
+        )),
+    }
+}
+
+/// Registers a webhook on a board and returns it with its secret, which no other response shows.
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/webhooks",
+    operation_id = "create_board_webhook",
+    tag = "Webhooks",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = CreateWebhookInput,
+    responses(
+        (status = 200, description = "The new webhook, with its secret", body = CreatedWebhookView),
+        (status = 400, description = "Missing or overlong name or url, a url that is not http or https, carries credentials or names a loopback, private or link-local address, no events or an unknown one, or a column_id that is not a column of the board"),
+        (status = 403, description = "`permission_denied`: the token lacks `webhooks.manage`"),
+        (status = 404, description = "Board not found"),
+        (status = 409, description = "`quota_exceeded`: the board already holds 20 webhooks"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn create_board_webhook(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<CreatedWebhookView>, AppError> {
+    let input: CreateWebhookInput = parse_body(&headers, body).await?;
+    let board = found(account.board(&board_id), "Board not found")?;
+    let name = check_webhook_name(required(input.name.as_deref(), "name")?)?;
+    let url = check_webhook_url(required(input.url.as_deref(), "url")?)?;
+    let events = check_webhook_events(required(input.events, "events")?)?;
+    let column_id = input
+        .column_id
+        .map(|column_id| check_webhook_column(&account, &board_id, column_id))
+        .transpose()?;
+    let hook = NewWebhook {
+        board_id,
+        name,
+        url,
+        events,
+        column_id,
+        enabled: input.enabled.unwrap_or(true),
+    };
+    let hook = account
+        .create_webhook(&board, hook)
+        .map_err(AppError::from)?;
+    Ok(Json(CreatedWebhookView::from(hook)))
+}
+
+/// Lists a board's webhooks, oldest first, without their secrets.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/webhooks",
+    operation_id = "list_board_webhooks",
+    tag = "Webhooks",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "The board's webhooks", body = Vec<WebhookView>),
+        (status = 403, description = "`permission_denied`: the token lacks `webhooks.manage`"),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_board_webhooks(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<Json<Vec<WebhookView>>, AppError> {
+    if !account.board_exists(&board_id).map_err(AppError::from)? {
+        return Err(AppError::not_found("Board not found"));
+    }
+    let hooks = account
+        .list_webhooks(&board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(WebhookView::from)
+        .collect();
+    Ok(Json(hooks))
+}
+
+/// Changes a webhook's name, url, events, column filter or enabled flag. Send only what changes.
+/// The secret is fixed and the response never carries it.
+#[utoipa::path(
+    patch,
+    path = "/api/webhooks/{id}",
+    operation_id = "update_webhook",
+    tag = "Webhooks",
+    params(("id" = String, Path, description = "Webhook id")),
+    request_body = UpdateWebhookInput,
+    responses(
+        (status = 200, description = "The updated webhook", body = WebhookView),
+        (status = 400, description = "Empty or overlong name or url, a url that is not http or https, carries credentials or names a loopback, private or link-local address, no events or an unknown one, or a column_id that is not a column of the webhook's board"),
+        (status = 403, description = "`permission_denied`: the token lacks `webhooks.manage`"),
+        (status = 404, description = "webhook not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn update_webhook(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<WebhookView>, AppError> {
+    let input: UpdateWebhookInput = parse_body(&headers, body).await?;
+    let stored = found(account.webhook(&id), "webhook not found")?;
+    let column_id = match input.column_id {
+        None => None,
+        Some(None) => Some(None),
+        Some(Some(column_id)) => Some(Some(check_webhook_column(
+            &account,
+            &stored.row().board_id,
+            column_id,
+        )?)),
+    };
+    let patch = WebhookPatch {
+        name: input.name.as_deref().map(check_webhook_name).transpose()?,
+        url: input.url.as_deref().map(check_webhook_url).transpose()?,
+        events: input.events.map(check_webhook_events).transpose()?,
+        column_id,
+        enabled: input.enabled,
+    };
+    let updated = account
+        .update_webhook(&stored, patch)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("webhook not found"))?;
+    Ok(Json(WebhookView::from(updated)))
+}
+
+/// Deletes a webhook.
+#[utoipa::path(
+    delete,
+    path = "/api/webhooks/{id}",
+    operation_id = "delete_webhook",
+    tag = "Webhooks",
+    params(("id" = String, Path, description = "Webhook id")),
+    responses(
+        (status = 200, description = "Webhook deleted"),
+        (status = 403, description = "`permission_denied`: the token lacks `webhooks.manage`"),
+        (status = 404, description = "webhook not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_webhook(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let hook = found(account.webhook(&id), "webhook not found")?;
+    if account.delete_webhook(&hook).map_err(AppError::from)? {
+        Ok(StatusCode::OK)
+    } else {
+        Err(AppError::not_found("webhook not found"))
+    }
+}
+
+/// The secret of a webhook, as only the browser session reads it.
+#[derive(serde::Serialize, ToSchema)]
+struct WebhookSecretView {
+    /// 64 lowercase hex characters. Deliveries carry `X-Pomb-Signature: sha256=` followed by the
+    /// lowercase hex HMAC-SHA256 of the request body keyed by this secret.
+    secret: String,
+}
+
+impl fmt::Debug for WebhookSecretView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebhookSecretView")
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Returns a webhook's secret to the browser session, so the settings can show it again.
+#[utoipa::path(
+    get,
+    path = "/api/webhooks/{id}/secret",
+    operation_id = "get_webhook_secret",
+    tag = "Webhooks",
+    params(("id" = String, Path, description = "Webhook id")),
+    responses(
+        (status = 200, description = "The webhook's secret", body = WebhookSecretView),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "webhook not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn get_webhook_secret(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let hook = found(account.webhook(&id), "webhook not found")?;
+    require_cookie_auth(&user)?;
+    let view = WebhookSecretView {
+        secret: hook.row().secret.clone(),
+    };
+    Ok((
+        [(
+            axum::http::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        )],
+        Json(view),
+    )
+        .into_response())
+}
+
+/// The body of a webhook check.
+#[derive(Deserialize, ToSchema)]
+struct WebhookProbeInput {
+    /// Required, an `http` or `https` URL held to the same rules as a webhook's url.
+    #[schema(value_type = String, required = true)]
+    url: Option<String>,
+}
+
+/// What a lookup of a callback host found.
+#[derive(serde::Serialize, ToSchema)]
+struct WebhookDnsView {
+    /// True when the host resolves and every address it names is public.
+    ok: bool,
+    /// `Resolves to public addresses only`, `Does not resolve` or `Resolves to a non-public
+    /// address`. No address is returned.
+    message: String,
+}
+
+/// How a test request ended.
+#[derive(serde::Serialize, ToSchema)]
+struct WebhookTestView {
+    /// The HTTP status the callback answered with, absent when it gave none.
+    status: Option<u16>,
+    /// `refused: not a public address`, `timed out` or `could not connect`, absent when the
+    /// callback answered.
+    error: Option<String>,
+}
+
+/// Returns the 429 a check gets while both of its slots are taken.
+#[must_use]
+fn probe_busy() -> AppError {
+    AppError::with_status(
+        StatusCode::TOO_MANY_REQUESTS,
+        "two webhook checks are already running, so try again in a moment",
+    )
+    .with_code(ErrorCode::Busy)
+}
+
+/// Looks up a callback URL's host the way deliveries do and says whether it resolves to public
+/// addresses only, without returning any address. Needs the browser session.
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/webhooks/test-dns",
+    operation_id = "test_webhook_dns",
+    tag = "Webhooks",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = WebhookProbeInput,
+    responses(
+        (status = 200, description = "What the lookup found", body = WebhookDnsView),
+        (status = 400, description = "A url that is missing, not http or https, carries credentials or names a loopback, private or link-local address"),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "Board not found"),
+        (status = 429, description = "`busy`: two checks are already running"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn test_webhook_dns(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<WebhookDnsView>, AppError> {
+    found(account.board(&board_id), "Board not found")?;
+    require_cookie_auth(&user)?;
+    let input: WebhookProbeInput = parse_body(&headers, body).await?;
+    let url = check_webhook_url(required(input.url.as_deref(), "url")?)?;
+    let checked = state
+        .prober
+        .check_host(&url)
+        .await
+        .map_err(|_| probe_busy())?;
+    let (ok, message) = match checked {
+        HostCheck::Resolves => (true, "Resolves to public addresses only"),
+        HostCheck::NotFound => (false, "Does not resolve"),
+        HostCheck::NotPublic => (false, "Resolves to a non-public address"),
+    };
+    Ok(Json(WebhookDnsView {
+        ok,
+        message: message.to_string(),
+    }))
+}
+
+/// Sends one unsigned `POST` with a small test event to a callback URL, through the guarded sender
+/// that deliveries use, and returns the status it answered with. At most two checks run at once.
+/// Needs the browser session.
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/webhooks/test-request",
+    operation_id = "test_webhook_request",
+    tag = "Webhooks",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = WebhookProbeInput,
+    responses(
+        (status = 200, description = "How the request ended", body = WebhookTestView),
+        (status = 400, description = "A url that is missing, not http or https, carries credentials or names a loopback, private or link-local address"),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "Board not found"),
+        (status = 429, description = "`busy`: two checks are already running"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn test_webhook_request(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<WebhookTestView>, AppError> {
+    let board = found(account.board(&board_id), "Board not found")?;
+    require_cookie_auth(&user)?;
+    let input: WebhookProbeInput = parse_body(&headers, body).await?;
+    let url = check_webhook_url(required(input.url.as_deref(), "url")?)?;
+    let sent = state.prober.send_test(&url, &board.row().id).await;
+    let view = match sent {
+        Ok(status) => WebhookTestView {
+            status: Some(status),
+            error: None,
+        },
+        Err(ProbeError::Busy) => return Err(probe_busy()),
+        Err(ProbeError::Refused) => WebhookTestView {
+            status: None,
+            error: Some("refused: not a public address".to_string()),
+        },
+        Err(ProbeError::TimedOut) => WebhookTestView {
+            status: None,
+            error: Some("timed out".to_string()),
+        },
+        Err(ProbeError::Unreachable) => WebhookTestView {
+            status: None,
+            error: Some("could not connect".to_string()),
+        },
+    };
+    Ok(Json(view))
+}
+
 #[derive(Deserialize, ToSchema)]
 struct CreateBoardInput {
     name: String,
@@ -15750,11 +16642,22 @@ struct CreateBoardInput {
     /// columns To-do, Doing and Done, no WIP limits, and the standard color palette with Brown and
     /// White disabled.
     template_id: Option<String>,
+    /// Optional id of a board to copy instead of a template: its colors, columns with their WIP
+    /// limits, swimlanes and due time. A copy and a template are exclusive.
+    copy_board_id: Option<String>,
+    /// With `copy_board_id`, also copies the first 200 tasks of the board in board order. Needs
+    /// the `tasks.read` permission, and `copy_board_id` itself needs `boards.read`. The copy is not a backup: comments, history, attachments, time
+    /// and links stay behind.
+    #[serde(default)]
+    copy_tasks: bool,
+    /// With `copy_tasks`, leaves the copied tasks with no members and no responsible actor.
+    #[serde(default)]
+    clear_members: bool,
 }
 
-/// Creates a board, optionally from a template, and returns the board id. A board made without a
-/// template gets the columns To-do, Doing and Done, and the standard color palette with Brown and
-/// White disabled.
+/// Creates a board, optionally from a template or as a copy of one of the account's boards, and
+/// returns the board id. A board made without either gets the columns To-do, Doing and Done, and
+/// the standard color palette with Brown and White disabled.
 #[utoipa::path(
     post,
     path = "/api/boards",
@@ -15763,8 +16666,9 @@ struct CreateBoardInput {
     request_body = CreateBoardInput,
     responses(
         (status = 200, description = "Created board id", body = IdResult),
-        (status = 400, description = "Invalid input: name blank or over 100 characters"),
-        (status = 404, description = "Template not found"),
+        (status = 400, description = "Invalid input: name blank or over 100 characters, a template together with a board to copy, or `copy_tasks` or `clear_members` without a board to copy"),
+        (status = 403, description = "`permission_denied`: `copy_board_id` needs `boards.read` and `copy_tasks` needs `tasks.read`"),
+        (status = 404, description = "Template or board to copy not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -15782,15 +16686,50 @@ async fn create_board(
         .map_err(AppError::bad_request)?
         .to_string();
 
-    let id = match input.template_id.filter(|s| !s.is_empty()) {
-        Some(template_id) => {
+    let template_id = input.template_id.filter(|s| !s.is_empty());
+    let copy_board_id = input.copy_board_id.filter(|s| !s.is_empty());
+    if template_id.is_some() && copy_board_id.is_some() {
+        return Err(AppError::bad_request(
+            "choose a template or a board to copy, not both",
+        ));
+    }
+    if copy_board_id.is_none() && (input.copy_tasks || input.clear_members) {
+        return Err(AppError::bad_request(
+            "copy_tasks and clear_members need copy_board_id",
+        ));
+    }
+    if input.clear_members && !input.copy_tasks {
+        return Err(AppError::bad_request("clear_members needs copy_tasks"));
+    }
+    if input.copy_tasks && !user.has(Permission::TasksRead) {
+        return Err(AppError::permission_denied(Permission::TasksRead));
+    }
+
+    if copy_board_id.is_some() && !user.has(Permission::BoardsRead) {
+        return Err(AppError::permission_denied(Permission::BoardsRead));
+    }
+
+    let id = match (template_id, copy_board_id) {
+        (_, Some(source_id)) => {
+            let source = found(db.board(&source_id), "board not found")?;
+            let tasks = match (input.copy_tasks, input.clear_members) {
+                (false, _) => CopyTasks::None,
+                (true, false) => CopyTasks::Keep,
+                (true, true) => CopyTasks::ClearMembers,
+            };
+            found(
+                db.copy_board(&source, &name, tasks, user.actor()),
+                "board not found",
+            )?
+        }
+        (Some(template_id), None) => {
             let template = found(db.template(&template_id), "template not found")?;
             found(
                 db.apply_template(&template, &name, user.actor()),
                 "template not found",
             )?
         }
-        None => db
+        (None, None) => db
             .create_simple_board(&name, user.actor())
             .map_err(AppError::from)?,
     };
@@ -16021,6 +16960,12 @@ struct BoardConfigInput {
     /// `DELETE /api/bin/{id}` remove a deleted task of this board for good, false (the default)
     /// refuses it.
     bin_permanent_delete: Option<bool>,
+    /// The member new tasks start with: `none` (the default), `creator` for the account that
+    /// creates the task, or the user id of one member from `GET /api/members`.
+    default_member: Option<String>,
+    /// Whether the default member also becomes the task's responsible member. True when never
+    /// set.
+    default_member_responsible: Option<bool>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -16041,6 +16986,10 @@ struct BoardConfigView {
     due_time: String,
     /// Whether the board's owner may delete tasks from its recycle bin for good.
     bin_permanent_delete: bool,
+    /// The member new tasks start with: `none`, `creator` or a user id.
+    default_member: String,
+    /// Whether the default member also becomes responsible.
+    default_member_responsible: bool,
 }
 
 /// Merges per-board UI settings into the board's opaque config bag (the Color legend Menu toggle
@@ -16054,7 +17003,7 @@ struct BoardConfigView {
     request_body = BoardConfigInput,
     responses(
         (status = 200, description = "Current board config", body = BoardConfigView),
-        (status = 400, description = "Invalid due_time, or archiving the last unarchived board"),
+        (status = 400, description = "Invalid due_time, unknown default_member, or archiving the last unarchived board"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -16097,6 +17046,28 @@ async fn update_board_config(
             serde_json::Value::Bool(allowed),
         );
     }
+    if let Some(member) = input.default_member.as_deref() {
+        let known = member == DEFAULT_MEMBER_NONE
+            || member == DEFAULT_MEMBER_CREATOR
+            || db
+                .list_users()
+                .map_err(AppError::from)?
+                .iter()
+                .any(|user| user.id == member);
+        if !known {
+            return Err(AppError::bad_request("unknown default_member"));
+        }
+        updates.insert(
+            DEFAULT_MEMBER_KEY.to_string(),
+            serde_json::Value::String(member.to_string()),
+        );
+    }
+    if let Some(responsible) = input.default_member_responsible {
+        updates.insert(
+            DEFAULT_MEMBER_RESPONSIBLE_KEY.to_string(),
+            serde_json::Value::Bool(responsible),
+        );
+    }
     if let Some(raw) = input.due_time.as_deref() {
         let time = parse_due_time(raw.trim()).ok_or_else(|| {
             AppError::bad_request(format!("invalid due_time \"{raw}\": use 24-hour HH:MM"))
@@ -16121,6 +17092,8 @@ async fn update_board_config(
         lane_names_folded: board.row().lane_names_folded(),
         due_time: board.row().due_time().format("%H:%M").to_string(),
         bin_permanent_delete: board.row().config_bool(BIN_PERMANENT_DELETE_KEY),
+        default_member: board.row().default_member(),
+        default_member_responsible: board.row().default_member_responsible(),
     }))
 }
 
@@ -16558,10 +17531,14 @@ async fn delete_template(
 /// One board-settings tab rendered inside the shared shell template.
 #[derive(Template)]
 #[template(path = "board_settings.html")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one setting the tab template reads"
+)]
 struct BoardSettingsTemplate {
     board_id: String,
     board_name: String,
-    /// "general" | "layout" | "colors" | "task" | "advanced" | "fields" | "rules" | "api" | "email"
+    /// "general" | "layout" | "colors" | "task" | "advanced" | "fields" | "rules" | "api" | "webhook" | "email"
     tab: String,
     colors: Vec<ColorView>,
     /// Other boards, for the Colors tab's "Copy from board" dialog.
@@ -16586,10 +17563,118 @@ struct BoardSettingsTemplate {
     /// The board's "Due date time" as "HH:MM" and as "5:00 PM".
     due_time: String,
     due_time_label: String,
+    /// The board's webhooks, for the API & Webhooks tab.
+    webhooks: Vec<WebhookListItem>,
+    /// The webhook the Add and Edit page shows.
+    webhook_form: WebhookFormView,
+    /// The member new tasks start with: `none`, `creator` or a user id.
+    default_member: String,
+    /// What the Default member row shows.
+    default_member_label: String,
+    /// Whether the default member also becomes responsible.
+    default_member_responsible: bool,
+    /// Registered users, one Default member choice each.
+    members: Vec<MemberDetail>,
     /// The locked labels, one per line, for the Column rules tab.
     rules_labels: String,
     /// Each column with its entry rule, for the Column rules tab.
     rules_columns: Vec<RulesColumnView>,
+}
+
+/// One saved webhook as the API & Webhooks tab lists it.
+#[derive(Clone, Debug)]
+struct WebhookListItem {
+    id: String,
+    name: String,
+    url: String,
+    /// The labels of its events, joined.
+    events: String,
+    /// The name of its column filter, or "All columns".
+    column: String,
+    enabled: bool,
+}
+
+/// One event checkbox of the webhook form.
+#[derive(Clone, Debug)]
+struct WebhookEventChoice {
+    name: &'static str,
+    label: &'static str,
+    checked: bool,
+}
+
+/// What the webhook Add and Edit page pre-fills, where an empty id means a new webhook.
+#[derive(Clone, Debug, Default)]
+struct WebhookFormView {
+    id: String,
+    name: String,
+    url: String,
+    /// The column filter, or empty for every column.
+    column_id: String,
+    events: Vec<WebhookEventChoice>,
+}
+
+impl WebhookFormView {
+    /// Returns the form of a new webhook, with no event checked.
+    #[must_use]
+    fn blank() -> Self {
+        Self::of(None)
+    }
+
+    /// Returns the form that shows `hook`, or the blank one.
+    #[must_use]
+    fn of(hook: Option<&WebhookRow>) -> Self {
+        let events = WebhookEvent::ALL
+            .iter()
+            .map(|&event| WebhookEventChoice {
+                name: event.name(),
+                label: event.label(),
+                checked: hook.is_some_and(|hook| hook.events.contains(&event)),
+            })
+            .collect();
+        match hook {
+            Some(hook) => Self {
+                id: hook.id.clone(),
+                name: hook.name.clone(),
+                url: hook.url.clone(),
+                column_id: hook.column_id.clone().unwrap_or_default(),
+                events,
+            },
+            None => Self {
+                events,
+                ..Self::default()
+            },
+        }
+    }
+}
+
+/// Returns the rows the API & Webhooks tab lists for board `board_id`.
+fn webhook_list(
+    db: &AccountDb,
+    board_id: &str,
+    columns: &[SettingsColumnView],
+) -> Result<Vec<WebhookListItem>, AppError> {
+    Ok(db
+        .list_webhooks(board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|hook| WebhookListItem {
+            column: hook
+                .column_id
+                .as_deref()
+                .and_then(|id| columns.iter().find(|column| column.id == id))
+                .map_or_else(|| "All columns".to_string(), |column| column.name.clone()),
+            events: hook
+                .events
+                .iter()
+                .map(|event| event.label())
+                .collect::<Vec<_>>()
+                .join(", "),
+            id: hook.id,
+            name: hook.name,
+            url: hook.url,
+            enabled: hook.enabled,
+        })
+        .collect())
 }
 
 /// One column's entry rule as the Column rules tab shows it.
@@ -16620,6 +17705,7 @@ struct RulesFieldView {
 
 #[derive(Clone, Debug)]
 struct SettingsColumnView {
+    id: String,
     name: String,
     wip_limit: Option<i64>,
     is_done: bool,
@@ -16706,6 +17792,7 @@ fn board_settings_context(
         .map_err(AppError::from)?
         .into_iter()
         .map(|c| SettingsColumnView {
+            id: c.id,
             name: c.name,
             wip_limit: c.wip_limit,
             is_done: c.is_done,
@@ -16732,7 +17819,36 @@ fn board_settings_context(
     let bin_permanent_delete = board.config_bool(BIN_PERMANENT_DELETE_KEY);
     let due_time = board.due_time();
     let chrome = shell_chrome(state, db, username)?;
+    let webhooks = if tab == "api" {
+        webhook_list(db, board_id, &columns)?
+    } else {
+        Vec::new()
+    };
+    let members: Vec<MemberDetail> = db
+        .list_users()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|user| MemberDetail {
+            id: user.id,
+            username: user.username,
+        })
+        .collect();
+    let default_member = board.default_member();
+    let default_member_label = match default_member.as_str() {
+        DEFAULT_MEMBER_NONE => "None".to_string(),
+        DEFAULT_MEMBER_CREATOR => "Task creator".to_string(),
+        id => members
+            .iter()
+            .find(|member| member.id == id)
+            .map_or_else(|| "None".to_string(), |member| member.username.clone()),
+    };
     Ok(BoardSettingsTemplate {
+        webhooks,
+        webhook_form: WebhookFormView::default(),
+        default_member_responsible: board.default_member_responsible(),
+        default_member,
+        default_member_label,
+        members,
         due_time: due_time.format("%H:%M").to_string(),
         due_time_label: due_time.format("%-I:%M %p").to_string(),
         board_id: board.id,
@@ -16785,6 +17901,48 @@ board_settings_tab!(board_settings_fields_page, "fields");
 board_settings_tab!(board_settings_rules_page, "rules");
 board_settings_tab!(board_settings_api_page, "api");
 board_settings_tab!(board_settings_email_page, "email");
+
+/// The Add webhook page.
+async fn board_settings_webhook_new_page(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<BoardSettingsTemplate, AppError> {
+    let mut page = board_settings_context(
+        &state,
+        &account,
+        &user.username,
+        &board_id,
+        "webhook",
+        false,
+    )?;
+    page.webhook_form = WebhookFormView::blank();
+    Ok(page)
+}
+
+/// The Edit webhook page, which pre-fills the webhook it names.
+async fn board_settings_webhook_edit_page(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path((board_id, webhook_id)): Path<(String, String)>,
+) -> Result<BoardSettingsTemplate, AppError> {
+    let mut page = board_settings_context(
+        &state,
+        &account,
+        &user.username,
+        &board_id,
+        "webhook",
+        false,
+    )?;
+    let hook = found(account.webhook(&webhook_id), "webhook not found")?;
+    if hook.row().board_id != board_id {
+        return Err(AppError::not_found("webhook not found"));
+    }
+    page.webhook_form = WebhookFormView::of(Some(hook.row()));
+    Ok(page)
+}
 
 #[derive(Deserialize)]
 struct BoardSettingsForm {
@@ -20007,6 +21165,14 @@ async fn mark_all_notifications_read(
 
 // ---- Generated OpenAPI ----
 
+/// Routes on a board or another owned row that also need the browser session, so a token never
+/// reaches them, as (method, axum path).
+const SESSION_ONLY_OWNED: &[(Method, &str)] = &[
+    (Method::GET, "/api/webhooks/:id/secret"),
+    (Method::POST, "/api/boards/:id/webhooks/test-dns"),
+    (Method::POST, "/api/boards/:id/webhooks/test-request"),
+];
+
 /// Adds the `bearerAuth` HTTP bearer security scheme for the `pomb_...` API tokens and the
 /// `cookieAuth` session cookie scheme, and gives each
 /// operation that needs credentials the permission [`auth::required_permission`] demands of it. A
@@ -20035,6 +21201,8 @@ impl Modify for SecurityAddon {
                 });
                 let session_only = route_class(&method, path).is_some_and(|class| {
                     matches!(class, RouteClass::AccountSession | RouteClass::Admin)
+                }) || SESSION_ONLY_OWNED.iter().any(|(listed, pattern)| {
+                    *listed == method && auth::path_matches(pattern, path)
                 });
                 if session_only {
                     operation.security = Some(vec![SecurityRequirement::new(
@@ -20419,6 +21587,48 @@ merged onto none and stored in the same write as the task. Metadata changes are 
 the task history. A request carrying `metadata` whose body is over 64 KiB is a 400, as is a merged
 object over 64 KiB."#;
 
+/// Concept prose for the `Webhooks` tag.
+const WEBHOOKS_DOC: &str = r#"A webhook tells another server about events on one board. It is stored per board, at most
+20 per board (the 21st is a 409 `quota_exceeded`), and managing webhooks needs the
+`webhooks.manage` permission, which only the admin preset holds.
+
+A webhook has:
+
+- `name`: 1 to 100 characters once trimmed.
+- `url`: an `http` or `https` URL of at most 2048 characters, with no username or password.
+- `events`: one or more of `taskCreated`, `taskChanged`, `taskDeleted`, `taskRestored`,
+  `commentCreated`, `commentChanged` and `commentDeleted`. An unknown name is a 400, and a repeat
+  is dropped.
+- `column_id`: optional, a column of the same board, so the webhook receives only that column's
+  events. Null or absent means every column. `PATCH` with null clears it.
+- `enabled`: true unless set false. Disabling keeps the webhook and its secret.
+- `secret`: 64 lowercase hex characters made at creation to sign deliveries. Only the response to
+  `POST /api/boards/{id}/webhooks` carries it. Lists and updates never do.
+
+Deleting a board deletes its webhooks. Deleting the column a webhook filters on clears the filter
+and disables the webhook. Webhooks are not part of a board export or archive, so a secret never
+leaves the server.
+
+Delivery: each event is posted to the `url` in the background, so a slow callback never delays an
+API request. The request is a `POST` with the event's JSON as its body, `Content-Type:
+application/json`, `User-Agent: Pomb`, `X-Pomb-Event` holding the `eventType` and
+`X-Pomb-Signature` holding `sha256=` and the lowercase hex HMAC-SHA256 of the exact body bytes,
+keyed by the 64 hex characters of the secret read as text. The body has `eventType`, `userId`,
+`userFullName`, `timestamp`, `task`, and `changedProperties` or `comment` where the event has
+them. Any 2xx status is a success. Any other status, a connection error, a redirect (redirects
+are not followed) or no complete response within 10 seconds is a failure. A failed event is tried
+twice more, 5 and then 30 seconds after the failure before it, and is then dropped. A webhook
+has at most one delivery in flight, so its other events wait and a webhook with a delivery
+running is skipped for that tick, and at most 4 deliveries run at once across webhooks. An event
+stored in a form that cannot be read is dropped. A disabled or deleted webhook receives nothing.
+
+A `url` whose host is `localhost`, a name under `.localhost` or an IP address that is loopback,
+unspecified, link-local, private, shared (100.64.0.0/10), benchmarking, documentation, multicast
+or reserved is a 400 at creation and update, whichever way the address is spelled, and so is an
+IPv6 address that carries such an IPv4 address. Delivery resolves the host name and drops
+the event without sending when any address it names is one of those, and it connects to the
+address it checked."#;
+
 /// Concept prose for the `Time` tag.
 const TIME_DOC: &str = r#"Time entries record work on a task. Timer sessions create them when they stop (see Timer), and
 the operations below add or edit them by hand. An entry carries `minutes` and `seconds`, since a
@@ -20683,7 +21893,15 @@ them, which the Backups section of the settings page calls after a confirmation.
         list_board_fields,
         update_board_field,
         delete_board_field,
+        create_board_webhook,
+        list_board_webhooks,
+        update_webhook,
+        delete_webhook,
+        get_webhook_secret,
+        test_webhook_dns,
+        test_webhook_request,
         board_export_data,
+        board_history_rows,
         board_archive,
         import_board,
         list_calendar_feeds,
@@ -20833,6 +22051,15 @@ them, which the Backups section of the settings page calls after a confirmation.
             FieldOwner,
             CreateFieldInput,
             UpdateFieldInput,
+            WebhookView,
+            WebhookEvent,
+            CreatedWebhookView,
+            CreateWebhookInput,
+            UpdateWebhookInput,
+            WebhookSecretView,
+            WebhookProbeInput,
+            WebhookDnsView,
+            WebhookTestView,
             ClaimInput,
             HeartbeatInput,
             ReleaseInput,
@@ -20916,6 +22143,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         (name = "Claims", description = CLAIMS_DOC),
         (name = "Links", description = LINKS_DOC),
         (name = "Fields", description = FIELDS_DOC),
+        (name = "Webhooks", description = WEBHOOKS_DOC),
         (name = "Time", description = TIME_DOC),
         (name = "Timer", description = TIMER_DOC),
         (name = "Boards", description = "Boards"),
@@ -20946,6 +22174,12 @@ mod backup_tests;
 
 #[cfg(test)]
 mod bin_tests;
+
+#[cfg(test)]
+mod board_history_tests;
+
+#[cfg(test)]
+mod boards_tests;
 
 #[cfg(test)]
 mod bulk_tests;
@@ -20984,6 +22218,9 @@ mod search_tests;
 mod rules_tests;
 
 #[cfg(test)]
+mod webhook_tests;
+
+#[cfg(test)]
 mod server;
 
 #[cfg(test)]
@@ -20994,22 +22231,42 @@ mod tests {
     use super::docs::SKILL_VERSION;
     use super::server::passkey_mode;
     use super::{
-        ApiDoc, Build, COMPLETION_GRACE_SECS, ColorView, RepeatCadence, TaskCardDisplay,
-        TimerSession, UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed,
-        csv_field, entry_badge, estimate_hours_to_size, format_added, format_due, format_due_card,
-        format_entry_duration, format_estimate_hours, format_pomodori, format_relative_day,
-        format_time_kf, format_timeline, generate_feed_token, history_kind_label, ical_escape,
-        ical_fold, is_overdue, log_timer_session, normalize_due_input, normalize_estimate_hours,
-        parse_manual_range, parse_repeat_cadence, router, timer_status_view, version_info,
+        ApiDoc, Build, COMPLETION_GRACE_SECS, ColorView, CreatedWebhookView, RepeatCadence,
+        TaskCardDisplay, TimerSession, UpdateColumnInput, UpdateTaskInput, build_board_export_data,
+        build_ical_feed, csv_field, entry_badge, estimate_hours_to_size, format_added, format_due,
+        format_due_card, format_entry_duration, format_estimate_hours, format_pomodori,
+        format_relative_day, format_time_kf, format_timeline, generate_feed_token,
+        history_kind_label, ical_escape, ical_fold, is_overdue, log_timer_session,
+        normalize_due_input, normalize_estimate_hours, parse_manual_range, parse_repeat_cadence,
+        router, timer_status_view, version_info,
     };
     use crate::db::{BootstrapToken, Db, NewTimeEntry};
     use crate::models::{
         AccountId, Actor, ActorKind, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, FeedTask,
-        MAX_BOARD_FEEDS, SECONDS_PER_DAY, TaskRow,
+        FieldDefRow, FieldKind, FieldOwner, MAX_BOARD_FEEDS, SECONDS_PER_DAY, TaskRow,
+        WebhookEvent, WebhookRow,
     };
     use crate::{AppState, auth, markdown};
 
     const SECONDS_PER_MINUTE: i64 = 60;
+
+    #[test]
+    fn created_webhook_view_should_redact_its_secret_in_debug_output() {
+        let row = WebhookRow {
+            id: "hook".to_string(),
+            board_id: "board".to_string(),
+            name: "Deploy".to_string(),
+            url: "https://example.com/hook".to_string(),
+            events: vec![WebhookEvent::TaskCreated],
+            column_id: None,
+            enabled: true,
+            secret: "feedfacefeedfacefeedfacefeedface".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let shown = format!("{:?}", CreatedWebhookView::from(row));
+        assert!(!shown.contains("feedface"), "{shown}");
+        assert!(shown.contains("<redacted>"), "{shown}");
+    }
 
     #[test]
     fn is_event_wait_should_match_only_a_get_of_a_boards_wait_path() {
@@ -22975,6 +24232,7 @@ mod tests {
             collapsed: false,
             config_json: "{}".into(),
             former_names: Vec::new(),
+            watchers: Vec::new(),
         }];
         let swimlanes = vec![SwimlaneRow {
             id: "s1".into(),
@@ -23129,6 +24387,7 @@ mod tests {
             collapsed: false,
             config_json: "{}".into(),
             former_names: Vec::new(),
+            watchers: Vec::new(),
         }];
         let tasks = vec![
             feed_task(
@@ -23194,6 +24453,25 @@ mod tests {
         );
     }
 
+    /// Each legend segment carries its color's id and value for the click menu.
+    #[test]
+    fn legend_should_carry_each_color_for_its_click_menu() {
+        let (_, _, html) = board_grid(&[("Default", 0)]);
+        assert!(html.contains("data-color-id=\"c\" data-color-value=\"blue\""));
+        assert!(html.contains("data-legend-act=\"rename\""));
+        assert!(html.contains("data-legend-act=\"filter\""));
+    }
+
+    /// A board with the legend off still renders the footer, hidden, so the Menu toggle can show it
+    /// without a reload.
+    #[test]
+    fn legend_should_render_hidden_when_the_board_turns_it_off() {
+        let (_, _, shown) = render_grid(&[("Default", 0)], &[], true, |_| {});
+        assert!(shown.contains("aria-label=\"Task color legend\">"));
+        let (_, _, hidden) = render_grid(&[("Default", 0)], &[], false, |_| {});
+        assert!(hidden.contains("aria-label=\"Task color legend\" hidden>"));
+    }
+
     /// The board table carries its column counts for the minimum width below which the board
     /// scrolls instead of shrinking.
     #[test]
@@ -23208,7 +24486,7 @@ mod tests {
     /// count)` bands, then returns the header cell count and each row's
     /// cell count.
     fn board_grid(lanes: &[(&str, usize)]) -> (usize, Vec<usize>, String) {
-        render_grid(lanes, &[], |_| {})
+        render_grid(lanes, &[], true, |_| {})
     }
 
     /// Renders like [`board_grid`] with the columns at `collapsed` indexes
@@ -23217,7 +24495,7 @@ mod tests {
         lanes: &[(&str, usize)],
         collapsed: &[usize],
     ) -> (usize, Vec<usize>, String) {
-        render_grid(lanes, collapsed, |_| {})
+        render_grid(lanes, collapsed, true, |_| {})
     }
 
     /// Renders like [`board_grid`] after `tweak` changes the bands.
@@ -23225,12 +24503,13 @@ mod tests {
         lanes: &[(&str, usize)],
         tweak: impl FnOnce(&mut [super::BandView]),
     ) -> (usize, Vec<usize>, String) {
-        render_grid(lanes, &[], tweak)
+        render_grid(lanes, &[], true, tweak)
     }
 
     fn render_grid(
         lanes: &[(&str, usize)],
         collapsed: &[usize],
+        legend_visible: bool,
         tweak: impl FnOnce(&mut [super::BandView]),
     ) -> (usize, Vec<usize>, String) {
         use askama::Template;
@@ -23253,6 +24532,7 @@ mod tests {
                 over_limit: false,
                 overdue_count: usize::from(i == 1),
                 is_done: i == 4,
+                watched: false,
                 config_json: "{}".into(),
                 sum_label: None,
                 sum_kind: "count",
@@ -23307,6 +24587,7 @@ mod tests {
                 lane_names_folded: false,
             },
             new_tasks_at_top: false,
+            default_member_ids: String::new(),
             colors: vec![ColorView {
                 id: "c".into(),
                 value: "blue".into(),
@@ -23320,7 +24601,7 @@ mod tests {
                 border: "#70b0ff".into(),
                 light: "#d6e9ff".into(),
             }],
-            legend_visible: true,
+            legend_visible,
             chrome: ShellChrome {
                 boards: Vec::new(),
                 username: "audit".into(),
@@ -23335,6 +24616,7 @@ mod tests {
             },
             due_time: "17:00".into(),
             members: Vec::new(),
+            filter_fields: Vec::new(),
         }
         .render()
         .expect("render board");
@@ -26072,6 +27354,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn board_page_should_render_dropdown_field_filters_and_card_values() {
+        let (_dir, fx) = kf221_fixture();
+        let field = |key: &str, label: &str, kind: FieldKind| FieldDefRow {
+            id: String::new(),
+            board_id: fx.board_id.clone(),
+            key: key.to_string(),
+            label: label.to_string(),
+            kind,
+            options: vec!["Draft".to_string(), "Live".to_string()],
+            columns: Vec::new(),
+            default: None,
+            required: false,
+            owner: FieldOwner::User,
+            position: 0,
+            created_at: String::new(),
+        };
+        fx.db
+            .create_field(field("stage", "Stage", FieldKind::Select))
+            .expect("select field");
+        fx.db
+            .create_field(field("notes", "Notes", FieldKind::Text))
+            .expect("text field");
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        let (_, task) = create_task_json(&fx, serde_json::json!({"name": "Staged"})).await;
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        let fields = serde_json::json!({"fields": {"stage": "Live", "notes": "private text"}});
+        send(&fx, "PATCH", &uri, Some(fields)).await;
+
+        let (_, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        assert!(page.contains("data-field-key=\"stage\""));
+        assert!(page.contains("<option value=\"Live\">Live</option>"));
+        assert!(!page.contains("data-field-key=\"notes\""));
+        assert!(page.contains("data-filter-fields=\"{&quot;stage&quot;:&quot;Live&quot;}\""));
+        assert!(!page.contains("private text"));
+        assert!(page.contains("id=\"f-label-mode\""));
+        assert!(page.contains("id=\"filter-reset\""));
+        assert!(page.contains("id=\"filter-reset-panel\""));
+    }
+
+    #[tokio::test]
     async fn board_page_should_render_the_finder_hidden() {
         let (_dir, fx) = kf221_fixture();
 
@@ -27625,6 +28948,8 @@ mod tests {
             [
                 "archived",
                 "bin_permanent_delete",
+                "default_member",
+                "default_member_responsible",
                 "due_time",
                 "lane_names_folded",
                 "legend_visible",

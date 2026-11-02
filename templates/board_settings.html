@@ -10,7 +10,7 @@
       <a href="/b/{{ board_id }}/settings/advanced" class="bshell-nav-item{% if tab == "advanced" %} bshell-nav-active{% endif %}">Advanced</a>
       <a href="/b/{{ board_id }}/settings/fields" class="bshell-nav-item{% if tab == "fields" %} bshell-nav-active{% endif %}">Custom fields</a>
       <a href="/b/{{ board_id }}/settings/rules" class="bshell-nav-item{% if tab == "rules" %} bshell-nav-active{% endif %}">Column rules</a>
-      <a href="/b/{{ board_id }}/settings/api-webhooks" class="bshell-nav-item{% if tab == "api" %} bshell-nav-active{% endif %}">API &amp; Webhooks</a>
+      <a href="/b/{{ board_id }}/settings/api-webhooks" class="bshell-nav-item{% if tab == "api" || tab == "webhook" %} bshell-nav-active{% endif %}">API &amp; Webhooks</a>
       <a href="/b/{{ board_id }}/settings/add-from-email" class="bshell-nav-item{% if tab == "email" %} bshell-nav-active{% endif %}">Add task from email</a>
     </nav>
 {% endblock %}
@@ -157,6 +157,8 @@
           <dd><span id="ntp-value">{% if new_tasks_at_top %}Top of column{% else %}Bottom of column{% endif %}</span> <button type="button" class="kf-btn kf-btn-link" id="ntp-edit">Edit</button></dd>
           <dt>Done column</dt>
           <dd>{% if done_column_name.is_empty() %}None configured{% else %}{{ done_column_name }}{% endif %}</dd>
+          <dt>Default member</dt>
+          <dd><span id="default-member-label">{{ default_member_label }}</span> <button type="button" class="kf-btn kf-btn-link" id="default-member-edit">Edit</button></dd>
           <!-- KF-404: KanbanFlow's "Due date time", the time a date-only
                due date gets. -->
           <dt>Due date time</dt>
@@ -175,6 +177,23 @@
           </div>
         </div>
         <div hidden data-page="board-settings-due-time"></div>
+        <div id="default-member-dialog" class="dlg-overlay" hidden>
+          <div class="dlg dlg-light" role="dialog" aria-label="Change default task member">
+            <div class="dlg-title">Change default task member</div>
+            <label class="check-label"><input type="radio" name="default-member" value="none"{% if default_member == "none" %} checked{% endif %}> None</label>
+            <label class="check-label"><input type="radio" name="default-member" value="creator"{% if default_member == "creator" %} checked{% endif %}> Task creator</label>
+            {% for m in members %}
+            <label class="check-label"><input type="radio" name="default-member" value="{{ m.id }}"{% if default_member == m.id %} checked{% endif %}> {{ m.username }}</label>
+            {% endfor %}
+            <label class="check-label" id="default-member-responsible-row"><input type="checkbox" id="default-member-responsible"{% if default_member_responsible %} checked{% endif %}> Set as responsible</label>
+            <div id="default-member-error" class="form-error" hidden></div>
+            <div class="dlg-actions">
+              <button type="button" class="btn" id="default-member-cancel">Cancel</button>
+              <button type="button" class="btn btn-success" id="default-member-save">Set default</button>
+            </div>
+          </div>
+        </div>
+        <div hidden data-page="board-settings-default-member"></div>
         <p class="settings-hint">Tasks completed in the Done column are stamped with a completion date;
           moving them out clears it. Column behavior is configured on the Layout tab.</p>
       </section>
@@ -208,7 +227,82 @@
           <li><code>POST /api/boards/{{ board_id }}/colors/copy-from</code> &mdash; copy another board's palette</li>
         </ul>
         <h3>Webhooks</h3>
-        <p class="settings-hint">Pomb does not support outgoing webhooks yet. Poll the API instead.</p>
+        <p class="settings-hint">A webhook calls a URL with a signed <code>POST</code> when events
+          happen on this board. Each delivery carries the <code>X-Pomb-Signature</code> header.</p>
+        <div id="wh-error" class="form-error" role="alert" hidden></div>
+        <div class="bshell-scroll"><table class="kf-table webhook-table" id="webhook-table">
+          <thead><tr><th>Name</th><th>Callback URL</th><th>Events</th><th>Column</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {% for w in webhooks %}
+            <tr class="webhook-row" data-webhook-id="{{ w.id }}" data-name="{{ w.name }}" data-enabled="{{ w.enabled }}">
+              <td class="wh-name">{{ w.name }}</td>
+              <td class="wh-url"><code title="{{ w.url }}">{{ w.url }}</code></td>
+              <td class="wh-events">{{ w.events }}</td>
+              <td class="wh-column">{{ w.column }}</td>
+              <td class="wh-state">{% if w.enabled %}Enabled{% else %}Disabled{% endif %}</td>
+              <td class="color-cell-actions">
+                <button type="button" class="kf-btn wh-secret">Show secret</button>
+                <a href="/b/{{ board_id }}/settings/api-webhooks/{{ w.id }}" class="kf-btn wh-edit">Edit</a>
+                <span class="wh-menu-wrap">
+                  <button type="button" class="kf-btn wh-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for {{ w.name }}">&hellip;</button>
+                  <div class="menu-pop menu-floating wh-menu" role="menu" hidden>
+                    <button type="button" role="menuitem" class="wh-toggle">{% if w.enabled %}Disable{% else %}Enable{% endif %}</button>
+                    <button type="button" role="menuitem" class="menu-danger wh-delete">Delete</button>
+                  </div>
+                </span>
+              </td>
+            </tr>
+            {% endfor %}
+            {% if webhooks.is_empty() %}
+            <tr><td colspan="6" class="settings-hint" id="wh-empty">No webhooks yet.</td></tr>
+            {% endif %}
+          </tbody>
+        </table></div>
+        <div class="kf-btn-row"><a href="/b/{{ board_id }}/settings/api-webhooks/new" class="kf-btn kf-btn-success" id="wh-add">Add webhook</a></div>
+      </section>
+      {% else if tab == "webhook" %}
+      <section class="settings-section kf-webhook">
+        <h2>{% if webhook_form.id.is_empty() %}Add webhook{% else %}Edit webhook{% endif %}</h2>
+        <form id="wh-form" class="settings-form" data-board-id="{{ board_id }}" data-webhook-id="{{ webhook_form.id }}" novalidate>
+          <div class="wh-tabs" role="tablist" aria-label="Webhook sections">
+            <button type="button" class="wh-tab" role="tab" id="wh-tab-general" data-wh-tab="general" aria-controls="wh-panel-general" aria-selected="true">General</button>
+            <button type="button" class="wh-tab" role="tab" id="wh-tab-filter" data-wh-tab="filter" aria-controls="wh-panel-filter" aria-selected="false" tabindex="-1">Filter</button>
+          </div>
+          <div id="wh-panel-general" class="wh-panel" role="tabpanel" aria-labelledby="wh-tab-general">
+            <label>Name <input type="text" name="name" id="wh-name" maxlength="100" value="{{ webhook_form.name }}" required></label>
+            <label>Callback URL <input type="text" name="url" id="wh-url" inputmode="url" placeholder="https://example.com/hook" value="{{ webhook_form.url }}" required></label>
+            <div class="wh-probe">
+              <button type="button" class="kf-btn" id="wh-test-dns">Test DNS lookup</button>
+              <span class="wh-probe-result" id="wh-dns-result" role="status" aria-live="polite"></span>
+            </div>
+            <div class="wh-probe">
+              <button type="button" class="kf-btn" id="wh-test-request">Send test POST request</button>
+              <span class="wh-probe-result" id="wh-test-result" role="status" aria-live="polite"></span>
+            </div>
+            <fieldset class="token-scopes" id="wh-events">
+              <legend>Events</legend>
+              {% for e in webhook_form.events %}
+              <label class="check-label"><input type="checkbox" name="event" value="{{ e.name }}"{% if e.checked %} checked{% endif %}> {{ e.label }}</label>
+              {% endfor %}
+            </fieldset>
+          </div>
+          <div id="wh-panel-filter" class="wh-panel" role="tabpanel" aria-labelledby="wh-tab-filter" hidden>
+            <label>Column
+              <select name="column_id" id="wh-column">
+                <option value=""{% if webhook_form.column_id.is_empty() %} selected{% endif %}>All columns</option>
+                {% for c in columns %}
+                <option value="{{ c.id }}"{% if webhook_form.column_id == c.id %} selected{% endif %}>{{ c.name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <p class="settings-hint">Only events in this column are sent. Deleting the column clears the filter and disables the webhook.</p>
+          </div>
+          <div id="wh-form-error" class="form-error" role="alert" hidden></div>
+          <div class="kf-btn-row">
+            <button type="submit" class="kf-btn kf-btn-success" id="wh-save">Save</button>
+            <a href="/b/{{ board_id }}/settings/api-webhooks" class="kf-btn" id="wh-cancel">Cancel</a>
+          </div>
+        </form>
       </section>
       {% else if tab == "fields" %}
       <section class="settings-section">
@@ -317,6 +411,43 @@
       {% endif %}
 {% endblock %}
 {% block shell_scripts %}
+{% if tab == "api" || tab == "webhook" %}
+<div id="wh-secret-overlay" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Webhook secret">
+    <div class="dlg-title">Webhook secret
+      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
+    </div>
+    <p class="settings-hint">Use this secret to verify requests. Each delivery carries an
+      <code>X-Pomb-Signature</code> header: <code>sha256=</code> followed by the HMAC-SHA256 of the
+      request body, keyed by this secret.</p>
+    <div id="wh-secret-error" class="form-error" hidden></div>
+    <textarea id="wh-secret-value" class="wh-secret-value" rows="3" readonly spellcheck="false" aria-label="Webhook secret"></textarea>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="wh-secret-copy">Copy</button>
+      <button type="button" class="btn btn-primary" data-close-dialog>Done</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% if tab == "api" %}
+<div id="wh-delete-overlay" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Delete webhook">
+    <div class="dlg-title">Delete webhook
+      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
+    </div>
+    <p class="settings-hint">Delete the webhook <strong id="wh-delete-name"></strong> and the events
+      still queued for it? This cannot be undone.</p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-danger" id="wh-delete-ok">Delete</button>
+    </div>
+  </div>
+</div>
+<div hidden data-page="board-settings-webhooks"></div>
+{% endif %}
+{% if tab == "webhook" %}
+<div hidden data-page="board-settings-webhook-form"></div>
+{% endif %}
 {% if tab == "rules" %}
 <div hidden data-page="board-settings-rules"></div>
 {% endif %}

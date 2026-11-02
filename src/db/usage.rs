@@ -8,15 +8,17 @@ use super::bin::txn_bin_usage;
 use super::entries::{txn_index_entry, txn_refuse_entry, txn_unindex_entry};
 use super::events::txn_record_events;
 use super::notifications::txn_record_task_notifications;
+use super::outbox::txn_queue_events;
 use super::{
     ACCOUNT_USAGE, BOARDS, Bound, COLUMNS, Db, DbResult, FIELD_DEFS, MAX_FIELD_DEF_ROW_BYTES,
     MAX_TASK_ROW_BYTES, QuotaExceeded, Rows, SWIMLANES, Store, TASK_COLORS, TASKS, TEMPLATES,
-    TIME_ENTRIES, board_use_in, read_in, rows_in, txn_member_quotas, txn_refuse_over_quota,
+    TIME_ENTRIES, WEBHOOKS, board_use_in, read_in, rows_in, txn_member_quotas,
+    txn_refuse_over_quota,
 };
 use crate::disk::MIB;
 use crate::models::{
     Actor, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, FieldDefRow, Quota, Quotas,
-    SwimlaneRow, TaskRow, TimeEntryRow,
+    SwimlaneRow, TaskRow, TimeEntryRow, WebhookRow,
 };
 
 /// Whether a write that takes its account past one of its quotas is refused. Writes the server
@@ -92,7 +94,7 @@ macro_rules! counted_by_board {
     )*};
 }
 
-counted_by_board!(ColumnRow, SwimlaneRow, ColorRow);
+counted_by_board!(ColumnRow, SwimlaneRow, ColorRow, WebhookRow);
 
 impl Counted for FieldDefRow {
     const MAX_ROW: Option<(Bound, usize)> =
@@ -294,8 +296,8 @@ fn refuse_past_quota(quotas: &Quotas, after: u64, allowance: u64) -> DbResult<()
 }
 
 /// Stores `task` through the open tasks table `tasks`, inside an open write transaction, counts
-/// the change in the row's size against its owner, and records the board events and the
-/// notifications the change makes.
+/// the change in the row's size against its owner, records the board events and the notifications
+/// the change makes, and queues the webhook events it makes.
 ///
 /// Unless `over` is [`OverQuota::Allow`], the write is refused when text that differs from the
 /// stored row is past its cap, when it adds subtasks past the subtask quota, when it grows the row
@@ -309,6 +311,19 @@ pub(super) fn txn_store_task(
     over: OverQuota,
     actor: Actor<'_>,
 ) -> DbResult<()> {
+    let before = txn_write_task(txn, tasks, task, over, actor)?;
+    txn_queue_events(txn, before.as_ref(), task, actor)
+}
+
+/// Stores `task` like [`txn_store_task`] but queues no webhook event, and returns the row it
+/// replaced.
+pub(super) fn txn_write_task(
+    txn: &WriteTransaction,
+    tasks: &mut Table<'_, &'static str, &'static [u8]>,
+    task: &TaskRow,
+    over: OverQuota,
+    actor: Actor<'_>,
+) -> DbResult<Option<TaskRow>> {
     let raw = serde_json::to_vec(task)?;
     let bytes = raw.len() as u64;
     let (held_bytes, before) = match tasks.get(task.id.as_str())? {
@@ -335,7 +350,8 @@ pub(super) fn txn_store_task(
     }
     tasks.insert(task.id.as_str(), raw.as_slice())?;
     txn_record_events(txn, before.as_ref(), task, actor)?;
-    txn_record_task_notifications(txn, before.as_ref(), task, actor)
+    txn_record_task_notifications(txn, before.as_ref(), task, actor)?;
+    Ok(before)
 }
 
 /// Refuses a write of `task`, which takes `bytes` stored and replaces the stored row `before`
@@ -488,9 +504,9 @@ fn count_owned<T: Counted>(
     Ok(())
 }
 
-/// Rebuilds what every account stores from its boards with their columns, swimlanes, colors and
-/// field definitions, its task rows, time entries, saved templates and attachment files, inside
-/// an open write transaction.
+/// Rebuilds what every account stores from its boards with their columns, swimlanes, colors,
+/// field definitions and webhooks, its task rows, time entries, saved templates and attachment
+/// files, inside an open write transaction.
 pub(super) fn txn_recount_usage(txn: &WriteTransaction) -> DbResult<()> {
     let mut usage: HashMap<String, u64> = HashMap::new();
     count_tasks(txn, &mut usage)?;
@@ -512,6 +528,7 @@ pub(super) fn txn_recount_usage(txn: &WriteTransaction) -> DbResult<()> {
     count_owned::<SwimlaneRow>(txn, SWIMLANES, &mut usage)?;
     count_owned::<ColorRow>(txn, TASK_COLORS, &mut usage)?;
     count_owned::<FieldDefRow>(txn, FIELD_DEFS, &mut usage)?;
+    count_owned::<WebhookRow>(txn, WEBHOOKS, &mut usage)?;
     let mut table = txn.open_table(ACCOUNT_USAGE)?;
     table.retain(|_, _| false)?;
     for (owner, bytes) in usage {
@@ -569,12 +586,12 @@ mod tests {
 
     use super::*;
     use crate::db::{
-        ColumnDeleteOutcome, ColumnPatch, FieldCreateOutcome, META, SCHEMA_VERSION_KEY,
-        SwimlanePatch,
+        ColumnDeleteOutcome, ColumnPatch, FieldCreateOutcome, META, NewWebhook, SCHEMA_VERSION_KEY,
+        SwimlanePatch, WebhookPatch,
     };
     use crate::models::{
         AccountId, Actor, BIN_RETENTION_DAYS, FieldColumn, FieldKind, FieldOwner, InstanceMode,
-        LinkKind, SECONDS_PER_DAY,
+        LinkKind, SECONDS_PER_DAY, WebhookEvent,
     };
 
     /// An open database with its admin and a member with one column.
@@ -934,6 +951,81 @@ mod tests {
                 ((), true)
             })
             .expect("a shrinking write goes through");
+        assert_counts_match(&fx.db);
+    }
+
+    #[test]
+    fn webhooks_should_count_against_stored_bytes_until_they_or_their_board_go() {
+        let fx = fixture();
+        let before = fx.db.stored_bytes_by_account().expect("usage")[fx.member.as_str()];
+        let hook = |name: &str| NewWebhook {
+            board_id: fx.board.clone(),
+            name: name.to_string(),
+            url: "https://example.com/hook".to_string(),
+            events: vec![WebhookEvent::TaskCreated],
+            column_id: None,
+            enabled: true,
+        };
+        let first = fx.db.create_webhook(hook("First")).expect("webhook");
+        let second = fx.db.create_webhook(hook("Second")).expect("webhook");
+        let held = fx.db.stored_bytes_by_account().expect("usage")[fx.member.as_str()];
+        assert!(held > before);
+        assert_counts_match(&fx.db);
+
+        fx.db
+            .update_webhook(
+                &first.id,
+                WebhookPatch {
+                    name: Some("A much longer webhook name".to_string()),
+                    enabled: Some(false),
+                    ..WebhookPatch::default()
+                },
+            )
+            .expect("update");
+        assert_counts_match(&fx.db);
+
+        assert!(fx.db.delete_webhook(&first.id).expect("delete"));
+        assert_counts_match(&fx.db);
+
+        fx.db.create_board(&fx.member, "Spare").expect("board");
+        fx.db.delete_board(&fx.board).expect("delete board");
+        assert!(fx.db.webhook(&second.id).expect("read").is_none());
+        assert_counts_match(&fx.db);
+    }
+
+    #[test]
+    fn queued_webhook_events_should_not_count_against_stored_bytes() {
+        let fx = fixture();
+        let hook = |name: &str| NewWebhook {
+            board_id: fx.board.clone(),
+            name: name.to_string(),
+            url: "https://example.com/hook".to_string(),
+            events: vec![WebhookEvent::TaskCreated],
+            column_id: None,
+            enabled: true,
+        };
+        let first = fx.db.create_webhook(hook("First")).expect("webhook");
+        let second = fx.db.create_webhook(hook("Second")).expect("webhook");
+        fx.db
+            .create_task(&fx.column, None, "Queued", 1, None)
+            .expect("task");
+        assert_eq!(fx.db.webhook_outbox(&first.id).expect("outbox").len(), 1);
+        let held = stored(&fx.db, &fx.member);
+
+        let txn = fx.db.db.begin_write().expect("write");
+        for index in 0..1005 {
+            let row = Db::new_task_row(&fx.column, None, &format!("Task {index}"), 0, None);
+            txn_queue_events(&txn, None, &row, Actor::SYSTEM).expect("queue");
+        }
+        txn.commit().expect("commit");
+        assert_eq!(fx.db.webhook_outbox(&first.id).expect("outbox").len(), 1000);
+        assert_eq!(stored(&fx.db, &fx.member), held);
+        assert_counts_match(&fx.db);
+
+        assert!(fx.db.delete_webhook(&first.id).expect("delete"));
+        fx.db.create_board(&fx.member, "Spare").expect("board");
+        fx.db.delete_board(&fx.board).expect("delete board");
+        assert!(fx.db.webhook_outbox(&second.id).expect("outbox").is_empty());
         assert_counts_match(&fx.db);
     }
 

@@ -22,6 +22,7 @@ var document = {
   querySelector: function (sel) { return sel === '.bshell-report' && reportPage ? {} : null; }
 };
 function doMoveTask() {}
+function doCopyTask() {}
 function doAddEstimate() {}
 function initRelationDialog() { relationInits++; }
 
@@ -36,12 +37,13 @@ function check(name, got, want) {
 }
 function count(key) { return (listeners[key] || []).length; }
 
-['mt-move-btn', 'move-task-dialog', 'est-add', 'estimate-dialog', 'duedate-dialog'].forEach(function (id) {
+['mt-move-btn', 'cp-copy-btn', 'cp-name', 'move-task-dialog', 'est-add', 'estimate-dialog', 'duedate-dialog'].forEach(function (id) {
   present[id] = element(id);
 });
 
 initReportModal();
 check('move button is wired on a report page', count('mt-move-btn:click'), 1);
+check('copy button is wired on a report page', count('cp-copy-btn:click'), 1);
 check('estimate add is wired on a report page', count('est-add:click'), 1);
 check('move overlay closes on outside click', count('move-task-dialog:click'), 1);
 check('estimate overlay closes on outside click', count('estimate-dialog:click'), 1);

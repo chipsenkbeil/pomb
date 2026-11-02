@@ -1,0 +1,40 @@
+<section class="mc-settings settings-form" aria-label="Report settings">
+  <h2>Settings</h2>
+  <label>Group by
+    <select id="rb-group">
+      <option value="total">Total</option>
+      <option value="color" selected>Color</option>
+      <option value="label">Label</option>
+      <option value="responsible">Responsible</option>
+      <option value="user">User</option>
+    </select>
+  </label>
+  <label>Period for archived columns
+    <select id="rb-period">
+      <option value="7" selected>Last 7 days</option>
+      <option value="14">Last 14 days</option>
+      <option value="30">Last 30 days</option>
+      <option value="90">Last 90 days</option>
+      <option value="this-month">This month</option>
+      <option value="last-month">Last month</option>
+      <option value="custom">Custom</option>
+    </select>
+  </label>
+  <div id="rb-custom" hidden>
+    <label>From
+      <input type="date" id="rb-from">
+    </label>
+    <label>To
+      <input type="date" id="rb-to">
+    </label>
+  </div>
+  <label>User
+    <select id="rb-user"><option value="">Any user</option></select>
+  </label>
+  <label>Color
+    <select id="rb-color"><option value="">Any color</option></select>
+  </label>
+  <label>Label
+    <select id="rb-label"><option value="">Any label</option></select>
+  </label>
+</section>

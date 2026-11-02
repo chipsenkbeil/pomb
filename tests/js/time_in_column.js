@@ -8,6 +8,7 @@ var csvStart = src.indexOf('  function csvText(value) {');
 var csvEnd = src.indexOf('  function downloadCsv(', csvStart);
 if (csvStart < 0 || csvEnd < csvStart) throw new Error('csvText not found');
 eval(src.slice(csvStart, csvEnd));
+eval(src.slice(src.indexOf('  var ReportFile = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ReportFile = (function () {')) + '\n  })();'.length));
 eval(src.slice(start, end));
 
 var MIN = 60000, HOUR = 60 * MIN, DAY = 24 * HOUR;

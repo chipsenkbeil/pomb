@@ -14,11 +14,11 @@ use crate::AppState;
 use crate::auth::{PENDING_ROUTES, new_api_token_record, required_permission};
 use crate::db::{
     AccountDb, BootstrapToken, Change, Db, FeedAdd, FencedWrite, FieldCreateOutcome,
-    LinkAddOutcome, NewComment,
+    LinkAddOutcome, NewComment, NewWebhook,
 };
 use crate::models::{
     AccountId, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind, FieldOwner,
-    InstanceMode, LinkKind, SubtaskTemplate,
+    InstanceMode, LinkKind, SubtaskTemplate, WebhookEvent,
 };
 
 /// Largest response body a test reads.
@@ -38,6 +38,7 @@ const SUB_ID_PARAMS: &[&str] = &[
     "attachment_id",
     "color_id",
     "feed_id",
+    "webhook_id",
 ];
 
 /// The ids one account's requests name.
@@ -73,6 +74,8 @@ pub(super) struct Ids {
     feed: String,
     /// A custom field on [`Ids::board`].
     field: String,
+    /// A webhook on [`Ids::board`].
+    webhook: String,
     /// A time entry logged on [`Ids::task`].
     entry: String,
     /// A template saved from [`Ids::board`].
@@ -87,7 +90,7 @@ pub(super) struct Ids {
 
 impl Ids {
     /// Returns every id, for blanking them out of an answer.
-    fn all(&self) -> [&str; 20] {
+    fn all(&self) -> [&str; 21] {
         [
             &self.account,
             &self.board,
@@ -104,6 +107,7 @@ impl Ids {
             &self.color,
             &self.feed,
             &self.field,
+            &self.webhook,
             &self.entry,
             &self.template,
             &self.subtask_template,
@@ -246,6 +250,18 @@ fn seed_feed(db: &Db, board: &str, name: &str) -> String {
     }
 }
 
+fn seed_webhook(db: &Db, board: &str) -> String {
+    let hook = NewWebhook {
+        board_id: board.to_string(),
+        name: "Notify".to_string(),
+        url: "https://example.com/hook".to_string(),
+        events: vec![WebhookEvent::TaskCreated],
+        column_id: None,
+        enabled: true,
+    };
+    db.create_webhook(hook).expect("webhook").id
+}
+
 /// Seeds one of everything for `account`, on two boards, beside its `token` and `passkey`.
 pub(super) fn seed(
     db: &Db,
@@ -304,6 +320,7 @@ pub(super) fn seed(
         color: db.list_colors(&board).expect("colors")[1].id.clone(),
         feed: seed_feed(db, &board, name),
         field: seed_field(db, &board),
+        webhook: seed_webhook(db, &board),
         entry: db.create_entry(&task, 5, "secret note").expect("entry"),
         board,
         board2,
@@ -656,6 +673,7 @@ fn param<'a>(class: RouteClass, path: &str, name: &str, main: &'a Ids, sub: &'a 
         "attachment_id" => &sub.attachment,
         "color_id" => &sub.color,
         "feed_id" => &sub.feed,
+        "webhook_id" => &sub.webhook,
         "index" => "0",
         "id" => match class {
             RouteClass::Board => &main.board,
@@ -664,6 +682,7 @@ fn param<'a>(class: RouteClass, path: &str, name: &str, main: &'a Ids, sub: &'a 
             RouteClass::Entity if path.starts_with("/api/columns/") => &main.column,
             RouteClass::Entity if path.starts_with("/api/swimlanes/") => &main.lane,
             RouteClass::Entity if path.starts_with("/api/fields/") => &main.field,
+            RouteClass::Entity if path.starts_with("/api/webhooks/") => &main.webhook,
             RouteClass::Entity if path.starts_with("/api/time/entries/") => &main.entry,
             RouteClass::Entity if path.starts_with("/api/templates/") => &main.template,
             _ => panic!("{path}: no id for :id on a {class:?} route"),
@@ -694,6 +713,10 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
         (&Method::POST, "/api/boards/:id/fields") => {
             json!({"key": "new", "label": "New", "kind": "text"})
         }
+        (&Method::POST, "/api/boards/:id/webhooks") => {
+            json!({"name": "New", "url": "https://example.com/new", "events": ["taskChanged"]})
+        }
+        (&Method::PATCH, "/api/webhooks/:id") => json!({"name": "Renamed"}),
         (&Method::POST, "/api/boards/:id/save-as-template") => json!({"name": "Saved"}),
         (&Method::POST, "/api/boards/:id/colors") => json!({"value": "yellow"}),
         (&Method::POST, "/api/boards/:id/calendar-feeds") => json!({"label": "Sneak"}),
@@ -775,6 +798,7 @@ fn missing() -> Ids {
         color: fresh(),
         feed: fresh(),
         field: fresh(),
+        webhook: fresh(),
         entry: fresh(),
         template: fresh(),
         subtask_template: fresh(),
@@ -1377,6 +1401,18 @@ fn body_id_cases(b: &Ids) -> Vec<(Method, String, BodyOf)> {
                 |ids: &Ids| json!({"task_id": ids.task, "date": "2020-01-02", "from": "10:00", "to": "10:30"}),
             ),
         ),
+        (
+            Method::POST,
+            format!("/api/boards/{}/webhooks", b.board),
+            Box::new(
+                |ids: &Ids| json!({"name": "Sneak", "url": "https://example.com/x", "events": ["taskCreated"], "column_id": ids.column}),
+            ),
+        ),
+        (
+            Method::PATCH,
+            format!("/api/webhooks/{}", b.webhook),
+            Box::new(|ids: &Ids| json!({"column_id": ids.column})),
+        ),
     ]
 }
 
@@ -1723,7 +1759,7 @@ async fn board_matrix_should_refuse_every_owned_route_outside_the_token_set() {
             assert!(text.contains("session_required"), "{what}: {text}");
         } else if !path.starts_with("/api/templates/") {
             assert!(
-                status != StatusCode::FORBIDDEN
+                (status != StatusCode::FORBIDDEN || text.contains("session_required"))
                     && status != StatusCode::NOT_FOUND
                     && !status.is_server_error(),
                 "{what} on the token's own board: {status} {text}"
@@ -1794,6 +1830,8 @@ fn route_of(uri: &str) -> &'static str {
         (Some("swimlanes"), _) => "/api/swimlanes",
         (Some("boards"), "copy-from") => "/api/boards/:id/colors/copy-from",
         (Some("boards"), "bulk") => "/api/boards/:id/tasks/bulk",
+        (Some("boards"), "webhooks") => "/api/boards/:id/webhooks",
+        (Some("webhooks"), _) => "/api/webhooks/:id",
         other => panic!("{uri}: no route for {other:?}"),
     }
 }

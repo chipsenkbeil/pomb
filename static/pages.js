@@ -272,29 +272,69 @@
 
   pages['new-board'] = function () {
     'use strict';
+    var CREATE_FAILED = 'Could not create the board.';
     function showError(msg) {
       var el = document.getElementById('nb-error');
       el.textContent = msg;
       el.hidden = false;
     }
+    var copyRadio = document.getElementById('nb-copy-radio');
+    var copyFields = document.getElementById('nb-copy-fields');
+    var copyBoard = document.getElementById('nb-copy-board');
+    var copyName = document.getElementById('nb-copy-name');
+    var copyTasks = document.getElementById('nb-copy-tasks');
+    var copyClear = document.getElementById('nb-copy-clear');
+    function copyNameFor() {
+      var option = copyBoard.options[copyBoard.selectedIndex];
+      return option ? option.textContent + ' copy' : '';
+    }
+    if (copyRadio) {
+      var radios = document.querySelectorAll('input[name="template_id"]');
+      Array.prototype.forEach.call(radios, function (radio) {
+        radio.addEventListener('change', function () {
+          copyFields.hidden = !copyRadio.checked;
+          if (copyRadio.checked && !copyName.value) copyName.value = copyNameFor();
+        });
+      });
+      copyBoard.addEventListener('change', function () { copyName.value = copyNameFor(); });
+      copyTasks.addEventListener('change', function () {
+        copyClear.disabled = !copyTasks.checked;
+        if (!copyTasks.checked) copyClear.checked = false;
+      });
+    }
     document.getElementById('nb-create').addEventListener('click', function () {
-      var name = document.getElementById('nb-name').value.trim();
-      if (!name) { showError('Board name is required.'); return; }
+      var copying = !!copyRadio && copyRadio.checked;
+      var name = (copying ? copyName : document.getElementById('nb-name')).value.trim();
+      if (!name) { showError(copying ? 'Name of copy is required.' : 'Board name is required.'); return; }
 
       // Count characters as the server does, not UTF-16 units.
       if (Array.from(name).length > 100) { showError('Board name must be 1-100 characters.'); return; }
       var picked = document.querySelector('input[name="template_id"]:checked');
       var templateId = picked && picked.value ? picked.value : null;
+      var payload = { name: name, template_id: templateId };
+      if (copying) {
+        payload = {
+          name: name,
+          copy_board_id: copyBoard.value,
+          copy_tasks: copyTasks.checked,
+          clear_members: copyClear.checked,
+        };
+      }
       fetch('/api/boards', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name, template_id: templateId }),
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(payload),
       }).then(function (res) {
-        if (!res.ok) { showError('Could not create the board.'); return null; }
-        return res.json();
+        if (res.ok) return res.json();
+        return res.text().then(function (text) {
+          var message = '';
+          try { message = JSON.parse(text).message || ''; } catch (ignored) { message = ''; }
+          showError(message || CREATE_FAILED);
+          return null;
+        });
       }).then(function (data) {
         if (data && data.id) window.location.href = '/b/' + encodeURIComponent(data.id);
-      }).catch(function () { showError('Could not create the board.'); });
+      }).catch(function () { showError(CREATE_FAILED); });
     });
     document.getElementById('nb-name').addEventListener('keydown', function (e) {
       if (e.key === 'Enter') document.getElementById('nb-create').click();
@@ -849,6 +889,53 @@
     });
   };
 
+  pages['board-settings-default-member'] = function () {
+    'use strict';
+    var dialog = document.getElementById('default-member-dialog');
+    var error = document.getElementById('default-member-error');
+    var label = document.getElementById('default-member-label');
+    var responsible = document.getElementById('default-member-responsible');
+    var responsibleRow = document.getElementById('default-member-responsible-row');
+    var boardId = document.querySelector('.board-settings-page').dataset.boardId;
+    function chosen() { return dialog.querySelector('input[name="default-member"]:checked'); }
+    function syncResponsible() {
+      var pick = chosen();
+      responsibleRow.hidden = !pick || pick.value === 'none';
+    }
+    function close() { dialog.hidden = true; error.hidden = true; }
+    Array.prototype.forEach.call(dialog.querySelectorAll('input[name="default-member"]'), function (radio) {
+      radio.addEventListener('change', syncResponsible);
+    });
+    syncResponsible();
+    document.getElementById('default-member-edit').addEventListener('click', function (e) {
+      e.preventDefault();
+      dialog.hidden = false;
+    });
+    document.getElementById('default-member-cancel').addEventListener('click', close);
+    document.getElementById('default-member-save').addEventListener('click', function () {
+      var pick = chosen();
+      if (!pick) return;
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ default_member: pick.value, default_member_responsible: responsible.checked }),
+      }).then(function (res) {
+        if (!res.ok) throw new Error('save failed');
+        return res.json();
+      }).then(function (config) {
+        var text = config.default_member === 'none' ? 'None'
+          : config.default_member === 'creator' ? 'Task creator'
+          : chosen().parentNode.textContent.trim();
+        label.textContent = text;
+        close();
+      }).catch(function () {
+        error.textContent = 'Could not save the default member.';
+        error.hidden = false;
+      });
+    });
+  };
+
   pages['board-settings-advanced'] = function () {
     'use strict';
     var boardId = document.querySelector('.board-settings-page').dataset.boardId;
@@ -1303,6 +1390,179 @@
         var err = document.getElementById('ntp-error');
         err.textContent = 'Could not save the position of new tasks.';
         err.hidden = false;
+      });
+    });
+  };
+
+  function webhookRequest(method, url, body) {
+    return fetch(url, {
+      method: method,
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    }).then(function (res) {
+      return res.text().then(function (text) {
+        var data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+        if (res.ok) return data;
+        throw new Error((data && data.message) || text || ('HTTP ' + res.status));
+      });
+    });
+  }
+
+  function webhookProbeFailure(path, message) {
+    if (message.indexOf('url must name a public host') !== 0) return message;
+    return path === 'test-dns' ? 'Resolves to a non-public address' : 'refused: not a public address';
+  }
+
+  function webhookProbeText(result) {
+    if (result.error) return result.error;
+    return 'Answered with HTTP ' + result.status;
+  }
+
+  function wireWebhookSecretDialog() {
+    var overlay = document.getElementById('wh-secret-overlay');
+    var value = document.getElementById('wh-secret-value');
+    var copy = document.getElementById('wh-secret-copy');
+    copy.addEventListener('click', function () {
+      value.select();
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(value.value).then(function () { copy.textContent = 'Copied'; });
+    });
+    return function (secret) {
+      value.value = secret;
+      copy.textContent = 'Copy';
+      document.getElementById('wh-secret-error').hidden = true;
+      overlay.hidden = false;
+      value.focus();
+      value.select();
+      return overlay;
+    };
+  }
+
+  pages['board-settings-webhooks'] = function () {
+    var errorBox = document.getElementById('wh-error');
+    function fail(error) { errorBox.textContent = error.message; errorBox.hidden = false; }
+    var showSecret = wireWebhookSecretDialog();
+    var openMenu = null;
+    var deleteOverlay = document.getElementById('wh-delete-overlay');
+    var deleteId = null;
+    function closeMenu() {
+      if (!openMenu) return;
+      openMenu.menu.hidden = true;
+      openMenu.button.setAttribute('aria-expanded', 'false');
+      openMenu = null;
+    }
+    document.querySelectorAll('.webhook-row').forEach(function (row) {
+      var id = row.dataset.webhookId;
+      var menu = row.querySelector('.wh-menu');
+      var button = row.querySelector('.wh-menu-btn');
+      button.addEventListener('click', function (event) {
+        event.stopPropagation();
+        var wasOpen = openMenu && openMenu.menu === menu;
+        closeMenu();
+        if (wasOpen) return;
+        var box = button.getBoundingClientRect();
+        menu.style.top = box.bottom + 'px';
+        menu.style.right = (window.innerWidth - box.right) + 'px';
+        menu.hidden = false;
+        button.setAttribute('aria-expanded', 'true');
+        openMenu = { menu: menu, button: button };
+      });
+      row.querySelector('.wh-secret').addEventListener('click', function () {
+        errorBox.hidden = true;
+        webhookRequest('GET', '/api/webhooks/' + encodeURIComponent(id) + '/secret')
+          .then(function (data) { showSecret(data.secret); })
+          .catch(fail);
+      });
+      row.querySelector('.wh-toggle').addEventListener('click', function () {
+        closeMenu();
+        webhookRequest('PATCH', '/api/webhooks/' + encodeURIComponent(id), { enabled: row.dataset.enabled !== 'true' })
+          .then(function () { window.location.reload(); })
+          .catch(fail);
+      });
+      row.querySelector('.wh-delete').addEventListener('click', function () {
+        closeMenu();
+        deleteId = id;
+        document.getElementById('wh-delete-name').textContent = row.dataset.name;
+        deleteOverlay.hidden = false;
+        document.getElementById('wh-delete-ok').focus();
+      });
+    });
+    document.addEventListener('click', closeMenu);
+    window.addEventListener('resize', closeMenu);
+    window.addEventListener('scroll', closeMenu, true);
+    document.getElementById('wh-delete-ok').addEventListener('click', function () {
+      deleteOverlay.hidden = true;
+      webhookRequest('DELETE', '/api/webhooks/' + encodeURIComponent(deleteId))
+        .then(function () { window.location.reload(); })
+        .catch(fail);
+    });
+  };
+
+  pages['board-settings-webhook-form'] = function () {
+    var form = document.getElementById('wh-form');
+    var boardId = form.dataset.boardId;
+    var webhookId = form.dataset.webhookId;
+    var listUrl = '/b/' + encodeURIComponent(boardId) + '/settings/api-webhooks';
+    var errorBox = document.getElementById('wh-form-error');
+    var save = document.getElementById('wh-save');
+    var showSecret = wireWebhookSecretDialog();
+
+    var tabs = form.querySelectorAll('.wh-tab');
+    function selectTab(name) {
+      tabs.forEach(function (tab) {
+        var on = tab.dataset.whTab === name;
+        tab.setAttribute('aria-selected', on ? 'true' : 'false');
+        tab.tabIndex = on ? 0 : -1;
+        document.getElementById('wh-panel-' + tab.dataset.whTab).hidden = !on;
+      });
+    }
+    tabs.forEach(function (tab) {
+      tab.addEventListener('click', function () { selectTab(tab.dataset.whTab); });
+    });
+
+    function probe(button, result, path) {
+      var url = document.getElementById('wh-url').value.trim();
+      errorBox.hidden = true;
+      result.textContent = 'Working...';
+      button.disabled = true;
+      webhookRequest('POST', '/api/boards/' + encodeURIComponent(boardId) + '/webhooks/' + path, { url: url })
+        .then(function (data) { result.textContent = path === 'test-dns' ? data.message : webhookProbeText(data); })
+        .catch(function (error) { result.textContent = webhookProbeFailure(path, error.message); })
+        .then(function () { button.disabled = false; });
+    }
+    document.getElementById('wh-test-dns').addEventListener('click', function (event) {
+      probe(event.target, document.getElementById('wh-dns-result'), 'test-dns');
+    });
+    document.getElementById('wh-test-request').addEventListener('click', function (event) {
+      probe(event.target, document.getElementById('wh-test-result'), 'test-request');
+    });
+
+    document.getElementById('wh-secret-overlay').addEventListener('click', function (event) {
+      if (event.target.closest('[data-close-dialog]')) window.location.assign(listUrl);
+    });
+
+    form.addEventListener('submit', function (event) {
+      event.preventDefault();
+      var body = {
+        name: document.getElementById('wh-name').value,
+        url: document.getElementById('wh-url').value.trim(),
+        events: Array.prototype.map.call(form.querySelectorAll('input[name="event"]:checked'), function (box) { return box.value; }),
+        column_id: document.getElementById('wh-column').value || null
+      };
+      errorBox.hidden = true;
+      save.disabled = true;
+      var request = webhookId
+        ? webhookRequest('PATCH', '/api/webhooks/' + encodeURIComponent(webhookId), body)
+        : webhookRequest('POST', '/api/boards/' + encodeURIComponent(boardId) + '/webhooks', body);
+      request.then(function (data) {
+        if (webhookId) { window.location.assign(listUrl); return; }
+        showSecret(data.secret);
+      }).catch(function (error) {
+        errorBox.textContent = error.message;
+        errorBox.hidden = false;
+        save.disabled = false;
       });
     });
   };

@@ -31,7 +31,6 @@ check('a missing date is refused', TimelineDialog.problem('', '2026-11-07') !== 
 check('a date that does not exist is refused',
   TimelineDialog.problem('2026-02-30', '2026-03-05') !== null, true);
 
-check('the history filter lists Timeline', src.indexOf("timeline_updated: 'Timeline'") > -1, true);
 check('the export wizard lists both Timeline columns',
   [src.indexOf("'Timeline start'") > -1, src.indexOf("'Timeline end'") > -1], [true, true]);
 check('the export wizard fills both Timeline columns',

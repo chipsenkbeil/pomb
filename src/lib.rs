@@ -15,5 +15,6 @@ mod passkey;
 pub mod permissions;
 /// The per-board column rules and the locked labels kept in the board config.
 pub mod rules;
+pub mod webhook;
 
 pub use db::AppState;

@@ -208,6 +208,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "end_session",
             "finish_reauth",
             "get_backups",
+            "get_webhook_secret",
             "inspect_api_token",
             "list_accounts",
             "list_api_tokens",
@@ -228,6 +229,8 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "start_passkey_registration",
             "start_reauth",
             "suspend_account",
+            "test_webhook_dns",
+            "test_webhook_request",
             "unsuspend_account",
             "update_admin_settings",
             "update_backup_settings",
@@ -261,7 +264,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        31
+        34
     );
 }
 

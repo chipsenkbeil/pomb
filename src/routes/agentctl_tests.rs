@@ -10386,6 +10386,86 @@ async fn the_board_page_should_hold_the_calendar_dialog_with_its_top_bar() {
 }
 
 #[tokio::test]
+async fn the_board_page_should_hold_the_copy_task_dialog_and_its_menu_item() {
+    let (_dir, fx) = fixture();
+    let (status, html) = request(
+        &fx,
+        As::Admin,
+        "GET",
+        &format!("/b/{}", fx.board_id),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let dialog = &html[html.find("id=\"copy-task-dialog\"").expect("copy dialog")..];
+    let dialog = &dialog[..dialog.find("id=\"cp-copy-btn\"").expect("copy button")];
+    for text in [
+        "Copy task",
+        "Name of copy",
+        "Target column",
+        "id=\"cp-name\"",
+        "id=\"cp-col\"",
+    ] {
+        assert!(dialog.contains(text), "{text}");
+    }
+    assert!(html.contains("data-card-act=\"copy\""));
+}
+
+#[tokio::test]
+async fn the_board_page_should_hold_the_print_board_dialog_with_its_filters() {
+    let (_dir, fx) = fixture();
+    let (status, html) = request(
+        &fx,
+        As::Admin,
+        "GET",
+        &format!("/b/{}", fx.board_id),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let dialog = &html[html
+        .find("id=\"print-board-dialog\"")
+        .expect("print dialog")..];
+    let dialog = &dialog[..dialog.find("id=\"print-board-sheet\"").expect("sheet")];
+    for id in [
+        "print-board-filter",
+        "print-board-now",
+        "print-board-columns",
+        "print-board-props",
+        "print-board-user",
+        "print-board-color",
+        "print-board-label",
+        "print-board-period",
+    ] {
+        assert!(dialog.contains(&format!("id=\"{id}\"")), "{id}");
+    }
+}
+
+#[tokio::test]
+async fn export_data_should_say_which_columns_are_done() {
+    let (_dir, fx) = fixture();
+    let (status, data) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{}/export-data", fx.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{data}");
+    let columns = data["columns"].as_array().expect("columns");
+    let flag = |id: &str| {
+        columns
+            .iter()
+            .find(|column| column["id"] == id)
+            .map(|column| column["is_done"].clone())
+    };
+    assert_eq!(flag(&fx.col_done), Some(json!(true)));
+    assert_eq!(flag(&fx.col_todo), Some(json!(false)));
+}
+
+#[tokio::test]
 async fn the_calendar_should_no_longer_be_a_page() {
     let (_dir, fx) = fixture();
     let (status, _) = request(

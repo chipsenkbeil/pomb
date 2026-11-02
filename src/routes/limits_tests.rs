@@ -31,7 +31,8 @@ use crate::api_error::ErrorCode;
 use crate::auth::new_api_token_record;
 use crate::db::{
     AccountDb, AccountSlot, Bound, Db, DeviceCodeLockout, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT,
-    MAX_HISTORY_TEXT_CHARS, MAX_TASK_ROW_BYTES, MAX_TEMPLATE_ROW_BYTES, NewComment, QuotaExceeded,
+    MAX_HISTORY_TEXT_CHARS, MAX_TASK_ROW_BYTES, MAX_TEMPLATE_ROW_BYTES, NewComment,
+    NewTaskPlacement, QuotaExceeded,
 };
 use crate::disk::{Clock as GuardClock, DiskGuard, DiskProbe, MIB};
 use crate::limit::Limits;
@@ -308,6 +309,80 @@ async fn quota_should_refuse_board_over_limit() {
         fx.db.owner_boards(&fx.member).expect("boards").len(),
         LIMIT as usize
     );
+}
+
+#[tokio::test]
+async fn quota_should_refuse_a_board_copy_over_the_board_limit() {
+    const LIMIT: u32 = 1;
+    let fx = Fixture::multi();
+    let (source, _) = fx.board(&fx.member, "Source");
+    fx.set_quotas(Quotas {
+        boards_per_account: LIMIT,
+        ..Quotas::default()
+    })
+    .await;
+    let body = json!({"name": "Copy", "copy_board_id": source});
+    let refused = fx.member("POST", "/api/boards", Some(body)).await;
+    assert_quota(&refused, Quota::BoardsPerAccount, LIMIT);
+    assert_eq!(
+        fx.db.owner_boards(&fx.member).expect("boards").len(),
+        LIMIT as usize
+    );
+}
+
+#[tokio::test]
+async fn copying_a_board_should_answer_404_for_another_accounts_board() {
+    let fx = Fixture::multi();
+    let (theirs, _) = fx.board(&fx.admin, "Theirs");
+    let body = json!({"name": "Copy", "copy_board_id": theirs});
+    let refused = fx.member("POST", "/api/boards", Some(body)).await;
+    assert_eq!(refused.status, StatusCode::NOT_FOUND, "{}", refused.body);
+    assert!(fx.db.owner_boards(&fx.member).expect("boards").is_empty());
+}
+
+#[tokio::test]
+async fn copying_a_board_should_need_the_read_permissions_of_what_it_copies() {
+    let fx = Fixture::multi();
+    let (source, _) = fx.board(&fx.member, "Source");
+    let no_tasks = fx.token_lacking(&[Permission::TasksRead]);
+    let body = json!({"name": "Copy", "copy_board_id": source, "copy_tasks": true});
+    let refused = fx.with_token(&no_tasks, "POST", "/api/boards", body).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(refused.code.as_deref(), Some("permission_denied"));
+
+    let body = json!({"name": "Copy", "copy_board_id": source});
+    let allowed = fx.with_token(&no_tasks, "POST", "/api/boards", body).await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+
+    let no_boards = fx.token_lacking(&[Permission::BoardsRead]);
+    let body = json!({"name": "Copy", "copy_board_id": source});
+    let refused = fx.with_token(&no_boards, "POST", "/api/boards", body).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+}
+
+#[tokio::test]
+async fn quota_should_refuse_a_board_copy_whose_tasks_pass_the_task_limit() {
+    const LIMIT: u32 = 2;
+    let fx = Fixture::multi();
+    let (source, column) = fx.board(&fx.member, "Source");
+    for n in 0..=LIMIT {
+        fx.db
+            .create_task(&column, None, &format!("Task {n}"), 1, None)
+            .expect("task");
+    }
+    fx.set_quotas(Quotas {
+        tasks_per_board: LIMIT,
+        ..Quotas::default()
+    })
+    .await;
+    let body = json!({"name": "Copy", "copy_board_id": source, "copy_tasks": true});
+    let refused = fx.member("POST", "/api/boards", Some(body)).await;
+    assert_quota(&refused, Quota::TasksPerBoard, LIMIT);
+    assert_eq!(fx.db.owner_boards(&fx.member).expect("boards").len(), 1);
+
+    let body = json!({"name": "Empty copy", "copy_board_id": source});
+    let made = fx.member("POST", "/api/boards", Some(body)).await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
 }
 
 #[tokio::test]
@@ -5537,4 +5612,131 @@ async fn convert_subtask_should_accept_a_subtask_the_token_made_without_subtasks
     let converted = fx.convert_as(&token, &own, json!({})).await;
     assert_eq!(converted.status, StatusCode::CREATED, "{}", converted.body);
     assert_eq!(converted.body["name"], "Mine");
+}
+
+impl Fixture {
+    /// Stores a task of the member with the id `id` in a fresh board, returning the board.
+    fn member_task_with_id(&self, id: &str) -> String {
+        self.task_with_id(&self.member, id)
+    }
+
+    /// Stores a task of `owner` with the id `id` in a fresh board, returning the board.
+    fn task_with_id(&self, owner: &AccountId, id: &str) -> String {
+        let (board, column) = self.board(owner, "Linked");
+        let mut row = Db::new_task_row(&column, None, "Linked", 1, None);
+        row.id = id.to_string();
+        self.db
+            .insert_task(row, NewTaskPlacement::Bottom)
+            .expect("task");
+        board
+    }
+}
+
+async fn task_link(fx: &Fixture, id: &str, authorization: &str) -> Response {
+    get_unread(fx, &format!("/t/{id}"), authorization).await
+}
+
+#[tokio::test]
+async fn task_link_should_redirect_to_the_board_with_the_card_open() {
+    let fx = Fixture::multi();
+    let id = "a1b2c3d4-0000-4000-8000-000000000001";
+    let board = fx.member_task_with_id(id);
+    let wanted = format!("/b/{board}#task-{id}");
+    for given in ["a1b2c3", "a1b2c3d4", id] {
+        let response = task_link(&fx, given, &fx.member_bearer).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER, "{given}");
+        let location = response.headers().get("location").expect("location");
+        assert_eq!(location.to_str().expect("ascii"), wanted, "{given}");
+    }
+}
+
+#[tokio::test]
+async fn task_link_should_answer_one_404_for_every_id_it_cannot_open() {
+    let fx = Fixture::multi();
+    fx.member_task_with_id("a1b2c3d4-0000-4000-8000-000000000001");
+    fx.member_task_with_id("a1b2c3d4-0000-4000-8000-000000000002");
+    fx.member_task_with_id("ffeedd11-0000-4000-8000-000000000003");
+    let ambiguous = task_link(&fx, "a1b2c3d4", &fx.member_bearer).await;
+    assert_eq!(ambiguous.status(), StatusCode::NOT_FOUND);
+    let missing = body_of(task_link(&fx, "012345", &fx.member_bearer).await).await;
+    assert_eq!(body_of(ambiguous).await, missing);
+
+    for rejected in ["ffeed", "ffeedd1!", "ffeedd11%2F"] {
+        let response = task_link(&fx, rejected, &fx.member_bearer).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{rejected}");
+        assert_eq!(body_of(response).await, missing, "{rejected}");
+    }
+
+    let foreign = task_link(&fx, "ffeedd11", &fx.admin_bearer).await;
+    assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body_of(foreign).await, missing);
+}
+
+#[tokio::test]
+async fn task_link_should_ignore_matches_in_other_accounts() {
+    let fx = Fixture::multi();
+    let own = fx.member_task_with_id("bb000000-0000-4000-8000-000000000001");
+    fx.task_with_id(&fx.admin, "bb000000-0000-4000-8000-000000000002");
+    let response = task_link(&fx, "bb0000", &fx.member_bearer).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response.headers().get("location").expect("location");
+    assert_eq!(
+        location.to_str().expect("ascii"),
+        format!("/b/{own}#task-bb000000-0000-4000-8000-000000000001")
+    );
+}
+
+#[tokio::test]
+async fn task_responses_should_carry_a_url_that_opens_the_card() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let wanted = format!("/t/{task}");
+    let detail = fx.member("GET", &format!("/api/tasks/{task}"), None).await;
+    assert_eq!(detail.body["url"], wanted, "{}", detail.body);
+    let board = fx
+        .db
+        .task_board_id(&task)
+        .expect("read")
+        .expect("task board");
+    let listed = fx.member("GET", "/api/tasks", None).await;
+    assert_eq!(listed.body["items"][0]["url"], wanted, "{}", listed.body);
+    let summaries = fx
+        .member("GET", &format!("/api/boards/{board}/tasks"), None)
+        .await;
+    assert_eq!(
+        summaries.body["items"][0]["url"], wanted,
+        "{}",
+        summaries.body
+    );
+}
+
+#[tokio::test]
+async fn task_link_should_refuse_boards_outside_the_token_set() {
+    let fx = Fixture::multi();
+    let inside = fx.member_task_with_id("cc000000-0000-4000-8000-000000000001");
+    fx.member_task_with_id("cc000000-0000-4000-8000-000000000002");
+    fx.member_task_with_id("dd000000-0000-4000-8000-000000000003");
+    let (mut record, raw) = new_api_token_record(&fx.member, "narrow", AuthScope::Admin, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([inside.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+    let bearer = format!("Bearer {raw}");
+
+    let shared = task_link(&fx, "cc000000-0000-4000-8000-000000000001", &bearer).await;
+    assert_eq!(shared.status(), StatusCode::SEE_OTHER);
+    let location = shared.headers().get("location").expect("location");
+    assert_eq!(
+        location.to_str().expect("ascii"),
+        format!("/b/{inside}#task-cc000000-0000-4000-8000-000000000001")
+    );
+
+    let denied = task_link(&fx, "dd0000", &bearer).await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    let missing = body_of(task_link(&fx, "012345", &bearer).await).await;
+    fx.task_with_id(&fx.member, "dd000000-0000-4000-8000-000000000004");
+    let mixed = task_link(&fx, "dd0000", &bearer).await;
+    assert_eq!(mixed.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body_of(mixed).await, missing);
+    let upper = task_link(&fx, "CC0000", &bearer).await;
+    assert_eq!(upper.status(), StatusCode::NOT_FOUND);
 }

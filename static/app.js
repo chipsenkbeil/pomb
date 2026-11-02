@@ -652,6 +652,14 @@
     var membersList = membersPop.querySelector('.addMembersPop-list');
     var roster = null;
     var picked = [];
+    function defaultMembers() {
+      var wrap = document.querySelector('.board-wrap');
+      var raw = wrap ? wrap.dataset.defaultMembers : '';
+      return raw ? raw.split(',') : [];
+    }
+    function sameMembers(a, b) {
+      return a.length === b.length && a.every(function (id) { return b.indexOf(id) !== -1; });
+    }
 
     function initials(name) {
       var words = name.trim().split(/\s+/);
@@ -940,7 +948,7 @@
       closeMore();
       closeDesc();
       chosenLabels = [];
-      picked = [];
+      picked = defaultMembers();
       overlay.hidden = false;
       fitName();
       nameInput.focus();
@@ -985,17 +993,19 @@
       if (!nameInput.value.trim()) { nameInput.focus(); return; }
       busy = true;
       var colId = form.elements.column_id.value;
+      var body = {
+        column_id: colId,
+        swimlane_id: form.elements.swimlane_id.value,
+        color_id: form.elements.color_id.value,
+        name: nameInput.value,
+        description: descText.value,
+        labels: chosenLabels.slice()
+      };
+      if (!sameMembers(picked, defaultMembers())) body.member_ids = picked.slice();
       fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          column_id: colId,
-          swimlane_id: form.elements.swimlane_id.value,
-          color_id: form.elements.color_id.value,
-          name: nameInput.value,
-          description: descText.value,
-          labels: chosenLabels.slice()
-        }),
+        body: JSON.stringify(body),
         credentials: 'same-origin'
       })
         .then(function (resp) {
@@ -1012,10 +1022,6 @@
           busy = false;
           var card = insertCard(colId, html);
           var taskId = card && card.dataset.taskId;
-          var assign = taskId && picked.length
-            ? api('/api/tasks/' + encodeURIComponent(taskId), 'PATCH', { member_ids: picked.slice() })
-              .then(function () { TimerUI.refreshTaskCard(taskId); })
-            : Promise.resolve();
           if (mode === 'more') {
             closeMembers();
             closeLabels();
@@ -1023,7 +1029,7 @@
             closeDesc();
             descText.value = '';
             chosenLabels = [];
-            picked = [];
+            picked = defaultMembers();
             nameInput.value = '';
             fitName();
             nameInput.focus();
@@ -1031,10 +1037,8 @@
           }
           close();
           if (mode === 'open' && taskId) {
-            assign.then(function () {
-              openModal(taskId);
-              if (follow) TimerUI.clickAfterModal('#tm-add-menu [data-tm-act="' + follow + '"]');
-            });
+            openModal(taskId);
+            if (follow) TimerUI.clickAfterModal('#tm-add-menu [data-tm-act="' + follow + '"]');
           }
         })
         .catch(function (err) {
@@ -1237,6 +1241,8 @@
       // KF-223: the Collapse item reads "Expand" for an already-collapsed column.
       var collapseBtn = document.getElementById('column-menu').querySelector('[data-col-act="collapse"]');
       if (collapseBtn) collapseBtn.textContent = th.dataset.collapsed === '1' ? 'Expand' : 'Collapse';
+      var watchBtn = document.getElementById('column-menu').querySelector('[data-col-act="watch"]');
+      if (watchBtn) watchBtn.textContent = th.dataset.watched === '1' ? 'Unwatch' : 'Watch';
       placeMenu(document.getElementById('column-menu'), e.clientX, e.clientY);
     });
 
@@ -1249,7 +1255,21 @@
       if (act === 'edit') openEditColumnDialog(id);
       else if (act === 'collapse') toggleColumnCollapsed(id);
       else if (act === 'details') showColumnDetails(id);
+      else if (act === 'watch') toggleColumnWatched(id);
     });
+
+    function toggleColumnWatched(id) {
+      var th = document.querySelector('.columnHeader[data-column-id="' + id + '"]');
+      var watch = !(th && th.dataset.watched === '1');
+      api('/api/columns/' + encodeURIComponent(id), 'PATCH', { watched: watch })
+        .then(function (res) {
+          return res.text().then(function () {
+            if (res.ok) window.location.reload();
+            else toast('Could not update the column.');
+          });
+        })
+        .catch(function () { toast('Could not update the column.'); });
+    }
 
     // KF-223: flip a column's collapsed state (persisted per board via the
     // column PATCH endpoint), then reload so the strip renders.
@@ -1463,6 +1483,7 @@
         if (act === 'assign-members') openMembersDialog(task ? task.id : null);
         else if (act === 'grouping-date') openGroupingDateDialog(cardMenuCard, cardMenuPoint);
         else if (act === 'copy-here') copyCardHere(task);
+        else if (act === 'copy') openCopyDialog(task ? task.id : null);
         else if (act === 'task-url') copyTaskUrl(task ? task.id : null);
         else if (act === 'delete') deleteCardTask(task);
       }
@@ -1730,11 +1751,24 @@
     document.getElementById('st-save').addEventListener('click', doSaveTemplate);
   }
 
+  function showPendingToast() {
+    var message = null;
+    try {
+      message = window.sessionStorage.getItem('pomb.pendingToast');
+      window.sessionStorage.removeItem('pomb.pendingToast');
+    } catch (e) {}
+    if (message) toast(message);
+  }
+
   var taskDialogsInitialized = false;
   function initTaskDialogs() {
     if (taskDialogsInitialized) return;
     taskDialogsInitialized = true;
     document.getElementById('mt-move-btn').addEventListener('click', doMoveTask);
+    document.getElementById('cp-copy-btn').addEventListener('click', doCopyTask);
+    document.getElementById('cp-name').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); doCopyTask(); }
+    });
     // KF-334: a click outside the card-anchored popover closes it.
     document.getElementById('move-task-dialog').addEventListener('click', function (e) {
       if (e.target === e.currentTarget && e.currentTarget.classList.contains('dlg-overlay--popover')) {
@@ -2658,6 +2692,22 @@
     return modal ? modal.dataset.taskId : null;
   }
 
+  var TASK_HASH = '#task-';
+
+  function showTaskHash(taskId) {
+    if (!boardId()) return;
+    var hash = window.location.hash;
+    if (hash && hash.indexOf(TASK_HASH) !== 0) return;
+    var wanted = TASK_HASH + taskId;
+    if (hash === wanted) return;
+    window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search + wanted);
+  }
+
+  function clearTaskHash() {
+    if (window.location.hash.indexOf(TASK_HASH) !== 0) return;
+    window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+  }
+
   function openModal(taskId, keepDirty) {
     fetch('/api/tasks/' + encodeURIComponent(taskId) + '/modal', {
       headers: { 'Accept': 'text/html' },
@@ -2672,6 +2722,7 @@
         modalSubviewOpen = false;
         // KF-250: lock the board behind the modal so it cannot scroll.
         document.body.classList.add('modal-open');
+        showTaskHash(taskId);
         wireModal();
       })
       .catch(function () { /* leave the board as-is on failure */ });
@@ -3440,6 +3491,7 @@
     modalSubviewOpen = false;
     modalTab = 'description';
     document.body.classList.remove('modal-open'); // KF-250: release the board scroll lock.
+    clearTaskHash();
     if (modalDirty) window.location.reload();
   }
 
@@ -4363,7 +4415,7 @@
     } else if (act === 'task-url') {
       copyTaskUrl(id);
     } else if (act === 'copy') {
-      copyModalTask();
+      openCopyDialog();
     } else if (act === 'shortcuts') {
       document.getElementById('shortcuts-dialog').hidden = false;
     } else if (act === 'delete') {
@@ -4427,33 +4479,64 @@
     }
   }
 
-  function copyModalTask() {
-    var id = modalTaskId();
-    if (!id) return;
-    var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
-    var list = card ? card.closest('.task-list') : null;
-    var place = list
-      ? Promise.resolve({ column_id: list.dataset.columnId, swimlane_id: list.dataset.swimlaneId || null })
-      : fetchJson('/api/tasks/' + encodeURIComponent(id));
-    var nameInput = document.getElementById('modal-name');
-    var name = nameInput ? nameInput.value.trim() : 'Task';
-    var modal = document.querySelector('#modal-root .task-modal');
-    var colorId = null;
-    if (modal) {
-      var src = document.querySelector('#board-colors span[data-value="' + cssEscape(modal.dataset.colorValue) + '"]');
-      if (src) colorId = src.dataset.id;
-    }
-    place.then(function (where) {
-      return api('/api/tasks', 'POST', {
-        column_id: where.column_id,
-        swimlane_id: where.swimlane_id || null,
-        name: name + ' (copy)',
-        color_id: colorId,
+  var copySource = null;
+
+  function openCopyDialog(taskId) {
+    var id = taskId || modalTaskId();
+    var bid = modalBoardId();
+    if (!id || !bid) return;
+    Promise.all([
+      fetchJson('/api/tasks/' + encodeURIComponent(id)),
+      fetchJson('/api/boards/' + encodeURIComponent(bid) + '/columns')
+    ]).then(function (loaded) {
+      copySource = loaded[0];
+      var colSel = document.getElementById('cp-col');
+      colSel.innerHTML = '';
+      (loaded[1] || []).forEach(function (c) {
+        var o = document.createElement('option');
+        o.value = c.id;
+        o.textContent = c.name;
+        colSel.appendChild(o);
       });
+      colSel.value = copySource.column_id;
+      var nameInput = document.getElementById('cp-name');
+      nameInput.value = copySource.name + ' (copy)';
+      document.getElementById('copy-task-dialog').hidden = false;
+      nameInput.focus();
+      nameInput.select();
+    }).catch(function () { toast('Could not load the task.'); });
+  }
+
+  function doCopyTask() {
+    var source = copySource;
+    if (!source) return;
+    var colSel = document.getElementById('cp-col');
+    var name = document.getElementById('cp-name').value.trim();
+    if (!name) { toast('Enter a name for the copy.'); return; }
+    if (!colSel.value) { toast('Choose a target column.'); return; }
+    var columnName = colSel.options[colSel.selectedIndex].textContent;
+    var copyBtn = document.getElementById('cp-copy-btn');
+    if (copyBtn.disabled) return;
+    copyBtn.disabled = true;
+    api('/api/tasks', 'POST', {
+      column_id: colSel.value,
+      swimlane_id: source.swimlane_id || null,
+      name: name,
+      description: source.description,
+      color_id: source.color_id,
+      labels: source.labels,
+      timeline_start: source.timeline_start,
+      timeline_end: source.timeline_end
     }).then(function (res) {
-      if (res.ok) { modalDirty = true; toast('Task copied.'); }
-      else toast('Could not copy task.');
-    }).catch(function () { toast('Could not copy task.'); });
+      if (!res.ok) { return toastRefusal(res, 'Could not copy task.'); }
+      return drained(res).then(function () {
+        document.getElementById('copy-task-dialog').hidden = true;
+        var message = 'Task was copied to column ' + columnName + '.';
+        if (modalTaskId()) { modalDirty = true; toast(message); return; }
+        try { window.sessionStorage.setItem('pomb.pendingToast', message); } catch (e) {}
+        window.location.reload();
+      });
+    }).catch(function () { toast('Could not copy task.'); }).then(function () { copyBtn.disabled = false; });
   }
 
   // KF-070/KF-334: the "Move task" dialog for `taskId` (default: the open
@@ -6975,6 +7058,16 @@
       }
     },
 
+    runKey: function () {
+      var body = document.getElementById('timer-popup-body');
+      if (!body) return false;
+      this.renderPopup();
+      var button = body.querySelector('#tp-stop, #tp-take-break, #tp-break-start, #tp-start');
+      if (!button) return false;
+      button.click();
+      return true;
+    },
+
     togglePopup: function () {
       var popup = document.getElementById('timer-popup');
       if (!popup) return;
@@ -8126,10 +8219,161 @@
     placeMenu(menu, x, y);
   }
 
+  var columnKeyHints = [];
+
+  function clearColumnHints() {
+    var had = columnKeyHints.length > 0;
+    columnKeyHints.forEach(function (hint) { hint.remove(); });
+    columnKeyHints = [];
+    return had;
+  }
+
+  function showColumnHints() {
+    clearColumnHints();
+    var adds = document.querySelectorAll('#column-headers-row .columnHeader-add[data-add-task-for]');
+    Array.prototype.slice.call(adds, 0, 9).forEach(function (add, i) {
+      var hint = document.createElement('span');
+      hint.className = 'column-key-hint';
+      hint.textContent = String(i + 1);
+      add.closest('.columnHeader').appendChild(hint);
+      columnKeyHints.push(hint);
+    });
+    return columnKeyHints.length > 0;
+  }
+
+  function pickColumnHint(digit) {
+    var adds = document.querySelectorAll('#column-headers-row .columnHeader-add[data-add-task-for]');
+    var add = adds[Number(digit) - 1];
+    clearColumnHints();
+    if (add) add.click();
+    return !!add;
+  }
+
+  function openBoardList() {
+    var dropdown = document.getElementById('boards-dropdown');
+    var button = document.getElementById('boards-dropdown-btn');
+    var search = document.getElementById('bs-search');
+    if (!dropdown || !button || !search) return false;
+    if (dropdown.hidden) button.click();
+    search.focus();
+    return true;
+  }
+
+  function reportsMenuKey(e) {
+    var sub = document.getElementById('reports-submenu');
+    if (!sub || sub.hidden || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return false;
+    var items = Array.prototype.slice.call(sub.querySelectorAll('[data-report]'));
+    if (!items.length) return false;
+    var at = items.indexOf(document.activeElement);
+    var step = e.key === 'ArrowDown' ? 1 : -1;
+    var next = at === -1 ? (step === 1 ? 0 : items.length - 1) : (at + step + items.length) % items.length;
+    items[next].focus();
+    return true;
+  }
+
+  function boardLetter(key) {
+    if (key === 'a') return showColumnHints();
+    if (key === 'b') return openBoardList();
+    if (key === 'f') return BoardChrome.openFilter();
+    if (key === 'r') return BoardChrome.openReports();
+    if (key === 'u') return BoardChrome.showAllMembers();
+    if (key === 'h') return !!document.getElementById('help-dialog') && BoardChrome.openHelp();
+    if (key === 'm') {
+      var popup = document.getElementById('timer-popup');
+      if (!popup || popup.hidden) return false;
+      TimerUI.switchModeTab();
+      return true;
+    }
+    if (key === 's') return TimerUI.runKey();
+    return false;
+  }
+
+  var SHORTCUT_DIALOGS = '.dlg-overlay:not([hidden]), .addTask-overlay:not([hidden])';
+
+  function timerShortcut(shift) {
+    if (document.querySelector(SHORTCUT_DIALOGS)) return false;
+    if (shift) {
+      if (!document.getElementById('timer-select-pill')) return false;
+      TimerUI.beginSelect();
+      return true;
+    }
+    TimerUI.togglePopup();
+    return true;
+  }
+
+  function onBoardShortcut(e, key) {
+    if (columnKeyHints.length) {
+      if (/^[1-9]$/.test(e.key)) {
+        e.preventDefault();
+        pickColumnHint(e.key);
+        return true;
+      }
+      clearColumnHints();
+    }
+    if (document.querySelector(SHORTCUT_DIALOGS + ', .menu-floating:not([hidden])')) {
+      return false;
+    }
+    if (!boardLetter(key)) return false;
+    e.preventDefault();
+    return true;
+  }
+
+  var MODAL_LETTER_ACTS = {
+    c: 'pick-color',
+    d: 'add-description',
+    f: 'add-attachment',
+    k: 'add-comment',
+    l: 'add-label',
+    m: 'add-member',
+    r: 'add-relation',
+    s: 'add-subtask',
+    u: 'add-duedate'
+  };
+
+  function modalLetter(modal, key) {
+    if (document.querySelector('.dlg-overlay:not([hidden])')) return false;
+    if (key === 'a') {
+      var add = document.querySelector('[data-tm-menu="tm-add-menu"]');
+      if (!add) return false;
+      add.click();
+      return true;
+    }
+    if (key === 'n') {
+      var name = document.getElementById('modal-name');
+      if (!name) return false;
+      name.focus();
+      name.select();
+      return true;
+    }
+    var act = MODAL_LETTER_ACTS[key];
+    if (!act) return false;
+    modalAction(act, modal.querySelector('[data-tm-act="' + act + '"]'));
+    return true;
+  }
+
+  function showShortcutsTab(dialog, name) {
+    Array.prototype.forEach.call(dialog.querySelectorAll('[data-shortcuts-panel]'), function (panel) {
+      panel.hidden = panel.getAttribute('data-shortcuts-panel') !== name;
+    });
+  }
+
+  document.addEventListener('change', function (e) {
+    if (e.target.id !== 'shortcuts-tab') return;
+    showShortcutsTab(document.getElementById('shortcuts-dialog'), e.target.value);
+  });
+
+  document.addEventListener('click', function (e) {
+    if (e.target.closest && e.target.closest('#shortcuts-print')) window.print();
+  });
+
   document.addEventListener('keydown', function (e) {
     var modal = document.querySelector('.task-modal[data-task-id]');
     var inField = !!(e.target && e.target.closest &&
       e.target.closest('input, textarea, select, [contenteditable]'));
+    if (!e.metaKey && !e.ctrlKey && !e.altKey && reportsMenuKey(e)) {
+      e.preventDefault();
+      return;
+    }
     // Cmd/Ctrl+Enter: save changes (the modal persists name/description on
     // change; Enter here just commits the field and closes).
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === 'Enter') {
@@ -8140,17 +8384,19 @@
       }
       return;
     }
+    if (columnKeyHints.length && !/^([1-9]|Shift|Control|Alt|Meta|Escape)$/.test(e.key)) clearColumnHints();
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     // Escape must work even with focus inside a field (dialog inputs etc.).
     if (e.key === 'Escape') { handleEscape(); return; }
     if (inField) return;
+    if (document.querySelector(SHORTCUT_DIALOGS)) return;
     var key = e.key.toLowerCase();
     if (key === 't') {
       if (modal) {
         var timerBtn = document.querySelector('[data-tm-menu="tm-timer-menu"]');
         if (timerBtn) timerBtn.click();
       } else {
-        TimerUI.togglePopup();
+        timerShortcut(e.shiftKey);
       }
     } else if (key === 'p') {
       // KF-383: with a task open, P opens the modal's Reports menu, as T
@@ -8181,6 +8427,10 @@
     } else if (key === '?') {
       var shortcuts = document.getElementById('shortcuts-dialog');
       if (shortcuts) shortcuts.hidden = false;
+    } else if (modal) {
+      if (modalLetter(modal, key)) e.preventDefault();
+    } else {
+      onBoardShortcut(e, key);
     }
   });
 
@@ -9201,6 +9451,7 @@
   // Unified Escape: submenus, floating menus, dialogs, time dialogs, why
   // menu, then the task modal — innermost surface first.
   function handleEscape() {
+    if (clearColumnHints()) return;
     if (typeof closeEmojiPop === 'function' && emojiPop && !emojiPop.hidden) { closeEmojiPop(); return; }
     if (closeLinkPicker(true)) return;
     if (closeAllTmMenus()) return;
@@ -10582,6 +10833,195 @@
     return { init: init };
   })();
 
+  var ReportBreakdown = (function () {
+    var GROUPS = { total: 'Total', color: 'Color', label: 'Label', responsible: 'Responsible', user: 'User' };
+
+    var NONE = 'none';
+    var DEFAULT_RANGE_DAYS = 6;
+
+    function parseDay(str) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(str || '')) return null;
+      var parts = str.split('-');
+      return new Date(+parts[0], +parts[1] - 1, +parts[2]).getTime();
+    }
+
+    function periodRange(value, fromStr, toStr, now) {
+      var y = now.getFullYear(), m = now.getMonth();
+      if (value === 'this-month') return { from: new Date(y, m, 1).getTime(), to: new Date(y, m + 1, 1).getTime() };
+      if (value === 'last-month') return { from: new Date(y, m - 1, 1).getTime(), to: new Date(y, m, 1).getTime() };
+      if (value === 'custom') {
+        var a = parseDay(fromStr), b = parseDay(toStr);
+        if (a === null || b === null || b < a) return null;
+        var after = new Date(b);
+        after.setDate(after.getDate() + 1);
+        return { from: a, to: after.getTime() };
+      }
+      var to = new Date(y, m, now.getDate() + 1);
+      return { from: new Date(y, m, now.getDate() + 1 - parseInt(value, 10)).getTime(), to: to.getTime() };
+    }
+
+    function groupsOf(t, mode, ctx) {
+      if (mode === 'total') return [{ key: 'total', label: 'Total', dot: null }];
+      if (mode === 'color') {
+        var c = ctx.colorById[t.color_id];
+        return [{ key: t.color_id || '', label: c ? (c.label || c.value) : 'No color', dot: c ? c.value : null }];
+      }
+      if (mode === 'label') {
+        var labels = t.labels || [];
+        return labels.length ? labels.map(function (l) { return { key: l, label: l, dot: null }; })
+          : [{ key: '', label: 'No label', dot: null }];
+      }
+      if (mode === 'responsible') {
+        var r = t.responsible;
+        if (r && r.kind === 'member') return [{ key: 'u:' + r.id, label: ctx.userName(r.id), dot: null }];
+        if (r && r.kind === 'session') return [{ key: 's:' + r.name, label: r.name, dot: null }];
+        return [{ key: '', label: 'Unassigned', dot: null }];
+      }
+      var ids = t.member_ids || [];
+      return ids.length ? ids.map(function (id) { return { key: id, label: ctx.userName(id), dot: null }; })
+        : [{ key: '', label: 'Unassigned', dot: null }];
+    }
+
+    function matches(t, f) {
+      var members = t.member_ids || [];
+      if (f.user === NONE) {
+        if (members.length) return false;
+      } else if (f.user && members.indexOf(f.user) === -1) {
+        return false;
+      }
+      if (f.color === NONE) {
+        if (t.color_id) return false;
+      } else if (f.color && t.color_id !== f.color) {
+        return false;
+      }
+      return !f.label || (t.labels || []).indexOf(f.label) !== -1;
+    }
+
+    function passes(t, opts) {
+      if (t.completed_at && opts.range) {
+        var at = Date.parse(t.completed_at);
+        if (!isNaN(at) && (at < opts.range.from || at >= opts.range.to)) return false;
+      }
+      return matches(t, opts);
+    }
+
+    function build(data, opts, valueOf) {
+      var columns = data.columns || [];
+      var colIndex = {};
+      columns.forEach(function (c, i) { colIndex[c.id] = i; });
+      var colorById = {}, userById = {};
+      (data.colors || []).forEach(function (c) { colorById[c.id] = c; });
+      (data.users || []).forEach(function (u) { userById[u.id] = u.username; });
+      var ctx = { colorById: colorById, userName: function (id) { return userById[id] || 'Unknown user'; } };
+      var rows = [], byKey = Object.create(null);
+      function rowFor(g) {
+        if (!byKey[g.key]) {
+          byKey[g.key] = { label: g.label, value: g.dot, sums: columns.map(function () { return 0; }) };
+          rows.push(byKey[g.key]);
+        }
+        return byKey[g.key];
+      }
+      if (opts.group === 'total') rowFor({ key: 'total', label: 'Total', dot: null });
+      var matched = 0, total = 0;
+      (data.tasks || []).forEach(function (t) {
+        var i = colIndex[t.column_id];
+        if (i === undefined || !passes(t, opts)) return;
+        var v = valueOf(t);
+        if (v > 0) matched++;
+        total += v;
+        groupsOf(t, opts.group, ctx).forEach(function (g) { rowFor(g).sums[i] += v; });
+      });
+      return { columns: columns, rows: rows, matched: matched, total: total, group: opts.group };
+    }
+
+    function fill(select, items) {
+      items.forEach(function (it) {
+        var opt = document.createElement('option');
+        opt.value = it.value;
+        opt.textContent = it.text;
+        select.appendChild(opt);
+      });
+    }
+
+    function fillFilters(data, prefix) {
+      var labels = Object.create(null);
+      (data.tasks || []).forEach(function (t) {
+        (t.labels || []).forEach(function (l) { labels[l] = true; });
+      });
+      fill(document.getElementById(prefix + 'user'), [{ value: NONE, text: 'Unassigned' }].concat(
+        (data.users || []).map(function (u) { return { value: u.id, text: u.username }; })));
+      fill(document.getElementById(prefix + 'color'), [{ value: NONE, text: 'No color' }].concat(
+        (data.colors || []).map(function (c) { return { value: c.id, text: c.label || c.value }; })));
+      fill(document.getElementById(prefix + 'label'), Object.keys(labels).sort().map(function (l) {
+        return { value: l, text: l };
+      }));
+    }
+
+    function mount(boardId, handlers) {
+      function qs(id) { return document.getElementById(id); }
+      var data = null;
+      function options() {
+        return {
+          group: qs('rb-group').value,
+          range: periodRange(qs('rb-period').value, qs('rb-from').value, qs('rb-to').value, new Date()),
+          user: qs('rb-user').value,
+          color: qs('rb-color').value,
+          label: qs('rb-label').value
+        };
+      }
+      function refresh() {
+        qs('rb-custom').hidden = qs('rb-period').value !== 'custom';
+        if (data) handlers.render(data, options());
+      }
+      var today = new Date();
+      var from = new Date(today.getFullYear(), today.getMonth(), today.getDate() - DEFAULT_RANGE_DAYS);
+      qs('rb-from').value = isoDate(from);
+      qs('rb-to').value = isoDate(today);
+      ['rb-group', 'rb-period', 'rb-from', 'rb-to', 'rb-user', 'rb-color', 'rb-label'].forEach(function (id) {
+        qs(id).addEventListener('change', refresh);
+      });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (loaded) {
+        data = loaded;
+        fillFilters(data, 'rb-');
+        refresh();
+      }).catch(function (err) {
+        handlers.error(err);
+      });
+    }
+
+    function tableHtml(table, cellText) {
+      if (!table.rows.length) return '<p class="settings-hint">No tasks match.</p>';
+      var html = '<table class="bshell-table"><thead><tr><th scope="col"><span class="sr-only">' +
+        escapeHtml(GROUPS[table.group]) + '</span></th>';
+      table.columns.forEach(function (c) {
+        html += '<th scope="col" class="num">' + escapeHtml(c.name) + '</th>';
+      });
+      html += '</tr></thead><tbody>';
+      table.rows.forEach(function (r) {
+        var dot = table.group !== 'color' ? '' : '<span class="report-color-dot"' +
+          (r.value
+            ? ' style="background:' + escapeHtml(r.value) + '"'
+            : ' style="background:transparent;border:1px dashed #9ca3af"') + '></span> ';
+        html += '<tr><th scope="row">' + dot + escapeHtml(r.label) + '</th>';
+        r.sums.forEach(function (v) {
+          html += '<td class="num">' + escapeHtml(String(cellText(v))) + '</td>';
+        });
+        html += '</tr>';
+      });
+      return html + '</tbody></table>';
+    }
+
+    return {
+      build: build, mount: mount, tableHtml: tableHtml, periodRange: periodRange, matches: matches,
+      fill: fill, fillFilters: fillFilters, parseDay: parseDay, GROUPS: GROUPS, NONE: NONE
+    };
+  })();
+
   // KF-343: Task count report page — number of tasks in each column,
   // broken down by color (KanbanFlow's "Time estimate & Task count" layout).
   // Renders client-side from the shared export-data dataset.
@@ -10595,83 +11035,23 @@
       if (el) el.textContent = msg;
     }
 
-    // Returns { columns, rows } where rows are per color (plus a "No color"
-    // row when needed) with per-column counts. Colors with no tasks are
-    // omitted; row order follows first appearance on the board.
-    function buildTable(data) {
-      var columns = data.columns || [];
-      var colors = data.colors || [];
-      var tasks = data.tasks || [];
-      var colorById = {};
-      colors.forEach(function (c) { colorById[c.id] = c; });
-      var colIndex = {};
-      columns.forEach(function (c, i) { colIndex[c.id] = i; });
-
-      var counts = {};
-      var order = [];
-      tasks.forEach(function (t) {
-        var key = t.color_id || '';
-        if (order.indexOf(key) === -1) order.push(key);
-        if (!counts[key]) counts[key] = columns.map(function () { return 0; });
-        var i = colIndex[t.column_id];
-        if (i !== undefined) counts[key][i]++;
-      });
-
-      var rows = order.map(function (key) {
-        var c = colorById[key];
-        return {
-          label: c ? (c.label || c.value) : 'No color',
-          value: c ? c.value : null,
-          counts: counts[key]
-        };
-      });
-      return { columns: columns, rows: rows };
-    }
-
-    function render(table) {
-      var host = qs('taskcount-table');
-      if (!host) return;
-      if (!table.rows.length) {
-        host.innerHTML = '<p class="settings-hint">No tasks on this board.</p>';
+    function render(data, opts) {
+      if (!opts.range) {
+        setStatus('Pick a start date that is on or before the end date.');
         return;
       }
-      var html = '<table class="bshell-table"><thead><tr><th scope="col"><span class="sr-only">Color</span></th>';
-      table.columns.forEach(function (c) {
-        html += '<th scope="col" class="num">' + escapeHtml(c.name) + '</th>';
-      });
-      html += '</tr></thead><tbody>';
-      table.rows.forEach(function (r) {
-        html += '<tr><th scope="row"><span class="report-color-dot"' +
-          (r.value
-            ? ' style="background:' + escapeHtml(r.value) + '"'
-            : ' style="background:transparent;border:1px dashed #9ca3af"') +
-          '></span> ' + escapeHtml(r.label) + '</th>';
-        r.counts.forEach(function (n) {
-          html += '<td class="num">' + n + '</td>';
-        });
-        html += '</tr>';
-      });
-      html += '</tbody></table>';
-      host.innerHTML = html;
+      var table = ReportBreakdown.build(data, opts, function () { return 1; });
+      qs('taskcount-table').innerHTML = ReportBreakdown.tableHtml(table, function (n) { return n; });
+      var total = table.matched;
+      setStatus(total === 1 ? '1 task.' : total + ' tasks.');
     }
 
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' }
-      }).then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      }).then(function (data) {
-        var table = buildTable(data);
-        render(table);
-        var total = table.rows.reduce(function (s, r) {
-          return s + r.counts.reduce(function (a, b) { return a + b; }, 0);
-        }, 0);
-        setStatus(total === 1 ? '1 task.' : total + ' tasks.');
-      }).catch(function (err) {
-        setStatus('Could not load task data: ' + err.message);
+      ReportBreakdown.mount(boardId, {
+        render: render,
+        error: function (err) { setStatus('Could not load task data: ' + err.message); }
       });
     }
 
@@ -10940,6 +11320,8 @@
   var BurndownPage = (function () {
     var initialized = false;
     var DAYS = 30;
+    var DAY_MS = 86400000;
+    var MAX_PROJECTION_DAYS = 365;
     var GEO = { W: 720, H: 300, padL: 46, padR: 32, padT: 16, padB: 34 };
 
     function qs(id) { return document.getElementById(id); }
@@ -10975,17 +11357,35 @@
           d: done && !isNaN(done.getTime()) ? done.getTime() : null
         };
       }).filter(function (t) { return t.c !== null; });
-      return {
-        ends: ends,
-        counts: ends.map(function (e) {
-          var ms = e.getTime();
-          var n = 0;
-          parsed.forEach(function (t) {
-            if (t.c <= ms && (t.d === null || t.d > ms)) n++;
-          });
-          return n;
-        })
-      };
+      var counts = ends.map(function (e) {
+        var ms = e.getTime();
+        var n = 0;
+        parsed.forEach(function (t) {
+          if (t.c <= ms && (t.d === null || t.d > ms)) n++;
+        });
+        return n;
+      });
+      var windowStart = ends[0].getTime() - DAY_MS;
+      var completed = parsed.filter(function (t) { return t.d !== null && t.d > windowStart; }).length;
+      return projectSeries({ ends: ends, counts: counts }, completed / DAYS);
+    }
+
+    function projectSeries(series, rate) {
+      var counts = series.counts;
+      var left = counts.length ? counts[counts.length - 1] : 0;
+      var ends = series.ends.slice();
+      var projection = [];
+      if (left > 0 && rate > 0) {
+        var days = Math.min(MAX_PROJECTION_DAYS, Math.ceil(left / rate));
+        var last = ends[ends.length - 1];
+        for (var k = 1; k <= days; k++) {
+          var d = new Date(last);
+          d.setDate(d.getDate() + k);
+          ends.push(d);
+          projection.push(Math.max(0, left - rate * k));
+        }
+      }
+      return { ends: ends, counts: counts, projection: projection };
     }
 
     function chartSvg(series) {
@@ -10995,7 +11395,9 @@
       series.counts.forEach(function (n) { if (n > max) max = n; });
       max = Math.ceil(max / 5) * 5;
 
-      var n = series.counts.length;
+      var n = series.ends.length;
+      var actual = series.counts.length;
+      var projection = series.projection || [];
       function x(i) { return padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW); }
       function y(v) { return padT + innerH - (v / max) * innerH; }
 
@@ -11011,19 +11413,34 @@
       }
       var midY = padT + innerH / 2;
       svg += '<text x="14" y="' + midY + '" text-anchor="middle" class="chart-axis-label"' +
-        ' transform="rotate(-90 14 ' + midY + ')">Tasks remaining</text>';
+        ' transform="rotate(-90 14 ' + midY + ')">Task count</text>';
       var i, j, k;
-      for (i = 0; i < n; i += 5) {
-        svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
+      var step = Math.max(5, Math.ceil(n / 7));
+      var labelled = [];
+      for (i = 0; i < n; i += step) labelled.push(i);
+      if (projection.length && n - 1 - labelled[labelled.length - 1] >= 3) labelled.push(n - 1);
+      labelled.forEach(function (at) {
+        svg += '<text x="' + x(at).toFixed(1) + '" y="' + (H - 10) +
           '" text-anchor="middle" class="chart-tick">' +
-          escapeHtml(ReportChart.shortDate(series.ends[i])) + '</text>';
-      }
+          escapeHtml(ReportChart.shortDate(series.ends[at])) + '</text>';
+      });
       var pts = [];
-      for (j = 0; j < n; j++) {
+      for (j = 0; j < actual; j++) {
         pts.push(x(j).toFixed(1) + ',' + y(series.counts[j]).toFixed(1));
       }
+      if (actual) {
+        svg += '<polygon points="' + x(0).toFixed(1) + ',' + y(0).toFixed(1) + ' ' + pts.join(' ') +
+          ' ' + x(actual - 1).toFixed(1) + ',' + y(0).toFixed(1) + '" class="chart-area"/>';
+      }
       svg += '<polyline points="' + pts.join(' ') + '" class="chart-line" fill="none"/>';
-      for (k = 0; k < n; k++) {
+      if (projection.length) {
+        var ppts = [pts[actual - 1]];
+        projection.forEach(function (v, p) {
+          ppts.push(x(actual + p).toFixed(1) + ',' + y(v).toFixed(1));
+        });
+        svg += '<polyline points="' + ppts.join(' ') + '" pathLength="1" class="chart-projection" fill="none"/>';
+      }
+      for (k = 0; k < actual; k++) {
         svg += '<circle cx="' + x(k).toFixed(1) + '" cy="' + y(series.counts[k]).toFixed(1) +
           '" r="4" class="chart-dot"><title>' + series.counts[k] +
           ' tasks remaining, ' + escapeHtml(ReportChart.longDate(ReportChart.dayStart(series.ends[k]))) + '</title></circle>';
@@ -11033,9 +11450,13 @@
     }
 
     function tipFor(series, i) {
+      var actual = i < series.counts.length;
       return {
         title: ReportChart.longDate(ReportChart.dayStart(series.ends[i])),
-        rows: [{ label: 'Tasks remaining', value: series.counts[i] }]
+        rows: [{
+          label: actual ? 'Tasks remaining' : 'Projected remaining',
+          value: actual ? series.counts[i] : Math.ceil(series.projection[i - series.counts.length])
+        }]
       };
     }
 
@@ -11067,7 +11488,7 @@
       });
     }
 
-    return { init: init, chartSvg: chartSvg, tipFor: tipFor };
+    return { init: init, chartSvg: chartSvg, tipFor: tipFor, projectSeries: projectSeries };
   })();
 
   // KF-340: Cycle & lead time report page. Average cycle/lead time per week
@@ -11709,42 +12130,15 @@
     return { init: init };
   })();
 
-  // KF-336: Board history report page. A detailed chronological log of
-  // changes made on the board (KanbanFlow's Board history: filter the history
-  // log by user or type of change; compare a field's value side-by-side
-  // before and after the change), rendered from the shared export-data
-  // dataset. Comment bodies come from each task's comments array (exact
-  // timestamps and text); the duplicate comment_added history events are
-  // skipped in favor of those richer entries.
   var BoardHistoryPage = (function () {
     var initialized = false;
+    var boardId = '';
+    var usersFilled = false;
+    var appliedQuery = '';
+    var loadToken = 0;
 
     var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-    // Machine-readable history kinds -> human labels (headlines + filter).
-    var KIND_LABELS = {
-      created: 'Created',
-      moved: 'Column',
-      renamed: 'Renamed',
-      description_updated: 'Description',
-      estimate_updated: 'Time estimate',
-      color_updated: 'Color',
-      labels_updated: 'Labels',
-      due_updated: 'Due date',
-      due_done_updated: 'Due date done',
-      members_updated: 'Members',
-      responsible_updated: 'Responsible',
-      grouping_date_updated: 'Grouping date',
-      timeline_updated: 'Timeline',
-      subtask_renamed: 'Subtask',
-      time_logged: 'Time logged',
-      time_edited: 'Time edited',
-      time_deleted: 'Time deleted',
-      deleted: 'Task deleted',
-      restored: 'Task restored',
-      comment: 'Comment'
-    };
 
     function qs(id) { return document.getElementById(id); }
 
@@ -11774,182 +12168,399 @@
       return (s || '?').toUpperCase();
     }
 
-    function parseMs(s) {
-      var t = new Date(s).getTime();
-      return isNaN(t) ? null : t;
+    function localDay(text) {
+      var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text || '');
+      return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
     }
 
-    // Flatten every task's history events plus one entry per comment into a
-    // single newest-first list. comment_added history events are skipped —
-    // the comment entries below carry the same information plus the body.
-    function collectEntries(data) {
-      var entries = [];
-      (data.tasks || []).forEach(function (t) {
-        (t.history || []).forEach(function (e) {
-          if (e.kind === 'comment_added') return;
-          var ms = parseMs(e.created_at);
-          if (ms === null) return;
-          entries.push({
-            kind: e.kind, detail: e.detail, actor: e.actor, ms: ms,
-            task: t.name
-          });
-        });
-        (t.comments || []).forEach(function (c) {
-          var ms = parseMs(c.created_at);
-          if (ms === null) return;
-          entries.push({
-            kind: 'comment', detail: c.body, actor: c.author, ms: ms,
-            task: t.name
-          });
-        });
-      });
-      (data.deleted || []).forEach(function (d) {
-        var ms = parseMs(d.deleted_at);
-        if (ms === null) return;
-        entries.push({
-          kind: 'deleted', detail: 'Task ' + d.name + ' was deleted from column ' + d.column,
-          actor: d.deleted_by, ms: ms, task: d.name
-        });
-      });
-      entries.sort(function (a, b) { return b.ms - a.ms; });
-      return entries;
-    }
-
-    // "Moved from X to Y" -> {from, to} for the side-by-side table.
-    function parseMove(detail) {
-      var m = /^Moved from (.*) to (.*)$/.exec(detail || '');
-      return m ? { from: m[1], to: m[2] } : null;
-    }
-
-    function headline(e) {
-      var t = '<b>' + escapeHtml(e.task) + '</b>';
-      switch (e.kind) {
-        case 'created': {
-          // detail: "Task created in Backlog"
-          var col = (e.detail || '').replace(/^Task created in /, '');
-          return 'Task ' + t + ' was created in column <b>' +
-            escapeHtml(col) + '</b>';
-        }
-        case 'moved':
-          return 'Task ' + t + ' has changed properties: Column.';
-        case 'renamed':
-          return 'Task ' + t + ' was renamed.';
-        case 'deleted': {
-          var from = (e.detail || '').replace(/^Task .* was deleted from column /, '');
-          return 'Task ' + t + ' was deleted from column <b>' +
-            escapeHtml(from) + '</b>';
-        }
-        case 'restored': {
-          var to = (e.detail || '').replace(/^Task .* was restored to column /, '');
-          return 'Task ' + t + ' was restored to column <b>' +
-            escapeHtml(to) + '</b>';
-        }
-        case 'comment':
-          return '<b>' + escapeHtml(e.actor) + '</b> added to task ' + t +
-            ' with text';
-        case 'time_logged':
-        case 'time_edited':
-        case 'time_deleted': {
-          var d = e.detail || '';
-          return 'Task ' + t + ': ' + escapeHtml(d.charAt(0).toLowerCase() + d.slice(1));
-        }
-        default: {
-          var label = KIND_LABELS[e.kind] || e.kind;
-          return 'Task ' + t + ' has changed properties: ' +
-            escapeHtml(label) + '.';
-        }
+    function periodRange(period, now, fromText, toText) {
+      var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      var monday = new Date(today);
+      monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+      var week = function (shift) {
+        var from = new Date(monday); from.setDate(monday.getDate() + shift);
+        var to = new Date(from); to.setDate(from.getDate() + 7);
+        return { from: from, to: to };
+      };
+      var month = function (shift) {
+        return {
+          from: new Date(now.getFullYear(), now.getMonth() + shift, 1),
+          to: new Date(now.getFullYear(), now.getMonth() + shift + 1, 1)
+        };
+      };
+      if (period === 'this-week') return week(0);
+      if (period === 'last-week') return week(-7);
+      if (period === 'this-month') return month(0);
+      if (period === 'last-month') return month(-1);
+      if (period === 'custom') {
+        var from = localDay(fromText);
+        var to = localDay(toText);
+        if (to) to.setDate(to.getDate() + 1);
+        return { from: from, to: to };
       }
+      return { from: null, to: null };
     }
 
-    function renderEntry(e) {
+    function queryString(values, now) {
+      var range = periodRange(values.period, now, values.from, values.to);
+      var pairs = [];
+      function add(key, value) {
+        if (value) pairs.push(key + '=' + encodeURIComponent(value));
+      }
+      add('event', values.event);
+      add('property', values.event === 'changed' ? values.property : '');
+      add('user', values.user);
+      add('from', range.from ? range.from.toISOString() : '');
+      add('to', range.to ? range.to.toISOString() : '');
+      add('order', values.order);
+      return pairs.join('&');
+    }
+
+    function chosen() {
+      return {
+        event: qs('history-event-filter').value,
+        property: qs('history-property-filter').value,
+        user: qs('history-user-filter').value,
+        period: qs('history-period-filter').value,
+        from: qs('history-from').value,
+        to: qs('history-to').value,
+        order: qs('history-order-filter').value
+      };
+    }
+
+    function headline(row) {
+      var t = '<b>' + escapeHtml(row.task) + '</b>';
+      if (row.kind === 'comment') {
+        return '<b>' + escapeHtml(row.user) + '</b> added to task ' + t + ' with text';
+      }
+      return 'Task ' + t + ': ' + escapeHtml(row.event);
+    }
+
+    function renderEntry(row, open) {
+      var ms = new Date(row.time).getTime();
       var html = '<div class="history-entry">';
       html += '<div class="history-head">';
       html += '<span class="user-avatar history-avatar" aria-hidden="true">' +
-        escapeHtml(initials(e.actor)) + '</span>';
-      html += '<span class="history-actor">' + escapeHtml(e.actor) + '</span>';
-      html += '<span class="history-time">' + escapeHtml(fmtTime(e.ms)) + '</span>';
+        escapeHtml(initials(row.user)) + '</span>';
+      html += '<span class="history-actor">' + escapeHtml(row.user) + '</span>';
+      html += '<span class="history-time">' + escapeHtml(fmtTime(ms)) + '</span>';
       html += '</div>';
-      html += '<div class="history-text">' + headline(e) + '</div>';
-      if (e.kind === 'moved') {
-        var mv = parseMove(e.detail);
-        if (mv) {
-          html += '<details class="history-compare" open>' +
-            '<summary>Compare values</summary>' +
-            '<table class="bshell-table"><thead><tr><th>Property</th><th>Old value</th><th>New value</th></tr></thead>' +
-            '<tbody><tr><th>Column</th><td>' + escapeHtml(mv.from) + '</td><td>' +
-            escapeHtml(mv.to) + '</td></tr></tbody></table></details>';
-        }
-      } else if (e.kind === 'comment') {
-        html += '<div class="history-comment">' + escapeHtml(e.detail) + '</div>';
-      } else if (e.kind === 'renamed') {
-        // detail: Renamed to "X"
-        html += '<div class="history-comment">' + escapeHtml(e.detail) + '</div>';
+      html += '<div class="history-text">' + headline(row) + '</div>';
+      if (row.detail) {
+        html += '<div class="history-comment">' + escapeHtml(row.detail) + '</div>';
+      }
+      if (row.changed) {
+        html += '<details class="history-compare"' + (open ? ' open' : '') + '>' +
+          '<summary>Compare values</summary>' +
+          '<table class="bshell-table"><thead><tr><th>Property</th><th>Old value</th><th>New value</th></tr></thead>' +
+          '<tbody><tr><th>' + escapeHtml(row.event) + '</th><td>' + escapeHtml(row.old_value) +
+          '</td><td>' + escapeHtml(row.new_value) + '</td></tr></tbody></table></details>';
       }
       html += '</div>';
       return html;
     }
 
-    function fillFilters(entries) {
-      var userSel = qs('history-user-filter');
-      var typeSel = qs('history-type-filter');
-      var users = {}, kinds = {};
-      entries.forEach(function (e) {
-        users[e.actor] = true;
-        kinds[e.kind] = true;
-      });
-      Object.keys(users).sort().forEach(function (u) {
+    function fillUsers(users) {
+      if (usersFilled) return;
+      usersFilled = true;
+      var sel = qs('history-user-filter');
+      users.forEach(function (u) {
         var o = document.createElement('option');
         o.value = u; o.textContent = u;
-        userSel.appendChild(o);
-      });
-      Object.keys(kinds).sort(function (a, b) {
-        var la = KIND_LABELS[a] || a, lb = KIND_LABELS[b] || b;
-        return la < lb ? -1 : la > lb ? 1 : 0;
-      }).forEach(function (k) {
-        var o = document.createElement('option');
-        o.value = k; o.textContent = KIND_LABELS[k] || k;
-        typeSel.appendChild(o);
+        sel.appendChild(o);
       });
     }
 
-    function render(entries) {
-      var userF = qs('history-user-filter').value;
-      var typeF = qs('history-type-filter').value;
-      var shown = entries.filter(function (e) {
-        return (!userF || e.actor === userF) && (!typeF || e.kind === typeF);
-      });
+    function render(page) {
+      fillUsers(page.users || []);
+      var rows = page.rows || [];
       var feed = qs('history-feed');
-      if (!shown.length) {
-        feed.innerHTML = '';
-        setStatus(entries.length
-          ? 'No changes match the selected filters.'
-          : 'No changes on this board.');
-        return;
-      }
-      feed.innerHTML = shown.map(renderEntry).join('');
-      setStatus(shown.length === 1 ? '1 change.' : shown.length + ' changes.');
+      var open = qs('history-show-all').checked;
+      feed.innerHTML = rows.map(function (r) { return renderEntry(r, open); }).join('');
+      setStatus(rows.length === 0
+        ? 'No changes match the selected filters.'
+        : rows.length === 1 ? '1 change.' : rows.length + ' changes.');
     }
 
-    function init(boardId) {
+    function exportHref(format) {
+      return '/api/boards/' + encodeURIComponent(boardId) + '/history?format=' + format +
+        (appliedQuery ? '&' + appliedQuery : '');
+    }
+
+    function reload() {
+      appliedQuery = queryString(chosen(), new Date());
+      qs('history-export-xlsx').href = exportHref('xlsx');
+      qs('history-export-csv').href = exportHref('csv');
+      setStatus('Loading...');
+      var token = ++loadToken;
+      return fetch('/api/boards/' + encodeURIComponent(boardId) + '/history' +
+        (appliedQuery ? '?' + appliedQuery : ''), {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (page) {
+        if (token === loadToken) render(page);
+      }).catch(function (err) {
+        if (token === loadToken) setStatus('Could not load board history: ' + err.message);
+      });
+    }
+
+    function syncVisibility() {
+      qs('history-property-label').hidden = qs('history-event-filter').value !== 'changed';
+      var custom = qs('history-period-filter').value === 'custom';
+      document.querySelectorAll('.history-custom').forEach(function (el) { el.hidden = !custom; });
+    }
+
+    function init(id) {
       if (initialized) return;
       initialized = true;
+      boardId = id;
+      qs('history-event-filter').addEventListener('change', syncVisibility);
+      qs('history-period-filter').addEventListener('change', syncVisibility);
+      qs('history-reload').addEventListener('click', reload);
+      qs('history-show-all').addEventListener('change', function () {
+        var open = qs('history-show-all').checked;
+        document.querySelectorAll('#history-feed details').forEach(function (el) { el.open = open; });
+      });
+      syncVisibility();
+      reload();
+    }
+
+    return { init: init, periodRange: periodRange, queryString: queryString };
+  })();
+
+  var PrintBoard = (function () {
+    var PROPERTIES = [
+      ['description', 'Description'], ['color', 'Color'], ['members', 'Members'],
+      ['estimate', 'Time estimate'], ['spent', 'Time spent'], ['labels', 'Labels'],
+      ['timeline', 'Timeline'], ['due', 'Due dates'], ['subtasks', 'Subtasks'],
+      ['comments', 'Comments'], ['relations', 'Relations'], ['grouping', 'Grouping date']
+    ];
+    var PERIODS = [
+      ['all', 'All time'], ['this-week', 'This week'], ['last-week', 'Last week'],
+      ['this-month', 'This month'], ['last-month', 'Last month']
+    ];
+    var RELATION_LABELS = {
+      blocked_by: 'Depends on', blocks: 'Required by', related: 'Relates to', parent: 'Part of'
+    };
+    var UNASSIGNED = '__unassigned__';
+
+    var data = null;
+    var wired = false;
+
+    function qs(id) { return document.getElementById(id); }
+
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+    function minutesText(minutes) {
+      var m = Math.round(minutes);
+      var h = Math.floor(m / 60);
+      var rest = m % 60;
+      if (h && rest) return h + 'h ' + rest + 'm';
+      return h ? h + 'h' : rest + 'm';
+    }
+
+    function dayText(text) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+      var d = new Date(text);
+      if (isNaN(d.getTime())) return String(text);
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    }
+
+    function lookup(list) {
+      var map = {};
+      (list || []).forEach(function (item) { map[item.id] = item; });
+      return map;
+    }
+
+    function selected(select) {
+      return Array.prototype.filter.call(select.options, function (o) { return o.selected; })
+        .map(function (o) { return o.value; });
+    }
+
+    function selectTasks(board, filters, now) {
+      var columns = board.columns || [];
+      var order = {};
+      var done = {};
+      var lanes = {};
+      (board.swimlanes || []).forEach(function (s, i) { lanes[s.id] = i; });
+      columns.forEach(function (c, i) { order[c.id] = i; done[c.id] = !!c.is_done; });
+      var range = BoardHistoryPage.periodRange(filters.period, now, '', '');
+      function inPeriod(task) {
+        if (!range.from && !range.to) return true;
+        var at = new Date(task.completed_at || '').getTime();
+        if (isNaN(at)) return false;
+        return (!range.from || at >= range.from.getTime()) && (!range.to || at < range.to.getTime());
+      }
+      return (board.tasks || []).filter(function (t) {
+        var members = t.member_ids || [];
+        return filters.columns.indexOf(t.column_id) >= 0 &&
+          (!filters.user || (filters.user === UNASSIGNED
+            ? members.length === 0 : members.indexOf(filters.user) >= 0)) &&
+          (!filters.color || t.color_id === filters.color) &&
+          (!filters.label || (t.labels || []).indexOf(filters.label) >= 0) &&
+          (!done[t.column_id] || inPeriod(t));
+      }).sort(function (a, b) {
+        return (order[a.column_id] - order[b.column_id]) ||
+          ((lanes[a.swimlane_id] || 0) - (lanes[b.swimlane_id] || 0)) || (a.position - b.position);
+      });
+    }
+
+    function rows(task, board, props) {
+      var users = lookup(board.users);
+      var colors = lookup(board.colors);
+      var tasks = lookup(board.tasks);
+      var out = [];
+      function add(key, label, html) {
+        if (props.indexOf(key) >= 0 && html) out.push([label, html]);
+      }
+      add('description', 'Description', escapeHtml(task.description || ''));
+      var color = colors[task.color_id];
+      add('color', 'Color', color ? escapeHtml(color.label || color.value) : '');
+      add('members', 'Members', (task.member_ids || []).map(function (id) {
+        return escapeHtml(users[id] ? users[id].username : id);
+      }).join(', '));
+      add('estimate', 'Time estimate',
+        task.estimate_hours ? minutesText(task.estimate_hours * 60) : '');
+      add('spent', 'Time spent', task.total_minutes ? minutesText(task.total_minutes) : '');
+      add('labels', 'Labels', (task.labels || []).map(escapeHtml).join(', '));
+      add('timeline', 'Timeline', task.timeline_start || task.timeline_end
+        ? escapeHtml(dayText(task.timeline_start || task.timeline_end) + ' to ' +
+          dayText(task.timeline_end || task.timeline_start)) : '');
+      var dues = [];
+      if (task.due_at) dues.push('Task: ' + dayText(task.due_at));
+      (task.subtasks || []).forEach(function (s) {
+        if (s.due_at) dues.push(s.name + ': ' + dayText(s.due_at));
+      });
+      add('due', 'Due dates', dues.map(escapeHtml).join('<br>'));
+      add('subtasks', 'Subtasks', (task.subtasks || []).map(function (s) {
+        return (s.done ? '&#9745; ' : '&#9744; ') + escapeHtml(s.name);
+      }).join('<br>'));
+      add('comments', 'Comments', (task.comments || []).map(function (c) {
+        return '<b>' + escapeHtml(c.author) + '</b>: ' + escapeHtml(c.body);
+      }).join('<br>'));
+      add('relations', 'Relations', (task.links || []).map(function (l) {
+        var other = tasks[l.target_id];
+        return escapeHtml((RELATION_LABELS[l.kind] || l.kind) + ' ' +
+          (other ? other.name : 'a task on another board'));
+      }).join('<br>'));
+      add('grouping', 'Grouping date', task.grouping_date ? escapeHtml(dayText(task.grouping_date)) : '');
+      return out;
+    }
+
+    function blockHtml(task, board, props) {
+      var columns = lookup(board.columns);
+      var column = columns[task.column_id];
+      var html = '<section class="print-task"><h3>' + escapeHtml(task.name) + '</h3>' +
+        '<div class="print-task-column">' + escapeHtml(column ? column.name : '') + '</div>';
+      var list = rows(task, board, props);
+      if (list.length) {
+        html += '<dl>' + list.map(function (r) {
+          return '<dt>' + r[0] + '</dt><dd>' + r[1] + '</dd>';
+        }).join('') + '</dl>';
+      }
+      return html + '</section>';
+    }
+
+    function sheetHtml(board, filters, now) {
+      var tasks = selectTasks(board, filters, now);
+      var head = '<h2>' + escapeHtml(board.board ? board.board.name : '') + '</h2>';
+      if (!tasks.length) return head + '<p>No tasks match the filters.</p>';
+      return head + tasks.map(function (t) {
+        return blockHtml(t, board, filters.props);
+      }).join('');
+    }
+
+    function chosen() {
+      return {
+        columns: selected(qs('print-board-columns')),
+        props: selected(qs('print-board-props')),
+        user: qs('print-board-user').value,
+        color: qs('print-board-color').value,
+        label: qs('print-board-label').value,
+        period: qs('print-board-period').value
+      };
+    }
+
+    function render() {
+      if (!data) return;
+      qs('print-board-sheet').innerHTML = sheetHtml(data, chosen(), new Date());
+    }
+
+    function fill(select, items, all) {
+      select.innerHTML = '';
+      items.forEach(function (item) {
+        var o = document.createElement('option');
+        o.value = item[0];
+        o.textContent = item[1];
+        if (all) o.selected = true;
+        select.appendChild(o);
+      });
+    }
+
+    function populate(board) {
+      fill(qs('print-board-columns'), (board.columns || []).map(function (c) {
+        return [c.id, c.name];
+      }), true);
+      fill(qs('print-board-props'), PROPERTIES, true);
+      fill(qs('print-board-user'), [['', 'All users'], [UNASSIGNED, 'Unassigned']].concat(
+        (board.users || []).map(function (u) { return [u.id, u.username]; })), false);
+      fill(qs('print-board-color'), [['', 'All colors']].concat(
+        (board.colors || []).map(function (c) { return [c.id, c.label || c.value]; })), false);
+      var labels = {};
+      (board.tasks || []).forEach(function (t) {
+        (t.labels || []).forEach(function (l) { labels[l] = true; });
+      });
+      fill(qs('print-board-label'), [['', 'All labels']].concat(
+        Object.keys(labels).sort().map(function (l) { return [l, l]; })), false);
+      fill(qs('print-board-period'), PERIODS, false);
+    }
+
+    function close() {
+      qs('print-board-dialog').hidden = true;
+      document.body.classList.remove('print-board-open');
+    }
+
+    function wire() {
+      if (wired) return;
+      wired = true;
+      var overlay = qs('print-board-dialog');
+      document.body.appendChild(overlay);
+      ['columns', 'props', 'user', 'color', 'label', 'period'].forEach(function (name) {
+        qs('print-board-' + name).addEventListener('change', render);
+      });
+      qs('print-board-filter').addEventListener('click', function () {
+        var panel = qs('print-board-filters');
+        panel.hidden = !panel.hidden;
+        qs('print-board-filter').setAttribute('aria-expanded', String(!panel.hidden));
+      });
+      qs('print-board-now').addEventListener('click', function () { window.print(); });
+      qs('print-board-close').addEventListener('click', close);
+      overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !overlay.hidden) close();
+      });
+    }
+
+    function open(boardId) {
+      wire();
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
-      }).then(function (data) {
-        var entries = collectEntries(data);
-        fillFilters(entries);
-        qs('history-user-filter').addEventListener('change', function () { render(entries); });
-        qs('history-type-filter').addEventListener('change', function () { render(entries); });
-        render(entries);
-      }).catch(function (err) {
-        setStatus('Could not load board history: ' + err.message);
-      });
+      }).then(function (board) {
+        data = board;
+        populate(board);
+        qs('print-board-filters').hidden = false;
+        qs('print-board-dialog').hidden = false;
+        document.body.classList.add('print-board-open');
+        render();
+      }).catch(function () { toast('Could not load the board to print.'); });
     }
 
-    return { init: init };
+    return { open: open, selectTasks: selectTasks, sheetHtml: sheetHtml };
   })();
 
   // Calendar report: tasks laid out by due date on a month grid, filterable by
@@ -12614,10 +13225,23 @@
       'July', 'August', 'September', 'October', 'November', 'December'];
     // KanbanFlow's forecast percentiles, with the reference screenshot's
     // line colors.
-    var PCTS = [95, 85, 75, 50];
-    var PCT_COLORS = { 95: '#43a047', 85: '#c49000', 75: '#c0392b', 50: '#8e44ad' };
+    var PCTS = [95, 85, 70, 50];
+    var PCT_COLORS = { 95: '#1b5e20', 85: '#7cb342', 70: '#e6b800', 50: '#fb8c00' };
+    var SIMULATIONS = 10000;
+    var TODAY = 'Today';
 
     var lastData = null;   // export-data payload
+    var lastForecast = null;
+    var loadFailed = false;
+    var hasRun = false;
+    var COUNT_MODE = { FIXED: 'fixed', BOARD: 'board' };
+    var countMode = COUNT_MODE.FIXED;
+    var DEFAULT_RANGE_DAYS = 29;
+    var RELATIVE_MONTHS = { '6m': 6, '12m': 12 };
+    var fixedCount = null;
+    var MIN_BASIS = 5;
+    var DAY = 86400000;
+    var MAX_CUSTOM_DAYS = 3660;
     var lastBasis = null;  // { starts, counts } for the current settings
 
     function qs(id) { return document.getElementById(id); }
@@ -12637,9 +13261,23 @@
       return new Date(d.getFullYear(), d.getMonth(), d.getDate());
     }
 
-    function isoDate(d) {
-      var m = d.getMonth() + 1, day = d.getDate();
-      return d.getFullYear() + '-' + (m < 10 ? '0' : '') + m + '-' + (day < 10 ? '0' : '') + day;
+    function startDateMs(type, value) {
+      if (type !== 'date' || !value) return todayLocal().getTime();
+      var parts = value.split('-');
+      return new Date(+parts[0], +parts[1] - 1, +parts[2]).getTime();
+    }
+
+    function bindStartDate(input) {
+      input.addEventListener('focus', function () {
+        if (input.type === 'date') return;
+        input.type = 'date';
+        input.value = isoDate(todayLocal());
+      });
+      input.addEventListener('blur', function () {
+        if (input.type !== 'date' || (input.value && input.value !== isoDate(todayLocal()))) return;
+        input.type = 'text';
+        input.value = TODAY;
+      });
     }
 
     // "Moved from {from} to {to}" — split on the last " to " so column
@@ -12655,10 +13293,7 @@
     // Per-day arrival counts into the target column over the last `days`
     // days (oldest first). Arrivals come from "moved" history events whose
     // destination matches the target column's current name.
-    function dailyThroughput(tasks, targetName, days) {
-      var start = todayLocal();
-      start.setDate(start.getDate() - (days - 1));
-      var startMs = start.getTime();
+    function dailyThroughput(tasks, targetName, startMs, days) {
       var counts = [];
       for (var i = 0; i < days; i++) counts.push(0);
       tasks.forEach(function (t) {
@@ -12674,7 +13309,10 @@
         });
       });
       var starts = [];
-      for (var j = 0; j < days; j++) starts.push(new Date(startMs + j * 86400000));
+      var first = new Date(startMs);
+      for (var j = 0; j < days; j++) {
+        starts.push(new Date(first.getFullYear(), first.getMonth(), first.getDate() + j));
+      }
       return { starts: starts, counts: counts };
     }
 
@@ -12729,7 +13367,6 @@
     function renderChart(sorted) {
       var host = qs('mc-chart');
       if (!host) return;
-      var DAY = 86400000;
       var minD = Math.floor(sorted[0] / DAY) * DAY;
       var maxD = Math.floor(sorted[sorted.length - 1] / DAY) * DAY;
       var nDays = Math.max(1, Math.round((maxD - minD) / DAY) + 1);
@@ -12832,61 +13469,248 @@
       host.innerHTML = svg;
     }
 
+    function taskMatches(t, f) {
+      if (f.column) {
+        if (t.column_id !== f.column) return false;
+      } else if (f.openOnly && t.completed_at) {
+        return false;
+      }
+      return ReportBreakdown.matches(t, f);
+    }
+
+    function boardCount(tasks, f) {
+      var n = 0;
+      tasks.forEach(function (t) {
+        if (taskMatches(t, f)) n++;
+      });
+      return n;
+    }
+
+    function parseDay(str) {
+      var ms = ReportBreakdown.parseDay(str);
+      return ms === null ? null : new Date(ms);
+    }
+
+    function periodRange(value, fromStr, toStr, now) {
+      var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      var start = new Date(today);
+      if (value === 'custom') {
+        start = parseDay(fromStr);
+        var end = parseDay(toStr);
+        if (!start || !end || end < start) return null;
+        if (end > today) end = today;
+        if (end < start) return null;
+        var span = Math.round((end - start) / DAY) + 1;
+        return span > MAX_CUSTOM_DAYS ? null : { start: start.getTime(), days: span };
+      }
+      if (RELATIVE_MONTHS[value]) {
+        var target = start.getMonth() - RELATIVE_MONTHS[value];
+        start.setDate(1);
+        start.setMonth(target);
+        start.setDate(Math.min(today.getDate(), new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate()));
+      } else {
+        start.setDate(start.getDate() - (parseInt(value, 10) - 1));
+      }
+      return { start: start.getTime(), days: Math.round((today - start) / DAY) + 1 };
+    }
+
+    function forecastRows(fc) {
+      var rows = [['Probability', 'Completion date']];
+      PCTS.forEach(function (p) {
+        rows.push([p + '%', isoDate(new Date(percentile(fc.sorted, p)))]);
+      });
+      rows.push([], ['Tasks', fc.nTasks], ['Start date', isoDate(new Date(fc.startMs))],
+        ['Simulations', fc.sims], ['Completed tasks in the period', fc.basisTotal]);
+      return rows;
+    }
+
+    function forecastLines(fc) {
+      var lines = ['Forecast to complete ' + fc.nTasks + (fc.nTasks === 1 ? ' task' : ' tasks') +
+        ' starting ' + fmtForecastDate(fc.startMs), ''];
+      PCTS.forEach(function (p) {
+        lines.push(p + '% probability: ' + fmtForecastDate(percentile(fc.sorted, p)));
+      });
+      lines.push('', 'Based on ' + fc.basisTotal + ' completed tasks in the selected period (' +
+        fc.sims + ' simulations).');
+      return lines;
+    }
+
+    function notEnoughMessage(total) {
+      return 'A forecast needs at least ' + MIN_BASIS + ' completed tasks in the selected period, and there ' +
+        (total === 1 ? 'is 1.' : 'are ' + total + '.');
+    }
+
     function targetColumnName() {
       var sel = qs('mc-target-column');
       if (!sel || !sel.options.length) return '';
       return sel.options[sel.selectedIndex].text;
     }
 
+    function basisFilter() {
+      return { user: qs('mc-user').value, color: qs('mc-color').value, label: qs('mc-label').value };
+    }
+
+    function countFilter() {
+      return {
+        column: qs('mc-count-column').value,
+        openOnly: true,
+        user: qs('mc-count-user').value,
+        color: qs('mc-count-color').value,
+        label: qs('mc-count-label').value
+      };
+    }
+
+    function currentBoardCount() {
+      return boardCount(lastData ? lastData.tasks || [] : [], countFilter());
+    }
+
+    function resolvedTaskCount() {
+      return countMode === COUNT_MODE.BOARD ? currentBoardCount() : fixedCount;
+    }
+
+    function showCount() {
+      var n = currentBoardCount();
+      qs('mc-count-current').textContent = n;
+      var shown = countMode === COUNT_MODE.BOARD ? n + (n === 1 ? ' task on board' : ' tasks on board')
+        : (fixedCount === null ? '' : String(fixedCount));
+      qs('mc-task-count').textContent = shown || 'Set task count';
+    }
+
     function refreshBasis() {
-      if (!lastData) return;
-      var days = parseInt(qs('mc-period').value, 10) || 90;
-      lastBasis = dailyThroughput(lastData.tasks || [], targetColumnName(), days);
+      if (!lastData || !hasRun) return true;
+      var range = periodRange(qs('mc-period').value, qs('mc-from').value, qs('mc-to').value, new Date());
+      if (!range) {
+        setStatus('Pick a start date that is on or before the end date, within ten years.');
+        return false;
+      }
+      var f = basisFilter();
+      var tasks = (lastData.tasks || []).filter(function (t) { return taskMatches(t, f); });
+      lastBasis = dailyThroughput(tasks, targetColumnName(), range.start, range.days);
       renderBasis(lastBasis);
+      return true;
+    }
+
+    function clearForecast() {
+      lastForecast = null;
+      qs('mc-headline').textContent = '';
+      qs('mc-forecast-lines').innerHTML = '';
+      qs('mc-chart').innerHTML = '';
+      qs('mc-export').hidden = true;
     }
 
     function runForecast() {
-      if (!lastData) return;
-      var nTasks = parseInt(qs('mc-task-count').value, 10);
-      if (isNaN(nTasks) || nTasks < 1) nTasks = 1;
-      qs('mc-task-count').value = nTasks;
-      var sims = parseInt(qs('mc-sims').value, 10);
-      if (isNaN(sims) || sims < 100) sims = 100;
-      if (sims > 10000) sims = 10000;
-      qs('mc-sims').value = sims;
-      var startVal = qs('mc-start-date').value;
-      var startMs;
-      if (startVal) {
-        var parts = startVal.split('-');
-        startMs = new Date(+parts[0], +parts[1] - 1, +parts[2]).getTime();
-      } else {
-        startMs = todayLocal().getTime();
-      }
-      refreshBasis();
-      var sorted = runSimulation(lastBasis.counts, nTasks, sims, startMs);
-      if (!sorted) {
-        qs('mc-headline').textContent = '';
-        qs('mc-forecast-lines').innerHTML = '';
-        qs('mc-chart').innerHTML = '';
-        setStatus('No completed tasks in the selected period — the forecast needs historical throughput.');
+      if (!lastData) {
+        if (!loadFailed) setStatus('Loading board data...');
         return;
       }
-      renderForecast(nTasks, startMs, sorted);
+      var nTasks = resolvedTaskCount();
+      if (!nTasks || nTasks < 1) {
+        clearForecast();
+        setStatus(countMode === COUNT_MODE.BOARD
+          ? 'No tasks on the board match the task count filters.'
+          : 'Enter how many tasks to forecast.');
+        return;
+      }
+      var startInput = qs('mc-start-date');
+      var startMs = startDateMs(startInput.type, startInput.value);
+      hasRun = true;
+      qs('mc-getting-started').hidden = true;
+      qs('mc-chart-title').hidden = false;
+      qs('mc-basis-title').hidden = false;
+      if (!refreshBasis()) {
+        clearForecast();
+        return;
+      }
       var total = lastBasis.counts.reduce(function (a, b) { return a + b; }, 0);
-      setStatus('Forecast based on ' + total + ' completed tasks in the selected period (' + sims + ' simulations).');
+      if (total < MIN_BASIS) {
+        clearForecast();
+        qs('mc-headline').textContent = 'Not enough throughput data';
+        qs('mc-forecast-lines').textContent = notEnoughMessage(total);
+        setStatus('The forecast is not shown: ' + notEnoughMessage(total));
+        return;
+      }
+      var sorted = runSimulation(lastBasis.counts, nTasks, SIMULATIONS, startMs);
+      lastForecast = { nTasks: nTasks, startMs: startMs, sorted: sorted, sims: SIMULATIONS, basisTotal: total };
+      renderForecast(nTasks, startMs, sorted);
+      qs('mc-export').hidden = false;
+      setStatus('Forecast based on ' + total + ' completed tasks in the selected period (' + SIMULATIONS + ' simulations).');
+    }
+
+    function exportPdf() {
+      if (!lastForecast) return;
+      saveBlob('monte-carlo-forecast.pdf', new Blob([ReportFile.pdfBytes('Monte Carlo forecast', forecastLines(lastForecast))],
+        { type: 'application/pdf' }));
+    }
+
+    function exportXlsx() {
+      if (!lastForecast) return;
+      saveBlob('monte-carlo-forecast.xlsx', new Blob([ReportFile.xlsxBytes(forecastRows(lastForecast), 'Forecast')],
+        { type: ReportFile.XLSX_MIME }));
+    }
+
+    function fillColumns(select, columns) {
+      ReportBreakdown.fill(select, columns.map(function (c) { return { value: c.id, text: c.name }; }));
+    }
+
+    function bindCountPopover() {
+      var pop = qs('mc-count-pop');
+      var input = qs('mc-task-count');
+      function close() { pop.hidden = true; }
+      function toggle() { pop.hidden = !pop.hidden; }
+      input.addEventListener('click', toggle);
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') close();
+      });
+      pop.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') {
+          close();
+          input.focus();
+        }
+      });
+      qs('mc-count-done').addEventListener('click', close);
+      document.addEventListener('click', function (e) {
+        if (!pop.hidden && !pop.contains(e.target) && !input.parentNode.contains(e.target)) close();
+      });
+      qs('mc-count-fixed').addEventListener('input', function () {
+        var n = parseInt(this.value, 10);
+        fixedCount = isNaN(n) ? null : n;
+        showCount();
+      });
+      ['mc-count-mode-fixed', 'mc-count-mode-board'].forEach(function (id) {
+        qs(id).addEventListener('change', function () {
+          countMode = qs('mc-count-mode-board').checked ? COUNT_MODE.BOARD : COUNT_MODE.FIXED;
+          showCount();
+        });
+      });
+      ['mc-count-column', 'mc-count-user', 'mc-count-color', 'mc-count-label'].forEach(function (id) {
+        qs(id).addEventListener('change', showCount);
+      });
     }
 
     function init(boardId, doneColumnId) {
       if (initialized) return;
       initialized = true;
-      qs('mc-start-date').value = isoDate(todayLocal());
+      bindStartDate(qs('mc-start-date'));
+      bindCountPopover();
       qs('mc-run').addEventListener('click', runForecast);
-      qs('mc-period').addEventListener('change', refreshBasis);
-      qs('mc-target-column').addEventListener('change', refreshBasis);
-      var more = qs('mc-more'), simsWrap = qs('mc-sims-wrap');
-      more.addEventListener('change', function () {
-        simsWrap.hidden = !more.checked;
+      var today = todayLocal();
+      var from = new Date(today);
+      from.setDate(from.getDate() - DEFAULT_RANGE_DAYS);
+      qs('mc-from').value = isoDate(from);
+      qs('mc-to').value = isoDate(today);
+      qs('mc-period').addEventListener('change', function () {
+        qs('mc-custom').hidden = qs('mc-period').value !== 'custom';
+        refreshBasis();
       });
+      ['mc-target-column', 'mc-from', 'mc-to', 'mc-user', 'mc-color', 'mc-label'].forEach(function (id) {
+        qs(id).addEventListener('change', refreshBasis);
+      });
+      var more = qs('mc-more'), moreWrap = qs('mc-more-wrap');
+      more.addEventListener('change', function () {
+        moreWrap.hidden = !more.checked;
+      });
+      qs('mc-export-pdf').addEventListener('click', exportPdf);
+      qs('mc-export-xlsx').addEventListener('click', exportXlsx);
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
       }).then(function (r) {
@@ -12896,21 +13720,25 @@
         lastData = data;
         var sel = qs('mc-target-column');
         var cols = data.columns || [];
-        cols.forEach(function (c) {
-          var opt = document.createElement('option');
-          opt.value = c.id;
-          opt.textContent = c.name;
-          sel.appendChild(opt);
-        });
+        fillColumns(sel, cols);
         var defId = doneColumnId || (cols.length ? cols[cols.length - 1].id : '');
         if (defId) sel.value = defId;
-        refreshBasis();
+        ReportBreakdown.fillFilters(data, 'mc-');
+        ReportBreakdown.fillFilters(data, 'mc-count-');
+        fillColumns(qs('mc-count-column'), cols);
+        showCount();
       }).catch(function (err) {
+        loadFailed = true;
         setStatus('Could not load forecast data: ' + err.message);
       });
     }
 
-    return { init: init };
+    return {
+      init: init, startDateMs: startDateMs, bindStartDate: bindStartDate, taskMatches: taskMatches,
+      boardCount: boardCount, periodRange: periodRange, forecastRows: forecastRows,
+      forecastLines: forecastLines, dailyThroughput: dailyThroughput, notEnoughMessage: notEnoughMessage,
+      PCTS: PCTS, PCT_COLORS: PCT_COLORS, SIMULATIONS: SIMULATIONS
+    };
   })();
 
   // KF-345: Time estimate report page — estimated workload by color and
@@ -12919,6 +13747,7 @@
   // board"). Renders client-side from the shared export-data dataset.
   var TimeEstimatePage = (function () {
     var initialized = false;
+    var lastTable = null;
 
     function qs(id) { return document.getElementById(id); }
 
@@ -12934,98 +13763,239 @@
       return h + 'h ' + (m < 10 ? '0' : '') + m + 'm';
     }
 
-    // Returns { columns, rows } where rows are per color (plus a "No color"
-    // row when needed) with per-column summed estimate hours. Mirrors
-    // TaskCountPage's grouping; colors with no tasks are omitted and row
-    // order follows first appearance on the board.
-    function buildTable(data) {
-      var columns = data.columns || [];
-      var colors = data.colors || [];
-      var tasks = data.tasks || [];
-      var colorById = {};
-      colors.forEach(function (c) { colorById[c.id] = c; });
-      var colIndex = {};
-      columns.forEach(function (c, i) { colIndex[c.id] = i; });
-
-      var sums = {};
-      var order = [];
-      var nEstimated = 0;
-      tasks.forEach(function (t) {
-        var key = t.color_id || '';
-        if (order.indexOf(key) === -1) order.push(key);
-        if (!sums[key]) sums[key] = columns.map(function () { return 0; });
-        var i = colIndex[t.column_id];
-        if (i === undefined) return;
-        var est = parseFloat(t.estimate_hours);
-        if (!isNaN(est) && est > 0) {
-          sums[key][i] += est;
-          nEstimated++;
-        }
-      });
-
-      var rows = order.map(function (key) {
-        var c = colorById[key];
-        return {
-          label: c ? (c.label || c.value) : 'No color',
-          value: c ? c.value : null,
-          sums: sums[key]
-        };
-      });
-      return { columns: columns, rows: rows, nEstimated: nEstimated };
+    function estimateOf(t) {
+      var est = parseFloat(t.estimate_hours);
+      return !isNaN(est) && est > 0 ? est : 0;
     }
 
-    function render(table) {
-      var host = qs('time-estimate-table');
-      if (!host) return;
-      if (!table.rows.length) {
-        host.innerHTML = '<p class="settings-hint">No tasks on this board.</p>';
+    function exportRows(table, seconds) {
+      var rows = [[ReportBreakdown.GROUPS[table.group]].concat(table.columns.map(function (c) { return c.name; }))];
+      table.rows.forEach(function (r) {
+        rows.push([r.label].concat(r.sums.map(function (h) {
+          return seconds ? Math.round(h * 3600) : fmtEstimate(h);
+        })));
+      });
+      return rows;
+    }
+
+    function exportExcel(seconds) {
+      if (!lastTable) return;
+      var bytes = ReportFile.xlsxBytes(exportRows(lastTable, seconds), 'Time estimate');
+      saveBlob(seconds ? 'time-estimate-total-seconds.xlsx' : 'time-estimate-human-readable.xlsx',
+        new Blob([bytes], { type: ReportFile.XLSX_MIME }));
+    }
+
+    function render(data, opts) {
+      if (!opts.range) {
+        lastTable = null;
+        setStatus('Pick a start date that is on or before the end date.');
         return;
       }
-      var html = '<table class="bshell-table"><thead><tr><th scope="col"><span class="sr-only">Color</span></th>';
-      table.columns.forEach(function (c) {
-        html += '<th scope="col" class="num">' + escapeHtml(c.name) + '</th>';
-      });
-      html += '</tr></thead><tbody>';
-      table.rows.forEach(function (r) {
-        html += '<tr><th scope="row"><span class="report-color-dot"' +
-          (r.value
-            ? ' style="background:' + escapeHtml(r.value) + '"'
-            : ' style="background:transparent;border:1px dashed #9ca3af"') +
-          '></span> ' + escapeHtml(r.label) + '</th>';
-        r.sums.forEach(function (h) {
-          html += '<td class="num">' + escapeHtml(fmtEstimate(h)) + '</td>';
-        });
-        html += '</tr>';
-      });
-      html += '</tbody></table>';
-      host.innerHTML = html;
+      var table = ReportBreakdown.build(data, opts, estimateOf);
+      lastTable = table;
+      qs('time-estimate-table').innerHTML = ReportBreakdown.tableHtml(table, fmtEstimate);
+      setStatus(table.matched === 0
+        ? 'No time estimates match.'
+        : 'Total estimated workload: ' + fmtEstimate(table.total) + ' across ' +
+          table.matched + (table.matched === 1 ? ' task' : ' tasks') + ' with estimates.');
     }
 
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' }
-      }).then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      }).then(function (data) {
-        var table = buildTable(data);
-        render(table);
-        var total = 0;
-        table.rows.forEach(function (r) {
-          r.sums.forEach(function (h) { total += h; });
-        });
-        setStatus(table.nEstimated === 0
-          ? 'No time estimates on this board.'
-          : 'Total estimated workload: ' + fmtEstimate(total) + ' across ' +
-            table.nEstimated + (table.nEstimated === 1 ? ' task' : ' tasks') + ' with estimates.');
-      }).catch(function (err) {
-        setStatus('Could not load time estimate data: ' + err.message);
+      qs('te-export-human').addEventListener('click', function () { exportExcel(false); });
+      qs('te-export-seconds').addEventListener('click', function () { exportExcel(true); });
+      ReportBreakdown.mount(boardId, {
+        render: render,
+        error: function (err) { setStatus('Could not load time estimate data: ' + err.message); }
       });
     }
 
-    return { init: init };
+    return { init: init, exportRows: exportRows, fmtEstimate: fmtEstimate };
+  })();
+
+  var ReportFile = (function () {
+    var CRC_TABLE = (function () {
+      var t = [];
+      for (var n = 0; n < 256; n++) {
+        var c = n;
+        for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+        t.push(c >>> 0);
+      }
+      return t;
+    })();
+
+    function crc32(bytes) {
+      var c = 0xFFFFFFFF;
+      for (var i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+      return (c ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    var LOCAL_HEADER_LEN = 30;
+    var CENTRAL_ENTRY_LEN = 46;
+    var END_RECORD_LEN = 22;
+    var ZIP_VERSION = 20;
+    var UTF8_FLAG = 0x0800;
+    var DOS_DATE_1980 = 33;
+
+    function zipStored(files) {
+      var enc = new TextEncoder();
+      var parts = [];
+      var central = [];
+      var offset = 0;
+      files.forEach(function (f) {
+        var name = enc.encode(f.name);
+        var data = enc.encode(f.text);
+        var crc = crc32(data);
+        var head = new DataView(new ArrayBuffer(LOCAL_HEADER_LEN));
+        head.setUint32(0, 0x04034b50, true);
+        head.setUint16(4, ZIP_VERSION, true);
+        head.setUint16(6, UTF8_FLAG, true);
+        head.setUint16(12, DOS_DATE_1980, true);
+        head.setUint32(14, crc, true);
+        head.setUint32(18, data.length, true);
+        head.setUint32(22, data.length, true);
+        head.setUint16(26, name.length, true);
+        var entry = new DataView(new ArrayBuffer(CENTRAL_ENTRY_LEN));
+        entry.setUint32(0, 0x02014b50, true);
+        entry.setUint16(4, ZIP_VERSION, true);
+        entry.setUint16(6, ZIP_VERSION, true);
+        entry.setUint16(8, UTF8_FLAG, true);
+        entry.setUint16(14, DOS_DATE_1980, true);
+        entry.setUint32(16, crc, true);
+        entry.setUint32(20, data.length, true);
+        entry.setUint32(24, data.length, true);
+        entry.setUint16(28, name.length, true);
+        entry.setUint32(42, offset, true);
+        parts.push(new Uint8Array(head.buffer), name, data);
+        central.push(new Uint8Array(entry.buffer), name);
+        offset += LOCAL_HEADER_LEN + name.length + data.length;
+      });
+      var size = 0;
+      central.forEach(function (p) { size += p.length; });
+      var end = new DataView(new ArrayBuffer(END_RECORD_LEN));
+      end.setUint32(0, 0x06054b50, true);
+      end.setUint16(8, files.length, true);
+      end.setUint16(10, files.length, true);
+      end.setUint32(12, size, true);
+      end.setUint32(16, offset, true);
+      var all = parts.concat(central, [new Uint8Array(end.buffer)]);
+      var total = 0;
+      all.forEach(function (p) { total += p.length; });
+      var out = new Uint8Array(total);
+      var at = 0;
+      all.forEach(function (p) { out.set(p, at); at += p.length; });
+      return out;
+    }
+
+    var XLSX_CELL_MAX = 32767;
+
+    function colLetters(i) {
+      var s = '';
+      for (var n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
+      return s;
+    }
+
+    function xmlText(s) {
+      var text = String(s);
+      if (text.length > XLSX_CELL_MAX) text = text.slice(0, XLSX_CELL_MAX - 4) + ' ...';
+      return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function xlsxBytes(rows, sheetName) {
+      var sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>';
+      rows.forEach(function (r, y) {
+        sheet += '<row r="' + (y + 1) + '">';
+        r.forEach(function (v, x) {
+          var ref = colLetters(x) + (y + 1);
+          sheet += typeof v === 'number'
+            ? '<c r="' + ref + '"><v>' + v + '</v></c>'
+            : '<c r="' + ref + '" t="inlineStr"><is><t xml:space="preserve">' + xmlText(v == null ? '' : v) + '</t></is></c>';
+        });
+        sheet += '</row>';
+      });
+      sheet += '</sheetData></worksheet>';
+      var head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+      var rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+      return zipStored([
+        { name: '[Content_Types].xml', text: head +
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+          '<Default Extension="xml" ContentType="application/xml"/>' +
+          '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+          '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+          '</Types>' },
+        { name: '_rels/.rels', text: head +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="' + rel + '/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+        { name: 'xl/workbook.xml', text: head +
+          '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="' + rel + '">' +
+          '<sheets><sheet name="' + xmlText(sheetName) + '" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+        { name: 'xl/_rels/workbook.xml.rels', text: head +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="' + rel + '/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' },
+        { name: 'xl/worksheets/sheet1.xml', text: sheet }
+      ]);
+    }
+
+    var XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    var PDF_PAGE_WIDTH = 612;
+    var PDF_PAGE_HEIGHT = 792;
+    var PDF_TITLE_PT = 16;
+    var PDF_BODY_PT = 11;
+    var PDF_LINES_PER_PAGE = 42;
+    var PDF_LEFT = 50;
+    var PDF_TITLE_Y = 750;
+    var PDF_FIRST_LINE_Y = 715;
+    var PDF_LEADING = 16;
+
+    function pdfText(s) {
+      return String(s).replace(/[^\x20-\x7E]/g, '?').replace(/[\\()]/g, '\\$&');
+    }
+
+    function pdfBytes(title, lines) {
+      var pages = [];
+      for (var at = 0; at < lines.length || !pages.length; at += PDF_LINES_PER_PAGE) {
+        pages.push(lines.slice(at, at + PDF_LINES_PER_PAGE));
+      }
+      var objects = [
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [' + pages.map(function (_, i) { return (4 + 2 * i) + ' 0 R'; }).join(' ') +
+          '] /Count ' + pages.length + ' >>',
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'
+      ];
+      pages.forEach(function (page, i) {
+        var stream = i === 0
+          ? 'BT /F1 ' + PDF_TITLE_PT + ' Tf ' + PDF_LEFT + ' ' + PDF_TITLE_Y + ' Td (' + pdfText(title) + ') Tj ET\n'
+          : '';
+        page.forEach(function (line, k) {
+          stream += 'BT /F1 ' + PDF_BODY_PT + ' Tf ' + PDF_LEFT + ' ' + (PDF_FIRST_LINE_Y - k * PDF_LEADING) +
+            ' Td (' + pdfText(line) + ') Tj ET\n';
+        });
+        objects.push('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + PDF_PAGE_WIDTH + ' ' + PDF_PAGE_HEIGHT + '] /Contents ' + (5 + 2 * i) +
+          ' 0 R /Resources << /Font << /F1 3 0 R >> >> >>');
+        objects.push('<< /Length ' + stream.length + ' >>\nstream\n' + stream + 'endstream');
+      });
+      var out = '%PDF-1.4\n';
+      var offsets = [];
+      objects.forEach(function (body, i) {
+        offsets.push(out.length);
+        out += (i + 1) + ' 0 obj\n' + body + '\nendobj\n';
+      });
+      var xref = out.length;
+      out += 'xref\n0 ' + (objects.length + 1) + '\n0000000000 65535 f \n';
+      offsets.forEach(function (o) {
+        out += ('0000000000' + o).slice(-10) + ' 00000 n \n';
+      });
+      out += 'trailer\n<< /Size ' + (objects.length + 1) + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n';
+      var bytes = new Uint8Array(out.length);
+      for (var c = 0; c < out.length; c++) bytes[c] = out.charCodeAt(c);
+      return bytes;
+    }
+
+    return { xlsxBytes: xlsxBytes, pdfBytes: pdfBytes, crc32: crc32, XLSX_MIME: XLSX_MIME };
   })();
 
   var TimeInColumnPage = (function () {
@@ -13252,136 +14222,9 @@
       return new TextEncoder().encode('﻿' + text);
     }
 
-    var CRC_TABLE = (function () {
-      var t = [];
-      for (var n = 0; n < 256; n++) {
-        var c = n;
-        for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
-        t.push(c >>> 0);
-      }
-      return t;
-    })();
-
-    function crc32(bytes) {
-      var c = 0xFFFFFFFF;
-      for (var i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
-      return (c ^ 0xFFFFFFFF) >>> 0;
-    }
-
-    var LOCAL_HEADER_LEN = 30;
-    var CENTRAL_ENTRY_LEN = 46;
-    var END_RECORD_LEN = 22;
-    var ZIP_VERSION = 20;
-    var UTF8_FLAG = 0x0800;
-    var DOS_DATE_1980 = 33;
-
-    function zipStored(files) {
-      var enc = new TextEncoder();
-      var parts = [];
-      var central = [];
-      var offset = 0;
-      files.forEach(function (f) {
-        var name = enc.encode(f.name);
-        var data = enc.encode(f.text);
-        var crc = crc32(data);
-        var head = new DataView(new ArrayBuffer(LOCAL_HEADER_LEN));
-        head.setUint32(0, 0x04034b50, true);
-        head.setUint16(4, ZIP_VERSION, true);
-        head.setUint16(6, UTF8_FLAG, true);
-        head.setUint16(12, DOS_DATE_1980, true);
-        head.setUint32(14, crc, true);
-        head.setUint32(18, data.length, true);
-        head.setUint32(22, data.length, true);
-        head.setUint16(26, name.length, true);
-        var entry = new DataView(new ArrayBuffer(CENTRAL_ENTRY_LEN));
-        entry.setUint32(0, 0x02014b50, true);
-        entry.setUint16(4, ZIP_VERSION, true);
-        entry.setUint16(6, ZIP_VERSION, true);
-        entry.setUint16(8, UTF8_FLAG, true);
-        entry.setUint16(14, DOS_DATE_1980, true);
-        entry.setUint32(16, crc, true);
-        entry.setUint32(20, data.length, true);
-        entry.setUint32(24, data.length, true);
-        entry.setUint16(28, name.length, true);
-        entry.setUint32(42, offset, true);
-        parts.push(new Uint8Array(head.buffer), name, data);
-        central.push(new Uint8Array(entry.buffer), name);
-        offset += LOCAL_HEADER_LEN + name.length + data.length;
-      });
-      var size = 0;
-      central.forEach(function (p) { size += p.length; });
-      var end = new DataView(new ArrayBuffer(END_RECORD_LEN));
-      end.setUint32(0, 0x06054b50, true);
-      end.setUint16(8, files.length, true);
-      end.setUint16(10, files.length, true);
-      end.setUint32(12, size, true);
-      end.setUint32(16, offset, true);
-      var all = parts.concat(central, [new Uint8Array(end.buffer)]);
-      var total = 0;
-      all.forEach(function (p) { total += p.length; });
-      var out = new Uint8Array(total);
-      var at = 0;
-      all.forEach(function (p) { out.set(p, at); at += p.length; });
-      return out;
-    }
-
-    var XLSX_CELL_MAX = 32767;
-
-    function colLetters(i) {
-      var s = '';
-      for (var n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
-      return s;
-    }
-
-    function xmlText(s) {
-      var text = String(s);
-      if (text.length > XLSX_CELL_MAX) text = text.slice(0, XLSX_CELL_MAX - 4) + ' ...';
-      return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    }
-
-    function xlsxBytes(rows) {
-      var sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>';
-      rows.forEach(function (r, y) {
-        sheet += '<row r="' + (y + 1) + '">';
-        r.forEach(function (v, x) {
-          var ref = colLetters(x) + (y + 1);
-          sheet += typeof v === 'number'
-            ? '<c r="' + ref + '"><v>' + v + '</v></c>'
-            : '<c r="' + ref + '" t="inlineStr"><is><t xml:space="preserve">' + xmlText(v == null ? '' : v) + '</t></is></c>';
-        });
-        sheet += '</row>';
-      });
-      sheet += '</sheetData></worksheet>';
-      var head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
-      var rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
-      return zipStored([
-        { name: '[Content_Types].xml', text: head +
-          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
-          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
-          '<Default Extension="xml" ContentType="application/xml"/>' +
-          '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
-          '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
-          '</Types>' },
-        { name: '_rels/.rels', text: head +
-          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-          '<Relationship Id="rId1" Type="' + rel + '/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
-        { name: 'xl/workbook.xml', text: head +
-          '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="' + rel + '">' +
-          '<sheets><sheet name="Time in column" sheetId="1" r:id="rId1"/></sheets></workbook>' },
-        { name: 'xl/_rels/workbook.xml.rels', text: head +
-          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-          '<Relationship Id="rId1" Type="' + rel + '/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' },
-        { name: 'xl/worksheets/sheet1.xml', text: sheet }
-      ]);
-    }
-
-    var XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-
     function exportFile(rows, format, stem) {
       return format === FORMAT_XLSX
-        ? { name: stem + '.' + FORMAT_XLSX, bytes: xlsxBytes(rows), mime: XLSX_MIME }
+        ? { name: stem + '.' + FORMAT_XLSX, bytes: ReportFile.xlsxBytes(rows, 'Time in column'), mime: ReportFile.XLSX_MIME }
         : { name: stem + '.' + FORMAT_CSV, bytes: csvBytes(rows), mime: 'text/csv;charset=utf-8' };
     }
 
@@ -13535,8 +14378,11 @@
   // buttons), KF-134/KF-096 (filter panel), KF-135/KF-099 (board menu),
   // KF-136 (reports submenu). Guarded init like the other inits (KF-137).
 
+  var MENU_KEEPS_OPEN = { dark: true, legend: true, 'large-names': true };
+
   var BoardChrome = {
     initialized: false,
+    LABEL_MODE: { AND: 'and', OR: 'or' },
     closeBoardMenu: null,
 
     init: function () {
@@ -13545,6 +14391,7 @@
       if (document.querySelector('.board-wrap') || document.querySelector('.login-page')) this.restorePrefs();
       if (!document.querySelector('.board-wrap')) return;
       this.initMenu();
+      this.initLegend();
       this.initFilter();
       this.initBarButtons();
       if (window.location.hash === '#layout') this.editLayout();
@@ -13638,8 +14485,9 @@
         var item = e.target.closest('[data-bm]');
         if (!item || item === reportsBtn) return;
         e.stopPropagation();
-        closeMenu();
-        self.menuAction(item.getAttribute('data-bm'));
+        var action = item.getAttribute('data-bm');
+        if (!MENU_KEEPS_OPEN[action]) closeMenu();
+        self.menuAction(action);
       });
 
       sub.addEventListener('click', function (e) {
@@ -13708,7 +14556,7 @@
           window.location.href = '/timer/log';
           break;
         case 'print':
-          window.print();
+          PrintBoard.open(boardId());
           break;
         case 'export':
           // KF-346: Export report page — download the board's tasks.
@@ -13776,6 +14624,13 @@
       });
       var close = document.getElementById('filter-close');
       if (close) close.addEventListener('click', function () { self.closeFilter(); });
+      ['filter-reset', 'filter-reset-panel'].forEach(function (id) {
+        var reset = document.getElementById(id);
+        if (reset) reset.addEventListener('click', function (e) {
+          e.preventDefault();
+          self.resetFilter();
+        });
+      });
       var back = document.getElementById('filter-back');
       if (back) back.addEventListener('click', function () { self.closeFilter(); });
       // KF-215: the list button shows the label checkboxes; the field
@@ -13813,6 +14668,7 @@
       panel.addEventListener('change', function (e) {
         // KF-175: handle both select dropdowns (by id) and radio buttons (by name)
         if (e.target.id === 'f-user' || e.target.id === 'f-color' || e.target.id === 'f-date' ||
+            e.target.id === 'f-label-mode' || e.target.classList.contains('f-field') ||
             e.target.name === 'f-user' || e.target.name === 'f-color' || e.target.name === 'f-date' || e.target.name === 'f-label') {
           self.applyFilter();
           self.maybeSaveFilter();
@@ -13857,6 +14713,8 @@
           self.setRadio('f-user', b.user);
           self.setRadio('f-color', b.color);
           self.setRadio('f-date', b.date);
+          self.setLabelMode(b.labelMode);
+          self.setFilterFields(b.fields);
           document.querySelectorAll('input[name="f-label"]').forEach(function (box) {
             box.checked = (b.labels || []).indexOf(box.value) !== -1;
           });
@@ -13897,7 +14755,9 @@
           user: self.filterValue('f-user'),
           color: self.filterValue('f-color'),
           date: self.filterValue('f-date'),
-          labels: self.filterLabels()
+          labels: self.filterLabels(),
+          labelMode: self.filterLabelMode(),
+          fields: self.filterFields()
         });
         name.value = '';
         self.writeFilterBookmarks(list);
@@ -13927,9 +14787,29 @@
     },
     openFilter: function () {
       var panel = document.getElementById('filter-panel');
-      if (!panel) return;
+      if (!panel) return false;
       panel.hidden = false;
       this.syncFilterBtn();
+      return true;
+    },
+    showAllMembers: function () {
+      var select = document.getElementById('f-user');
+      if (!select) return false;
+      select.value = 'all';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    },
+    openReports: function () {
+      var menu = document.getElementById('board-menu');
+      var button = document.getElementById('board-menu-btn');
+      var reports = menu ? menu.querySelector('[data-bm="reports"]') : null;
+      var sub = document.getElementById('reports-submenu');
+      if (!button || !reports || !sub) return false;
+      if (menu.hidden && sub.hidden) button.click();
+      reports.click();
+      var first = sub.querySelector('[data-report]');
+      if (first) first.focus();
+      return true;
     },
     closeFilter: function () {
       var panel = document.getElementById('filter-panel');
@@ -13937,11 +14817,99 @@
       panel.hidden = true;
       this.syncFilterBtn();
     },
+    syncLegendFilter: function () {
+      var color = this.filterValue('f-color');
+      document.querySelectorAll('.color-legend-segment').forEach(function (segment) {
+        segment.classList.toggle('color-legend-segment--filtered',
+          color !== 'all' && segment.dataset.colorValue === color);
+      });
+    },
+    filterOnColor: function (value) {
+      var select = document.getElementById('f-color');
+      if (!select) return false;
+      select.value = value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    },
+    renameLegendColor: function (segment) {
+      var original = segment.textContent.trim();
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'color-legend-rename';
+      input.maxLength = 50;
+      input.value = original;
+      segment.textContent = '';
+      segment.appendChild(input);
+      input.focus();
+      input.select();
+      var finished = false;
+      function finish(save) {
+        if (finished) return;
+        finished = true;
+        var label = input.value.trim();
+        if (!save || !label || label === original) {
+          segment.textContent = original;
+          return;
+        }
+        api('/api/boards/' + encodeURIComponent(boardId()) + '/colors/' + encodeURIComponent(segment.dataset.colorId),
+          'PATCH', { label: label }).then(function (res) {
+          if (!res.ok) {
+            segment.textContent = original;
+            toast('Could not rename the color.');
+            return;
+          }
+          segment.textContent = label;
+          var swatch = document.querySelector('#board-colors span[data-id="' + cssEscape(segment.dataset.colorId) + '"]');
+          if (swatch) swatch.dataset.label = label;
+          var option = document.querySelector('#f-color option[value="' + cssEscape(segment.dataset.colorValue) + '"]');
+          if (option) option.textContent = label;
+        }).catch(function () {
+          segment.textContent = original;
+          toast('Could not rename the color.');
+        });
+      }
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        else if (e.key === 'Escape') finish(false);
+      });
+      input.addEventListener('blur', function () { finish(true); });
+    },
+    initLegend: function () {
+      var self = this;
+      var menu = document.getElementById('legend-menu');
+      var footer = document.querySelector('.color-legend');
+      if (!menu || !footer) return;
+      var target = null;
+      footer.addEventListener('click', function (e) {
+        var segment = e.target.closest('.color-legend-segment');
+        if (!segment || e.target.closest('input')) return;
+        e.stopPropagation();
+        target = segment;
+        var rect = segment.getBoundingClientRect();
+        placeMenu(menu, rect.left, 0);
+        menu.style.top = Math.max(4, rect.top - menu.offsetHeight - 4) + 'px';
+      });
+      menu.addEventListener('click', function (e) {
+        var item = e.target.closest('[data-legend-act]');
+        if (!item || !target) return;
+        e.stopPropagation();
+        hideFloatingMenus();
+        if (item.getAttribute('data-legend-act') === 'rename') self.renameLegendColor(target);
+        else self.filterOnColor(target.dataset.colorValue);
+      });
+    },
     syncFilterBtn: function () {
+      this.syncLegendFilter();
       var btn = document.getElementById('filter-btn');
       var panel = document.getElementById('filter-panel');
       if (!btn || !panel) return;
-      btn.classList.toggle('active', !panel.hidden || this.isFiltering());
+      var filtering = this.isFiltering();
+      btn.classList.toggle('active', !panel.hidden || filtering);
+      btn.classList.toggle('filtering', filtering);
+      var reset = document.getElementById('filter-reset');
+      if (reset) reset.hidden = !filtering || !panel.hidden;
+      var panelReset = document.getElementById('filter-reset-panel');
+      if (panelReset) panelReset.hidden = !filtering || panel.hidden;
       var labelsInput = document.getElementById('filter-labels-input');
       if (labelsInput) labelsInput.value = this.filterLabels().join(', ');
     },
@@ -13949,7 +14917,45 @@
       return this.filterValue('f-user') !== 'all' ||
         this.filterValue('f-color') !== 'all' ||
         this.filterValue('f-date') !== 'all' ||
-        this.filterLabels().length > 0;
+        this.filterLabels().length > 0 ||
+        Object.keys(this.filterFields()).length > 0;
+    },
+    filterLabelMode: function () {
+      var select = document.getElementById('f-label-mode');
+      return select && select.value === this.LABEL_MODE.OR ? this.LABEL_MODE.OR : this.LABEL_MODE.AND;
+    },
+    setLabelMode: function (mode) {
+      var select = document.getElementById('f-label-mode');
+      if (select) select.value = mode === this.LABEL_MODE.OR ? this.LABEL_MODE.OR : this.LABEL_MODE.AND;
+    },
+    filterFields: function () {
+      var chosen = {};
+      document.querySelectorAll('.f-field').forEach(function (select) {
+        if (select.value !== '') chosen[select.dataset.fieldKey] = select.value;
+      });
+      return chosen;
+    },
+    setFilterFields: function (chosen) {
+      chosen = chosen || {};
+      document.querySelectorAll('.f-field').forEach(function (select) {
+        var value = chosen[select.dataset.fieldKey];
+        var known = Array.prototype.some.call(select.options, function (option) {
+          return option.value === value;
+        });
+        select.value = known ? value : '';
+      });
+    },
+    resetFilter: function () {
+      this.setRadio('f-user', 'all');
+      this.setRadio('f-color', 'all');
+      this.setRadio('f-date', 'all');
+      this.setLabelMode(this.LABEL_MODE.AND);
+      this.setFilterFields({});
+      document.querySelectorAll('input[name="f-label"]').forEach(function (box) {
+        box.checked = false;
+      });
+      this.applyFilter();
+      this.maybeSaveFilter();
     },
     filterValue: function (name) {
       // KF-175: support both select dropdowns (new) and radio buttons (legacy)
@@ -13985,6 +14991,9 @@
       var color = this.filterValue('f-color');
       var date = this.filterValue('f-date');
       var labels = this.filterLabels();
+      var anyLabel = this.filterLabelMode() === this.LABEL_MODE.OR;
+      var fields = this.filterFields();
+      var fieldKeys = Object.keys(fields);
       var self = this;
       var activeTaskId = null;
       if (user === 'timer' && window.TimerUI && TimerUI.state && TimerUI.state.taskId) {
@@ -14002,13 +15011,17 @@
         // KF-159: date filters evaluate the card's data-due-at (RFC3339).
         if (!self.dateMatches(date, card.dataset.dueAt, card.dataset.dueDone === '1')) show = false;
         // KF-165: label filters match the card's data-labels JSON array.
-        // Checking several labels narrows to cards carrying every one
-        // (KanbanFlow parity).
+        // Several labels match every one, or any one in "or" mode.
         if (show && labels.length) {
           var cardLabels = [];
           try { cardLabels = JSON.parse(card.dataset.labels || '[]'); } catch (e) { cardLabels = []; }
-          var allPresent = labels.every(function (l) { return cardLabels.indexOf(l) !== -1; });
-          if (!allPresent) show = false;
+          var hasLabel = function (l) { return cardLabels.indexOf(l) !== -1; };
+          if (!(anyLabel ? labels.some(hasLabel) : labels.every(hasLabel))) show = false;
+        }
+        if (show && fieldKeys.length) {
+          var cardFields = {};
+          try { cardFields = JSON.parse(card.dataset.filterFields || '{}'); } catch (e) { cardFields = {}; }
+          if (!fieldKeys.every(function (k) { return cardFields[k] === fields[k]; })) show = false;
         }
         card.style.display = show ? '' : 'none';
       });
@@ -14043,7 +15056,7 @@
         }
         var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
         var el = th.querySelector('.columnHeader-count');
-        if (el) el.textContent = wip ? count + ' / ' + wip : String(count);
+        if (el) el.textContent = wip && !filtering ? count + ' / ' + wip : String(count);
         // KF-297/KF-371: the badge follows the visible set too.
         setSumBadge(th, count, minutes);
         // Mirror updateColumnCount's WIP-violation warning for the visible set.
@@ -14196,7 +15209,9 @@
         user: this.filterValue('f-user'),
         color: this.filterValue('f-color'),
         date: this.filterValue('f-date'),
-        labels: this.filterLabels()
+        labels: this.filterLabels(),
+        labelMode: this.filterLabelMode(),
+        fields: this.filterFields()
       });
       try { window.sessionStorage.setItem(this.sessionFilterKey(), state); } catch (e) {}
       try {
@@ -14218,6 +15233,8 @@
         this.setRadio('f-user', f.user);
         this.setRadio('f-color', f.color);
         this.setRadio('f-date', f.date);
+        this.setLabelMode(f.labelMode);
+        this.setFilterFields(f.fields);
         // Label checkboxes load async — apply them when they arrive.
         this._pendingLabelFilter = (f.labels && f.labels.length) ? f.labels : null;
         var remember = document.getElementById('filter-remember');
@@ -14449,7 +15466,6 @@
       // KF-353: keep the menu's toggle switch in sync.
       var item = document.querySelector('#board-menu [data-bm="dark"]');
       if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');
-      toast(on ? 'Dark mode on.' : 'Dark mode off.');
     },
     toggleLargeNames: function () {
       var on = !document.body.classList.contains('large-names');
@@ -14458,12 +15474,10 @@
       // KF-353: keep the menu's toggle switch in sync.
       var item = document.querySelector('#board-menu [data-bm="large-names"]');
       if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');
-      toast(on ? 'Large task names on.' : 'Large task names off.');
     },
-    // KF-222: the Color legend is a per-board Menu toggle (KanbanFlow shows
-    // no legend by default). The server renders the footer only when
-    // legend_visible is ON — no footer markup at all when OFF — so persist
-    // the new state, then reload to apply it.
+    // The Color legend is a per-board Menu toggle. The server always renders
+    // the footer, hidden when the legend is off, so persist the new state,
+    // then show or hide the footer in place.
     toggleLegend: function () {
       var item = document.querySelector('#board-menu [data-bm="legend"]');
       var on = item ? item.getAttribute('aria-checked') !== 'true' : true;
@@ -14480,8 +15494,8 @@
             toast('Could not save the legend setting.');
             return;
           }
-          toast(on ? 'Color legend on.' : 'Color legend off.');
-          window.location.reload();
+          var footer = document.querySelector('.color-legend');
+          if (footer) footer.hidden = !on;
         })
         .catch(function () {
           if (item) item.setAttribute('aria-checked', on ? 'false' : 'true');
@@ -14492,11 +15506,12 @@
     // feedback.
     openHelp: function () {
       var dlg = document.getElementById('help-dialog');
-      if (!dlg) { toast('Help is not available.'); return; }
+      if (!dlg) { toast('Help is not available.'); return false; }
       this.showHelpTab('quick');
       dlg.hidden = false;
       var search = document.getElementById('help-search');
       if (search) search.focus();
+      return true;
     },
     showHelpTab: function (name) {
       document.querySelectorAll('[data-help-tab]').forEach(function (tab) {
@@ -14992,6 +16007,7 @@
   function initBoard() {
     if (boardInitialized) return;
     boardInitialized = true;
+    showPendingToast();
     initTaskSortable();
     initSelection();
     initColumnSortable();

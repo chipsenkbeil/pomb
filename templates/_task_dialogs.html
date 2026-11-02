@@ -92,6 +92,23 @@
   </div>
 </div>
 
+<div id="copy-task-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Copy task">
+    <div class="dlg-title"><span>Copy task</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <label class="dlg-field">
+      <span>Name of copy</span>
+      <input type="text" id="cp-name" maxlength="200" autocomplete="off">
+    </label>
+    <label class="dlg-field">
+      <span>Target column</span>
+      <select id="cp-col"></select>
+    </label>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-success" id="cp-copy-btn">Copy</button>
+    </div>
+  </div>
+</div>
+
 <!-- Add time estimate dialog (task modal → Add → Add time estimate) -->
 <div id="estimate-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
   <div class="dlg dlg-light estimate-dlg" role="dialog" aria-label="Add time estimate">
@@ -227,7 +244,41 @@
 <div id="shortcuts-dialog" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Keyboard shortcuts">
     <div class="dlg-title">Keyboard shortcuts</div>
-    <dl class="shortcuts-list">
+    <select id="shortcuts-tab" class="shortcuts-tab" aria-label="Shortcut list">
+      <option value="board" selected>Board</option>
+      <option value="task">Task details</option>
+    </select>
+    <div class="shortcuts-print-head">Board</div>
+    <dl class="shortcuts-list" data-shortcuts-panel="board">
+      <div><dt><kbd>A</kbd> <kbd>1-9</kbd></dt><dd>Add a task in that column</dd></div>
+      <div><dt><kbd>B</kbd></dt><dd>Open the board list and search it</dd></div>
+      <div><dt><kbd>F</kbd></dt><dd>Open the filter</dd></div>
+      <div><dt><kbd>R</kbd></dt><dd>Open the Reports menu (arrows and Enter)</dd></div>
+      <div><dt><kbd>U</kbd></dt><dd>Show all members</dd></div>
+      <div><dt><kbd>H</kbd></dt><dd>Open help</dd></div>
+      <div><dt><kbd>T</kbd></dt><dd>Open the timer</dd></div>
+      <div><dt><kbd>T</kbd> <kbd>M</kbd></dt><dd>Switch Pomodoro and Stopwatch</dd></div>
+      <div><dt><kbd>Shift + T</kbd></dt><dd>Pick the timer task</dd></div>
+      <div><dt><kbd>S</kbd></dt><dd>Start, stop or take a break</dd></div>
+      <div><dt><kbd>P</kbd></dt><dd>Open the timer reports menu</dd></div>
+      <div><dt><kbd>Esc</kbd></dt><dd>Cancel</dd></div>
+      <div><dt><kbd>?</kbd></dt><dd>Show this list</dd></div>
+    </dl>
+    <div class="shortcuts-print-head">Task details</div>
+    <dl class="shortcuts-list" data-shortcuts-panel="task" hidden>
+      <div><dt><kbd>A</kbd></dt><dd>Open the Add menu</dd></div>
+      <div><dt><kbd>N</kbd></dt><dd>Edit the name</dd></div>
+      <div><dt><kbd>D</kbd></dt><dd>Edit the description</dd></div>
+      <div><dt><kbd>C</kbd></dt><dd>Pick the color</dd></div>
+      <div><dt><kbd>M</kbd></dt><dd>Assign members</dd></div>
+      <div><dt><kbd>L</kbd></dt><dd>Edit labels</dd></div>
+      <div><dt><kbd>S</kbd></dt><dd>Add a subtask</dd></div>
+      <div><dt><kbd>K</kbd></dt><dd>Add a comment</dd></div>
+      <div><dt><kbd>U</kbd></dt><dd>Set the due date</dd></div>
+      <div><dt><kbd>F</kbd></dt><dd>Add an attachment</dd></div>
+      <div><dt><kbd>R</kbd></dt><dd>Add a relation</dd></div>
+      <div><dt><kbd>E</kbd></dt><dd>Set the time estimate</dd></div>
+      <div><dt><kbd>Y</kbd></dt><dd>Add a manual time entry</dd></div>
       <div><dt><kbd>V</kbd></dt><dd>Open Move dialog</dd></div>
       <div><dt><kbd>T</kbd></dt><dd>Open Timer menu</dd></div>
       <div><dt><kbd>P</kbd></dt><dd>Open Reports menu</dd></div>
@@ -239,6 +290,7 @@
       <div><dt><kbd>Delete</kbd></dt><dd>Delete task</dd></div>
     </dl>
     <div class="dlg-actions">
+      <button type="button" class="btn" id="shortcuts-print">Print list (PDF)</button>
       <button type="button" class="btn" data-close-dialog>Close</button>
     </div>
   </div>

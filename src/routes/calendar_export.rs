@@ -10,8 +10,6 @@ const HEADER: [&str; 7] = [
 ];
 /// The most characters an XLSX cell holds.
 const XLSX_CELL_MAX: usize = 32767;
-/// The title of the one sheet in an XLSX export.
-const SHEET_NAME: &str = "Due dates";
 /// The ZIP version needed to extract an XLSX export.
 const ZIP_VERSION: u16 = 20;
 /// The ZIP flag marking entry names as UTF-8.
@@ -208,8 +206,8 @@ fn xml_text(text: &str) -> String {
     out
 }
 
-/// Returns `rows` as an Excel workbook of one sheet of text cells.
-pub(super) fn xlsx_bytes(rows: &[Vec<String>]) -> Vec<u8> {
+/// Returns `rows` as an Excel workbook of one sheet named `sheet_name` of text cells.
+pub(super) fn xlsx_bytes(rows: &[Vec<String>], sheet_name: &str) -> Vec<u8> {
     let mut sheet = format!(
         r#"{XML_HEAD}<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#
     );
@@ -242,7 +240,7 @@ pub(super) fn xlsx_bytes(rows: &[Vec<String>]) -> Vec<u8> {
         (
             "xl/workbook.xml",
             format!(
-                r#"{XML_HEAD}<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="{RELATIONSHIPS}"><sheets><sheet name="{SHEET_NAME}" sheetId="1" r:id="rId1"/></sheets></workbook>"#
+                r#"{XML_HEAD}<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="{RELATIONSHIPS}"><sheets><sheet name="{sheet_name}" sheetId="1" r:id="rId1"/></sheets></workbook>"#
             ),
         ),
         (
@@ -361,7 +359,7 @@ mod tests {
 
     #[test]
     fn xlsx_should_be_a_zip_of_the_workbook_parts_with_escaped_cells() {
-        let files = unzip(&xlsx_bytes(&text_rows()));
+        let files = unzip(&xlsx_bytes(&text_rows(), "Due dates"));
         let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
             names,
@@ -383,7 +381,7 @@ mod tests {
     #[test]
     fn xlsx_should_cap_a_cell_and_drop_control_characters() {
         let rows = vec![vec![format!("a\u{1}{}", "x".repeat(40000))]];
-        let files = unzip(&xlsx_bytes(&rows));
+        let files = unzip(&xlsx_bytes(&rows, "Sheet"));
         let sheet = String::from_utf8(files[4].1.clone()).expect("utf8");
         assert!(!sheet.contains('\u{1}'));
         assert!(sheet.len() < 33000 + 400, "{}", sheet.len());

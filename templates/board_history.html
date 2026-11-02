@@ -5,20 +5,60 @@
 {% block shell_body %}
 <p class="settings-hint">
   A detailed log of changes made on
-  <strong>{{ board_name }}</strong>: newest first.
+  <strong>{{ board_name }}</strong>.
 </p>
 
-<div class="settings-form field-row">
-  <label>Show changes by
+<div class="settings-form field-row" id="history-filters">
+  <label>Event
+    <select id="history-event-filter">
+      <option value="">All events</option>
+      {% for (value, label) in event_groups %}
+      <option value="{{ value }}">{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label id="history-property-label" hidden>Property
+    <select id="history-property-filter">
+      <option value="">All properties</option>
+      {% for (value, label) in properties %}
+      <option value="{{ value }}">{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>User
     <select id="history-user-filter">
       <option value="">All users</option>
     </select>
   </label>
-  <label>of type
-    <select id="history-type-filter">
-      <option value="">All types</option>
+  <label>Period
+    <select id="history-period-filter">
+      <option value="latest">Latest</option>
+      <option value="this-week">This week</option>
+      <option value="last-week">Last week</option>
+      <option value="this-month">This month</option>
+      <option value="last-month">Last month</option>
+      <option value="custom">Custom</option>
     </select>
   </label>
+  <label class="history-custom" hidden>From
+    <input type="date" id="history-from">
+  </label>
+  <label class="history-custom" hidden>To
+    <input type="date" id="history-to">
+  </label>
+  <label>Order
+    <select id="history-order-filter">
+      <option value="newest">Newest first</option>
+      <option value="oldest">Oldest first</option>
+    </select>
+  </label>
+  <button type="button" id="history-reload">Reload</button>
+</div>
+
+<div class="settings-form field-row">
+  <label><input type="checkbox" id="history-show-all"> Show all details</label>
+  <a id="history-export-xlsx" href="#" download>Export Excel</a>
+  <a id="history-export-csv" href="#" download>Export CSV</a>
 </div>
 
 <div id="history-feed" class="history-feed"></div>

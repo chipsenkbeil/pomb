@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use redb::{ReadableTable, WriteTransaction};
 
-use super::usage::{OverQuota, txn_count_usage, txn_remove_entry, txn_store_entry, txn_store_task};
+use super::outbox::{txn_queue_task_deleted, txn_queue_task_restored};
+use super::usage::{OverQuota, txn_count_usage, txn_remove_entry, txn_store_entry, txn_write_task};
 use super::{
     BIN, BIN_BY_BOARD, BOARDS, COLUMNS, COLUMNS_BY_BOARD, Db, DbResult, ENTRIES_BY_TASK, SETTINGS,
     SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, index_in,
@@ -155,6 +156,7 @@ fn bin_task_in(txn: &WriteTransaction, id: &str, actor: Actor<'_>) -> DbResult<O
     let owner = task_owner_in(txn, id)?.unwrap_or_default();
     let entry_ids = txn_mmap_get(txn, ENTRIES_BY_TASK, id)?;
     let freed = txn_task_bytes(txn, &[id.to_string()])?;
+    txn_queue_task_deleted(txn, &task, actor)?;
     unlink_deleted_tasks(txn, &[id.to_string()])?;
     txn_count_usage(txn, &owner, 0, freed)?;
     let mut entries = Vec::new();
@@ -309,7 +311,7 @@ impl Db {
         task.updated_at = Some(at);
         {
             let mut tasks = txn.open_table(TASKS)?;
-            txn_store_task(&txn, &mut tasks, task, OverQuota::Allow, actor)?;
+            txn_write_task(&txn, &mut tasks, task, OverQuota::Allow, actor)?;
         }
         mmap_insert(&txn, TASKS_BY_COLUMN, &column.id, id)?;
         for entry in &row.entries {
@@ -318,6 +320,7 @@ impl Db {
         }
         txn.open_table(BIN)?.remove(id)?;
         mmap_remove(&txn, BIN_BY_BOARD, &row.board_id, id)?;
+        txn_queue_task_restored(&txn, &row.task, actor)?;
         txn.commit()?;
         Ok(RestoreOutcome::Restored {
             column_id: column.id,

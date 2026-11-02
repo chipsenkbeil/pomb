@@ -54,6 +54,18 @@ pub const LANE_NAMES_FOLDED_KEY: &str = "lane_names_folded";
 /// bin for good.
 pub const BIN_PERMANENT_DELETE_KEY: &str = "bin_permanent_delete";
 
+/// Key in a board's config bag of the member new tasks start with.
+pub const DEFAULT_MEMBER_KEY: &str = "default_member";
+
+/// Key in a board's config bag of the flag that makes the default member responsible.
+pub const DEFAULT_MEMBER_RESPONSIBLE_KEY: &str = "default_member_responsible";
+
+/// Wire name of "no default member".
+pub const DEFAULT_MEMBER_NONE: &str = "none";
+
+/// Wire name of "the task's creator is the default member".
+pub const DEFAULT_MEMBER_CREATOR: &str = "creator";
+
 /// Seconds in a day, for expiry arithmetic.
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -145,6 +157,8 @@ impl TextCap {
     pub const COLOR_DESCRIPTION: Self = Self::chars("description", 500);
     /// A column's name.
     pub const COLUMN_NAME: Self = Self::chars("column name", 200);
+    /// Most accounts that watch one column.
+    pub const COLUMN_WATCHERS: Self = Self::items("watchers", 1000);
     /// The settings bag of a board or a column, as JSON.
     pub const CONFIG: Self = Self::bytes("config", 16 * 1024);
     /// A task's or a column's description.
@@ -202,6 +216,10 @@ impl TextCap {
     pub const TASK_NAME: Self = Self::chars("name", 500);
     /// A saved template's name.
     pub const TEMPLATE_NAME: Self = Self::chars("name", 200);
+    /// A webhook's name.
+    pub const WEBHOOK_NAME: Self = Self::chars("name", 100);
+    /// A webhook's callback URL.
+    pub const WEBHOOK_URL: Self = Self::chars("url", 2048);
 
     /// Returns the cap of at most `max` entries in the list `field`.
     const fn items(field: &'static str, max: usize) -> Self {
@@ -310,6 +328,40 @@ pub struct BoardRow {
 }
 
 impl BoardRow {
+    /// Returns the board's default member as its wire name: `none`, `creator` or a user id.
+    pub fn default_member(&self) -> String {
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
+            .ok()
+            .and_then(|m| {
+                m.get(DEFAULT_MEMBER_KEY)
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| DEFAULT_MEMBER_NONE.to_string())
+    }
+
+    /// Returns whether the default member also becomes responsible, which holds unless the board
+    /// turned it off.
+    pub fn default_member_responsible(&self) -> bool {
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
+            .ok()
+            .and_then(|m| {
+                m.get(DEFAULT_MEMBER_RESPONSIBLE_KEY)
+                    .and_then(serde_json::Value::as_bool)
+            })
+            .unwrap_or(true)
+    }
+
+    /// Returns the user ids a new task created by `creator` starts with.
+    pub fn default_member_ids(&self, creator: &str) -> Vec<String> {
+        match self.default_member().as_str() {
+            DEFAULT_MEMBER_NONE => Vec::new(),
+            DEFAULT_MEMBER_CREATOR => vec![creator.to_string()],
+            id => vec![id.to_string()],
+        }
+    }
+
     /// Reads a boolean flag from the board config bag.
     pub fn config_bool(&self, key: &str) -> bool {
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
@@ -434,11 +486,21 @@ pub struct ColumnRow {
     /// under an old name. Empty for rows written before the field existed.
     #[serde(default)]
     pub former_names: Vec<String>,
+    /// The ids of the accounts that watch the column. Empty for rows written before the field
+    /// existed.
+    #[serde(default)]
+    pub watchers: Vec<String>,
 }
 
 impl ColumnRow {
     /// Most former names a column remembers.
     pub const MAX_FORMER_NAMES: usize = 50;
+
+    /// Returns whether account `account` watches the column.
+    #[must_use]
+    pub fn watched_by(&self, account: &str) -> bool {
+        self.watchers.iter().any(|watcher| watcher == account)
+    }
 
     /// Renames the column to `name` and remembers the old name in `former_names`, forgetting the
     /// oldest past [`ColumnRow::MAX_FORMER_NAMES`].
@@ -1232,6 +1294,127 @@ impl FieldDefRow {
             Some(serde_json::Value::Array(items)) => !items.is_empty(),
             Some(_) => true,
         }
+    }
+}
+
+/// An event a webhook can subscribe to.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum WebhookEvent {
+    /// A task was created.
+    TaskCreated,
+    /// A task was changed.
+    TaskChanged,
+    /// A task was deleted.
+    TaskDeleted,
+    /// A deleted task was restored.
+    TaskRestored,
+    /// A comment was created.
+    CommentCreated,
+    /// A comment was changed.
+    CommentChanged,
+    /// A comment was deleted.
+    CommentDeleted,
+}
+
+impl WebhookEvent {
+    /// Every event, in the order the settings list them.
+    pub const ALL: [Self; 7] = [
+        Self::TaskCreated,
+        Self::TaskChanged,
+        Self::TaskDeleted,
+        Self::TaskRestored,
+        Self::CommentCreated,
+        Self::CommentChanged,
+        Self::CommentDeleted,
+    ];
+
+    /// Returns the name the API and the payload spell.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::TaskCreated => "taskCreated",
+            Self::TaskChanged => "taskChanged",
+            Self::TaskDeleted => "taskDeleted",
+            Self::TaskRestored => "taskRestored",
+            Self::CommentCreated => "commentCreated",
+            Self::CommentChanged => "commentChanged",
+            Self::CommentDeleted => "commentDeleted",
+        }
+    }
+
+    /// Returns the name the settings show.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::TaskCreated => "Task created",
+            Self::TaskChanged => "Task changed",
+            Self::TaskDeleted => "Task deleted",
+            Self::TaskRestored => "Task restored",
+            Self::CommentCreated => "Comment created",
+            Self::CommentChanged => "Comment changed",
+            Self::CommentDeleted => "Comment deleted",
+        }
+    }
+}
+
+/// A webhook that calls a URL when events happen on one board.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WebhookRow {
+    /// The webhook's id.
+    pub id: String,
+    /// The board the webhook belongs to.
+    pub board_id: String,
+    /// The name the settings show.
+    pub name: String,
+    /// The `http` or `https` URL the webhook calls.
+    pub url: String,
+    /// The events the webhook receives, each once.
+    pub events: Vec<WebhookEvent>,
+    /// The column whose events the webhook receives, or absent for every column.
+    pub column_id: Option<String>,
+    /// Whether the webhook receives events.
+    pub enabled: bool,
+    /// Hex of the random bytes that sign deliveries.
+    pub secret: String,
+    /// RFC3339.
+    pub created_at: String,
+}
+
+/// One event waiting to be delivered to one webhook.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OutboxRow {
+    /// The row's key: a zero-padded sequence number, so the oldest row sorts first.
+    pub id: String,
+    /// The webhook the event is for.
+    pub webhook_id: String,
+    /// The board the webhook belongs to.
+    pub board_id: String,
+    /// What happened.
+    pub event: WebhookEvent,
+    /// The JSON payload, serialized once so every delivery sends the same bytes.
+    pub body: String,
+    /// RFC3339 time the event was queued.
+    pub created_at: String,
+    /// Count of failed deliveries.
+    pub attempts: u32,
+    /// RFC3339 time from which the event may be delivered, or absent when it may be at once.
+    pub next_attempt_at: Option<String>,
+}
+
+impl fmt::Debug for WebhookRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebhookRow")
+            .field("id", &self.id)
+            .field("board_id", &self.board_id)
+            .field("name", &self.name)
+            .field("url", &self.url)
+            .field("events", &self.events)
+            .field("column_id", &self.column_id)
+            .field("enabled", &self.enabled)
+            .field("secret", &"<redacted>")
+            .field("created_at", &self.created_at)
+            .finish()
     }
 }
 

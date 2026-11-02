@@ -826,7 +826,17 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::GET,
         "/b/:board_id/settings/api-webhooks",
-        Permission::BoardsRead,
+        Permission::WebhooksManage,
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/api-webhooks/new",
+        Permission::WebhooksManage,
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/api-webhooks/:webhook_id",
+        Permission::WebhooksManage,
     ),
     (
         Method::GET,
@@ -862,6 +872,7 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (Method::POST, "/api/bin/:id/restore", Permission::TasksWrite),
     (Method::GET, "/api/tasks/:id/card", Permission::TasksRead),
     (Method::GET, "/api/tasks/:id/modal", Permission::TasksRead),
+    (Method::GET, "/t/:id", Permission::TasksRead),
     (Method::POST, "/api/tasks/:id/move", Permission::TasksWrite),
     (
         Method::POST,
@@ -1073,7 +1084,47 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/boards/:id/calendar-feeds/:feed_id",
         Permission::FeedsManage,
     ),
+    (
+        Method::GET,
+        "/api/boards/:id/history",
+        Permission::BoardsRead,
+    ),
     (Method::GET, "/api/calendar-export", Permission::BoardsRead),
+    (
+        Method::GET,
+        "/api/boards/:id/webhooks",
+        Permission::WebhooksManage,
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/webhooks",
+        Permission::WebhooksManage,
+    ),
+    (
+        Method::PATCH,
+        "/api/webhooks/:id",
+        Permission::WebhooksManage,
+    ),
+    (
+        Method::DELETE,
+        "/api/webhooks/:id",
+        Permission::WebhooksManage,
+    ),
+    (
+        Method::GET,
+        "/api/webhooks/:id/secret",
+        Permission::WebhooksManage,
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/webhooks/test-dns",
+        Permission::WebhooksManage,
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/webhooks/test-request",
+        Permission::WebhooksManage,
+    ),
     (Method::GET, "/api/time/entries/:id", Permission::TimeRead),
     (Method::PUT, "/api/time/entries/:id", Permission::TimeEdit),
     (
@@ -1853,6 +1904,23 @@ mod tests {
         (
             Method::DELETE,
             "/api/tasks/:id/attachments/:attachment_id",
+            AuthScope::Admin,
+        ),
+        (Method::GET, "/api/boards/:id/webhooks", AuthScope::Admin),
+        (Method::GET, "/api/webhooks/:id/secret", AuthScope::Admin),
+        (
+            Method::GET,
+            "/b/:board_id/settings/api-webhooks",
+            AuthScope::Admin,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/settings/api-webhooks/new",
+            AuthScope::Admin,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/settings/api-webhooks/:webhook_id",
             AuthScope::Admin,
         ),
         (Method::PUT, "/api/time/entries/:id", AuthScope::Admin),

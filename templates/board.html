@@ -34,6 +34,7 @@
   <button type="button" id="filter-btn" class="board-bar-btn" title="Filter" aria-label="Filter" aria-haspopup="dialog">
     <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
   </button>
+  <a href="#" id="filter-reset" class="filter-reset-link" hidden>Reset filter</a>
   <!-- KF-309: solid pencil glyph (KanbanFlow parity) — was a thin &#9998; text glyph. Outer silhouette subpath only: renders fully solid under the nonzero fill rule. -->
   <button type="button" id="edit-layout-btn" class="board-bar-btn" title="Edit board layout" aria-label="Edit board layout"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10z"/></svg></button>
   <!-- KF-204: "Menu" text label next to hamburger (KanbanFlow parity). -->
@@ -50,6 +51,7 @@
     <button type="button" class="filter-panel-close" id="filter-close" aria-label="Close filter">&times;</button>
   </div>
   <div class="filter-body">
+    <a href="#" id="filter-reset-panel" class="filter-reset-link filter-reset-panel" hidden>Reset filter</a>
     <section class="filter-section" aria-label="Filter by user">
       <h4>User</h4>
       <!-- KF-175: dropdown (KanbanFlow parity) — was radio buttons -->
@@ -93,8 +95,23 @@
         <option value="90">Due in 90 days</option>
       </select>
     </section>
+    {% for field in filter_fields %}
+    <section class="filter-section" aria-label="Filter by {{ field.label }}">
+      <h4>{{ field.label }}</h4>
+      <select class="filter-select f-field" data-field-key="{{ field.key }}">
+        <option value="" selected>Show all</option>
+        {% for option in field.options %}
+        <option value="{{ option }}">{{ option }}</option>
+        {% endfor %}
+      </select>
+    </section>
+    {% endfor %}
     <section class="filter-section" aria-label="Filter by labels">
       <h4>Labels</h4>
+      <select id="f-label-mode" class="filter-select">
+        <option value="and" selected>Match all chosen labels</option>
+        <option value="or">Match any chosen label</option>
+      </select>
       <!-- KF-215: KanbanFlow's "Add labels..." field with a list button;
            the list holds the KF-165 checkboxes, populated by
            BoardChrome.loadFilterLabels from GET /api/boards/:id/labels. -->
@@ -386,7 +403,7 @@
 
 <div class="board-layout">
 
-<main class="board-wrap" data-board-id="{{ board_id }}" data-new-tasks-at-top="{% if new_tasks_at_top %}1{% else %}0{% endif %}">
+<main class="board-wrap" data-board-id="{{ board_id }}" data-new-tasks-at-top="{% if new_tasks_at_top %}1{% else %}0{% endif %}" data-default-members="{{ default_member_ids }}">
   <!-- KF-457: only the board region scrolls; the legend below stays put. -->
   <div class="board-scroll">
   <div class="board-table-wrap">
@@ -405,6 +422,7 @@
             data-wip-limit="{% if let Some(lim) = col.wip_limit %}{{ lim }}{% endif %}"
             data-is-done="{% if col.is_done %}1{% else %}0{% endif %}"
             data-collapsed="{% if col.collapsed %}1{% else %}0{% endif %}"
+            data-watched="{% if col.watched %}1{% else %}0{% endif %}"
             data-overdue-count="{{ col.overdue_count }}"
             data-column-config="{{ col.config_json }}"
             {% if col.collapsed %}tabindex="0" role="button" aria-expanded="false" title="{% if col.overdue_count > 0 %}Overdue tasks: {{ col.overdue_count }} / Total tasks: {{ col.count }}{% else %}Task count: {{ col.count }}{% endif %} / Click to expand"{% endif %}>
@@ -413,11 +431,11 @@
                count (darkred over the WIP limit), plus the #ff8080 line at
                the header bottom when the column is over its WIP limit or has
                overdue tasks. The name runs down the strip's body cells. -->
-          <span class="columnHeader-titleRow"><span class="columnHeader-countBadge{% if col.over_limit %} columnHeader-countBadge--over{% endif %}">{{ col.count }}</span></span>
+          <span class="columnHeader-titleRow"><span class="columnHeader-countBadge{% if col.over_limit %} columnHeader-countBadge--over{% endif %}">{{ col.count }}</span>{% if col.watched %}<svg class="columnHeader-watch" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" role="img" aria-label="Watched"><title>Watched</title><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>{% endif %}</span>
           {% if col.over_limit || col.overdue_count > 0 %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
           {% else %}
           <span class="columnHeader-titleRow">
-            <span class="columnHeader-name">{{ col.name }}</span>
+            <span class="columnHeader-name">{{ col.name }}</span>{% if col.watched %}<svg class="columnHeader-watch" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" role="img" aria-label="Watched"><title>Watched</title><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>{% endif %}
             {% if let Some(lim) = col.wip_limit %}
             <span class="columnHeader-count"{% if col.over_limit %} title="*LIMIT EXCEEDED*"{% endif %}>{{ col.count }} / {{ lim }}</span>
             {% endif %}
@@ -498,25 +516,26 @@
        shows no footer by default. When ON, one labeled segment per ENABLED
        board color in palette order, labeled with the color's custom name
        (falling back to the standard name) — never hardcoded pomodoro
-       segments. When OFF, no footer markup is rendered at all. (Keeps the
-       KF-210 bottom-anchored + KF-212 full-bleed styling via .color-legend.) -->
+       segments. When OFF, the footer is rendered hidden. -->
   <!-- KF-249/KF-457: color legend footer, KanbanFlow's 23px segment row
        (1px per-segment top edge in the segment's edge color + 22px fills in
        the color's background color, labels #222 12px centered), equal
        full-width segments flush to the viewport bottom. The board frame
-       above it keeps its own bottom edge and 9px gutter. When OFF, no
-       footer markup is rendered at all. -->
-  {% if legend_visible %}
-  <footer class="color-legend" aria-label="Task color legend">
+       above it keeps its own bottom edge and 9px gutter. When OFF, the
+       footer is rendered hidden. -->
+  <footer class="color-legend" aria-label="Task color legend"{% if !legend_visible %} hidden{% endif %}>
     <div class="color-legend-segments">
     {# KF-354: one segment per board color, in its card face with its card
        border along the top. #}
     {% for color in colors %}
-      <span class="color-legend-segment" style="background-color: {{ color.bg }}; border-top-color: {{ color.border }}" title="{{ color.description }}">{{ color.display_label() }}</span>
+      <span class="color-legend-segment" role="button" data-color-id="{{ color.id }}" data-color-value="{{ color.value }}" style="background-color: {{ color.bg }}; border-top-color: {{ color.border }}" title="{{ color.description }}">{{ color.display_label() }}</span>
     {% endfor %}
     </div>
   </footer>
-  {% endif %}
+  <div id="legend-menu" class="menu-pop menu-floating" role="menu" hidden>
+    <button type="button" role="menuitem" data-legend-act="rename">Rename</button>
+    <button type="button" role="menuitem" data-legend-act="filter">Filter on color</button>
+  </div>
 </main>
 </div><!-- /.board-layout -->
 
@@ -644,6 +663,7 @@
   <button type="button" data-col-act="edit">Edit</button>
   <button type="button" data-col-act="collapse">Collapse</button>
   <button type="button" data-col-act="details">Show details</button>
+  <button type="button" data-col-act="watch">Watch</button>
 </div>
 
 <div id="lane-order" hidden>{% for band in bands %}<span data-lane-id="{{ band.id }}" data-lane-name="{{ band.name }}" data-lane-description="{{ band.description }}" data-lane-limits="{{ band.limits_json() }}" data-lane-collapsed="{% if band.collapsed %}1{% else %}0{% endif %}" data-task-count="{{ band.task_count }}"></span>{% endfor %}</div>
@@ -668,6 +688,7 @@
   <button type="button" data-card-act="assign-members"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="5.8" cy="5.8" r="2.6"/><path d="M1.2 13.2c0-2.6 2.1-4.2 4.6-4.2s4.6 1.6 4.6 4.2"/><circle cx="11.4" cy="6.6" r="2.1"/><path d="M11.2 9.2c2 .4 3.6 1.8 3.6 4"/></svg></span>Assign members</button>
   <button type="button" data-card-act="grouping-date" hidden><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10.5" rx="1.5"/><path d="M2 6.5h12M5.5 1.8v2.4M10.5 1.8v2.4"/></svg></span>Edit grouping date</button>
   <button type="button" data-card-act="copy-here"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3.5v5A1.5 1.5 0 0 0 4 10h1.5"/></svg></span>Copy here</button>
+  <button type="button" data-card-act="copy"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3.5v5A1.5 1.5 0 0 0 4 10h1.5M9.5 7.5v4M7.5 9.5h4"/></svg></span>Copy task</button>
   <button type="button" data-card-act="task-url"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.5 9.5l3-3"/><path d="M8.5 5.5l1.8-1.8a2.8 2.8 0 0 1 4 4L12.5 9.5a2.8 2.8 0 0 1-4 0"/><path d="M7.5 10.5l-1.8 1.8a2.8 2.8 0 0 1-4-4l1.8-1.8a2.8 2.8 0 0 1 4 0"/></svg></span>Task URL</button>
   <button type="button" data-card-act="delete"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.3a1 1 0 0 0 1 .7h4.6a1 1 0 0 0 1-.7L12 4"/><path d="M6.5 7v4M9.5 7v4"/></svg></span>Delete</button>
 </div>
@@ -909,8 +930,10 @@
         <details class="help-subject"><summary>Start a pomodoro</summary><p>Open a task and use Timer, or press T with the task open.</p></details>
         <details class="help-subject"><summary>Add time manually</summary><p>Open the task and use Add &gt; Manual time entry.</p></details>
         <h3 class="help-group">Keyboard shortcuts</h3>
+        <details class="help-subject"><summary>Shortcuts on the board</summary>
+          <p>A then 1 to 9 adds a task in that column, B boards, F filter, R Reports menu, U show all members, H help, T timer, T then M switches Pomodoro and Stopwatch, Shift + T picks the timer task, S starts, stops or takes a break. Keys do nothing while you type or a dialog is open.</p></details>
         <details class="help-subject"><summary>Shortcuts in an open task</summary>
-          <p>V Move, T Timer menu, P Reports menu, . More menu, Esc discards changes and then closes, Cmd/Ctrl + Enter saves, Delete deletes the task.</p></details>
+          <p>A add menu, N name, D description, C color, M members, L labels, S subtask, K comment, U due date, F attachment, R relation, E estimate, Y manual time, V Move, T Timer menu, P Reports menu, . More menu, Esc discards changes and then closes, Cmd/Ctrl + Enter saves, Delete deletes the task.</p></details>
         <p class="help-empty" id="help-empty" hidden>No help topics match your search.</p>
       </section>
       <section data-help-panel="ask" hidden>
@@ -997,6 +1020,28 @@
   <div class="menu-sep" role="separator" aria-hidden="true"></div>
   <button type="button" data-report="export" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M8 2v8M4.5 7L8 10.5 11.5 7M2.5 13.5h11"/></svg></span>Export</button>
   <button type="button" data-report="print" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" focusable="false"><path d="M4.5 6V2h7v4M4.5 11.5h-2v-5h11v5h-2M4.5 9.5h7v4.5h-7z"/></svg></span>Print</button>
+</div>
+
+<div id="print-board-dialog" class="print-board-overlay" hidden>
+  <div class="print-board-box" role="dialog" aria-modal="true" aria-label="Print board">
+    <header class="print-board-head">
+      <h2>Print board</h2>
+      <button type="button" id="print-board-close" class="print-board-x" aria-label="Close">&times;</button>
+    </header>
+    <div class="print-board-btns">
+      <button type="button" id="print-board-filter" class="kf-btn" aria-expanded="true" aria-controls="print-board-filters">Filter</button>
+      <button type="button" id="print-board-now" class="kf-btn">Print now</button>
+    </div>
+    <div id="print-board-filters" class="print-board-filters">
+      <label>Columns <select id="print-board-columns" multiple size="6"></select></label>
+      <label>Task properties <select id="print-board-props" multiple size="6"></select></label>
+      <label>User <select id="print-board-user"></select></label>
+      <label>Color <select id="print-board-color"></select></label>
+      <label>Label <select id="print-board-label"></select></label>
+      <label>Period for archived columns <select id="print-board-period"></select></label>
+    </div>
+    <div id="print-board-sheet" class="print-board-sheet"></div>
+  </div>
 </div>
 
 <div id="calendar-dialog" class="dlg-overlay cal-overlay" hidden>

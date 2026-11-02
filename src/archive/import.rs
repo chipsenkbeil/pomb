@@ -559,6 +559,7 @@ impl Builder<'_> {
                 collapsed: column.collapsed,
                 config_json: bag_json(settings, "column settings")?,
                 former_names: column.former_names,
+                watchers: Vec::new(),
             });
         }
         Ok(rows)
