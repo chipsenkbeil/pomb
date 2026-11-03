@@ -782,6 +782,12 @@ pub struct TaskRow {
     /// The id of the image attachment shown as the task's cover, or null.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover_id: Option<String>,
+    /// Whether the task is a plain task or an epic, the only kind that holds children.
+    #[serde(default)]
+    pub kind: TaskKind,
+    /// Whether someone closed the epic. A column move leaves it alone.
+    #[serde(default)]
+    pub closed: bool,
     /// Activity trail (KanbanFlow parity: History report). Newest appended
     /// last; capped by the DB layer. Empty for older rows.
     #[serde(default)]
@@ -987,6 +993,9 @@ pub struct TaskCard {
     /// The id of the image attachment shown as the task's cover, or null.
     #[serde(default)]
     pub cover_id: Option<String>,
+    /// Whether the task is a plain task or an epic.
+    #[serde(default)]
+    pub kind: TaskKind,
     /// Links this task holds: its `blocked_by` and `related` links.
     #[serde(default)]
     pub links: Vec<TaskLink>,
@@ -1001,6 +1010,12 @@ pub struct TaskCard {
 impl TaskCard {
     /// Most characters of a description a card keeps.
     pub const DESCRIPTION_PREVIEW_CHARS: usize = 200;
+
+    /// Returns whether the task's kind holds work.
+    #[must_use]
+    pub fn is_work(&self) -> bool {
+        self.kind.is_work()
+    }
 
     /// Returns the claim when its `expires_at` is not yet in the past.
     #[must_use]
@@ -1044,6 +1059,7 @@ impl From<&TaskRow> for TaskCard {
             comments: row.comments.len(),
             attachments: row.attachments.len(),
             cover_id: row.cover_id.clone(),
+            kind: row.kind,
             links: row.links.clone(),
             claim: row.claim.clone(),
             fields: row.fields.clone(),
@@ -1086,6 +1102,12 @@ pub struct TaskHead {
     /// Links this task holds: its `blocked_by`, `related` and `parent` links.
     #[serde(default)]
     pub links: Vec<TaskLink>,
+    /// Whether the task is a plain task or an epic.
+    #[serde(default)]
+    pub kind: TaskKind,
+    /// Whether someone closed the epic.
+    #[serde(default)]
+    pub closed: bool,
 }
 
 /// What the timer and its reports show of the task a time entry is logged on.
@@ -1165,6 +1187,12 @@ where
 }
 
 impl TaskRow {
+    /// Returns whether the task's kind holds work.
+    #[must_use]
+    pub fn is_work(&self) -> bool {
+        self.kind.is_work()
+    }
+
     /// Returns the claim when its `expires_at` is not yet in the past.
     pub fn live_claim(&self) -> Option<&TaskClaim> {
         self.claim
@@ -1703,6 +1731,34 @@ impl TaskClaim {
     /// `expires_at` counts as expired.
     pub fn is_live(&self, now: DateTime<Utc>) -> bool {
         DateTime::parse_from_rfc3339(&self.expires_at).is_ok_and(|at| at >= now)
+    }
+}
+
+/// What a task is: a plain task, or an epic that groups children.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    /// A plain task.
+    #[default]
+    Task,
+    /// A task that groups child cards and holds no work of its own.
+    Epic,
+}
+
+impl TaskKind {
+    /// Returns whether the kind holds work. Every count, limit, claim and readiness check uses it.
+    #[must_use]
+    pub fn is_work(self) -> bool {
+        self == Self::Task
+    }
+
+    /// Returns the wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Task => "task",
+            Self::Epic => "epic",
+        }
     }
 }
 

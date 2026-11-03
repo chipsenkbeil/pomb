@@ -14,17 +14,18 @@ use tokio::sync::watch;
 
 use super::{
     AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardMember,
-    BoardSnapshot, BookmarkAdd, BookmarkPatch, COLUMNS, Change, ChangeOutcome, ClaimOutcome,
-    ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite,
-    Commit, CopyTasks, Db, DbResult, DeviceGrant, EventRead, FIELD_DEFS, FeedAdd, FencedWrite,
-    FieldCreateOutcome, Incoming, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, LinkEdit,
-    LinkRefusal, MemberSet, MoveGuards, MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry,
-    NewWebhook, NotificationPage, OwnerChange, PasskeyAddOutcome, PasskeyDeleteOutcome,
-    PurgeOutcome, Reads, RestoreOutcome, Rows, SWIMLANES, SessionEndOutcome, SessionListing,
-    SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
-    SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome,
-    UmbrellaChange, WEBHOOKS, WebhookPatch, first_board, index_in, link_event_target,
-    links_blocked_in, no_signed_in_account, read_in, redacted_history, role_in, task_role_in,
+    BoardSnapshot, BookmarkAdd, BookmarkPatch, COLUMNS, COLUMNS_BY_BOARD, Change, ChangeOutcome,
+    ChildLinks, ClaimOutcome, ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind,
+    ColumnPatch, CommentWrite, Commit, CopyTasks, Db, DbResult, DeviceGrant, EpicCloseOutcome,
+    EventRead, FIELD_DEFS, FeedAdd, FencedWrite, FieldCreateOutcome, Incoming, LINKS_BY_TARGET,
+    LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkRefusal, MemberSet, MoveGuards, MoveOutcome,
+    NewComment, NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage, OwnerChange,
+    PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome, Reads, RestoreOutcome, Rows, SWIMLANES,
+    SessionEndOutcome, SessionListing, SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
+    SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
+    TaskContext, TemplateDeleteOutcome, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board,
+    index_in, link_event_target, links_blocked_in, no_signed_in_account, read_in, redacted_history,
+    role_in, task_role_in,
 };
 use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission, required_role,
@@ -294,6 +295,23 @@ impl LinkReads {
             self.heads.insert(id.to_string(), head);
         }
         Ok(self.heads.get(id).and_then(Option::as_ref))
+    }
+
+    /// Returns every task on board `board_id` read as `T` from this snapshot, in no set order.
+    /// Returns none when the account holds no role on the board or the token does not reach it.
+    pub fn board_tasks<T: DeserializeOwned>(&self, board_id: &str) -> DbResult<Vec<T>> {
+        if !self.access.allows(board_id) || role_in(&self.txn, &self.account, board_id)?.is_none() {
+            return Ok(Vec::new());
+        }
+        let mut tasks = Vec::new();
+        for column_id in index_in(&self.txn, COLUMNS_BY_BOARD, board_id)? {
+            for task_id in index_in(&self.txn, TASKS_BY_COLUMN, &column_id)? {
+                if let Some(task) = read_in::<T>(&self.txn, TASKS, &task_id)? {
+                    tasks.push(task);
+                }
+            }
+        }
+        Ok(tasks)
     }
 
     /// Returns the board column `id` sits on, when the account owns it, and records that the board
@@ -705,6 +723,16 @@ impl AccountDb {
                 needs: self.needs,
             })),
         }
+    }
+
+    /// Refuses with [`BoardDenied`] or [`RoleDenied`] when a task among `ids` sits outside the
+    /// token's set or on a board where the account's role falls short, as unlinking them from a
+    /// task would rewrite them.
+    pub fn check_tasks_granted(&self, ids: &[String]) -> DbResult<()> {
+        ids.iter().try_for_each(|id| {
+            self.check_task_granted(id)?;
+            self.check_linked_role(id)
+        })
     }
 
     /// Refuses with [`BoardDenied`] when task `id` links with a task outside the token's set,
@@ -1629,13 +1657,15 @@ impl AccountDb {
     pub fn apply_task_change_in_board<R, F>(
         &self,
         task: &OwnedTask,
+        children: ChildLinks,
         actor: Actor<'_>,
         f: F,
     ) -> DbResult<Option<R>>
     where
         F: FnOnce(&mut TaskRow, &TaskContext) -> (R, bool),
     {
-        self.db.apply_task_change_in_board(&task.row().id, actor, f)
+        self.db
+            .apply_task_change_in_board(&task.row().id, children, actor, f)
     }
 
     /// Moves a task into `column` after the checks in `guards`, all in one write transaction.
@@ -2019,6 +2049,16 @@ impl AccountDb {
         actor: Actor<'_>,
     ) -> DbResult<ClaimOutcome> {
         self.db.claim_task(&task.row().id, request, actor)
+    }
+
+    /// Sets or clears an epic's closed flag in one write transaction.
+    pub fn set_epic_closed(
+        &self,
+        task: &OwnedTask,
+        closed: bool,
+        actor: Actor<'_>,
+    ) -> DbResult<EpicCloseOutcome> {
+        self.db.set_epic_closed(&task.row().id, closed, actor)
     }
 
     /// Extends the live claim holding `fence`.

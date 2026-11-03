@@ -747,8 +747,11 @@ fn openapi_should_list_agentctl_paths_and_schemas() {
     let spec: Value = serde_json::from_str(&json).expect("valid json");
     for path in [
         "/api/boards/{id}/tasks",
+        "/api/boards/{id}/epics",
         "/api/tasks/{id}/links",
         "/api/tasks/{id}/links/{link_id}",
+        "/api/tasks/{id}/close",
+        "/api/tasks/{id}/reopen",
         "/api/tasks/{id}/claim",
         "/api/tasks/{id}/claim/heartbeat",
         "/api/tasks/{id}/claim/release",
@@ -8469,10 +8472,15 @@ async fn parent_and_child_links_should_list_on_both_tasks_and_count_done_childre
     let html = card_html(&fx, &umbrella).await;
     assert!(html.contains("task-card-umbrella"), "{html}");
     assert!(html.contains("1 of 2 done"), "{html}");
-    assert!(!html.contains("card-umbrella-chip"), "{html}");
+    assert!(!html.contains("card-epic-tag"), "{html}");
     let html = card_html(&fx, &a).await;
-    assert!(html.contains("card-umbrella-chip"), "{html}");
-    assert!(html.contains("Part of Tokens"), "{html}");
+    assert!(html.contains("card-epic-tag"), "{html}");
+    assert!(html.contains("In epic Tokens"), "{html}");
+    assert!(
+        html.contains(&format!(r#"data-epic-id="{umbrella}""#)),
+        "{html}"
+    );
+    assert!(html.contains(">Tokens</span>"), "{html}");
     assert!(!html.contains("task-card-umbrella"), "{html}");
 
     let (_, again) = link(&fx, &a, "parent", &umbrella).await;
@@ -8626,7 +8634,7 @@ async fn deleting_an_umbrella_or_a_child_should_clear_the_parent_link() {
         assert_eq!(view["parent"], Value::Null);
         assert!(view["name"].is_string());
         assert!(links_of(&fx, child).await.is_empty());
-        assert!(!card_html(&fx, child).await.contains("card-umbrella-chip"));
+        assert!(!card_html(&fx, child).await.contains("card-epic-tag"));
     }
 
     let again = create(&fx, json!({"column_id": fx.col_todo, "name": "U2"})).await;
@@ -8671,13 +8679,13 @@ async fn the_modal_should_show_the_children_tab_chip_and_rows_for_an_umbrella_on
     assert!(html.contains("tm-children-chip"), "{html}");
     assert!(html.contains("1 of 2 children done"), "{html}");
     assert!(html.contains("1 of 2 done"), "{html}");
-    assert!(html.contains(r#"data-link-open="child""#), "{html}");
+    assert!(!html.contains(r#"data-link-open="child""#), "{html}");
     assert!(
         html.contains(&format!(r#"data-unlink-child="{a}""#)),
         "{html}"
     );
     assert!(html.contains(r#"aria-label="Unlink Slice B""#), "{html}");
-    assert!(html.contains(r#"data-tm-act="link-child""#), "{html}");
+    assert!(!html.contains(r#"data-tm-act="link-child""#), "{html}");
     assert!(html.contains(r#"class="tm-child tm-child-done""#), "{html}");
     let description = description_panel(&html);
     assert!(!description.contains("Slice A"), "{description}");
@@ -8693,11 +8701,11 @@ async fn the_modal_should_show_the_children_tab_chip_and_rows_for_an_umbrella_on
     ] {
         assert!(!html.contains(absent), "{absent}: {html}");
     }
-    assert!(html.contains(r#"data-tm-act="link-child""#), "{html}");
+    assert!(!html.contains(r#"data-tm-act="link-child""#), "{html}");
 }
 
 #[tokio::test]
-async fn the_modal_should_offer_change_and_remove_and_link_child_on_a_child() {
+async fn the_modal_should_offer_change_and_remove_on_a_child() {
     let (_dir, fx) = fixture();
     let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Tokens"})).await;
     let child = create(&fx, json!({"column_id": fx.col_todo, "name": "Slice A"})).await;
@@ -8714,7 +8722,7 @@ async fn the_modal_should_offer_change_and_remove_and_link_child_on_a_child() {
         html.contains(r#"aria-label="Remove from umbrella""#),
         "{html}"
     );
-    assert!(html.contains(r#"data-tm-act="link-child""#), "{html}");
+    assert!(!html.contains(r#"data-tm-act="link-child""#), "{html}");
     assert!(!html.contains("tm-tab-children"), "{html}");
 }
 
@@ -8907,22 +8915,23 @@ async fn the_modal_should_show_the_whole_umbrella_path_and_count_direct_children
     assert!(at(&root) < at(&mid), "{html}");
     assert!(html.contains("&rsaquo;"), "{html}");
     assert!(html.contains(">Root</span>"), "{html}");
-    assert!(html.contains(r#"data-tm-act="link-child""#), "{html}");
+    assert!(!html.contains(r#"data-tm-act="link-child""#), "{html}");
 
     let html = modal_html(&fx, &mid).await;
     assert!(html.contains("1 of 2 children done"), "{html}");
     assert!(html.contains("Children &middot; 1/2"), "{html}");
-    assert!(html.contains(r#"data-tm-act="link-child""#), "{html}");
+    assert!(!html.contains(r#"data-tm-act="link-child""#), "{html}");
 
     let html = modal_html(&fx, &root).await;
     assert!(html.contains("0 of 1 children done"), "{html}");
 
     let html = card_html(&fx, &leaf).await;
     assert!(
-        html.contains("title=\"Part of Root &rsaquo; Mid\""),
+        html.contains("title=\"In epic Root &rsaquo; Mid\""),
         "{html}"
     );
-    assert!(html.contains(">Mid</div>"), "{html}");
+    assert!(html.contains(&format!("data-epic-id=\"{mid}\"")), "{html}");
+    assert!(html.contains(">Mid</span>"), "{html}");
 }
 
 #[tokio::test]
@@ -11426,4 +11435,786 @@ async fn a_comment_reaction_should_toggle_per_account_and_show_as_a_pill() {
     let missing = format!("/api/tasks/{id}/comments/nope/reactions");
     let (status, _) = call(&fx, "POST", &missing, Some(json!({"emoji": "\u{1F44D}"}))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+async fn patch_kind(fx: &Fixture, who: As<'_>, task: &str, body: Value) -> (StatusCode, Value) {
+    let uri = format!("/api/tasks/{task}");
+    let (status, text) = request(fx, who, "PATCH", &uri, Some(body), true).await;
+    (
+        status,
+        serde_json::from_str(&text).unwrap_or(Value::String(text)),
+    )
+}
+
+async fn epic_with_children(fx: &Fixture, children: usize) -> (String, Vec<String>) {
+    let epic = create(
+        fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let mut ids = Vec::new();
+    for index in 0..children {
+        let name = format!("Child {index}");
+        let child = create(fx, json!({"column_id": fx.col_todo, "name": name})).await;
+        let (status, created) = link(fx, &child, "parent", &epic).await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        ids.push(child);
+    }
+    (epic, ids)
+}
+
+#[tokio::test]
+async fn creating_an_epic_with_only_a_board_id_should_land_in_the_first_column() {
+    let (_dir, fx) = fixture();
+    let (status, epic) = call(
+        &fx,
+        "POST",
+        "/api/tasks",
+        Some(json!({"board_id": fx.board_id, "name": "Epic", "kind": "epic"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{epic}");
+    assert_eq!(epic["kind"], "epic");
+    assert_eq!(epic["closed"], false);
+    assert_eq!(epic["column_id"], fx.col_todo.as_str());
+
+    let (status, task) = call(
+        &fx,
+        "POST",
+        "/api/tasks",
+        Some(json!({"column_id": fx.col_done, "name": "Plain"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{task}");
+    assert_eq!(task["kind"], "task");
+    assert_eq!(task["closed"], false);
+}
+
+#[tokio::test]
+async fn creating_a_card_without_a_column_should_be_a_400_unless_an_epic_names_a_board() {
+    let (_dir, fx) = fixture();
+    let cases = [
+        json!({"name": "Both missing", "kind": "epic"}),
+        json!({"name": "No column", "board_id": fx.board_id}),
+        json!({"name": "Neither"}),
+        json!({"name": "Wrong board", "kind": "epic", "board_id": "nope", "column_id": fx.col_todo}),
+    ];
+    for body in cases {
+        let (status, error) = call(&fx, "POST", "/api/tasks", Some(body.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {error}");
+    }
+    let (status, error) = call(
+        &fx,
+        "POST",
+        "/api/tasks",
+        Some(json!({"name": "Ghost", "kind": "epic", "board_id": "nope"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{error}");
+}
+
+#[tokio::test]
+async fn a_work_token_should_turn_a_card_into_an_epic_and_only_a_task_back_with_epics_manage() {
+    let (_dir, fx) = fixture();
+    let work = token_with(&fx, "worker", AuthScope::Work);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+
+    let (status, detail) = patch_kind(&fx, As::Bearer(&work), &id, json!({"kind": "epic"})).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["kind"], "epic");
+    assert_eq!(detail["closed"], false);
+
+    let (status, error) = patch_kind(&fx, As::Bearer(&work), &id, json!({"kind": "epic"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+
+    let (status, error) = patch_kind(&fx, As::Bearer(&work), &id, json!({"kind": "task"})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+    assert_eq!(error, permission_denied("epics.manage"));
+    assert_eq!(stored(&fx, &id)["kind"], "epic");
+
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+    let (status, detail) = patch_kind(&fx, As::Bearer(&lead), &id, json!({"kind": "task"})).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["kind"], "task");
+    let (status, error) = patch_kind(&fx, As::Bearer(&lead), &id, json!({"kind": "task"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+}
+
+#[tokio::test]
+async fn an_epic_with_children_should_not_become_a_task_without_unlink_children() {
+    let (_dir, fx) = fixture();
+    let (epic, children) = epic_with_children(&fx, 2).await;
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+
+    let body = json!({"kind": "task"});
+    let (status, error) = patch_kind(&fx, As::Bearer(&lead), &epic, body).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert_eq!(error["code"], "epic_has_children");
+    assert_eq!(stored(&fx, &epic)["kind"], "epic");
+    for child in &children {
+        assert_eq!(links_of(&fx, child).await.len(), 1);
+    }
+
+    let body = json!({"kind": "task", "unlink_children": false});
+    let (status, error) = patch_kind(&fx, As::Admin, &epic, body).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+}
+
+#[tokio::test]
+async fn unlink_children_should_leave_the_children_unlinked_and_the_epic_a_plain_card() {
+    let (_dir, fx) = fixture();
+    let (epic, children) = epic_with_children(&fx, 2).await;
+    let body = json!({"kind": "task", "unlink_children": true});
+    let (status, detail) = patch_kind(&fx, As::Admin, &epic, body).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["kind"], "task");
+    assert_eq!(detail["closed"], false);
+    assert_eq!(detail["children_total"], 0);
+    for child in &children {
+        assert!(links_of(&fx, child).await.is_empty());
+        let (status, child_detail) = call(&fx, "GET", &format!("/api/tasks/{child}"), None).await;
+        assert_eq!(status, StatusCode::OK, "{child_detail}");
+        assert!(child_detail["parent"].is_null(), "{child_detail}");
+        assert!(event_kinds(&fx, child).contains(&"link_removed".to_string()));
+    }
+    assert!(links_of(&fx, &epic).await.is_empty());
+}
+
+#[tokio::test]
+async fn unlink_children_should_be_a_400_without_kind_task_and_a_refused_patch_should_unlink_nothing()
+ {
+    let (_dir, fx) = fixture();
+    let (epic, children) = epic_with_children(&fx, 1).await;
+    let work = token_with(&fx, "worker", AuthScope::Work);
+
+    let (status, error) = patch_kind(&fx, As::Admin, &epic, json!({"unlink_children": true})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    let body = json!({"kind": "epic", "unlink_children": true});
+    let (status, error) = patch_kind(&fx, As::Admin, &epic, body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    let body = json!({"kind": "task", "unlink_children": true});
+    let (status, error) = patch_kind(&fx, As::Bearer(&work), &epic, body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+
+    let plain = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
+    let body = json!({"kind": "task", "unlink_children": true});
+    let (status, error) = patch_kind(&fx, As::Admin, &plain, body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert_eq!(links_of(&fx, &children[0]).await.len(), 1);
+    assert_eq!(stored(&fx, &epic)["kind"], "epic");
+}
+
+#[tokio::test]
+async fn kind_and_closed_should_appear_on_task_detail_the_board_task_list_and_the_spec() {
+    let (_dir, fx) = fixture();
+    let (epic, children) = epic_with_children(&fx, 1).await;
+
+    let (status, detail) = call(&fx, "GET", &format!("/api/tasks/{epic}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(
+        (&detail["kind"], &detail["closed"]),
+        (&json!("epic"), &json!(false))
+    );
+    let (status, detail) = call(&fx, "GET", &format!("/api/tasks/{}", children[0]), None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(
+        (&detail["kind"], &detail["closed"]),
+        (&json!("task"), &json!(false))
+    );
+
+    let uri = list_uri(&fx, BOARD_TASKS_PATH);
+    let (status, items) = call_list(&fx, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{items}");
+    let item = |id: &str| {
+        items
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|item| item["id"] == id)
+            .expect("listed")
+            .clone()
+    };
+    assert_eq!(item(&epic)["kind"], "epic");
+    assert_eq!(item(&epic)["closed"], false);
+    assert_eq!(item(&children[0])["kind"], "task");
+    assert_eq!(item(&children[0])["closed"], false);
+
+    use utoipa::OpenApi;
+
+    use super::ApiDoc;
+    let spec: Value =
+        serde_json::from_str(&ApiDoc::openapi().to_json().expect("json")).expect("spec");
+    let schemas = &spec["components"]["schemas"];
+    for schema in ["TaskDetail", "TaskSummary", "CreateTaskInput"] {
+        assert!(
+            schemas[schema]["properties"]["kind"].is_object(),
+            "{schema}.kind"
+        );
+    }
+    for schema in ["TaskDetail", "TaskSummary"] {
+        assert!(
+            schemas[schema]["properties"]["closed"].is_object(),
+            "{schema}.closed"
+        );
+    }
+    for property in ["kind", "unlink_children"] {
+        assert!(
+            schemas["UpdateTaskInput"]["properties"][property].is_object(),
+            "UpdateTaskInput.{property}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unlink_children_should_refuse_a_token_when_a_child_is_locked_but_not_the_browser() {
+    let (_dir, fx) = fixture();
+    let (epic, children) = epic_with_children(&fx, 1).await;
+    let (status, labelled) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{}", children[0]),
+        Some(json!({"labels": ["needs:human"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{labelled}");
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+    let body = json!({"kind": "task", "unlink_children": true});
+
+    let (status, error) = patch_kind(&fx, As::Bearer(&lead), &epic, body.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+    assert_eq!(error["code"], "card_locked");
+    assert_eq!(links_of(&fx, &children[0]).await.len(), 1);
+    assert_eq!(stored(&fx, &epic)["kind"], "epic");
+
+    let (status, detail) = patch_kind(&fx, As::Admin, &epic, body).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert!(links_of(&fx, &children[0]).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_card_with_a_live_claim_should_not_become_an_epic() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let uri = format!("/api/tasks/{id}/claim");
+    let claim = json!({"claimant": "builder-i", "ttl_seconds": 60});
+    let (status, text) = request(&fx, As::Admin, "POST", &uri, Some(claim), true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let work = token_with(&fx, "worker", AuthScope::Work);
+
+    let (status, error) = patch_kind(&fx, As::Bearer(&work), &id, json!({"kind": "epic"})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert_eq!(error["code"], "claim_held");
+    assert_eq!(stored(&fx, &id)["kind"], "task");
+}
+
+#[tokio::test]
+async fn unlink_children_should_refuse_a_restricted_token_when_a_child_is_on_a_board_outside_its_set()
+ {
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let other_board = board["id"].as_str().expect("board id").to_string();
+    let other_column = column_ids_of(&fx, &other_board).await.remove(0);
+    let (epic, children) = epic_with_children(&fx, 1).await;
+    let remote = create(&fx, json!({"column_id": other_column, "name": "Remote"})).await;
+    let (status, linked) = link(&fx, &remote, "parent", &epic).await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    let (_, raw) = assigned_token(&fx, AuthScope::Provision, &[&fx.board_id]);
+    let body = json!({"kind": "task", "unlink_children": true});
+
+    let (status, error) = patch_kind(&fx, As::Bearer(&raw), &epic, body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+    assert_eq!(error["code"], "permission_denied");
+    assert_eq!(error["board_id"], other_board.as_str());
+    assert_eq!(stored(&fx, &epic)["kind"], "epic");
+    assert_eq!(links_of(&fx, &remote).await.len(), 1);
+    assert_eq!(links_of(&fx, &children[0]).await.len(), 1);
+}
+
+async fn post_epic(fx: &Fixture, who: As<'_>, task: &str, verb: &str) -> (StatusCode, Value) {
+    let uri = format!("/api/tasks/{task}/{verb}");
+    let (status, text) = request(fx, who, "POST", &uri, None, true).await;
+    (
+        status,
+        serde_json::from_str(&text).unwrap_or(Value::String(text)),
+    )
+}
+
+#[tokio::test]
+async fn the_owner_should_close_and_reopen_an_epic_with_history_events() {
+    let (_dir, fx) = fixture();
+    let (epic, children) = epic_with_children(&fx, 1).await;
+    let before = stored(&fx, &epic);
+
+    let (status, detail) = post_epic(&fx, As::Admin, &epic, "close").await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["kind"], "epic");
+    assert_eq!(detail["closed"], true);
+    let after = stored(&fx, &epic);
+    assert_eq!(after["closed"], true);
+    assert_eq!(after["column_id"], before["column_id"]);
+    assert_eq!(after["completed_at"], before["completed_at"]);
+    assert_eq!(count(&event_kinds(&fx, &epic), "closed"), 1);
+    assert_eq!(links_of(&fx, &children[0]).await.len(), 1);
+
+    let (status, detail) = post_epic(&fx, As::Admin, &epic, "reopen").await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["closed"], false);
+    assert_eq!(stored(&fx, &epic)["closed"], false);
+    assert_eq!(count(&event_kinds(&fx, &epic), "reopened"), 1);
+}
+
+#[tokio::test]
+async fn closing_a_closed_epic_or_reopening_an_open_one_should_be_a_400_without_an_event() {
+    let (_dir, fx) = fixture();
+    let (epic, _) = epic_with_children(&fx, 0).await;
+
+    let (status, error) = post_epic(&fx, As::Admin, &epic, "reopen").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    let (status, _) = post_epic(&fx, As::Admin, &epic, "close").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, error) = post_epic(&fx, As::Admin, &epic, "close").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    let kinds = event_kinds(&fx, &epic);
+    assert_eq!(count(&kinds, "closed"), 1);
+    assert_eq!(count(&kinds, "reopened"), 0);
+}
+
+#[tokio::test]
+async fn closing_or_reopening_a_plain_card_should_be_a_400_and_a_missing_task_a_404() {
+    let (_dir, fx) = fixture();
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    for verb in ["close", "reopen"] {
+        let (status, error) = post_epic(&fx, As::Admin, &card, verb).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{verb}: {error}");
+        let (status, error) = post_epic(&fx, As::Admin, "missing", verb).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{verb}: {error}");
+    }
+    assert_eq!(stored(&fx, &card)["closed"], false);
+    let kinds = event_kinds(&fx, &card);
+    assert_eq!(count(&kinds, "closed") + count(&kinds, "reopened"), 0);
+}
+
+#[tokio::test]
+async fn a_work_token_should_get_403_naming_epics_manage_on_close_and_reopen_but_a_lead_succeeds() {
+    let (_dir, fx) = fixture();
+    let (epic, _) = epic_with_children(&fx, 0).await;
+    let work = token_with(&fx, "worker", AuthScope::Work);
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+
+    for verb in ["close", "reopen"] {
+        let (status, error) = post_epic(&fx, As::Bearer(&work), &epic, verb).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{verb}: {error}");
+        assert_eq!(error, permission_denied("epics.manage"));
+    }
+    assert_eq!(stored(&fx, &epic)["closed"], false);
+
+    let (status, detail) = post_epic(&fx, As::Bearer(&lead), &epic, "close").await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["closed"], true);
+    let (status, error) = post_epic(&fx, As::Bearer(&work), &epic, "reopen").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+    let (status, detail) = post_epic(&fx, As::Bearer(&lead), &epic, "reopen").await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["closed"], false);
+}
+
+#[tokio::test]
+async fn an_epic_whose_children_are_all_done_should_stay_open_until_someone_closes_it() {
+    let (_dir, fx) = fixture();
+    let (epic, children) = epic_with_children(&fx, 2).await;
+    for child in &children {
+        let move_body = json!({"column_id": fx.col_done, "position": 0});
+        let uri = format!("/api/tasks/{child}/move");
+        let (status, moved) = call(&fx, "POST", &uri, Some(move_body)).await;
+        assert_eq!(status, StatusCode::OK, "{moved}");
+    }
+    let (status, detail) = call(&fx, "GET", &format!("/api/tasks/{epic}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["closed"], false);
+    assert_eq!(stored(&fx, &epic)["closed"], false);
+    assert!(!event_kinds(&fx, &epic).contains(&"closed".to_string()));
+}
+
+#[tokio::test]
+async fn closing_a_locked_epic_should_refuse_a_token_but_not_the_browser() {
+    let (_dir, fx) = fixture();
+    let (epic, _) = epic_with_children(&fx, 0).await;
+    let (status, labelled) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{epic}"),
+        Some(json!({"labels": ["needs:human"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{labelled}");
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+
+    let (status, error) = post_epic(&fx, As::Bearer(&lead), &epic, "close").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+    assert_eq!(error["code"], "card_locked");
+    assert_eq!(stored(&fx, &epic)["closed"], false);
+
+    let (status, detail) = post_epic(&fx, As::Admin, &epic, "close").await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+}
+
+async fn board_epics(fx: &Fixture, board: &str) -> Value {
+    let (status, epics) = call(fx, "GET", &format!("/api/boards/{board}/epics"), None).await;
+    assert_eq!(status, StatusCode::OK, "{epics}");
+    epics
+}
+
+fn epic_entry<'a>(epics: &'a Value, id: &str) -> &'a Value {
+    epics
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|epic| epic["id"] == id)
+        .expect("epic listed")
+}
+
+#[tokio::test]
+async fn board_epics_should_count_children_on_other_boards_by_their_done_column_at_request_time() {
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let other_board = board["id"].as_str().expect("board id").to_string();
+    let (_, columns) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{other_board}/columns"),
+        None,
+    )
+    .await;
+    let other_column = columns[0]["id"].as_str().expect("column").to_string();
+    fx.db
+        .set_column_done(&other_column, true)
+        .expect("set done");
+    let (epic, children) = epic_with_children(&fx, 2).await;
+    let remote = create(&fx, json!({"column_id": other_column, "name": "Remote"})).await;
+    let (status, linked) = link(&fx, &remote, "parent", &epic).await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+
+    let epics = board_epics(&fx, &fx.board_id).await;
+    assert_eq!(epics.as_array().expect("array").len(), 1);
+    let entry = epic_entry(&epics, &epic);
+    assert_eq!(entry["name"], "Epic");
+    assert_eq!(entry["closed"], false);
+    assert_eq!(entry["parent_id"], Value::Null);
+    assert_eq!(entry["children_total"], 3);
+    assert_eq!(entry["children_done"], 1);
+    assert!(
+        board_epics(&fx, &other_board)
+            .await
+            .as_array()
+            .expect("array")
+            .is_empty()
+    );
+
+    move_to_done(&fx, &children[0]).await;
+    let epics = board_epics(&fx, &fx.board_id).await;
+    assert_eq!(epic_entry(&epics, &epic)["children_done"], 2);
+
+    fx.db
+        .set_column_done(&other_column, false)
+        .expect("clear done");
+    let epics = board_epics(&fx, &fx.board_id).await;
+    assert_eq!(epic_entry(&epics, &epic)["children_done"], 1);
+}
+
+#[tokio::test]
+async fn a_nested_epic_should_report_its_parent_epic_and_count_only_direct_children() {
+    let (_dir, fx) = fixture();
+    let (outer, _) = epic_with_children(&fx, 1).await;
+    let (inner, inner_children) = epic_with_children(&fx, 2).await;
+    let (status, linked) = link(&fx, &inner, "parent", &outer).await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    move_to_done(&fx, &inner_children[0]).await;
+
+    let epics = board_epics(&fx, &fx.board_id).await;
+    let outer_entry = epic_entry(&epics, &outer);
+    assert_eq!(outer_entry["parent_id"], Value::Null);
+    assert_eq!(outer_entry["children_total"], 2);
+    assert_eq!(outer_entry["children_done"], 0);
+    let inner_entry = epic_entry(&epics, &inner);
+    assert_eq!(inner_entry["parent_id"], outer.as_str());
+    assert_eq!(inner_entry["children_total"], 2);
+    assert_eq!(inner_entry["children_done"], 1);
+}
+
+#[tokio::test]
+async fn board_epics_should_skip_plain_cards_and_give_a_card_umbrella_no_parent_id() {
+    let (_dir, fx) = fixture();
+    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Umbrella"})).await;
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let (status, linked) = link(&fx, &epic, "parent", &umbrella).await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+
+    let epics = board_epics(&fx, &fx.board_id).await;
+    assert_eq!(epics.as_array().expect("array").len(), 1);
+    let entry = epic_entry(&epics, &epic);
+    assert_eq!(entry["parent_id"], Value::Null);
+    assert_eq!(entry["children_total"], 0);
+    assert_eq!(entry["children_done"], 0);
+}
+
+#[tokio::test]
+async fn board_epics_should_list_open_epics_by_name_then_closed_ones_by_name() {
+    let (_dir, fx) = fixture();
+    let mut ids = Vec::new();
+    for name in ["Zeta", "alpha", "Beta", "Aardvark"] {
+        let epic = create(
+            &fx,
+            json!({"column_id": fx.col_todo, "name": name, "kind": "epic"}),
+        )
+        .await;
+        ids.push(epic);
+    }
+    for id in [&ids[3], &ids[2]] {
+        let (status, closed) = post_epic(&fx, As::Admin, id, "close").await;
+        assert_eq!(status, StatusCode::OK, "{closed}");
+    }
+
+    let epics = board_epics(&fx, &fx.board_id).await;
+    let names: Vec<&str> = epics
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|epic| epic["name"].as_str().expect("name"))
+        .collect();
+    assert_eq!(names, ["alpha", "Zeta", "Aardvark", "Beta"]);
+    assert_eq!(epics[2]["closed"], true);
+    assert_eq!(epics[0]["closed"], false);
+}
+
+#[tokio::test]
+async fn board_epics_should_be_a_404_for_a_missing_board() {
+    let (_dir, fx) = fixture();
+    let (status, error) = call(&fx, "GET", "/api/boards/missing/epics", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{error}");
+}
+
+#[tokio::test]
+async fn board_epics_should_leave_out_children_on_boards_a_restricted_token_cannot_reach() {
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let other_board = board["id"].as_str().expect("board id").to_string();
+    let other_column = column_ids_of(&fx, &other_board).await.remove(0);
+    let (epic, _) = epic_with_children(&fx, 1).await;
+    let remote = create(&fx, json!({"column_id": other_column, "name": "Remote"})).await;
+    let (status, linked) = link(&fx, &remote, "parent", &epic).await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    let (_, raw) = assigned_token(&fx, AuthScope::Read, &[&fx.board_id]);
+
+    let uri = format!("/api/boards/{}/epics", fx.board_id);
+    let (status, text) = request(&fx, As::Bearer(&raw), "GET", &uri, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let held: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(epic_entry(&held, &epic)["children_total"], 1);
+    assert_eq!(
+        epic_entry(&board_epics(&fx, &fx.board_id).await, &epic)["children_total"],
+        2
+    );
+
+    let uri = format!("/api/boards/{other_board}/epics");
+    let (status, text) = request(&fx, As::Bearer(&raw), "GET", &uri, None, true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+}
+
+#[tokio::test]
+async fn an_epic_should_not_count_against_a_column_wip_limit() {
+    let (_dir, fx) = fixture();
+    let limited = fx
+        .db
+        .create_column(&fx.board_id, "Review", Some(2))
+        .expect("column");
+    create(
+        &fx,
+        json!({"column_id": limited, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    create(&fx, json!({"column_id": limited, "name": "R1"})).await;
+    let first = create(&fx, json!({"column_id": fx.col_todo, "name": "First"})).await;
+    let second = create(&fx, json!({"column_id": fx.col_todo, "name": "Second"})).await;
+    let into_review = json!({"column_id": limited, "position": 0});
+
+    let (status, moved) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{first}/move"),
+        Some(into_review.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    let (status, error) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{second}/move"),
+        Some(into_review),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert_eq!(error, "column WIP limit reached (2/2)");
+    assert_eq!(fx.db.count_tasks_in_column(&limited).expect("count"), 2);
+}
+
+#[tokio::test]
+async fn an_epic_should_not_move_by_the_move_route_or_in_bulk() {
+    let (_dir, fx) = fixture();
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let target = json!({"column_id": fx.col_done, "position": 0});
+
+    let (status, error) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{epic}/move"),
+        Some(target),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+
+    let plain = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
+    let body = json!({"task_ids": [plain, epic], "action": "move", "column_id": fx.col_done});
+    let (status, error) = call(
+        &fx,
+        "POST",
+        &format!("/api/boards/{}/tasks/bulk", fx.board_id),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert_eq!(stored(&fx, &epic)["column_id"], fx.col_todo.as_str());
+    assert_eq!(stored(&fx, &plain)["column_id"], fx.col_todo.as_str());
+}
+
+#[tokio::test]
+async fn claiming_an_epic_should_be_a_409_epic_not_claimable() {
+    let (_dir, fx) = fixture();
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let (status, error) = claim(&fx, &epic, json!({"claimant": "agent", "ttl_seconds": 60})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert_eq!(error, "an epic holds no work, so it cannot be claimed");
+    assert!(stored(&fx, &epic)["claim"].is_null());
+}
+
+#[tokio::test]
+async fn a_column_holding_only_epics_should_delete_and_send_them_to_the_first_column() {
+    let (_dir, fx) = fixture();
+    let extra = fx
+        .db
+        .create_column(&fx.board_id, "Extra", None)
+        .expect("column");
+    let epic = create(
+        &fx,
+        json!({"column_id": extra, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+
+    let (status, deleted) = call(&fx, "DELETE", &format!("/api/columns/{extra}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    let row = stored(&fx, &epic);
+    assert_eq!(row["column_id"], fx.col_todo.as_str());
+    assert_eq!(row["kind"], "epic");
+}
+
+#[tokio::test]
+async fn a_column_holding_work_beside_an_epic_should_refuse_deletion_counting_only_work() {
+    let (_dir, fx) = fixture();
+    let extra = fx
+        .db
+        .create_column(&fx.board_id, "Extra", None)
+        .expect("column");
+    let epic = create(
+        &fx,
+        json!({"column_id": extra, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    create(&fx, json!({"column_id": extra, "name": "Work"})).await;
+
+    let (status, error) = call(&fx, "DELETE", &format!("/api/columns/{extra}"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert_eq!(stored(&fx, &epic)["column_id"], extra.as_str());
+}
+
+#[tokio::test]
+async fn an_epic_should_not_count_against_an_hours_wip_limit() {
+    let (_dir, fx) = fixture();
+    let limited = fx
+        .db
+        .create_column(&fx.board_id, "Review", None)
+        .expect("column");
+    let limit = json!({"wip_limit": 3, "config_json": "{\"wip_limit_type\":\"hours\"}"});
+    let (status, patched) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/columns/{limited}"),
+        Some(limit),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{patched}");
+    create(
+        &fx,
+        json!({"column_id": limited, "name": "Epic", "kind": "epic", "estimate_hours": 10}),
+    )
+    .await;
+    let first = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "First", "estimate_hours": 2}),
+    )
+    .await;
+    let second = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Second", "estimate_hours": 2}),
+    )
+    .await;
+    let into_review = json!({"column_id": limited, "position": 0});
+
+    let (status, moved) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{first}/move"),
+        Some(into_review.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    let (status, error) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{second}/move"),
+        Some(into_review),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+}
+
+#[tokio::test]
+async fn an_epic_sent_to_a_done_column_by_a_deletion_should_keep_its_completion_unstamped() {
+    let (_dir, fx) = fixture();
+    fx.db.set_column_done(&fx.col_todo, true).expect("done");
+    let extra = fx
+        .db
+        .create_column(&fx.board_id, "Extra", None)
+        .expect("column");
+    let epic = create(
+        &fx,
+        json!({"column_id": extra, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+
+    let (status, deleted) = call(&fx, "DELETE", &format!("/api/columns/{extra}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    let row = stored(&fx, &epic);
+    assert_eq!(row["column_id"], fx.col_todo.as_str());
+    assert!(row["completed_at"].is_null(), "{row}");
 }

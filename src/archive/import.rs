@@ -21,9 +21,9 @@ use crate::db::{AccountDb, BoardImport, Db, FileImport, MAX_HISTORY_TEXT_CHARS, 
 use crate::models::{
     AccountId, AttachmentVersion, BreakActivity, ColorRow, ColumnRow, EntryKind, FieldDefRow,
     FieldKind, LaneLimit, LinkKind, MAIN_SWIMLANE_KEY, NUMBERING_KEY, Numbering, Quotas,
-    Responsible, Subtask, SwimlaneRow, TaskAttachment, TaskComment, TaskEvent, TaskLink, TaskRow,
-    TextCap, TimeEntryRow, custom_color_hexes, is_custom_color, parse_due_time, standard_color,
-    valid_field_key,
+    Responsible, Subtask, SwimlaneRow, TaskAttachment, TaskComment, TaskEvent, TaskKind, TaskLink,
+    TaskRow, TextCap, TimeEntryRow, custom_color_hexes, is_custom_color, parse_due_time,
+    standard_color, valid_field_key,
 };
 use crate::routes::{
     LANE_HEIGHT_MAX_PX, LANE_HEIGHT_MIN_PX, MAX_COMMENT_AUTHOR_CHARS, MAX_COMMENT_BYTES,
@@ -785,6 +785,12 @@ impl Builder<'_> {
             imported.push(self.task(task, fields, &mut graph)?);
         }
         graph.check()?;
+        let umbrellas: HashSet<&String> = graph.parents.values().collect();
+        for task in &mut imported {
+            if umbrellas.contains(&task.row.id) {
+                task.row.kind = TaskKind::Epic;
+            }
+        }
         Ok(imported)
     }
 
@@ -927,6 +933,8 @@ impl Builder<'_> {
             claim: None,
             claim_fence: 0,
             cover_id,
+            kind: task.kind,
+            closed: task.closed,
             fields,
         };
         row.check_caps(None)
@@ -1996,6 +2004,29 @@ mod tests {
     }
 
     #[test]
+    fn read_board_should_make_epics_of_the_parents_of_an_archive_without_kinds() {
+        let mut document = base();
+        let mut child = task("t1", "Child");
+        child["links"] = json!([link("l1", "parent", Some("t2"))]);
+        let mut explicit = task("t3", "Explicit");
+        explicit["kind"] = json!("epic");
+        document["tasks"] = json!([child, task("t2", "Parent"), explicit, task("t4", "Lone")]);
+
+        let (import, _) = read(&document).expect("import");
+
+        let kinds: Vec<TaskKind> = import.tasks.iter().map(|task| task.row.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                TaskKind::Task,
+                TaskKind::Epic,
+                TaskKind::Epic,
+                TaskKind::Task
+            ]
+        );
+    }
+
+    #[test]
     fn read_board_should_refuse_two_parents() {
         let mut document = base();
         let mut a = task("t1", "A");
@@ -2646,6 +2677,12 @@ mod tests {
             .expect("link");
         db.add_task_link(&child, LinkKind::Parent, &task, None, Actor::SYSTEM)
             .expect("parent");
+        db.apply_task_change(&task, Actor::SYSTEM, |row| {
+            row.kind = TaskKind::Epic;
+            row.closed = true;
+            ((), true)
+        })
+        .expect("epic");
         db.add_task_link(&other, LinkKind::BlockedBy, &child, None, Actor::SYSTEM)
             .expect("blocked");
         for (name, bytes) in [

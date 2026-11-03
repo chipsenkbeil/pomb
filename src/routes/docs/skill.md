@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "23"
+  version: "24"
 ---
 
 # Pomb
@@ -107,18 +107,18 @@ credentials gets every 4xx that way. Match on `code` and show `message` to the u
    `POST /api/tasks/{id}/checklist/{index}` and
    `{"checked": true, "description_hash": "<task description_hash>"}`. On 409 reread and retry.
 6. Release with `POST /api/tasks/{id}/claim/release` and `{"fence": N}` (empty 200), also on stop.
+7. An epic (`kind` `epic`) holds no work and is never claimed. Make one with `POST /api/tasks`,
+   `"kind": "epic"` and a `board_id` in place of `column_id`, or `PATCH` a task to `"kind": "epic"`.
+   Link a child with `POST /api/tasks/{id}/links` on it and `{"kind": "parent", "target_id": "<epic>"}`.
+8. `GET /api/boards/{id}/epics` shows progress. Finished children never close an epic: only a lead
+   token or the owner does, with `POST /api/tasks/{id}/close`.
 
 ## Waiting for changes
 
 Never poll a board on a timer. `GET /api/boards/{id}/events/wait` with no `after` replies at once
 with the board's `cursor`. Call it with `after=<cursor>`, optional `kinds=task_moved` and
 `timeout=60` (at most 300): it waits for an event after the cursor and replies with `events`, or none
-after `timeout`. Keep curl's `--max-time` past that:
-
-```sh
-curl -sS -H "Authorization: Bearer $POMB_API_TOKEN" --max-time 75 "$POMB_URL/api/boards/$board/events/wait?after=$cursor&timeout=60"
-```
-
+after `timeout`. Keep curl's `--max-time` past that (75 for `timeout=60`).
 Each event names `kind`, `task_id`, `column_id`, `actor_kind` (`user`, `api_token` or `system`) and
 `token_name`, so skip your own token's. Send the reply's `cursor` as the next `after`. A board keeps
 its newest 1000 events, so a 410 `cursor_expired` means some were trimmed unseen: list the tasks

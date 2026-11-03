@@ -58,6 +58,21 @@
   </div>
 </div>
 
+<div id="make-epic-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Make it an epic">
+    <div class="dlg-title">Make it an epic?</div>
+    <p class="dlg-text" id="make-epic-message"></p>
+    <fieldset class="dlg-fieldset" id="make-epic-subtasks" hidden>
+      <legend>Turn these subtasks into child cards</legend>
+      <div id="make-epic-list"></div>
+    </fieldset>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-success" id="make-epic-ok">Make it an epic</button>
+    </div>
+  </div>
+</div>
+
 <!-- KF-253: description editor dialog (opened by clicking the static
      description block in the task modal, or via Add → Description). -->
 <div id="description-dialog" class="dlg-overlay dlg-overlay-top" hidden>

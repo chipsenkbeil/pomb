@@ -22,7 +22,8 @@ pub use spool::Spool;
 use crate::db::{BoardSnapshot, DbResult, OfflineDb};
 use crate::models::{
     ActorKind, BoardRow, ColorRow, ColumnRow, FieldColumn, FieldDefRow, FieldKind, FieldOwner,
-    LaneLimit, LinkKind, Responsible, SwimlaneRow, TaskClaim, TaskLink, TaskRow, TimeEntryRow,
+    LaneLimit, LinkKind, Responsible, SwimlaneRow, TaskClaim, TaskKind, TaskLink, TaskRow,
+    TimeEntryRow,
 };
 use crate::taskjson::TaskArray;
 
@@ -283,6 +284,12 @@ struct TaskInfo {
     due_done: bool,
     /// The id of the column the task should reach by its due date, or null.
     due_target_column_id: Option<String>,
+    /// Whether the task is a plain task or an epic.
+    #[serde(default)]
+    kind: TaskKind,
+    /// Whether someone closed the epic.
+    #[serde(default)]
+    closed: bool,
     /// The time estimate in hours, or null.
     estimate_hours: Option<f64>,
     /// The points estimate, or null.
@@ -808,6 +815,8 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
         due_at: row.due_at,
         due_repeat: row.due_repeat,
         due_done: row.due_done,
+        kind: row.kind,
+        closed: row.closed,
         due_target_column_id: lookup.column(row.due_target_column_id),
         estimate_hours: row.estimate_hours,
         points: row.points,
@@ -1469,6 +1478,41 @@ mod tests {
             .row;
         assert_eq!(row.timeline_start.as_deref(), Some("2026-10-31"));
         assert_eq!(row.timeline_end.as_deref(), Some("2026-11-07"));
+    }
+
+    #[test]
+    fn kind_and_closed_should_survive_an_export_and_import_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+        seeded
+            .db
+            .apply_task_change(&seeded.task, Actor::SYSTEM, |row| {
+                row.kind = TaskKind::Epic;
+                row.closed = true;
+                ((), true)
+            })
+            .expect("epic");
+        let exported = document(&archive_of(&seeded));
+        assert_eq!(exported["tasks"][0]["kind"], "epic");
+        assert_eq!(exported["tasks"][0]["closed"], true);
+
+        let spool_dir = tempfile::tempdir().expect("tempdir");
+        let spool = Spool::create(spool_dir.path()).expect("spool");
+        let account = AccountId::new("acc");
+        let importer = Importer {
+            handle: "chip",
+            account: &account,
+            max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
+            activities: &[],
+        };
+        let row = read_board(&archive_bytes(&seeded), &importer, &spool)
+            .expect("import")
+            .0
+            .tasks
+            .remove(0)
+            .row;
+        assert_eq!(row.kind, TaskKind::Epic);
+        assert!(row.closed);
     }
 
     #[test]

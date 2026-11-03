@@ -1,18 +1,21 @@
 {% if !custom_css.is_empty() %}<style>{{ custom_css|safe }}</style>{% endif %}
 <div class="modal-overlay" id="modal-overlay">
   <div class="task-modal-wrap">
-    <div class="task-modal taskColorVars-{{ task.color_value }}{% if self.is_bare() %} tm-bare{% endif %}" data-estimate-unit="{% if task.unit.is_points() %}points{% else %}hours{% endif %}"
-         data-task-id="{{ task.id }}" data-board-id="{{ board_id }}" data-board-name="{{ board_name }}" data-color-value="{{ task.color_value }}"
+    <div class="task-modal taskColorVars-{{ task.color_value }}{% if self.is_bare() %} tm-bare{% endif %}{% if is_epic %} tm-epic{% endif %}" data-estimate-unit="{% if task.unit.is_points() %}points{% else %}hours{% endif %}"
+         data-task-id="{{ task.id }}" data-column-id="{{ task.column_id }}"{% if let Some(lane) = swimlane_id %} data-swimlane-id="{{ lane }}"{% endif %} data-board-id="{{ board_id }}" data-board-name="{{ board_name }}" data-color-value="{{ task.color_value }}"{% if is_epic %} data-children-done="{{ task.children_done }}" data-children-total="{{ task.children_total }}"{% endif %}
          role="dialog" aria-label="Task details">
     <div class="task-modal-head">
       <div class="tm-title-wrap">
         {% if let Some(number) = task.number %}<span class="tm-number">{{ number }}:</span>{% endif %}
         <textarea id="modal-name" class="tm-modal-title" rows="1" maxlength="200" aria-label="Task name" autocomplete="off" spellcheck="false">{{ task.name }}</textarea>
         <div class="tm-subtitle tm-meta">
+          {% if is_epic %}<span class="tm-pill">Epic</span>{% endif %}
           <span class="tm-pill tm-pill-column">{{ column_name }}</span>
-          {% if let Some(p) = task.pomodori_label %}<span class="tm-pill">{{ p }}</span>{% endif %}
+          {% if is_epic && closed %}<span class="tm-pill tm-pill-closed">Closed</span>{% endif %}
+          {% if !is_epic %}{% if let Some(p) = task.pomodori_label %}<span class="tm-pill">{{ p }}</span>{% endif %}{% endif %}
           <span>Created: {{ created_short }}</span>
-          {% if task.children_total > 0 %}<button type="button" class="tm-children-chip" data-children-chip title="Show the children"><span class="tm-progress" aria-hidden="true"><span class="tm-progress-fill" style="width: {{ task.children_done * 100 / task.children_total }}%"></span></span>{{ task.children_done }} of {{ task.children_total }} children done</button>{% endif %}
+          {% if is_epic %}<span class="tm-children-chip tm-epic-progress"><span class="tm-progress" aria-hidden="true"><span class="tm-progress-fill" style="width: {{ progress_percent }}%"></span></span>{{ task.children_done }} of {{ task.children_total }} done</span>
+          {% else if task.children_total > 0 %}<button type="button" class="tm-children-chip" data-children-chip title="Show the children"><span class="tm-progress" aria-hidden="true"><span class="tm-progress-fill" style="width: {{ progress_percent }}%"></span></span>{{ task.children_done }} of {{ task.children_total }} children done</button>{% endif %}
           {% if let Some(umbrella) = task.umbrella %}<span class="tm-umbrella-line">Part of: {% for part in umbrella.path %}{% if !loop.first %} &rsaquo; {% endif %}<span class="tm-umbrella-name" data-open-task="{{ part.id }}" role="link" tabindex="0">{{ part.name }}</span>{% if let Some(board) = part.board_name %} <span class="tm-relation-board">{{ board }}</span>{% endif %}{% endfor %}<button type="button" class="tm-umbrella-btn" data-umbrella-change aria-label="Change umbrella">Change</button><button type="button" class="tm-umbrella-btn" data-umbrella-remove aria-label="Remove from umbrella">Remove</button></span>{% endif %}
           {% if !task.attachments.is_empty() %}<svg class="tm-subline-ico tm-subline-clip" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.2 7.6 7.7 13.1a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-6 6a1 1 0 0 1-1.5-1.5l5.4-5.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
         </div>
@@ -20,6 +23,7 @@
       <button type="button" class="modal-close" data-close-modal aria-label="Close">&times;</button>
     </div>
 
+    {% if !is_epic %}
     <div class="tm-tabs" role="tablist" aria-label="Task sections">
       <button type="button" class="tm-tab" role="tab" id="tm-tab-description" data-tm-tab="description" aria-controls="tm-panel-description" aria-selected="true">Description</button>
       {% if task.children_total > 0 %}<button type="button" class="tm-tab" role="tab" id="tm-tab-children" data-tm-tab="children" aria-controls="tm-panel-children" aria-selected="false" tabindex="-1">Children &middot; {{ task.children_done }}/{{ task.children_total }}</button>{% endif %}
@@ -29,6 +33,7 @@
       <button type="button" class="tm-tab" role="tab" id="tm-tab-files" data-tm-tab="files" aria-controls="tm-panel-files" aria-selected="false" tabindex="-1">Files &middot; {{ task.attachments.len() }}</button>
       <button type="button" class="tm-tab" role="tab" id="tm-tab-history" data-tm-tab="history" aria-controls="tm-panel-history" aria-selected="false" tabindex="-1">History</button>
     </div>
+    {% endif %}
 
     <div class="task-modal-body">
       <div class="tm-layout">
@@ -37,12 +42,15 @@
         <button type="button" class="tm-side-btn tm-fold-panel" data-sidebar-show aria-expanded="false" aria-controls="tm-side" aria-label="Show panel (unfold the sidebar)">&lsaquo; Show panel</button>
       </div>
 
-      <section class="tm-panel" id="tm-panel-description" role="tabpanel" aria-labelledby="tm-tab-description">
-        <div id="modal-description-wrap" data-description="{{ task.description }}" data-description-hash="{{ description_hash }}">
+      <section class="tm-panel" id="tm-panel-description"{% if !is_epic %} role="tabpanel" aria-labelledby="tm-tab-description"{% endif %}>
+        {% if is_epic %}<div class="tm-panel-head"><h3 class="tm-section-title">About</h3></div>{% endif %}
+        <div id="modal-description-wrap" data-description="{{ description_seed }}" data-description-hash="{{ description_hash }}">
           <div class="tm-panel-bar">
             <button type="button" class="tm-md-toggle" data-md-toggle aria-pressed="false" title="Show the raw text">Raw</button>
           </div>
-          {% if task.description.is_empty() %}
+          {% if task.description.is_empty() && is_epic %}
+          <div id="modal-description-text" class="tm-description-text tm-description-empty" tabindex="0" role="button" aria-label="Edit about" title="Click to write the about"><div class="tm-md tm-md-rendered">{{ empty_about_html|safe }}</div><div class="tm-md-raw">{{ description_seed }}</div></div>
+          {% else if task.description.is_empty() %}
           <div id="modal-description-text" class="tm-description-text tm-description-empty" tabindex="0" role="button" aria-label="Add description" title="Click to add a description">Add description…</div>
           {% else %}
           <div id="modal-description-text" class="tm-description-text" tabindex="0" role="button" aria-label="Edit description" title="Click to edit description"><div class="tm-md tm-md-rendered">{{ description_html|safe }}</div><div class="tm-md-raw">{{ task.description }}</div></div>
@@ -50,24 +58,27 @@
         </div>
       </section>
 
-      {% if task.children_total > 0 %}
-      <section class="tm-panel tm-children-sect" id="tm-panel-children" role="tabpanel" aria-labelledby="tm-tab-children" hidden>
+      {% if task.children_total > 0 || is_epic %}
+      <section class="tm-panel tm-children-sect" id="tm-panel-children"{% if !is_epic %} role="tabpanel" aria-labelledby="tm-tab-children" hidden{% endif %}>
+        {% if is_epic %}<div class="tm-panel-head"><h3 class="tm-section-title">Its cards</h3></div>{% endif %}
         <div class="tm-children-head">
-          <span class="tm-progress" role="progressbar" aria-label="Children done" aria-valuemin="0" aria-valuemax="{{ task.children_total }}" aria-valuenow="{{ task.children_done }}"><span class="tm-progress-fill" style="width: {{ task.children_done * 100 / task.children_total }}%"></span></span>
+          <span class="tm-progress" role="progressbar" aria-label="Children done" aria-valuemin="0" aria-valuemax="{{ task.children_total }}" aria-valuenow="{{ task.children_done }}"><span class="tm-progress-fill" style="width: {{ progress_percent }}%"></span></span>
           <span class="tm-children-count">{{ task.children_done }} of {{ task.children_total }} done</span>
-          <button type="button" class="tm-side-btn tm-children-hide-done" data-children-hide-done aria-pressed="{{ hide_done_children }}">{% if hide_done_children %}Show done{% else %}Hide done{% endif %}</button>
-          <button type="button" class="tm-side-btn" data-link-open="child">+ Link a child</button>
+          {% if task.children_total > 0 %}<button type="button" class="tm-side-btn tm-children-hide-done" data-children-hide-done aria-pressed="{{ hide_done_children }}">{% if hide_done_children %}Show done{% else %}Hide done{% endif %}</button>{% endif %}
+          {% if is_epic && role.writes() %}<button type="button" class="tm-side-btn" data-link-open="child">+ Add existing</button><button type="button" class="tm-side-btn" data-new-child-open>+ New child</button>{% endif %}
         </div>
-        <p class="empty-note tm-children-note" id="tm-children-note"{% if !(hide_done_children && task.children_done == task.children_total) %} hidden{% endif %}>All children are done.</p>
+        {% if is_epic && role.writes() %}<div class="tm-new-child" data-new-child-row hidden><input type="text" class="tm-new-child-input" data-new-child-input maxlength="500" aria-label="New child name" placeholder="Name of the new card" autocomplete="off" spellcheck="false"><button type="button" class="tm-side-btn tm-new-child-create" data-new-child-create>Create</button><button type="button" class="tm-side-btn tm-new-child-cancel" data-new-child-cancel>Cancel</button></div>{% endif %}
+        {% if task.children_total == 0 %}<p class="empty-note tm-children-empty">No cards in this epic yet.</p>{% endif %}
+        <p class="empty-note tm-children-note" id="tm-children-note"{% if !(hide_done_children && task.children_total > 0 && task.children_done == task.children_total) %} hidden{% endif %}>All children are done.</p>
         <ul class="tm-children-list" id="tm-children-list">
           {% for child in task.children %}
-          <li class="tm-child{% if child.done %} tm-child-done{% endif %}" data-child-id="{{ child.id }}" data-child-done="{{ child.done }}"{% if hide_done_children && child.done %} hidden{% endif %}><span class="tm-child-name" data-open-task="{{ child.id }}" role="link" tabindex="0">{{ child.name }}</span>{% if let Some(board) = child.board_name %}<span class="tm-relation-board">{{ board }}</span>{% endif %}<span class="tm-child-column">{{ child.column_name }}</span><button type="button" class="tm-child-unlink" data-unlink-child="{{ child.id }}" aria-label="Unlink {{ child.name }}">Unlink</button></li>
+          <li class="tm-child{% if child.done %} tm-child-done{% endif %}" data-child-id="{{ child.id }}" data-child-done="{{ child.done }}"{% if hide_done_children && child.done %} hidden{% endif %}><span class="tm-child-name" data-open-task="{{ child.id }}" role="link" tabindex="0">{{ child.name }}</span>{% if let Some(board) = child.board_name %}<span class="tm-relation-board">{{ board }}</span>{% endif %}<span class="tm-child-column">{% if is_epic && child.done %}&#10003; {% endif %}{{ child.column_name }}</span>{% if role.writes() %}<button type="button" class="tm-child-unlink" data-unlink-child="{{ child.id }}" aria-label="Unlink {{ child.name }}">Unlink</button>{% endif %}</li>
           {% endfor %}
         </ul>
       </section>
       {% endif %}
 
-      <section class="tm-panel tm-comments-sect" id="tm-panel-comments" role="tabpanel" aria-labelledby="tm-tab-comments" hidden>
+      <section class="tm-panel tm-comments-sect" id="tm-panel-comments"{% if !is_epic %} role="tabpanel" aria-labelledby="tm-tab-comments" hidden{% endif %}>
         <div class="tm-panel-head">
           <h3 class="tm-section-title tm-comments-title">Comments <span class="tm-sect-count">{{ task.comments.len() }}</span></h3>
           <button type="button" class="tm-sect-kebab" data-tm-menu="tm-comments-menu" aria-label="Comment section options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="currentColor"/><circle cx="2.5" cy="8" r="2.3" fill="currentColor"/><circle cx="2.5" cy="13.5" r="2.3" fill="currentColor"/></svg></button>
@@ -239,11 +250,13 @@
           <h3 class="tm-side-title"><button type="button" class="tm-fold" data-fold-group="details" aria-expanded="true" aria-controls="tm-body-details">Details</button></h3>
           <div class="tm-side-body" id="tm-body-details">
             <dl class="tm-props">
+              {% if !is_epic %}
               <dt>Color</dt>
               <dd data-cell="color">
                 <button type="button" class="tm-color-chip" data-tm-act="pick-color" style="background-color: var(--taskColorBorder);"{% if task.show_color_name %} title="{{ task.color_label }} — click to change"{% else %} title="Click to change"{% endif %}></button>
                 {% if task.show_color_name %}<span class="tm-color-name">{{ task.color_label }}</span>{% endif %}
               </dd>
+              {% endif %}
               <dt class="tm-prop-extra">Timeline</dt>
               <dd class="tm-prop-extra" data-cell="timeline" id="modal-timeline-row">
                 {% if let Some(timeline) = task.timeline_display %}
@@ -278,6 +291,7 @@
                 <button type="button" class="tm-add-link" data-tm-act="add-duedate">Add due date</button>
                 {% endif %}
               </dd>
+              {% if !is_epic %}
               <dt class="tm-prop-extra">Time</dt>
               <dd class="tm-prop-extra tm-cell" data-cell="time-spent">
                 {% if task.total_minutes > 0 || task.pomodori_label.is_some() %}
@@ -292,12 +306,13 @@
               <dd class="tm-prop-extra" data-cell="estimate">
                 {% if let Some(e) = task.estimate_label %}<span id="modal-estimate">{{ e }}</span>{% else %}<button type="button" class="tm-add-link" data-tm-act="estimate">Add estimate</button>{% endif %}
               </dd>
+              {% endif %}
               {% if is_done %}{% if let Some(done) = task.completed_display %}
               <dt>Done</dt>
               <dd class="tm-stat tm-done">&#10003; {{ done }}</dd>
               {% endif %}{% endif %}
             </dl>
-            <div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color" hidden></div>
+            {% if !is_epic %}<div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color" hidden></div>{% endif %}
           </div>
         </section>
 
@@ -417,14 +432,16 @@
           <button type="button" data-tm-act="add-description"><span class="tm-item-icon" aria-hidden="true">&#128196;</span>Description</button>
           <button type="button" data-tm-act="add-member"><span class="tm-item-icon" aria-hidden="true">&#128100;</span>Member</button>
           <button type="button" data-tm-act="add-label"><span class="tm-item-icon" aria-hidden="true">&#127991;</span>Label</button>
-          <button type="button" data-tm-act="add-subtask"><span class="tm-item-icon" aria-hidden="true">&#9744;</span>Subtask</button>
+          {% if !is_epic %}<button type="button" data-tm-act="add-subtask"><span class="tm-item-icon" aria-hidden="true">&#9744;</span>Subtask</button>{% endif %}
           <button type="button" data-tm-act="add-duedate"><span class="tm-item-icon" aria-hidden="true">&#128197;</span>Due date</button>
           <button type="button" data-tm-act="add-timeline"><span class="tm-item-icon" aria-hidden="true">&#128198;</span>Timeline</button>
+          {% if !is_epic %}
           <button type="button" data-tm-act="estimate"><span class="tm-item-icon" aria-hidden="true">&#9201;</span>{% if task.unit.is_points() %}Points estimate{% else %}Time estimate{% endif %}</button>
           <button type="button" data-tm-act="manual-time"><span class="tm-item-icon" aria-hidden="true">&#9998;</span>Manual time entry</button>
+          {% endif %}
           <button type="button" data-tm-act="add-comment"><span class="tm-item-icon" aria-hidden="true">&#128172;</span>Comment</button>
-          <button type="button" data-tm-act="add-attachment"><span class="tm-item-icon" aria-hidden="true">&#128206;</span>Attachment</button>
-          <button type="button" data-tm-act="add-relation"><span class="tm-item-icon" aria-hidden="true">&#128279;</span>Relation</button>
+          {% if !is_epic %}<button type="button" data-tm-act="add-attachment"><span class="tm-item-icon" aria-hidden="true">&#128206;</span>Attachment</button>{% endif %}
+          {% if !is_epic %}<button type="button" data-tm-act="add-relation"><span class="tm-item-icon" aria-hidden="true">&#128279;</span>Relation</button>{% endif %}
         </div>
         <div id="tm-attach-menu" class="tm-menu tm-menu-edge" hidden role="menu">
           <button type="button" data-tm-act="upload-attachment">Upload file from computer</button>
@@ -439,6 +456,7 @@
           <span class="tm-icon" aria-hidden="true"><svg width="21" height="19" viewBox="0 0 21 19" aria-hidden="true" focusable="false"><line x1="1.5" y1="9.5" x2="13.3" y2="9.5" stroke="#666" stroke-width="2" stroke-linecap="round"/><polygon points="12.3,1.5 20.3,9.5 12.3,17.5" fill="#666"/></svg></span><span class="tm-icon-label">Move</span>
         </button>
       </div>
+      {% if !is_epic %}
       <div class="tm-action">
         <button type="button" class="tm-icon-btn" data-tm-menu="tm-timer-menu" aria-haspopup="menu" aria-label="Timer">
           <span class="tm-icon" aria-hidden="true"><svg width="20" height="24" viewBox="0 0 20 24" aria-hidden="true" focusable="false"><rect x="8" y="0.5" width="4" height="2.6" rx="0.6" fill="#666"/><rect x="9.2" y="3.1" width="1.6" height="2.2" fill="#666"/><circle cx="10" cy="14.2" r="8.2" fill="none" stroke="#666" stroke-width="2"/><line x1="10" y1="14.2" x2="10" y2="8.2" stroke="#666" stroke-width="1.8" stroke-linecap="round"/></svg></span><span class="tm-icon-label">Timer</span>
@@ -448,7 +466,9 @@
           <button type="button" data-tm-act="start-stopwatch">Start Stopwatch</button>
           <button type="button" data-tm-act="time-log">Time log</button>
         </div>
-      </div>{% endif %}
+      </div>
+      {% endif %}
+      {% endif %}
       <div class="tm-action">
         <button type="button" class="tm-icon-btn" data-tm-menu="tm-reports-menu" aria-haspopup="menu" aria-label="Reports">
           <span class="tm-icon" aria-hidden="true"><svg width="22" height="20" viewBox="0 0 22 20" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11,0.5 21,5.2 11,8.5 1,5.2"/><path d="M1.5 9.5 L11 13.5 L20.5 9.5"/><path d="M1.5 14.5 L11 18.5 L20.5 14.5"/></g></svg></span><span class="tm-icon-label">Reports</span>
@@ -457,7 +477,7 @@
           <!-- KF-275: GM-089 verbatim order — Time log, Print, History, Time in column. -->
           <button type="button" data-tm-act="time-log">Time log</button>
           <button type="button" data-tm-act="print">Print</button>
-          <button type="button" data-tm-act="history">History</button>
+          {% if !is_epic %}<button type="button" data-tm-act="history">History</button>{% endif %}
           <button type="button" data-tm-act="time-in-column">Time in column</button>
         </div>
       </div>
@@ -466,16 +486,26 @@
           <span class="tm-icon" aria-hidden="true">&bull;&bull;&bull;</span><span class="tm-icon-label">More</span>
         </button>
         <div id="tm-more-menu" class="tm-menu tm-menu-edge" hidden role="menu">
+          {% if is_epic %}
+          {% if role.writes() %}{% if closed %}<button type="button" data-tm-act="reopen-epic">Reopen epic</button>{% else %}<button type="button" data-tm-act="close-epic">Close epic</button>{% endif %}{% endif %}
+          {% else %}
           <button type="button" id="tm-watch-btn" data-tm-act="watch" data-watched="{% if task.watched %}true{% else %}false{% endif %}">{% if task.watched %}&#10003; Unwatch{% else %}Watch{% endif %}</button>
-          <button type="button" data-tm-act="link-child">Link a child</button>
+          {% endif %}
           <button type="button" data-tm-act="task-url">Task URL</button>
-          <button type="button" data-tm-act="copy">Copy task</button>
+          {% if !is_epic %}<button type="button" data-tm-act="copy">Copy task</button>{% endif %}
+          {% if !is_epic && role.writes() %}<button type="button" data-tm-act="make-epic">Make it an epic</button>{% endif %}
+          {% if role.writes() %}<button type="button" data-tm-act="add-to-epic" aria-haspopup="menu" aria-expanded="false">Add to epic &#9656;</button>
+          <div id="tm-epic-list" class="tm-menu-sub" hidden role="menu" aria-label="Epics"></div>{% endif %}
           <button type="button" data-tm-act="shortcuts">Keyboard shortcuts</button>
+          {% if is_epic && role.writes() %}
+          <button type="button" class="tm-menu-danger" data-tm-act="delete">Delete epic</button>
+          <button type="button" class="tm-menu-split" data-tm-act="make-card">Make it a card</button>
+          {% endif %}
         </div>
       </div>
       {% if role.writes() %}<div class="tm-action">
-        <button type="button" class="tm-icon-btn" data-tm-act="delete" aria-label="Delete">
-          <span class="tm-icon" aria-hidden="true">&#128465;</span><span class="tm-icon-label">Delete</span>
+        <button type="button" class="tm-icon-btn" data-tm-act="delete" aria-label="{% if is_epic %}Delete epic{% else %}Delete{% endif %}">
+          <span class="tm-icon" aria-hidden="true">&#128465;</span><span class="tm-icon-label">{% if is_epic %}Delete epic{% else %}Delete{% endif %}</span>
         </button>
       </div>{% endif %}
     </div><!-- /task-modal-iconbar -->

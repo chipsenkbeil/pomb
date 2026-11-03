@@ -16,6 +16,7 @@ ignores:
   - src/routes/bin_tests.rs
   - src/routes/boards_tests.rs
   - src/routes/bulk_tests.rs
+  - src/routes/epics_tests.rs
   - src/routes/events_tests.rs
   - src/routes/import_tests.rs
   - src/routes/labels_tests.rs

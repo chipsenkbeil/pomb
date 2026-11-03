@@ -66,8 +66,8 @@ use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
 pub use self::account::{
-    AccountDb, BoardDenied, ChildRef, LinkReads, OwnedBoard, OwnedTask, RoleDenied, UmbrellaPart,
-    UmbrellaRef,
+    AccountDb, BoardDenied, ChildRef, LinkReads, OwnedBoard, OwnedColumn, OwnedTask, RoleDenied,
+    UmbrellaPart, UmbrellaRef,
 };
 use self::activity::Activity;
 use self::bin::txn_remove_board_bin;
@@ -119,9 +119,10 @@ use crate::models::{
     MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
     MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NUMBERING_KEY, Numbering, PasskeyRow, Quota, Quotas,
     RecoveryCodeRow, ReportBookmark, Responsible, SessionRow, Settings, Subtask, SwimlaneRow,
-    TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TextCap,
-    TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes, custom_color_value,
-    format_minutes, is_custom_color, lighter_hex, normalize_hex, standard_color, text_contrast,
+    TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind, TaskLink, TaskRow,
+    TextCap, TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes,
+    custom_color_value, format_minutes, is_custom_color, lighter_hex, normalize_hex,
+    standard_color, text_contrast,
 };
 use crate::permissions::Permission;
 use crate::rules;
@@ -510,6 +511,19 @@ pub enum ClaimOutcome {
     FenceMismatch,
 }
 
+/// Typed outcome of [`Db::set_epic_closed`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum EpicCloseOutcome {
+    /// The flag changed and the history event was written.
+    Changed,
+    /// The epic already had the requested state, so nothing was written.
+    Unchanged,
+    /// The task is not an epic.
+    NotEpic,
+    /// The task does not exist.
+    NotFound,
+}
+
 /// The caller-supplied parts of a new time entry.
 /// See [`Db::create_entry_full`].
 #[derive(Copy, Clone, Debug)]
@@ -590,6 +604,8 @@ pub struct MoveGuards<'a> {
     pub enforce_wip: bool,
     /// Tasks of the same batch still waiting to move, which the target cell does not count as siblings.
     pub batch: &'a [String],
+    /// Whether an epic may move.
+    pub allow_epic: bool,
 }
 
 /// What a bulk write does with its transaction once every task changed.
@@ -629,6 +645,8 @@ pub enum MoveOutcome {
     Moved,
     NotFound,
     StaleFence,
+    /// Refused: an epic holds no work, so it never moves.
+    Epic,
     /// Refused: the target column holds `count` tasks against `limit`.
     WipLimit {
         count: usize,
@@ -1301,8 +1319,19 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// The upgrade rewrites no row. The new stamp makes a version-56 binary refuse a file whose tip
 /// switches it would drop on its next settings save.
 ///
+/// Version 58 adds, over version 57 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskRow`: `kind`, a `TaskKind` that says whether the task is a plain task or an epic.
+/// 2. `TaskRow`: `closed`, whether someone closed the epic.
+/// 3. The `Permission` `epics.manage`, which the upgrade grants to every token and device request
+///    that holds the whole lead or admin preset of its scope.
+///
+/// The upgrade makes the target of every parent link an epic and recounts each account's stored
+/// bytes, so a task that had children before it is an epic and every other task is a plain, open
+/// task. A version-57 binary refuses the file, so its next task save cannot drop the new fields.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 57;
+pub const SCHEMA_VERSION: u64 = 58;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1366,6 +1395,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "dfd39048866caf54730ca8c1bd13904d404f57314bd3cd4e4ac5d764a59bf2b1",
     "26879f4069c114a3dac70192954b9e787d42d63b504f1e1acdca47e1839868cf",
     "e7a53b9d817be858118e1204c0350d7ec3c1de04c6e251227c9f289704cdc4b2",
+    "3e6c4600a02a4c61aa6e04a9f2eff3501e8ce6fe084b3560b780cfc87b5af6d7",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1503,11 +1533,47 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
         grant_scope_permissions(txn)?;
     }
     if from.is_none_or(|version| version < 41) {
-        grant_added_permissions(txn, &[Permission::TasksBin, Permission::LabelsManage])?;
+        grant_added_permissions(
+            txn,
+            &[
+                Permission::TasksBin,
+                Permission::LabelsManage,
+                Permission::EpicsManage,
+            ],
+        )?;
     } else if from.is_some_and(|version| version < 51) {
-        grant_added_permissions(txn, &[Permission::LabelsManage])?;
+        grant_added_permissions(txn, &[Permission::LabelsManage, Permission::EpicsManage])?;
+    } else if from.is_some_and(|version| version < 58) {
+        grant_added_permissions(txn, &[Permission::EpicsManage])?;
+    }
+    if from.is_none_or(|version| version < 58) {
+        mark_parents_as_epics(txn)?;
+        txn_recount_usage(txn)?;
     }
     Ok(())
+}
+
+/// Sets the kind of every task that is the target of a parent link to epic.
+fn mark_parents_as_epics(txn: &WriteTransaction) -> DbResult<()> {
+    let mut parents = HashSet::new();
+    rewrite_rows(txn, TASKS, |_, task| {
+        let links = task.get("links").and_then(serde_json::Value::as_array);
+        for link in links.into_iter().flatten() {
+            if link.get("kind").and_then(serde_json::Value::as_str) == Some("parent")
+                && let Some(target) = link.get("target_id").and_then(serde_json::Value::as_str)
+            {
+                parents.insert(target.to_string());
+            }
+        }
+        false
+    })?;
+    rewrite_rows(txn, TASKS, |id, task| {
+        if !parents.contains(id) {
+            return false;
+        }
+        task.insert("kind".to_string(), serde_json::Value::from("epic"));
+        true
+    })
 }
 
 /// Moves each task's `column_added_at` to `column_entered_at`, keeping a value the new name
@@ -2996,6 +3062,74 @@ pub struct TaskContext {
     /// The board's colors as stored when the change runs.
     pub colors: Vec<ColorRow>,
     pub pomodoro_minutes: u32,
+    /// The ids of the tasks that hold a parent link to this one, read for an epic and empty for
+    /// any other task.
+    pub child_ids: Vec<String>,
+}
+
+/// Whether a task change also removes the parent link of each child of the task.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ChildLinks {
+    /// Leave the children linked.
+    Keep,
+    /// Delete each child's parent link to the task in the same write.
+    Remove,
+}
+
+/// Returns the ids of the tasks that hold a parent link to `epic_id`.
+fn child_ids_in(
+    txn: &WriteTransaction,
+    tasks: &impl ReadableTable<&'static str, &'static [u8]>,
+    epic_id: &str,
+) -> DbResult<Vec<String>> {
+    let mut children = Vec::new();
+    for holder_id in txn_mmap_get(txn, LINKS_BY_TARGET, epic_id)? {
+        let Some(holder) = task_in(tasks, &holder_id)? else {
+            continue;
+        };
+        if holder
+            .links
+            .iter()
+            .any(|link| link.kind == LinkKind::Parent && link.target_id == epic_id)
+        {
+            children.push(holder_id);
+        }
+    }
+    Ok(children)
+}
+
+/// Removes each child's parent link to `epic_id` and records a `link_removed` event on the child.
+fn txn_unlink_children(
+    txn: &WriteTransaction,
+    tasks: &mut redb::Table<'_, &'static str, &'static [u8]>,
+    epic_id: &str,
+    actor: Actor<'_>,
+) -> DbResult<()> {
+    let children = child_ids_in(txn, tasks, epic_id)?;
+    let epic_name = task_in(tasks, epic_id)?.map(|epic| epic.name);
+    let mut by_target = txn.open_multimap_table(LINKS_BY_TARGET)?;
+    for child_id in children {
+        let Some(mut child) = task_in(tasks, &child_id)? else {
+            continue;
+        };
+        let (removed, kept): (Vec<_>, Vec<_>) = child
+            .links
+            .into_iter()
+            .partition(|link| link.kind == LinkKind::Parent && link.target_id == epic_id);
+        child.links = kept;
+        for link in &removed {
+            let detail = link_event_detail(link, epic_name.as_deref(), |detail| {
+                format!("Removed link {detail}")
+            });
+            push_event(&mut child, "link_removed", detail, actor);
+        }
+        child.updated_at = Some(Utc::now().to_rfc3339());
+        txn_store_task(txn, tasks, &child, OverQuota::Allow, actor)?;
+        if !child.links.iter().any(|link| link.target_id == epic_id) {
+            by_target.remove(epic_id, child_id.as_str())?;
+        }
+    }
+    Ok(())
 }
 
 fn task_context_in(txn: &WriteTransaction, task: &TaskRow) -> DbResult<TaskContext> {
@@ -3026,6 +3160,7 @@ fn task_context_in(txn: &WriteTransaction, task: &TaskRow) -> DbResult<TaskConte
         fields,
         colors,
         pomodoro_minutes: settings.unwrap_or_default().pomodoro_minutes,
+        child_ids: Vec::new(),
     })
 }
 
@@ -3173,7 +3308,7 @@ fn restamp_column_tasks(txn: &WriteTransaction, column_id: &str, is_done: bool) 
         let Some(mut task) = task_in(&tasks, &id)? else {
             continue;
         };
-        if task.completed_at.is_some() == is_done {
+        if !task.is_work() || task.completed_at.is_some() == is_done {
             continue;
         }
         task.completed_at = is_done.then(|| Utc::now().to_rfc3339());
@@ -6814,9 +6949,39 @@ impl Db {
         if txn_mmap_get(&txn, COLUMNS_BY_BOARD, &column.board_id)?.len() <= 1 {
             return Ok(ColumnDeleteOutcome::RefusedLast);
         }
-        let held = txn_mmap_get(&txn, TASKS_BY_COLUMN, id)?.len();
-        if held > 0 {
-            return Ok(ColumnDeleteOutcome::RefusedHasTasks(held));
+        let held: Vec<TaskRow> = txn_indexed_rows(&txn, TASKS_BY_COLUMN, id, TASKS)?;
+        let work = held.iter().filter(|task| task.is_work()).count();
+        if work > 0 {
+            return Ok(ColumnDeleteOutcome::RefusedHasTasks(work));
+        }
+        if !held.is_empty() {
+            let mut siblings: Vec<ColumnRow> =
+                txn_indexed_rows(&txn, COLUMNS_BY_BOARD, &column.board_id, COLUMNS)?;
+            siblings.retain(|sibling| sibling.id != id);
+            siblings.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+            let first = siblings
+                .first()
+                .ok_or_else(|| format!("no column left beside: {id}"))?;
+            let detail = format!("Moved from {} to {}", column.name, first.name);
+            for epic in &held {
+                let guards = MoveGuards {
+                    event: Some(&detail),
+                    allow_epic: true,
+                    ..MoveGuards::default()
+                };
+                let outcome = Self::move_in(
+                    &txn,
+                    &epic.id,
+                    &first.id,
+                    epic.swimlane_id.as_deref(),
+                    f64::MAX,
+                    guards,
+                    Actor::SYSTEM,
+                )?;
+                if outcome != MoveOutcome::Moved {
+                    return Err(format!("epic did not move: {}", epic.id).into());
+                }
+            }
         }
 
         // No task keeps a due target column that no longer exists
@@ -6858,7 +7023,12 @@ impl Db {
     }
 
     pub fn count_tasks_in_column(&self, column_id: &str) -> DbResult<usize> {
-        Ok(mmap_get(&self.db, TASKS_BY_COLUMN, column_id)?.len())
+        let mut work = 0;
+        for id in mmap_get(&self.db, TASKS_BY_COLUMN, column_id)? {
+            let task: Option<TaskRow> = read_one(&self.db, TASKS, &id)?;
+            work += usize::from(task.is_some_and(|task| task.is_work()));
+        }
+        Ok(work)
     }
 
     // ---- Swimlanes ----
@@ -7657,6 +7827,8 @@ impl Db {
                 "estimate_hours": task.estimate_hours,
                 "subtasks": subtasks,
                 "labels": task.labels,
+                "kind": task.kind,
+                "closed": task.closed,
             });
             if tasks == CopyTasks::Keep {
                 entry["member_ids"] = serde_json::json!(task.member_ids);
@@ -8022,6 +8194,14 @@ impl Db {
                 comments: Vec::new(),
                 attachments: Vec::new(),
                 cover_id: None,
+                kind: task
+                    .get("kind")
+                    .and_then(|value| serde_json::from_value(value.clone()).ok())
+                    .unwrap_or_default(),
+                closed: task
+                    .get("closed")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or_default(),
                 history: Vec::new(),
                 updated_at: Some(now),
                 metadata: None,
@@ -8177,6 +8357,8 @@ impl Db {
             comments: Vec::new(),
             attachments: Vec::new(),
             cover_id: None,
+            kind: TaskKind::Task,
+            closed: false,
             history: Vec::new(),
             updated_at: Some(now),
             metadata: None,
@@ -8217,7 +8399,7 @@ impl Db {
             }
 
             // A task created in a done column is complete from the start
-            if column.is_done && row.completed_at.is_none() {
+            if column.is_done && row.is_work() && row.completed_at.is_none() {
                 let added = row.column_entered_at.clone();
                 row.completed_at = Some(added.unwrap_or_else(|| Utc::now().to_rfc3339()));
             }
@@ -9935,7 +10117,7 @@ impl Db {
     where
         F: FnOnce(&mut TaskRow) -> (R, bool),
     {
-        self.change_task(task_id, false, actor, |task, _| {
+        self.change_task(task_id, false, ChildLinks::Keep, actor, |task, _| {
             let (result, changed) = f(task);
             (
                 result,
@@ -9954,13 +10136,14 @@ impl Db {
     pub fn apply_task_change_in_board<R, F>(
         &self,
         task_id: &str,
+        children: ChildLinks,
         actor: Actor<'_>,
         f: F,
     ) -> DbResult<Option<R>>
     where
         F: FnOnce(&mut TaskRow, &TaskContext) -> (R, bool),
     {
-        self.change_task(task_id, true, actor, |task, context| {
+        self.change_task(task_id, true, children, actor, |task, context| {
             let (result, changed) = f(task, context);
             (
                 result,
@@ -10008,6 +10191,7 @@ impl Db {
         &self,
         task_id: &str,
         with_context: bool,
+        children: ChildLinks,
         actor: Actor<'_>,
         f: F,
     ) -> DbResult<Option<R>>
@@ -10020,17 +10204,23 @@ impl Db {
             let Some(mut task) = task_in(&tbl, task_id)? else {
                 return Ok(None);
             };
-            let context = if with_context {
+            let mut context = if with_context {
                 task_context_in(&txn, &task)?
             } else {
                 TaskContext::default()
             };
+            if with_context && task.kind == TaskKind::Epic {
+                context.child_ids = child_ids_in(&txn, &tbl, task_id)?;
+            }
             let (result, write) = f(&mut task, &context);
             if matches!(write, RowWrite::Stamp) {
                 task.updated_at = Some(Utc::now().to_rfc3339());
             }
             if !matches!(write, RowWrite::Skip) {
                 txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
+                if children == ChildLinks::Remove {
+                    txn_unlink_children(&txn, &mut tbl, task_id, actor)?;
+                }
             }
             (result, write)
         };
@@ -10059,7 +10249,7 @@ impl Db {
         request: &ClaimRequest,
         actor: Actor<'_>,
     ) -> DbResult<ClaimOutcome> {
-        let outcome = self.change_task(task_id, false, actor, |task, _| {
+        let outcome = self.change_task(task_id, false, ChildLinks::Keep, actor, |task, _| {
             let now = Utc::now();
             let expired = expire_claim(task, now);
             if let Some(live) = task.claim.as_mut() {
@@ -10115,6 +10305,33 @@ impl Db {
         Ok(outcome.unwrap_or(ClaimOutcome::NotFound))
     }
 
+    /// Sets whether an epic is closed, with a `closed` or `reopened` history event, in one write
+    /// transaction. It leaves the column, `completed_at` and the children alone.
+    pub fn set_epic_closed(
+        &self,
+        task_id: &str,
+        closed: bool,
+        actor: Actor<'_>,
+    ) -> DbResult<EpicCloseOutcome> {
+        let outcome = self.change_task(task_id, false, ChildLinks::Keep, actor, |task, _| {
+            if task.kind != TaskKind::Epic {
+                return (EpicCloseOutcome::NotEpic, RowWrite::Skip);
+            }
+            if task.closed == closed {
+                return (EpicCloseOutcome::Unchanged, RowWrite::Skip);
+            }
+            task.closed = closed;
+            let (kind, detail) = if closed {
+                ("closed", "Closed the epic")
+            } else {
+                ("reopened", "Reopened the epic")
+            };
+            push_event(task, kind, detail.to_string(), actor);
+            (EpicCloseOutcome::Changed, RowWrite::Stamp)
+        })?;
+        Ok(outcome.unwrap_or(EpicCloseOutcome::NotFound))
+    }
+
     /// Extend the live claim holding `fence`. Without `ttl_seconds` the
     /// lease keeps its previous length and `updated_at` is left alone. An
     /// expired claim is cleared and reported as a mismatch.
@@ -10125,32 +10342,38 @@ impl Db {
         ttl_seconds: Option<i64>,
         session_id: Option<&str>,
     ) -> DbResult<ClaimOutcome> {
-        let outcome = self.change_task(task_id, false, Actor::SYSTEM, |task, _| {
-            let now = Utc::now();
-            let expired = expire_claim(task, now);
-            let Some(live) = task.claim.as_mut().filter(|claim| claim.fence == fence) else {
-                let write = if expired {
-                    RowWrite::Stamp
-                } else {
-                    RowWrite::Skip
+        let outcome = self.change_task(
+            task_id,
+            false,
+            ChildLinks::Keep,
+            Actor::SYSTEM,
+            |task, _| {
+                let now = Utc::now();
+                let expired = expire_claim(task, now);
+                let Some(live) = task.claim.as_mut().filter(|claim| claim.fence == fence) else {
+                    let write = if expired {
+                        RowWrite::Stamp
+                    } else {
+                        RowWrite::Skip
+                    };
+                    return (ClaimOutcome::FenceMismatch, write);
                 };
-                return (ClaimOutcome::FenceMismatch, write);
-            };
-            let previous_ttl = chrono::DateTime::parse_from_rfc3339(&live.expires_at)
-                .ok()
-                .zip(chrono::DateTime::parse_from_rfc3339(&live.heartbeat_at).ok())
-                .map(|(end, beat)| (end - beat).num_seconds())
-                .unwrap_or(0);
-            live.heartbeat_at = now.to_rfc3339();
-            live.expires_at = lease_end(now, ttl_seconds.unwrap_or(previous_ttl));
-            if let Some(session_id) = session_id {
-                live.session_id = Some(session_id.to_string());
-            }
+                let previous_ttl = chrono::DateTime::parse_from_rfc3339(&live.expires_at)
+                    .ok()
+                    .zip(chrono::DateTime::parse_from_rfc3339(&live.heartbeat_at).ok())
+                    .map(|(end, beat)| (end - beat).num_seconds())
+                    .unwrap_or(0);
+                live.heartbeat_at = now.to_rfc3339();
+                live.expires_at = lease_end(now, ttl_seconds.unwrap_or(previous_ttl));
+                if let Some(session_id) = session_id {
+                    live.session_id = Some(session_id.to_string());
+                }
 
-            // A heartbeat is not a change to the task, so `?since=` pollers
-            // do not see every claimed task on every tick.
-            (ClaimOutcome::Granted(live.clone()), RowWrite::Keep)
-        })?;
+                // A heartbeat is not a change to the task, so `?since=` pollers
+                // do not see every claimed task on every tick.
+                (ClaimOutcome::Granted(live.clone()), RowWrite::Keep)
+            },
+        )?;
         Ok(outcome.unwrap_or(ClaimOutcome::NotFound))
     }
 
@@ -10335,6 +10558,9 @@ impl Db {
         let Some(task) = txn_read_one::<TaskRow>(txn, TASKS, id)? else {
             return Ok(MoveOutcome::NotFound);
         };
+        if !task.is_work() && !guards.allow_epic {
+            return Ok(MoveOutcome::Epic);
+        }
         let target: ColumnRow = txn_read_one(txn, COLUMNS, column_id)?
             .ok_or_else(|| format!("unknown column: {column_id}"))?;
         if !task.fence_allows(guards.fence) {
@@ -10355,7 +10581,7 @@ impl Db {
                 let cell: Vec<TaskRow> = txn_indexed_rows(txn, TASKS_BY_COLUMN, column_id, TASKS)?;
                 let held: i64 = cell
                     .iter()
-                    .filter(|other| other.id != id)
+                    .filter(|other| other.id != id && other.is_work())
                     .map(minutes)
                     .sum();
                 if minutes(&task) > 0 && held + minutes(&task) > limit * 60 {
@@ -10365,9 +10591,9 @@ impl Db {
                     });
                 }
             } else {
-                let count = txn_mmap_get(txn, TASKS_BY_COLUMN, column_id)?
+                let count = txn_indexed_rows::<TaskRow>(txn, TASKS_BY_COLUMN, column_id, TASKS)?
                     .iter()
-                    .filter(|task_id| task_id.as_str() != id)
+                    .filter(|other| other.id != id && other.is_work())
                     .count();
                 if count as i64 >= limit {
                     return Ok(MoveOutcome::WipLimit { count, limit });
@@ -10381,6 +10607,7 @@ impl Db {
             .map(|column| column.is_done)
             .unwrap_or(false);
         let completed_at = match (target.is_done, was_done) {
+            _ if !task.is_work() => task.completed_at.clone(),
             (true, false) => Some(Utc::now().to_rfc3339()),
             (true, true) => task.completed_at.clone(),
             (false, _) => None,
@@ -10452,7 +10679,14 @@ impl Db {
         // moved task lands exactly at the client-sent index.
         let mut siblings = txn_cell_tasks(txn, column_id, new_swimlane_id.as_deref())?;
         siblings.retain(|sibling| sibling.id != id && !guards.batch.contains(&sibling.id));
-        let at = (position.round() as i64).clamp(0, siblings.len() as i64) as usize;
+        let work = siblings.iter().filter(|sibling| sibling.is_work()).count();
+        let work_at = (position.round() as i64).clamp(0, work as i64) as usize;
+        let at = siblings
+            .iter()
+            .enumerate()
+            .filter(|(_, sibling)| sibling.is_work())
+            .nth(work_at)
+            .map_or(siblings.len(), |(index, _)| index);
         let mut moved = TaskRow {
             column_id: column_id.to_string(),
             swimlane_id: new_swimlane_id.clone(),
@@ -11125,6 +11359,111 @@ mod template_repeat_tests {
         };
         assert_eq!(repeat_of("orphan"), (false, None));
         assert_eq!(repeat_of("dated"), (true, Some("every week".to_string())));
+    }
+
+    #[test]
+    fn template_snapshot_should_keep_an_epic_and_read_an_old_task_as_open_plain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let board = db
+            .create_board(&AccountId::ownerless(), "Board")
+            .expect("board");
+        let column = db.create_column(&board, "Todo", None).expect("column");
+        let epic = db
+            .create_task(&column, None, "Epic", 1, None)
+            .expect("task");
+        db.apply_task_change(&epic, Actor::SYSTEM, |row| {
+            row.kind = TaskKind::Epic;
+            row.closed = true;
+            ((), true)
+        })
+        .expect("epic");
+        let snapshot = db
+            .write_template_snapshot(&board, &[epic], CopyTasks::ClearMembers)
+            .expect("snapshot");
+        let mut snapshot: serde_json::Value =
+            serde_json::from_slice(&snapshot).expect("valid JSON");
+        let tasks = snapshot["tasks"].as_array_mut().expect("tasks");
+        let mut old = tasks[0].clone();
+        let fields = old.as_object_mut().expect("object");
+        fields.remove("kind");
+        fields.remove("closed");
+        fields.insert("name".to_string(), serde_json::json!("Old"));
+        tasks.push(old);
+        let mut row = BoardTemplateRow {
+            id: "epics".to_string(),
+            name: "Epics".to_string(),
+            description: String::new(),
+            built_in: false,
+            owner_id: Some(String::new()),
+            snapshot_bytes: 0,
+        };
+        let snapshot = serde_json::to_vec(&snapshot).expect("json");
+        let txn = db.db.begin_write().expect("write");
+        txn_store_template(&txn, &mut row, &snapshot).expect("template");
+        txn.commit().expect("commit");
+
+        let copy = db
+            .apply_template(&AccountId::ownerless(), "epics", "Copy")
+            .expect("apply")
+            .expect("board");
+
+        let tasks = db.board_tasks(&copy).expect("tasks");
+        let state_of = |name: &str| {
+            let task = tasks.iter().find(|task| task.name == name).expect("task");
+            (task.kind, task.closed)
+        };
+        assert_eq!(state_of("Epic"), (TaskKind::Epic, true));
+        assert_eq!(state_of("Old"), (TaskKind::Task, false));
+    }
+
+    #[test]
+    fn an_epic_created_in_a_done_column_should_not_be_completed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let board = db
+            .create_board(&AccountId::ownerless(), "Board")
+            .expect("board");
+        let done = db.create_column(&board, "Done", None).expect("column");
+        db.set_column_done(&done, true).expect("done flag");
+        let mut row = Db::new_task_row(&done, None, "Epic", 1, None);
+        row.kind = TaskKind::Epic;
+        let epic = db.insert_task(row, NewTaskPlacement::Bottom).expect("epic");
+        let plain = db.create_task(&done, None, "Plain", 1, None).expect("task");
+
+        let completed = |id: &str| db.task(id).expect("read").expect("task").completed_at;
+        assert_eq!(completed(&epic), None);
+        assert!(completed(&plain).is_some());
+    }
+
+    #[test]
+    fn marking_a_column_done_should_complete_its_cards_but_not_its_epics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let board = db
+            .create_board(&AccountId::ownerless(), "Board")
+            .expect("board");
+        let column = db.create_column(&board, "Review", None).expect("column");
+        let epic = db
+            .create_task(&column, None, "Epic", 1, None)
+            .expect("epic");
+        let plain = db
+            .create_task(&column, None, "Plain", 1, None)
+            .expect("task");
+        db.apply_task_change(&epic, Actor::SYSTEM, |row| {
+            row.kind = TaskKind::Epic;
+            ((), true)
+        })
+        .expect("epic kind");
+
+        db.set_column_done(&column, true).expect("done flag");
+
+        let completed = |id: &str| db.task(id).expect("read").expect("task").completed_at;
+        assert_eq!(completed(&epic), None);
+        assert!(completed(&plain).is_some());
     }
 }
 
@@ -12444,7 +12783,9 @@ mod schema_version_tests {
             object["permissions"]
                 .as_array_mut()
                 .expect("permissions")
-                .retain(|name| name != "tasks.bin" && name != "labels.manage");
+                .retain(|name| {
+                    name != "tasks.bin" && name != "labels.manage" && name != "epics.manage"
+                });
         });
     }
 
@@ -12573,7 +12914,7 @@ mod schema_version_tests {
             object["permissions"]
                 .as_array_mut()
                 .expect("permissions")
-                .retain(|name| name != "labels.manage");
+                .retain(|name| name != "labels.manage" && name != "epics.manage");
         };
         for key in presets.iter().map(|(_, id)| id).chain([&custom]) {
             edit_raw(&path, API_TOKENS, key, strip);
@@ -12591,6 +12932,50 @@ mod schema_version_tests {
             .expect("read")
             .expect("row");
         assert!(!token.permissions.contains(&Permission::LabelsManage));
+        assert!(token.permissions.contains(&Permission::TasksBin));
+    }
+
+    /// A version-57 file's tokens at the lead or admin preset gain `epics.manage`, and a custom set
+    /// and the lower presets keep what they hold.
+    #[test]
+    fn version_57_file_should_grant_epic_management_to_lead_and_admin_presets_and_no_custom_set() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let (presets, custom) = {
+            let db = Db::connect(&path).expect("connect");
+            let mut presets = Vec::new();
+            for scope in AuthScope::ALL {
+                let (record, _) = new_api_token_record(&account, scope.as_str(), scope, None);
+                db.create_api_token(&record).expect("token");
+                presets.push((scope, record.id));
+            }
+            let (mut record, _) = new_api_token_record(&account, "custom", AuthScope::Work, None);
+            record.permissions.insert(Permission::TasksBin);
+            db.create_api_token(&record).expect("token");
+            (presets, record.id)
+        };
+        let strip = |object: &mut serde_json::Map<String, serde_json::Value>| {
+            object["permissions"]
+                .as_array_mut()
+                .expect("permissions")
+                .retain(|name| name != "epics.manage");
+        };
+        for key in presets.iter().map(|(_, id)| id).chain([&custom]) {
+            edit_raw(&path, API_TOKENS, key, strip);
+        }
+        stamp(&path, 57);
+
+        let db = Db::connect(&path).expect("open version 57");
+        for (scope, id) in &presets {
+            let token: ApiTokenRecord = read_one(&db.db, API_TOKENS, id)
+                .expect("read")
+                .expect("row");
+            assert!(token.permissions == scope.permissions(), "{scope:?}");
+        }
+        let token: ApiTokenRecord = read_one(&db.db, API_TOKENS, &custom)
+            .expect("read")
+            .expect("row");
+        assert!(!token.permissions.contains(&Permission::EpicsManage));
         assert!(token.permissions.contains(&Permission::TasksBin));
     }
 
@@ -13182,6 +13567,120 @@ mod schema_version_tests {
         assert_eq!(read(&bare).column_entered_at, None);
     }
 
+    fn strip_task_fields(path: &str, fields: &[&str]) {
+        let raw = Database::create(path).expect("raw open");
+        let txn = raw.begin_write().expect("write txn");
+        {
+            let mut tbl = txn.open_table(TASKS).expect("tasks");
+            let rows: Vec<(String, Vec<u8>)> = tbl
+                .iter()
+                .expect("iter")
+                .map(|item| {
+                    let (key, value) = item.expect("row");
+                    (key.value().to_string(), value.value().to_vec())
+                })
+                .collect();
+            for (id, bytes) in rows {
+                let mut row: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+                let object = row.as_object_mut().expect("object");
+                for field in fields {
+                    assert!(object.remove(*field).is_some(), "{field} was stored");
+                }
+                let bytes = serde_json::to_vec(&row).expect("bytes");
+                tbl.insert(id.as_str(), bytes.as_slice()).expect("insert");
+            }
+        }
+        txn.commit().expect("commit");
+    }
+
+    fn kind_of(db: &Db, id: &str) -> TaskKind {
+        db.task(id).expect("read").expect("task kept").kind
+    }
+
+    #[test]
+    fn version_fifty_seven_file_should_make_epics_of_exactly_the_parents_once() {
+        let (_dir, path) = temp_path();
+        let (parent, grandparent, child, sibling, blocker, blocked, lone) = {
+            let db = Db::connect(&path).expect("connect");
+            let board = db
+                .create_board(&AccountId::ownerless(), "Old")
+                .expect("board");
+            let column = db.create_column(&board, "Todo", None).expect("column");
+            let make = |name: &str| db.create_task(&column, None, name, 1, None).expect("task");
+            let tasks = (
+                make("Parent"),
+                make("Grandparent"),
+                make("Child"),
+                make("Sibling"),
+                make("Blocker"),
+                make("Blocked"),
+                make("Lone"),
+            );
+            let link = |holder: &str, kind: LinkKind, target: &str| {
+                let outcome = db
+                    .add_task_link(holder, kind, target, None, Actor::SYSTEM)
+                    .expect("link");
+                assert!(matches!(outcome, LinkAddOutcome::Added(_)));
+            };
+            link(&tasks.2, LinkKind::Parent, &tasks.0);
+            link(&tasks.3, LinkKind::Parent, &tasks.0);
+            link(&tasks.0, LinkKind::Parent, &tasks.1);
+            link(&tasks.5, LinkKind::BlockedBy, &tasks.4);
+            tasks
+        };
+        strip_task_fields(&path, &["kind", "closed"]);
+        stamp(&path, 57);
+
+        drop(Db::connect(&path).expect("open version-57 file"));
+
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+        let db = Db::connect(&path).expect("reopen");
+        let mut kept = db.stored_bytes_by_account().expect("usage");
+        kept.retain(|_, bytes| *bytes > 0);
+        let recount = db.db.begin_write().expect("write");
+        txn_recount_usage(&recount).expect("recount");
+        let counted: HashMap<String, u64> = recount
+            .open_table(ACCOUNT_USAGE)
+            .expect("table")
+            .iter()
+            .expect("iter")
+            .map(|item| {
+                let (account, bytes) = item.expect("row");
+                (account.value().to_string(), bytes.value())
+            })
+            .collect();
+        recount.abort().expect("abort");
+        assert_eq!(kept, counted, "usage was recounted");
+        for id in [&parent, &grandparent] {
+            assert_eq!(kind_of(&db, id), TaskKind::Epic);
+        }
+        for id in [&child, &sibling, &blocker, &blocked, &lone] {
+            assert_eq!(kind_of(&db, id), TaskKind::Task);
+        }
+        for id in [
+            &parent,
+            &grandparent,
+            &child,
+            &sibling,
+            &blocker,
+            &blocked,
+            &lone,
+        ] {
+            assert!(!db.task(id).expect("read").expect("task kept").closed);
+        }
+
+        db.apply_task_change(&parent, Actor::SYSTEM, |row| {
+            row.kind = TaskKind::Task;
+            ((), true)
+        })
+        .expect("demote");
+        drop(db);
+        drop(Db::connect(&path).expect("open version-58 file"));
+        let db = Db::connect(&path).expect("reopen");
+        assert_eq!(kind_of(&db, &parent), TaskKind::Task, "no second upgrade");
+        assert_eq!(kind_of(&db, &grandparent), TaskKind::Epic);
+    }
+
     #[test]
     fn version_eight_file_should_upgrade_to_default_backup_settings() {
         let (_dir, path) = temp_path();
@@ -13763,6 +14262,7 @@ mod schema_fingerprint_tests {
             shape::<TaskComment>("TaskComment"),
             shape::<CommentReaction>("CommentReaction"),
             shape::<TaskEvent>("TaskEvent"),
+            shape::<TaskKind>("TaskKind"),
             shape::<TaskRow>("TaskRow"),
             shape::<TimeEntryRow>("TimeEntryRow"),
             shape::<TimerMode>("TimerMode"),

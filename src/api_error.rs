@@ -126,6 +126,11 @@ pub enum ErrorCode {
     StorageFull,
     /// The task already holds an attachment with this name or these bytes (409).
     DuplicateAttachment,
+    /// The epic has children, so it cannot become a plain task unless the request unlinks them
+    /// (409).
+    EpicHasChildren,
+    /// An epic holds no work, so nobody can claim it (409).
+    EpicNotClaimable,
     /// The server failed (5xx).
     InternalError,
 }

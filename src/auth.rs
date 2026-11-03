@@ -940,6 +940,12 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/tasks/:id/umbrella",
         Permission::LinksDelete,
     ),
+    (Method::POST, "/api/tasks/:id/close", Permission::TasksWrite),
+    (
+        Method::POST,
+        "/api/tasks/:id/reopen",
+        Permission::TasksWrite,
+    ),
     (Method::POST, "/api/tasks/:id/claim", Permission::TasksWrite),
     (
         Method::POST,
@@ -1072,6 +1078,7 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         Permission::BoardsRead,
     ),
     (Method::GET, "/api/boards/:id/tasks", Permission::TasksRead),
+    (Method::GET, "/api/boards/:id/epics", Permission::TasksRead),
     (
         Method::GET,
         "/api/boards/:id/export-data",
@@ -2033,6 +2040,8 @@ mod tests {
             AuthScope::Work,
         ),
         (Method::PUT, "/api/tasks/:id/umbrella", AuthScope::Admin),
+        (Method::POST, "/api/tasks/:id/close", AuthScope::Work),
+        (Method::POST, "/api/tasks/:id/reopen", AuthScope::Work),
         (Method::POST, "/api/tasks/:id/claim", AuthScope::Work),
         (
             Method::POST,

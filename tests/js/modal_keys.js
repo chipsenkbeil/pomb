@@ -53,6 +53,16 @@ Object.keys(wanted).forEach(function (key) {
   check(key + ' runs ' + wanted[key] + ' from its control', actions, [[wanted[key], { act: wanted[key] }]]);
 });
 
+var epicModal = {
+  querySelector: function (sel) {
+    var m = /data-tm-act="([^"]*)"/.exec(sel);
+    return m && m[1] !== 'add-relation' ? { act: m[1] } : null;
+  }
+};
+actions.length = 0;
+check('r does nothing in a modal without the Relation item', [modalLetter(epicModal, 'r'), actions], [false, []]);
+check('the other letters still run in that modal', [modalLetter(epicModal, 'd'), actions.length], [true, 1]);
+
 check('a opens the Add menu', [modalLetter(modal, 'a'), clicks], [true, ['add']]);
 check('n focuses and selects the name', [modalLetter(modal, 'n'), focused], [true, ['name', 'select']]);
 check('an unmapped letter is not handled', modalLetter(modal, 'z'), false);

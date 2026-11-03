@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::router;
-use super::server::passkey_mode;
+use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -56,7 +56,7 @@ impl Fixture {
         let backlog = db.create_column(&board, "Backlog", None).expect("backlog");
         let ready = db.create_column(&board, "Ready", None).expect("ready");
         let lane = db.create_swimlane(&board, "Extra").expect("lane");
-        let app = router(AppState::new(db, None, passkey_mode()));
+        let app = router(AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits()));
         Self {
             _dir: dir,
             app,
@@ -157,6 +157,7 @@ impl Fixture {
 
 const SECTION: &str = "## Done when\n- it ships\n";
 
+const ACCOUNT_BURST_REQUESTS: usize = 1000;
 mod rules_api {
     use super::*;
 
@@ -720,6 +721,16 @@ mod locked {
                 status != StatusCode::FORBIDDEN && !status.is_server_error(),
                 "session {method} {uri}: {status} {text}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn session_should_not_be_rate_limited_by_a_burst_beyond_the_account_bucket() {
+        let fx = Fixture::new();
+        let uri = fx.rules_uri();
+        for _ in 0..ACCOUNT_BURST_REQUESTS {
+            let (status, text) = fx.call(Who::Session, "GET", &uri, Body::Empty).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
         }
     }
 

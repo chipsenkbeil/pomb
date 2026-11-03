@@ -57,20 +57,20 @@ use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn, TokenGrant};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
-    AdminActionOutcome, BoardDenied, BookmarkAdd, BookmarkPatch, Bound, ChangeOutcome, ChildRef,
-    ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, ColumnWatch, CommentWrite, Commit,
-    CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment, EventRead,
-    FeedAdd, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LargestUse,
-    LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD,
-    MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME,
-    NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted,
-    OwnedBoard, OwnedTask, OwnerChange, PaletteStrandsColor, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuotaExceeded, RecoverOutcome, RegisterOutcome,
-    RestoreOutcome, Revoked, RoleDenied, SessionEndOutcome, SessionListing, SessionRefused,
-    SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
-    SwimlaneUpdateOutcome, TaskContext, UmbrellaChange, UmbrellaPart, UmbrellaRef,
-    WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels, local_day, merge_metadata,
-    push_change_event, push_column_event, push_event, round_estimate,
+    AdminActionOutcome, BoardDenied, BookmarkAdd, BookmarkPatch, Bound, ChangeOutcome, ChildLinks,
+    ChildRef, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, ColumnWatch,
+    CommentWrite, Commit, CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll,
+    DuplicateAttachment, EpicCloseOutcome, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome,
+    FirstPasskeyOutcome, InstanceDb, LargestUse, LinkAddOutcome, LinkDeleteOutcome, LinkEdit,
+    LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards,
+    MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement,
+    NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedColumn, OwnedTask, OwnerChange,
+    PaletteStrandsColor, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome,
+    QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked, RoleDenied,
+    SessionEndOutcome, SessionListing, SessionRefused, SessionToken, SwimlaneDeleteOutcome,
+    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext, UmbrellaChange,
+    UmbrellaPart, UmbrellaRef, WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels,
+    local_day, merge_metadata, push_change_event, push_column_event, push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -165,6 +165,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/tasks/:id/links/:link_id", delete(delete_task_link))
         .route("/api/tasks/:id/umbrella", put(change_task_umbrella))
+        .route("/api/tasks/:id/close", post(close_task))
+        .route("/api/tasks/:id/reopen", post(reopen_task))
         .route("/api/tasks/:id/claim", post(claim_task))
         .route("/api/tasks/:id/claim/heartbeat", post(heartbeat_claim))
         .route("/api/tasks/:id/claim/release", post(release_claim))
@@ -295,6 +297,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/bin/:id", delete(purge_binned_task))
         .route("/api/bin/:id/restore", post(restore_task))
         .route("/api/boards/:id/tasks", get(list_board_tasks))
+        .route("/api/boards/:id/epics", get(list_board_epics))
         .route(
             "/api/boards/:id/fields",
             post(create_board_field).get(list_board_fields),
@@ -820,6 +823,8 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             Task,
             Exempt,
         ),
+        (Method::POST, "/api/tasks/:id/close", Task, Grows),
+        (Method::POST, "/api/tasks/:id/reopen", Task, Grows),
         (Method::POST, "/api/tasks/:id/claim", Task, Grows),
         (Method::POST, "/api/tasks/:id/claim/heartbeat", Task, Grows),
         (Method::POST, "/api/tasks/:id/claim/release", Task, Grows),
@@ -980,6 +985,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::DELETE, "/api/bin/:id", Entity, Exempt),
         (Method::POST, "/api/bin/:id/restore", Entity, Grows),
         (Method::GET, "/api/boards/:id/tasks", Board, No),
+        (Method::GET, "/api/boards/:id/epics", Board, No),
         (Method::POST, "/api/boards/:id/fields", Board, Grows),
         (Method::GET, "/api/boards/:id/fields", Board, No),
         (Method::PATCH, "/api/fields/:id", Entity, Grows),
@@ -1545,6 +1551,8 @@ struct CellTask {
     completed_at: Option<String>,
     #[serde(default)]
     column_entered_at: Option<String>,
+    #[serde(default)]
+    kind: TaskKind,
 }
 
 /// One page of `GET /api/boards/{id}/tasks`.
@@ -4073,6 +4081,11 @@ struct FilterField {
 }
 
 impl BoardTemplate {
+    /// Returns the About text a new epic starts with.
+    fn epic_template(&self) -> &'static str {
+        EPIC_TEMPLATE
+    }
+
     /// Counts the columns that render at full width (board minimum).
     fn expanded_column_count(&self) -> usize {
         self.columns.len() - self.collapsed_column_count()
@@ -4238,6 +4251,10 @@ struct ExportTemplate {
 
 #[derive(Template)]
 #[template(path = "modal.html")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one switch the modal template reads"
+)]
 struct ModalTemplate {
     task: TaskView,
     is_done: bool,
@@ -4281,6 +4298,19 @@ struct ModalTemplate {
     custom_css: String,
     /// The role the signed-in account holds on the task's board.
     role: BoardRole,
+    /// Whether the task is an epic, which the modal lays out as About, Its cards and Comments.
+    is_epic: bool,
+    /// Whether someone closed the epic.
+    closed: bool,
+    /// What the About editor opens with: the description, or the epic template while an epic has
+    /// none.
+    description_seed: String,
+    /// The epic template rendered as markdown, shown while an epic has no description.
+    empty_about_html: String,
+    /// How far the children are done, as a whole percent, which is zero without children.
+    progress_percent: usize,
+    /// The swimlane the task sits in, where a new child of an epic lands.
+    swimlane_id: Option<String>,
 }
 
 impl ModalTemplate {
@@ -4302,6 +4332,7 @@ impl ModalTemplate {
             && self.assigned_members.is_empty()
             && self.responsible_session.is_none()
             && self.relation_count == 0
+            && !self.is_epic
     }
 
     /// Returns the avatar chips of the members assigned to subtask `id`.
@@ -4559,6 +4590,9 @@ impl PickerMode {
 /// The fold key that hides the done children in the modal's Children tab.
 const HIDE_DONE_CHILDREN_FOLD: &str = "children-done";
 
+/// What the About of an epic holds until someone writes one.
+const EPIC_TEMPLATE: &str = "## Problem\n\n## Goal\n\n## Approach\n\n## Out of scope";
+
 /// Most tasks the link picker lists.
 const LINK_PICKER_LIMIT: usize = 20;
 
@@ -4746,6 +4780,9 @@ fn board_template(
     let mut incomplete: HashSet<String> = HashSet::new();
     let mut tasks: Vec<TaskCard> = Vec::new();
     db.visit_board_cards(&board_id, |mut card| {
+        if !card.is_work() {
+            return Ok(());
+        }
         if fields_incomplete(&required, &card.fields) {
             incomplete.insert(card.id.clone());
         }
@@ -7462,7 +7499,15 @@ async fn remove_unnamed_attachment_files(
 
 #[derive(Deserialize, ToSchema)]
 struct CreateTaskInput {
-    column_id: String,
+    /// The column the task lands in. Needed for a task. For an epic it may be left out when
+    /// `board_id` is given.
+    column_id: Option<String>,
+    /// The board an epic lands on, in the board's first column by position. Needed for an epic
+    /// that names no `column_id`, and a 400 when it names another board than that column's.
+    board_id: Option<String>,
+    /// `task` (the default) or `epic`.
+    #[serde(default)]
+    kind: TaskKind,
     swimlane_id: Option<String>,
     name: String,
     size: Option<i64>,
@@ -7747,8 +7792,39 @@ fn run_search(
     })
 }
 
+/// Resolves the column a new task lands in: the named column, or for an epic with only a
+/// `board_id` that board's first column by position.
+fn create_target_column(db: &AccountDb, input: &CreateTaskInput) -> Result<OwnedColumn, AppError> {
+    let column_id = input.column_id.as_deref().filter(|id| !id.is_empty());
+    let board_id = input.board_id.as_deref().filter(|id| !id.is_empty());
+    let column_id = match (column_id, board_id) {
+        (Some(column_id), _) => column_id.to_string(),
+        (None, Some(board_id)) if input.kind == TaskKind::Epic => {
+            let board = found(db.board(board_id), "board not found")?;
+            db.list_columns(&board.row().id)
+                .map_err(AppError::from)?
+                .into_iter()
+                .next()
+                .map(|column| column.id)
+                .ok_or_else(|| AppError::bad_request("the board has no column"))?
+        }
+        (None, _) if input.kind == TaskKind::Epic => {
+            return Err(AppError::bad_request("column_id or board_id is required"));
+        }
+        (None, _) => return Err(AppError::bad_request("column_id is required")),
+    };
+    let column = found(db.column(&column_id), "column not found")?;
+    if let Some(board_id) = board_id
+        && column.row().board_id != board_id
+    {
+        return Err(AppError::bad_request("the column is not on board_id"));
+    }
+    Ok(column)
+}
+
 /// Creates a task. Bearer callers, and any caller sending `Accept: application/json`, receive the
-/// created task's detail as a 201 JSON body.
+/// created task's detail as a 201 JSON body. With `kind` `epic` the task is an epic, and `column_id`
+/// may be left out when `board_id` is given.
 #[utoipa::path(
     post,
     path = "/api/tasks",
@@ -7757,8 +7833,8 @@ fn run_search(
     request_body = CreateTaskInput,
     responses(
         (status = 201, description = "Created task", body = TaskDetail),
-        (status = 400, description = "Invalid input: empty name or unparseable due_at"),
-        (status = 404, description = "Column not found"),
+        (status = 400, description = "Invalid input: empty name, unparseable due_at, neither `column_id` nor (for an epic) `board_id`, or a `board_id` that is not the column's board"),
+        (status = 404, description = "Column or board not found"),
         (status = 409, description = "The board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -7772,10 +7848,7 @@ async fn create_task(
     let body_len = body.len();
     let input: CreateTaskInput = parse_body(&headers, body).await?;
     let db = &account;
-    let column = db
-        .column(&input.column_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("column not found"))?;
+    let column = create_target_column(db, &input)?;
     let patch = input
         .metadata
         .as_ref()
@@ -7869,6 +7942,7 @@ async fn create_task(
         }
     }
     row.points = points.map(round_estimate);
+    row.kind = input.kind;
 
     // Optional due date at creation (same format rules as the PATCH path). A repeat without a due
     // date is dropped.
@@ -8157,6 +8231,15 @@ struct UpdateTaskInput {
     #[serde(default, deserialize_with = "de_opt_opt")]
     #[schema(value_type = Object, required = false)]
     fields: Option<Option<serde_json::Value>>,
+    /// `epic` turns a task into an epic and needs only `tasks.write`. `task` turns an epic back
+    /// into a plain task, needs `epics.manage`, and is a 409 `epic_has_children` while the epic
+    /// has children unless `unlink_children` is true. `epic` is a 409 `claim_held` while the task
+    /// holds a live claim. Naming the kind the task already has is a 400. Absent leaves it
+    /// unchanged.
+    kind: Option<TaskKind>,
+    /// With `kind` `task`, deletes each child's parent link to the epic in the same write. Without
+    /// `kind` `task` it is a 400 when true.
+    unlink_children: Option<bool>,
 }
 
 impl UpdateTaskInput {
@@ -8183,6 +8266,8 @@ impl UpdateTaskInput {
             fields,
             timeline_start,
             timeline_end,
+            kind,
+            unlink_children,
         } = self;
         (labels.is_some() || labels_add.is_some() || labels_remove.is_some())
             && name.is_none()
@@ -8202,6 +8287,8 @@ impl UpdateTaskInput {
             && fields.is_none()
             && timeline_start.is_none()
             && timeline_end.is_none()
+            && kind.is_none()
+            && unlink_children.is_none()
     }
 }
 
@@ -8500,9 +8587,10 @@ fn update_history(
     request_body = UpdateTaskInput,
     responses(
         (status = 200, description = "Updated task detail", body = TaskDetail),
-        (status = 400, description = "Invalid input"),
+        (status = 400, description = "Invalid input, including `kind` naming the kind the task already has and `unlink_children` true without `kind` `task`"),
+        (status = 403, description = "`permission_denied`: `kind` `task` needs `epics.manage`. `card_locked`: the task carries a locking label"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`stale_fence`: a live claim holds another fence"),
+        (status = 409, description = "`stale_fence`: a live claim holds another fence. `epic_has_children`: `kind` `task` on an epic that has children, without `unlink_children`. `claim_held`: `kind` `epic` on a task with a live claim"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -8516,6 +8604,13 @@ async fn update_task(
     let body_len = body.len();
     let input: UpdateTaskInput = parse_body(&headers, body).await?;
     let db = &account;
+    let unlink_children = input.unlink_children == Some(true);
+    if unlink_children && input.kind != Some(TaskKind::Task) {
+        return Err(AppError::bad_request("unlink_children needs kind task"));
+    }
+    if input.kind == Some(TaskKind::Task) && !user.has(Permission::EpicsManage) {
+        return Err(AppError::permission_denied(Permission::EpicsManage));
+    }
     let owned = found(db.task(&id), "task not found")?;
     let rules = board_rules(db, owned.board_id())?;
     let only_labels = input.only_labels();
@@ -8530,6 +8625,15 @@ async fn update_task(
     };
     if !unlocks {
         ensure_unlocked(db, &user, owned.board_id(), owned.row())?;
+    }
+    if unlink_children {
+        let links = db
+            .list_task_links(&id)
+            .map_err(AppError::from)?
+            .unwrap_or_default();
+        for link in links.iter().filter(|link| link.kind == LinkKind::Child) {
+            ensure_task_id_unlocked(db, &user, &link.target_id)?;
+        }
     }
     let entry_rule = entry_rule_of(db, owned.board_id(), &owned.row().column_id)?;
     let metadata = check_task_metadata(input.metadata.as_ref().map(Option::as_ref), body_len)?;
@@ -8628,8 +8732,13 @@ async fn update_task(
 
     // One write transaction runs every check that reads stored state
     // A failed check writes nothing
+    let children = if unlink_children {
+        ChildLinks::Remove
+    } else {
+        ChildLinks::Keep
+    };
     let applied = db
-        .apply_task_change_in_board(&owned, actor, |task, context| {
+        .apply_task_change_in_board(&owned, children, actor, |task, context| {
             // A failed check returns before the row is stored
             let mut apply = || -> Result<(), AppError> {
                 if !task.fence_allows(fence) {
@@ -8682,6 +8791,34 @@ async fn update_task(
                     } else {
                         task.fields.insert(key, value);
                     }
+                }
+                if let Some(kind) = input.kind {
+                    if task.kind == kind {
+                        return Err(AppError::bad_request(format!(
+                            "the task is already kind {}",
+                            kind.as_str()
+                        )));
+                    }
+                    if kind == TaskKind::Task && !unlink_children && !context.child_ids.is_empty() {
+                        return Err(AppError::conflict(
+                            "the epic has children: send unlink_children true to unlink them",
+                        )
+                        .with_code(ErrorCode::EpicHasChildren));
+                    }
+                    if let (TaskKind::Epic, Some(claim)) = (kind, before.live_claim()) {
+                        return Err(claim_conflict(claim));
+                    }
+                    if unlink_children {
+                        db.check_tasks_granted(&context.child_ids)?;
+                    }
+                    task.kind = kind;
+                    task.closed = false;
+                    let change = EventChange {
+                        from: Some(before.kind.as_str().to_string()),
+                        to: Some(kind.as_str().to_string()),
+                    };
+                    let detail = format!("Changed the kind to {}", kind.as_str());
+                    push_change_event(task, "kind_changed", detail, actor, change);
                 }
                 if let Some(name) = input.name.as_deref() {
                     task.name = name.trim().to_string();
@@ -9099,7 +9236,7 @@ struct MoveTaskInput {
     request_body = MoveTaskInput,
     responses(
         (status = 200, description = "Moved task detail", body = TaskDetail),
-        (status = 400, description = "Unknown column"),
+        (status = 400, description = "Unknown column, or the task is an epic (an epic cannot be moved)"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit). `stale_fence`: a live claim holds another fence. Without a code: the target board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -9165,7 +9302,7 @@ async fn move_task(
         };
         let mut cell: Vec<(f64, String, Option<chrono::NaiveDate>)> = Vec::new();
         db.visit_board_tasks(&to_column.row().board_id, |t: CellTask| {
-            if t.column_id == to_column.row().id && t.swimlane_id == lane {
+            if t.kind.is_work() && t.column_id == to_column.row().id && t.swimlane_id == lane {
                 let date = done_group_date(
                     t.grouping_date.as_deref(),
                     t.completed_at.as_deref(),
@@ -9220,6 +9357,7 @@ async fn move_task(
         fence,
         enforce_wip: !query.force.unwrap_or(false),
         batch: &[],
+        allow_epic: false,
     };
     match db
         .move_task_logged(
@@ -9235,6 +9373,7 @@ async fn move_task(
         MoveOutcome::Moved => {}
         MoveOutcome::NotFound => return Err(AppError::not_found("task not found")),
         MoveOutcome::StaleFence => return Err(stale_fence()),
+        MoveOutcome::Epic => return Err(epic_not_movable()),
         MoveOutcome::WipLimit { count, limit } => {
             return Err(
                 AppError::conflict(format!("column WIP limit reached ({count}/{limit})"))
@@ -9413,7 +9552,7 @@ struct BulkTasksResult {
     request_body = BulkTasksInput,
     responses(
         (status = 200, description = "Every task changed, or would change under `dry_run`", body = BulkTasksResult),
-        (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, or a `relations` change with no links, an unknown kind, a target among the tasks or a link the tasks cannot hold"),
+        (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks or a link the tasks cannot hold, or a move of an epic (an epic cannot be moved)"),
         (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task, or a task it links to, carries a locking label and the token is not the owner's"),
         (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -9719,6 +9858,7 @@ async fn bulk_tasks(
             {
                 MoveOutcome::Moved => {}
                 MoveOutcome::NotFound => return Err(AppError::not_found("task not found")),
+                MoveOutcome::Epic => return Err(epic_not_movable()),
                 MoveOutcome::StaleFence | MoveOutcome::WipLimit { .. } => {
                     return Err(AppError::conflict("the tasks could not be moved"));
                 }
@@ -10456,6 +10596,10 @@ async fn restore_task(
 }
 
 #[derive(serde::Serialize, ToSchema)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the flat JSON shape of the task API is the contract"
+)]
 struct TaskDetail {
     id: String,
     /// Path that opens the card in the browser, `/t/{id}`.
@@ -10489,6 +10633,10 @@ struct TaskDetail {
     timeline_end: Option<String>,
     /// The id of the image attachment shown as the task's cover, or null.
     cover_id: Option<String>,
+    /// `task` or `epic`.
+    kind: TaskKind,
+    /// True when someone closed the epic. Always false for a task.
+    closed: bool,
     /// Watch flag: task More menu "Watch" (KanbanFlow parity).
     watched: bool,
     subtasks: Vec<SubtaskDetail>,
@@ -10641,6 +10789,8 @@ impl TaskDetail {
             timeline_start: task.timeline_start,
             timeline_end: task.timeline_end,
             cover_id: task.cover_id,
+            kind: task.kind,
+            closed: task.closed,
             watched: task.watched,
             subtasks: task.subtasks.iter().map(SubtaskDetail::from).collect(),
             labels: task.labels,
@@ -10969,6 +11119,88 @@ fn claim_conflict(claim: &TaskClaim) -> AppError {
     .with_code(ErrorCode::ClaimHeld)
 }
 
+/// Closes an epic. Pomb never closes an epic when its children finish: only this call does, and
+/// it needs `epics.manage`. The children, their links and the epic's column stay as they are.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/close",
+    operation_id = "close_task",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "The closed epic", body = TaskDetail),
+        (status = 400, description = "The task is not an epic, or the epic is already closed"),
+        (status = 403, description = "`permission_denied`: closing needs `epics.manage`. `card_locked`: the task carries a locking label"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn close_task(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<TaskDetail>, AppError> {
+    set_epic_closed(&account, &user, &id, true)
+}
+
+/// Reopens a closed epic. It needs `epics.manage`.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/reopen",
+    operation_id = "reopen_task",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "The reopened epic", body = TaskDetail),
+        (status = 400, description = "The task is not an epic, or the epic is not closed"),
+        (status = 403, description = "`permission_denied`: reopening needs `epics.manage`. `card_locked`: the task carries a locking label"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn reopen_task(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<TaskDetail>, AppError> {
+    set_epic_closed(&account, &user, &id, false)
+}
+
+/// Closes or reopens an epic for the caller, after the permission and lock checks.
+fn set_epic_closed(
+    account: &AccountDb,
+    user: &AuthUser,
+    id: &str,
+    closed: bool,
+) -> Result<Json<TaskDetail>, AppError> {
+    if !user.has(Permission::EpicsManage) {
+        return Err(AppError::permission_denied(Permission::EpicsManage));
+    }
+    let owned = found(account.task(id), "task not found")?;
+    ensure_unlocked(account, user, owned.board_id(), owned.row())?;
+    match account
+        .set_epic_closed(&owned, closed, user.actor())
+        .map_err(AppError::from)?
+    {
+        EpicCloseOutcome::Changed => {}
+        EpicCloseOutcome::Unchanged => {
+            let state = if closed { "closed" } else { "not closed" };
+            return Err(AppError::bad_request(format!(
+                "the epic is already {state}"
+            )));
+        }
+        EpicCloseOutcome::NotEpic => return Err(AppError::bad_request("the task is not an epic")),
+        EpicCloseOutcome::NotFound => return Err(AppError::not_found("task not found")),
+    }
+    let task = found(account.task(id), "task not found")?;
+    Ok(Json(TaskDetail::load(account, task.into_row())?))
+}
+
+/// Returns the 400 a move answers when it names an epic.
+fn epic_not_movable() -> AppError {
+    AppError::bad_request("an epic cannot be moved")
+}
+
 /// Claims a task, or renews the caller's own live claim.
 #[utoipa::path(
     post,
@@ -10981,7 +11213,7 @@ fn claim_conflict(claim: &TaskClaim) -> AppError {
         (status = 200, description = "The claim", body = TaskClaim),
         (status = 400, description = "Missing claimant, ttl_seconds outside 1..86400, or a claimant, role, harness, model, jj_workspace, jj_change_id or session_id over 200 characters"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`claim_held`: task claimed by <claimant> until <expires_at>"),
+        (status = 409, description = "`claim_held`: task claimed by <claimant> until <expires_at>. `epic_not_claimable`: the task is an epic"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -10995,6 +11227,12 @@ async fn claim_task(
     let input: ClaimInput = parse_body(&headers, body).await?;
     let task = found(account.task(&id), "task not found")?;
     ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    if !task.row().is_work() {
+        return Err(
+            AppError::conflict("an epic holds no work, so it cannot be claimed")
+                .with_code(ErrorCode::EpicNotClaimable),
+        );
+    }
     let claimant = input
         .claimant
         .as_deref()
@@ -13877,7 +14115,28 @@ async fn task_modal(
     };
     let groups = relation_groups(db, &board_id, &id)?;
     let custom_css = board_custom_css(db, &board_id)?;
+    let is_epic = row.row().kind == TaskKind::Epic;
+    let seed_template = is_epic && task.description.is_empty();
+    let description_seed = if seed_template {
+        EPIC_TEMPLATE.to_string()
+    } else {
+        task.description.clone()
+    };
+    let empty_about_html = if seed_template {
+        markdown::render(EPIC_TEMPLATE)
+    } else {
+        String::new()
+    };
+    let progress_percent = (task.children_done * 100)
+        .checked_div(task.children_total)
+        .unwrap_or(0);
     Ok(ModalTemplate {
+        is_epic,
+        closed: row.row().closed,
+        swimlane_id: row.row().swimlane_id.clone(),
+        description_seed,
+        empty_about_html,
+        progress_percent,
         custom_css,
         role,
         board_id,
@@ -17309,6 +17568,10 @@ struct TaskSummary {
     swimlane_id: Option<String>,
     /// Sort order within the task's column and swimlane cell.
     position: f64,
+    /// `task` or `epic`.
+    kind: TaskKind,
+    /// True when someone closed the epic. Always false for a task.
+    closed: bool,
     labels: Vec<String>,
     member_ids: Vec<String>,
     /// The one actor the task is the responsibility of, or null. A member is one of `member_ids`,
@@ -17343,6 +17606,8 @@ impl TaskSummary {
             column_id: task.column_id,
             swimlane_id: task.swimlane_id,
             position: task.position,
+            kind: task.kind,
+            closed: task.closed,
             labels: task.labels,
             member_ids: task.member_ids,
             responsible: task.responsible,
@@ -17372,7 +17637,8 @@ struct BoardTasksQuery {
     /// Percent-encode a `+` offset or use `Z`.
     #[param(value_type = Option<String>)]
     since: Option<DateTime<chrono::FixedOffset>>,
-    /// true: only tasks that are not blocked; false: only blocked tasks.
+    /// true: only work that is not blocked; false: only blocked work. An epic is neither, so both
+    /// leave it out.
     ready: Option<bool>,
     /// true: only tasks with a live claim; false: only unclaimed tasks.
     claimed: Option<bool>,
@@ -17466,7 +17732,9 @@ impl BoardTasksQuery {
                 .is_none_or(|id| task.color_id.as_ref() == Some(id))
             && self.label.iter().all(|label| task.labels.contains(label))
             && self.since.as_ref().is_none_or(updated_after)
-            && self.ready.is_none_or(|ready| ready != blocked)
+            && self
+                .ready
+                .is_none_or(|ready| task.is_work() && ready != blocked)
             && self
                 .claimed
                 .is_none_or(|claimed| claimed == task.live_claim().is_some())
@@ -17565,6 +17833,82 @@ async fn list_board_tasks(
         }
     }
     Ok(Json(TaskSummaryPage { items, next_cursor }))
+}
+
+/// One epic in `GET /api/boards/{id}/epics`.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct EpicProgress {
+    /// The epic's task id.
+    id: String,
+    /// The epic's name.
+    name: String,
+    /// Whether someone closed the epic.
+    closed: bool,
+    /// The id of the epic this epic is a child of, or null.
+    parent_id: Option<String>,
+    /// How many direct children the epic has, on any board.
+    children_total: usize,
+    /// How many of those children sit in a done column right now.
+    children_done: usize,
+}
+
+/// Lists the epics on a board with their progress: open epics by name, then closed ones by name.
+/// Only direct children count, wherever they sit, and a child is done when its column is a done
+/// column at the time of the request. Children on boards the caller cannot reach are left out of
+/// both counts.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/epics",
+    operation_id = "list_board_epics",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "The board's epics with their progress", body = Vec<EpicProgress>),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
+    )
+)]
+async fn list_board_epics(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<EpicProgress>>, AppError> {
+    found(account.board(&id), "Board not found")?;
+    let mut reads = account.link_reads().map_err(AppError::from)?;
+    let heads = reads
+        .board_tasks::<TaskHead>(&id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .filter(|head| head.kind == TaskKind::Epic);
+    let mut epics = Vec::new();
+    for head in heads {
+        let links = reads.task_links(&head.id).map_err(AppError::from)?;
+        let children = reads.children(&links).map_err(AppError::from)?;
+        let parent_id = match head.links.iter().find(|link| link.kind == LinkKind::Parent) {
+            Some(link) => reads
+                .head(&link.target_id)
+                .map_err(AppError::from)?
+                .filter(|above| above.kind == TaskKind::Epic)
+                .map(|above| above.id.clone()),
+            None => None,
+        };
+        epics.push(EpicProgress {
+            id: head.id,
+            name: head.name,
+            closed: head.closed,
+            parent_id,
+            children_total: children.len(),
+            children_done: children.iter().filter(|child| child.done).count(),
+        });
+    }
+    epics.sort_by(|a, b| {
+        a.closed
+            .cmp(&b.closed)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(Json(epics))
 }
 
 /// A custom field defined on a board.
@@ -24644,6 +24988,8 @@ them, which the Backups section of the settings page calls after a confirmation.
         change_task_umbrella,
         list_task_links,
         delete_task_link,
+        close_task,
+        reopen_task,
         claim_task,
         heartbeat_claim,
         release_claim,
@@ -24713,6 +25059,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         restore_task,
         get_board_detail,
         list_board_tasks,
+        list_board_epics,
         create_board_field,
         list_board_fields,
         update_board_field,
@@ -24961,6 +25308,7 @@ them, which the Backups section of the settings page calls after a confirmation.
             UnnamedFiles,
             BoardListItem,
             ColumnListItem,
+            EpicProgress,
             VersionInfo,
             TemplateListItem,
             ColorView,
@@ -25041,6 +25389,9 @@ mod events_tests;
 mod history_values_tests;
 
 #[cfg(test)]
+mod epics_tests;
+
+#[cfg(test)]
 mod import_tests;
 
 #[cfg(test)]
@@ -25112,7 +25463,7 @@ mod tests {
     use crate::models::{
         AccountId, Actor, ActorKind, ApiTokenRecord, AuthScope, BoardRole, ColumnRow, EntryKind,
         FeedTask, FieldDefRow, FieldKind, FieldOwner, MAX_BOARD_FEEDS, MAX_REPORT_BOOKMARKS,
-        SECONDS_PER_DAY, TaskRow, TimeFormat, WebhookEvent, WebhookRow, WeekStart,
+        SECONDS_PER_DAY, TaskKind, TaskRow, TimeFormat, WebhookEvent, WebhookRow, WeekStart,
     };
     use crate::{AppState, auth, markdown};
 
@@ -25841,6 +26192,8 @@ mod tests {
             comments: Vec::new(),
             attachments: Vec::new(),
             cover_id: None,
+            kind: TaskKind::Task,
+            closed: false,
             history: Vec::new(),
             updated_at: None,
             metadata: None,

@@ -633,11 +633,13 @@ fn menu_actions(html: &str, menu_id: &str, attribute: &str) -> Vec<String> {
         .collect()
 }
 
-const WRITE_CARD_ACTIONS: [&str; 8] = [
+const WRITE_CARD_ACTIONS: [&str; 10] = [
     "timer",
     "move",
     "color",
     "assign-members",
+    "make-epic",
+    "add-to-epic",
     "grouping-date",
     "copy-here",
     "copy",
@@ -696,14 +698,57 @@ async fn board_page_should_keep_the_owner_every_column_and_card_menu_entry() {
     }
 }
 
-const MODAL_WRITE_CONTROLS: [&str; 6] = [
+const MODAL_WRITE_CONTROLS: [&str; 8] = [
     "data-claim-take",
     "tm-add-menu",
     "data-tm-act=\"move\"",
     "tm-timer-menu",
     "data-tm-act=\"delete\"",
     "tm-claim-ttl",
+    "data-tm-act=\"make-epic\"",
+    "data-tm-act=\"add-to-epic\"",
 ];
+
+const EPIC_MODAL_WRITE_CONTROLS: [&str; 6] = [
+    "data-tm-act=\"close-epic\"",
+    "data-tm-act=\"make-card\"",
+    "data-tm-act=\"delete\"",
+    "data-link-open=\"child\"",
+    "data-new-child-open",
+    "data-unlink-child",
+];
+
+#[tokio::test]
+async fn epic_modal_should_hide_the_epic_write_controls_from_a_viewer_alone() {
+    let fx = Fixture::new();
+    let child = fx
+        .db
+        .create_task(&fx.column, None, "Child", 2, None)
+        .expect("task");
+    let linked = fx
+        .db
+        .add_task_link(&child, LinkKind::Parent, &fx.task, None, Actor::SYSTEM)
+        .expect("link");
+    assert!(matches!(linked, LinkAddOutcome::Added(_)));
+    let made = fx
+        .send(
+            OWNER,
+            "PATCH",
+            &fx.fill("/api/tasks/{task}"),
+            Some(json!({"kind": "epic"})),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    for who in [VIEWER, MEMBER, OWNER] {
+        let page = fx
+            .send(who, "GET", &fx.fill("/api/tasks/{task}/modal"), None)
+            .await;
+        let html = page.body.as_str().expect("html");
+        for control in EPIC_MODAL_WRITE_CONTROLS {
+            assert_eq!(html.contains(control), who != VIEWER, "{control} for {who}");
+        }
+    }
+}
 
 #[tokio::test]
 async fn task_modal_should_hide_the_write_controls_from_a_viewer() {

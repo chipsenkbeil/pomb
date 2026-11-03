@@ -246,6 +246,10 @@
         onEnd: function (evt) {
           window.setTimeout(function () { dragging = false; }, 80);
           markDoneTarget(null);
+          if (window.BoardChrome && BoardChrome.unfold) {
+            BoardChrome.unfold();
+            window.setTimeout(function () { BoardChrome.refold(); }, 0);
+          }
           var card = evt.item;
           var toList = evt.to;
           var fromList = evt.from;
@@ -253,16 +257,16 @@
           // the card back where it was and moves nothing.
           if (droppedOnCollapsedStrip()) {
             var cardsHere = Array.prototype.filter.call(fromList.querySelectorAll('.task-card'), function (el) { return el !== card; });
-            if (cardsHere[evt.oldIndex]) fromList.insertBefore(card, cardsHere[evt.oldIndex]);
+            if (cardsHere[evt.oldDraggableIndex]) fromList.insertBefore(card, cardsHere[evt.oldDraggableIndex]);
             else if (cardsHere.length) cardsHere[cardsHere.length - 1].after(card);
             return;
           }
           // KF-371: a sorted column's order is its sort order, so a drop
           // within it snaps straight back.
           if (toList === fromList && toList.dataset.sorted === '1') {
-            if (evt.oldIndex !== evt.newIndex) {
-              var rest = Array.prototype.filter.call(fromList.children, function (el) { return el !== card; });
-              fromList.insertBefore(card, rest[evt.oldIndex] || null);
+            if (evt.oldDraggableIndex !== evt.newDraggableIndex) {
+              var rest = Array.prototype.filter.call(fromList.querySelectorAll('.task-card'), function (el) { return el !== card; });
+              fromList.insertBefore(card, rest[evt.oldDraggableIndex] || null);
               toast('This column is sorted, so its order follows the sorting.');
             }
             return;
@@ -314,6 +318,7 @@
             tmp.innerHTML = html;
             var fresh = tmp.firstElementChild;
             if (fresh) card.replaceWith(fresh);
+            if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
             paintSelection();
             // KF-199: the server-rendered card carries no client-side timer
             // state — re-apply the timer outline and live badge immediately
@@ -341,6 +346,10 @@
   ['dragover', 'pointermove', 'mousemove'].forEach(function (type) {
     document.addEventListener(type, function (e) { lastDragPoint = { x: e.clientX, y: e.clientY }; }, true);
   });
+
+  document.addEventListener('dragover', function (e) {
+    if (window.BoardChrome && BoardChrome.foldDragOver) BoardChrome.foldDragOver(e.target);
+  }, true);
 
   function droppedOnCollapsedStrip() {
     if (!lastDragPoint) return false;
@@ -1233,6 +1242,7 @@
           list.appendChild(card);
         }
         if (window.htmx) window.htmx.process(card);
+        if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
         refreshCardSecStates(); // KF-224: new card honors section state
       }
       updateColumnCount(colId, 1, cardEstimateMinutes(card));
@@ -1430,6 +1440,10 @@
     document.querySelectorAll('.tm-menu').forEach(function (m) {
       if (!m.hidden) { m.hidden = true; any = true; }
     });
+    var epicList = document.getElementById('tm-epic-list');
+    if (epicList) epicList.hidden = true;
+    var epicTrigger = document.querySelector('[data-tm-act="add-to-epic"]');
+    if (epicTrigger) epicTrigger.setAttribute('aria-expanded', 'false');
     return any;
   }
 
@@ -1631,6 +1645,8 @@
       hideFloatingMenus();
       cardMenuCard = card;
       cardMenuPoint = { x: x, y: y };
+      epicHoverTried = false;
+      hoveredAct = null;
       var groupingDate = document.querySelector('#card-ctx-menu [data-card-act="grouping-date"]');
       if (groupingDate) groupingDate.hidden = !card.closest('[data-done-column="true"]');
       placeMenu(document.getElementById('card-ctx-menu'), x, y);
@@ -1645,7 +1661,7 @@
 
     function hideCardSubmenu() {
       var sub = document.getElementById('card-ctx-submenu');
-      if (sub) { sub.hidden = true; sub.innerHTML = ''; sub.classList.remove('card-sub--color'); sub.dataset.for = ''; }
+      if (sub) { sub.hidden = true; sub.innerHTML = ''; sub.classList.remove('card-sub--color', 'card-sub--epics'); sub.dataset.for = ''; }
     }
 
     // KF-334: the submenu opens beside the card menu, which stays open
@@ -1653,7 +1669,7 @@
     function openCardSubmenu(btn, buildItems) {
       var sub = document.getElementById('card-ctx-submenu');
       sub.innerHTML = '';
-      sub.classList.remove('card-sub--color');
+      sub.classList.remove('card-sub--color', 'card-sub--epics');
       sub.dataset.for = '';
       buildItems(sub);
       var r = btn.getBoundingClientRect();
@@ -1688,15 +1704,49 @@
       return b;
     }
 
-    document.getElementById('card-ctx-menu').addEventListener('mouseover', function (e) {
-      var item = e.target.closest('[data-card-act]');
-      if (!item) return;
+    var epicSubmenuLoading = false;
+    var epicHoverTried = false;
+    var hoveredAct = null;
+
+    function openEpicSubmenu(btn, task) {
+      var card = cardMenuCard;
+      if (!card || epicSubmenuLoading) return;
+      epicSubmenuLoading = true;
+      BoardChrome.epicChoices(task.id).then(function (choices) {
+        epicSubmenuLoading = false;
+        if (cardMenuCard !== card || document.getElementById('card-ctx-menu').hidden) return;
+        if (hoveredAct !== null && hoveredAct !== 'add-to-epic') return;
+        if (!choices) { toast('Could not load epics.'); return; }
+        openCardSubmenu(btn, function (sub) {
+          sub.dataset.for = 'epic';
+          sub.classList.add('card-sub--epics');
+          appendEpicChoices(sub, choices, function (label, epicId) {
+            return cardSubmenuButton(label, 'epic', { 'data-epic-id': epicId });
+          });
+        });
+      }, function () { epicSubmenuLoading = false; });
+    }
+
+    function hoverCardMenuItem(item) {
       var sub = document.getElementById('card-ctx-submenu');
-      if (item.getAttribute('data-card-act') === 'move') {
+      var act = item.getAttribute('data-card-act');
+      hoveredAct = act;
+      if (act === 'move') {
         if (sub.hidden || sub.dataset.for !== 'move') item.click();
-      } else if (sub.dataset.for === 'move') {
+      } else if (act === 'add-to-epic') {
+        if (epicSubmenuLoading || (!sub.hidden && sub.dataset.for === 'epic')) return;
+        if (BoardChrome.epicsLoaded || !epicHoverTried) {
+          epicHoverTried = true;
+          item.click();
+        }
+      } else if (sub.dataset.for === 'move' || sub.dataset.for === 'epic') {
         hideCardSubmenu();
       }
+    }
+
+    document.getElementById('card-ctx-menu').addEventListener('mouseover', function (e) {
+      var item = e.target.closest('[data-card-act]');
+      if (item) hoverCardMenuItem(item);
     });
 
     document.getElementById('card-ctx-menu').addEventListener('click', function (e) {
@@ -1735,6 +1785,8 @@
           // "Move advanced" (always available).
           sub.appendChild(cardSubmenuButton('Move advanced', 'move-advanced'));
         });
+      } else if (act === 'add-to-epic') {
+        openEpicSubmenu(btn, task);
       } else if (act === 'color') {
         openCardSubmenu(btn, function (sub) {
           // KF-333: each row is tinted with its colour; the card's own colour
@@ -1763,6 +1815,7 @@
         else if (act === 'copy') openCopyDialog(task ? task.id : null);
         else if (act === 'task-url') copyTaskUrl(task ? task.id : null);
         else if (act === 'delete') deleteCardTask(task);
+        else if (act === 'make-epic') makeCardEpic(task);
       }
     });
 
@@ -1867,7 +1920,9 @@
       var task = cardMenuTask();
       hideCardSubmenu();
       hideFloatingMenus();
-      if (sub === 'move-right') {
+      if (sub === 'epic') {
+        addCardToEpic(cardMenuCard, btn.getAttribute('data-epic-id'));
+      } else if (sub === 'move-right') {
         // KF-334: move to the column to the right, placed per the board's setting.
         var colId = btn.getAttribute('data-column-id');
         var curList = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
@@ -1970,6 +2025,7 @@
             var estimate = cardEstimateMinutes(cardMenuCard);
             if (cardMenuCard && cardMenuCard.parentNode) cardMenuCard.remove();
             cardMenuCard = null;
+            if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
             if (colId) updateColumnCount(colId, -1, -estimate);
             syncTimerAfterDelete();
           });
@@ -2148,6 +2204,7 @@
       label.hidden = !shown;
     });
     more.hidden = !list.querySelector('.task-card[hidden]');
+    if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
   });
 
   // Generic dialog wiring on every page: [data-close-dialog] hides its overlay.
@@ -3073,6 +3130,7 @@
 
   function selectModalTab(name) {
     if (MODAL_TABS.indexOf(name) === -1) return;
+    if (document.querySelector('#modal-root .task-modal.tm-epic')) return;
     if (!document.getElementById('tm-tab-' + name)) name = 'description';
     modalTab = name;
     Array.prototype.forEach.call(document.querySelectorAll('#modal-root [data-tm-tab]'), function (tab) {
@@ -3126,6 +3184,7 @@
   }
 
   var LINK_PICKER_DEBOUNCE_MS = 150;
+  var EPICS_REFRESH_DEBOUNCE_MS = 150;
   var HIDE_DONE_CHILDREN_FOLD = 'children-done';
   var LinkKind = { CHILD: 'child', PARENT: 'parent' };
   var linkPicker = { mode: null, onPick: null, timer: null, seq: 0, opener: null, board: null };
@@ -3214,6 +3273,80 @@
         refreshAfterLinkChange();
       })
       .catch(function (err) { toast(linkFailure(err, 'Could not link the child.')); });
+  }
+
+  var newChildBusy = false;
+
+  function closeNewChild(row, open) {
+    var input = row.querySelector('[data-new-child-input]');
+    input.value = '';
+    row.hidden = true;
+    open.focus();
+  }
+
+  function createNewChild(row) {
+    if (newChildBusy) return;
+    var modal = document.querySelector('#modal-root .task-modal');
+    var input = row.querySelector('[data-new-child-input]');
+    var name = input.value.trim();
+    if (!modal || !name) { input.focus(); return; }
+    var epicId = modal.dataset.taskId;
+    var body = { column_id: modal.dataset.columnId, name: name };
+    if (modal.dataset.swimlaneId) body.swimlane_id = modal.dataset.swimlaneId;
+    newChildBusy = true;
+    var created = null;
+    fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(body)
+    })
+      .then(function (res) {
+        return res.text().then(function (text) {
+          if (!res.ok) throw linkError(text || 'Could not create the card.');
+          return JSON.parse(text);
+        });
+      })
+      .then(function (task) {
+        created = task;
+        return addTaskLink(epicId, LinkKind.CHILD, task.id);
+      })
+      .then(function () {
+        newChildBusy = false;
+        modalTab = 'children';
+        refreshAfterLinkChange();
+      })
+      .catch(function (err) {
+        newChildBusy = false;
+        if (!created) {
+          toast(linkFailure(err, 'Could not create the card.'));
+          return;
+        }
+        toast('Created "' + name + '" but could not add it to this epic. It is in the same column.');
+        refreshAfterLinkChange();
+      });
+  }
+
+  function wireNewChild(overlay) {
+    var row = overlay.querySelector('[data-new-child-row]');
+    var open = overlay.querySelector('[data-new-child-open]');
+    if (!row || !open) return;
+    var input = row.querySelector('[data-new-child-input]');
+    open.addEventListener('click', function () {
+      row.hidden = false;
+      input.focus();
+    });
+    row.querySelector('[data-new-child-create]').addEventListener('click', function () { createNewChild(row); });
+    row.querySelector('[data-new-child-cancel]').addEventListener('click', function () { closeNewChild(row, open); });
+    input.addEventListener('keydown', function (e) {
+      e.stopPropagation();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        createNewChild(row);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeNewChild(row, open);
+      }
+    });
   }
 
   function changeUmbrella(targetId) {
@@ -3398,6 +3531,7 @@
     Array.prototype.forEach.call(overlay.querySelectorAll('[data-link-open="child"]'), function (btn) {
       btn.addEventListener('click', function () { openLinkPicker(LinkKind.CHILD, pickChild); });
     });
+    wireNewChild(overlay);
     Array.prototype.forEach.call(overlay.querySelectorAll('[data-unlink-child]'), function (btn) {
       btn.addEventListener('click', function () { unlinkChild(btn.getAttribute('data-unlink-child')); });
     });
@@ -4603,9 +4737,249 @@
       }, function () { toast('Could not save description.'); });
   }
 
+  function epicModalFacts() {
+    var modal = document.querySelector('#modal-root .task-modal.tm-epic');
+    if (!modal) return null;
+    var nameInput = document.getElementById('modal-name');
+    var done = parseInt(modal.dataset.childrenDone, 10) || 0;
+    var total = parseInt(modal.dataset.childrenTotal, 10) || 0;
+    return { name: nameInput ? nameInput.value : '', done: done, total: total, open: Math.max(total - done, 0) };
+  }
+
+  function epicRequest(path, method, body) {
+    return fetch(path, {
+      method: method,
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    }).then(function (res) {
+      return res.text().then(function (text) {
+        if (!res.ok) throw text ? linkError(text) : new Error('refused');
+        return text;
+      });
+    });
+  }
+
+  function setEpicClosed(id, closed) {
+    epicRequest('/api/tasks/' + encodeURIComponent(id) + (closed ? '/close' : '/reopen'), 'POST')
+      .then(refreshAfterLinkChange)
+      .catch(function (err) {
+        toast(linkFailure(err, closed ? 'Could not close the epic.' : 'Could not reopen the epic.'));
+      });
+  }
+
+  function closeModalEpic() {
+    var id = modalTaskId();
+    var epic = epicModalFacts();
+    if (!id || !epic) return;
+    if (epic.open === 0) { setEpicClosed(id, true); return; }
+    showConfirmDialog('Close epic',
+      epic.open + ' of ' + epic.total + ' cards are still open. Close anyway? They stay where they are.',
+      'Close anyway', function () { setEpicClosed(id, true); });
+  }
+
+  function epicCardsPhrase(total) {
+    return total === 1
+      ? 'Its 1 card stays on the board and loses its link to it.'
+      : 'Its ' + total + ' cards stay on the board and lose their link to it.';
+  }
+
+  function unmakeModalEpic() {
+    var id = modalTaskId();
+    var epic = epicModalFacts();
+    if (!id || !epic) return;
+    var message = 'Make "' + epic.name + '" an ordinary card?';
+    if (epic.total > 0) message += ' ' + epicCardsPhrase(epic.total);
+    showConfirmDialog('Make it a card', message, 'Make it a card', function () {
+      epicRequest('/api/tasks/' + encodeURIComponent(id), 'PATCH', { kind: 'task', unlink_children: true })
+        .then(refreshAfterLinkChange)
+        .catch(function (err) { toast(linkFailure(err, 'Could not make the epic a card.')); });
+    });
+  }
+
+  function showMakeEpicDialog(name, subs, onConfirm) {
+    var overlay = document.getElementById('make-epic-dialog');
+    var message = '"' + name + '" leaves its column and becomes an epic. It holds no work of its own.';
+    if (subs.length) message += ' Subtasks you leave unticked stay stored, but an epic does not show them.';
+    document.getElementById('make-epic-message').textContent = message;
+    var list = document.getElementById('make-epic-list');
+    list.textContent = '';
+    var boxes = subs.map(function (sub) {
+      var label = document.createElement('label');
+      var box = document.createElement('input');
+      var text = document.createElement('span');
+      box.type = 'checkbox';
+      box.checked = false;
+      text.textContent = sub.name;
+      label.appendChild(box);
+      label.appendChild(text);
+      list.appendChild(label);
+      return { box: box, sub: sub };
+    });
+    document.getElementById('make-epic-subtasks').hidden = !subs.length;
+    var okBtn = document.getElementById('make-epic-ok');
+    var fresh = okBtn.cloneNode(true);
+    okBtn.parentNode.replaceChild(fresh, okBtn);
+    fresh.addEventListener('click', function () {
+      overlay.hidden = true;
+      onConfirm(boxes.filter(function (entry) { return entry.box.checked; }).map(function (entry) { return entry.sub; }));
+    });
+    overlay.hidden = false;
+    fresh.focus();
+  }
+
+  function subtaskProblem(sub, linking, err) {
+    var reason = linkFailure(err, '');
+    return { name: sub.name, linking: linking, reason: reason };
+  }
+
+  function turnSubtaskIntoChild(epicId, sub) {
+    var base = '/api/tasks/' + encodeURIComponent(epicId);
+    return epicRequest(base + '/subtasks/' + encodeURIComponent(sub.id) + '/convert', 'POST', { relation: 'none' })
+      .then(function (text) {
+        return Promise.resolve()
+          .then(function () {
+            return epicRequest(base + '/links', 'POST', { kind: 'child', target_id: JSON.parse(text).id });
+          })
+          .then(function () { return null; }, function (err) { return subtaskProblem(sub, true, err); });
+      }, function (err) { return subtaskProblem(sub, false, err); });
+  }
+
+  function makeEpicProblems(problems) {
+    function listed(items) {
+      return items.map(function (p) { return '"' + p.name + '"' + (p.reason ? ' (' + p.reason + ')' : ''); }).join(', ');
+    }
+    var notConverted = problems.filter(function (p) { return !p.linking; });
+    var notLinked = problems.filter(function (p) { return p.linking; });
+    var parts = [];
+    if (notConverted.length) parts.push('These subtasks could not become cards and stay subtasks: ' + listed(notConverted) + '.');
+    if (notLinked.length) parts.push('These became cards in the same column but are not in the epic: ' + listed(notLinked) + '.');
+    return parts.join(' ');
+  }
+
+  function makeEpic(id, picked, finish) {
+    epicRequest('/api/tasks/' + encodeURIComponent(id), 'PATCH', { kind: 'epic' })
+      .then(function () {
+        var problems = [];
+        return picked.reduce(function (chain, sub) {
+          return chain
+            .then(function () { return turnSubtaskIntoChild(id, sub); })
+            .then(function (problem) { if (problem) problems.push(problem); });
+        }, Promise.resolve()).then(function () { finish(makeEpicProblems(problems)); });
+      }, function (err) { toast(linkFailure(err, 'Could not make the card an epic.')); });
+  }
+
+  function startMakeEpic(id, name, finish) {
+    fetchJson('/api/tasks/' + encodeURIComponent(id)).then(function (task) {
+      var subs = task.subtasks || [];
+      if (!subs.length) { makeEpic(id, [], finish); return; }
+      showMakeEpicDialog(name, subs, function (picked) { makeEpic(id, picked, finish); });
+    }, function () { toast('Could not load the card.'); });
+  }
+
+  function makeModalEpic(id) {
+    var nameInput = document.getElementById('modal-name');
+    startMakeEpic(id, nameInput ? nameInput.value : '', function (problems) {
+      refreshAfterLinkChange();
+      if (problems) toast(problems);
+    });
+  }
+
+  function makeCardEpic(task) {
+    if (!task) return;
+    startMakeEpic(task.id, task.name, function (problems) {
+      if (problems) {
+        try { window.sessionStorage.setItem('pomb.pendingToast', problems); } catch (e) {}
+      }
+      window.location.reload();
+    });
+  }
+
+  function epicLinkCall(taskId, epicId, hasParent) {
+    if (hasParent) {
+      return epicRequest('/api/tasks/' + encodeURIComponent(taskId) + '/umbrella', 'PUT', { target_id: epicId });
+    }
+    return epicRequest('/api/tasks/' + encodeURIComponent(epicId) + '/links', 'POST', { kind: 'child', target_id: taskId });
+  }
+
+  function addToEpic(taskId, epicId, hasParent, refresh) {
+    epicLinkCall(taskId, epicId, hasParent).then(refresh, function (err) {
+      toast(linkFailure(err, 'Could not add the card to the epic.'));
+    });
+  }
+
+  function appendEpicChoices(container, choices, makeButton) {
+    if (!choices.length) {
+      var none = document.createElement('button');
+      none.type = 'button';
+      none.disabled = true;
+      none.textContent = 'No open epics';
+      container.appendChild(none);
+      return;
+    }
+    choices.forEach(function (choice) {
+      var button = makeButton((choice.depth ? '↳ ' : '') + choice.name, choice.id);
+      if (choice.depth) button.style.setProperty('--depth', choice.depth);
+      container.appendChild(button);
+    });
+  }
+
+  function addCardToEpic(card, epicId) {
+    var id = card.dataset.taskId;
+    addToEpic(id, epicId, !!card.querySelector('.card-epic-tag'), function () {
+      if (window.TimerUI && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(id);
+      else window.location.reload();
+    });
+  }
+
+  function toggleModalEpicList(trigger) {
+    var list = document.getElementById('tm-epic-list');
+    var id = modalTaskId();
+    if (!list || !id) return;
+    if (!list.hidden) {
+      list.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    BoardChrome.epicChoices(id).then(function (choices) {
+      if (!choices) { toast('Could not load epics.'); return; }
+      list.textContent = '';
+      appendEpicChoices(list, choices, function (label, epicId) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        button.addEventListener('click', function () {
+          var hasParent = !!document.querySelector('#modal-root .tm-umbrella-line');
+          closeAllTmMenus();
+          addToEpic(id, epicId, hasParent, refreshAfterLinkChange);
+        });
+        return button;
+      });
+      list.hidden = false;
+      trigger.setAttribute('aria-expanded', 'true');
+    });
+  }
+
+  function deleteModalEpic(id, epic) {
+    var message = 'Delete "' + epic.name + '"? It goes to the recycle bin.';
+    if (epic.total > 0) {
+      message += ' ' + epicCardsPhrase(epic.total) + ' Restoring the epic from the bin does not link them again.';
+    }
+    showConfirmDialog('Delete epic', message, 'Delete epic', function () {
+      epicRequest('/api/tasks/' + encodeURIComponent(id), 'DELETE')
+        .then(function () {
+          modalDirty = true;
+          closeModal();
+          if (window.TimerUI) { window.TimerUI.refresh(); window.TimerUI.broadcastTimer(); }
+        })
+        .catch(function (err) { toast(linkFailure(err, 'Could not delete the epic.')); });
+    });
+  }
+
   function deleteModalTask() {
     var id = modalTaskId();
     if (!id) return;
+    var epic = epicModalFacts();
+    if (epic) { deleteModalEpic(id, epic); return; }
     // KF-184: styled in-page confirmation (KanbanFlow parity); the native
     // window.confirm() auto-dismisses under automation, silently no-op'ing.
     showConfirmDialog('Delete task', 'Delete this task? It stays in the Recycle bin for 30 days.', 'Delete', function () {
@@ -4705,10 +5079,11 @@
     btn.innerHTML = watched ? '&#10003; Unwatch' : 'Watch';
   }
 
-  var BARE_KEEPING_ACTS = ['pick-color', 'move', 'delete', 'watch', 'task-url', 'copy', 'shortcuts', 'print'];
+  var BARE_KEEPING_ACTS = ['pick-color', 'move', 'delete', 'watch', 'task-url', 'copy', 'make-epic', 'shortcuts', 'print'];
 
   function modalAction(act, source) {
     var id = modalTaskId();
+    if (act === 'add-to-epic') { toggleModalEpicList(source); return; }
     closeAllTmMenus();
     if (BARE_KEEPING_ACTS.indexOf(act) === -1) {
       var bare = document.querySelector('#modal-root .task-modal.tm-bare');
@@ -4759,6 +5134,14 @@
       document.getElementById('shortcuts-dialog').hidden = false;
     } else if (act === 'delete') {
       deleteModalTask();
+    } else if (act === 'close-epic') {
+      closeModalEpic();
+    } else if (act === 'reopen-epic') {
+      setEpicClosed(id, false);
+    } else if (act === 'make-card') {
+      unmakeModalEpic();
+    } else if (act === 'make-epic') {
+      makeModalEpic(id);
     } else if (act === 'add-description') {
       // KF-253: opens the description editor dialog (the description is a
       // static text block now, never an inline textarea).
@@ -4806,9 +5189,6 @@
     } else if (act === 'attach-link') {
       if (showModalTab('files')) return;
       openAttachmentLink();
-    } else if (act === 'link-child') {
-      if (document.getElementById('tm-tab-children') && showModalTab('children')) return;
-      openLinkPicker(LinkKind.CHILD, pickChild);
     } else if (act === 'add-relation') {
       if (showModalTab('relations')) return;
       openRelationDialog();
@@ -10134,7 +10514,7 @@
     taskExtrasInitialized = true;
 
     document.addEventListener('click', function (e) {
-      if (!e.target.closest('.tm-picker, [data-link-open], [data-umbrella-change], [data-tm-act="link-child"]')) {
+      if (!e.target.closest('.tm-picker, [data-link-open], [data-umbrella-change]')) {
         closeLinkPicker(false);
       }
     });
@@ -16231,6 +16611,7 @@
   var BoardChrome = {
     initialized: false,
     LABEL_MODE: { AND: 'and', OR: 'or' },
+    FOLD_MODE: { COLLAPSE: 'collapse', HIDE: 'hide' },
     closeBoardMenu: null,
 
     init: function () {
@@ -16241,6 +16622,7 @@
       this.initMenu();
       this.initLegend();
       this.initFilter();
+      this.initEpics();
       this.initBarButtons();
       if (window.location.hash === '#layout' && document.querySelector('.board-wrap[data-role="owner"]')) this.editLayout();
       this.initEsc();
@@ -16551,11 +16933,13 @@
         // KF-175: handle both select dropdowns (by id) and radio buttons (by name)
         if (e.target.id === 'f-user' || e.target.id === 'f-color' || e.target.id === 'f-date' ||
             e.target.id === 'f-label-mode' || e.target.classList.contains('f-field') ||
-            e.target.name === 'f-user' || e.target.name === 'f-color' || e.target.name === 'f-date' || e.target.name === 'f-label') {
+            e.target.name === 'f-fold' || e.target.name === 'f-user' || e.target.name === 'f-color' || e.target.name === 'f-date' || e.target.name === 'f-label') {
           self.applyFilter();
           self.maybeSaveFilter();
         } else if (e.target.id === 'filter-remember') {
           self.maybeSaveFilter();
+        } else if (e.target.id === 'f-epic') {
+          self.filterOnEpic(e.target.value);
         }
       });
       this.initColumnLabels();
@@ -16654,26 +17038,463 @@
 
     // KF-215: KanbanFlow docks the panel directly under the top bar.
     positionFilterPanel: function () {
-      var panel = document.getElementById('filter-panel');
+      var row = document.querySelector('.board-header-row');
       var topbar = document.querySelector('.topbar');
-      if (!panel || !topbar) return;
-      var offset = topbar.offsetHeight;
-      panel.style.top = offset + 'px';
-      panel.style.height = 'calc(100vh - ' + offset + 'px)';
+      var anchor = row || topbar;
+      if (!anchor) return;
+      var offset = Math.round(anchor.getBoundingClientRect().bottom);
+      ['filter-panel', 'epics-panel'].forEach(function (id) {
+        var panel = document.getElementById(id);
+        if (!panel) return;
+        panel.style.top = offset + 'px';
+        panel.style.height = 'calc(100vh - ' + offset + 'px)';
+      });
     },
 
     toggleFilter: function () {
       var panel = document.getElementById('filter-panel');
       if (!panel) return;
-      panel.hidden = !panel.hidden;
-      this.syncFilterBtn();
+      if (panel.hidden) this.openFilter();
+      else this.closeFilter();
     },
     openFilter: function () {
       var panel = document.getElementById('filter-panel');
       if (!panel) return false;
+      this.closeEpics();
+      this.positionFilterPanel();
       panel.hidden = false;
       this.syncFilterBtn();
+      if (!this.epicsLoaded) this.loadEpics();
       return true;
+    },
+    initEpics: function () {
+      var self = this;
+      var btn = document.getElementById('epics-btn');
+      var panel = document.getElementById('epics-panel');
+      if (!btn || !panel) return;
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self.toggleEpics();
+      });
+      ['epics-close', 'epics-back'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('click', function () { self.closeEpics(); });
+      });
+      panel.addEventListener('epics:open', function () { self.loadEpics(); });
+      this.syncEpicsBtn();
+    },
+    toggleEpics: function () {
+      var panel = document.getElementById('epics-panel');
+      if (!panel) return;
+      if (panel.hidden) this.openEpics();
+      else this.closeEpics();
+    },
+    openEpics: function () {
+      var panel = document.getElementById('epics-panel');
+      if (!panel) return false;
+      this.closeFilter();
+      this.positionFilterPanel();
+      var wasHidden = panel.hidden;
+      panel.hidden = false;
+      this.syncEpicsBtn();
+      if (wasHidden) panel.dispatchEvent(new CustomEvent('epics:open', { bubbles: true }));
+      return true;
+    },
+    closeEpics: function () {
+      var panel = document.getElementById('epics-panel');
+      if (!panel) return;
+      panel.hidden = true;
+      this.syncEpicsBtn();
+    },
+    epics: [],
+    epicsLoaded: false,
+    epicFilter: '',
+    epicsFolded: {},
+    epicsClosedOpen: false,
+    epicsTimer: null,
+    epicsSeq: 0,
+    epicsPanelOpen: function () {
+      var panel = document.getElementById('epics-panel');
+      return !!panel && !panel.hidden;
+    },
+    scheduleEpicsRefresh: function () {
+      var self = this;
+      if (!this.epicsPanelOpen()) return;
+      if (this.epicsTimer) window.clearTimeout(this.epicsTimer);
+      this.epicsTimer = window.setTimeout(function () {
+        self.epicsTimer = null;
+        self.loadEpics();
+      }, EPICS_REFRESH_DEBOUNCE_MS);
+    },
+    loadEpics: function () {
+      var self = this;
+      var board = boardId();
+      if (!board) return Promise.resolve();
+      var seq = ++this.epicsSeq;
+      return fetch('/api/boards/' + encodeURIComponent(board) + '/epics', {
+        headers: { 'Accept': 'application/json' },
+      })
+        .then(function (res) {
+          return res.ok ? res.json() : toastRefusal(res, 'Could not load epics.');
+        })
+        .then(function (list) {
+          if (seq !== self.epicsSeq || !Array.isArray(list)) return;
+          self.epics = list;
+          self.epicsLoaded = true;
+          self.fillEpicSelect();
+          if (!self.epicsNewOpen) self.renderEpics();
+        })
+        .catch(function () { toast('Could not load epics.'); });
+    },
+    epicChoices: function (excludeId) {
+      var self = this;
+      var ready = this.epicsLoaded ? Promise.resolve() : this.loadEpics();
+      return ready.then(function () {
+        if (!self.epicsLoaded) return null;
+        var barred = {};
+        if (excludeId) barred[excludeId] = true;
+        var grew = true;
+        while (grew) {
+          grew = false;
+          self.epics.forEach(function (e) {
+            if (e.parent_id && barred[e.parent_id] && !barred[e.id]) {
+              barred[e.id] = true;
+              grew = true;
+            }
+          });
+        }
+        var open = self.epics.filter(function (e) { return !e.closed && !barred[e.id]; });
+        var openIds = {};
+        open.forEach(function (e) { openIds[e.id] = true; });
+        var byParent = {};
+        var roots = [];
+        open.forEach(function (e) {
+          if (e.parent_id && openIds[e.parent_id] && e.parent_id !== e.id) {
+            (byParent[e.parent_id] = byParent[e.parent_id] || []).push(e);
+          } else {
+            roots.push(e);
+          }
+        });
+        var choices = [];
+        var seen = {};
+        function walk(epic, depth) {
+          if (seen[epic.id]) return;
+          seen[epic.id] = true;
+          choices.push({ id: epic.id, name: epic.name, depth: depth });
+          (byParent[epic.id] || []).forEach(function (child) { walk(child, depth + 1); });
+        }
+        roots.forEach(function (epic) { walk(epic, 0); });
+        open.forEach(function (epic) { walk(epic, 0); });
+        return choices;
+      });
+    },
+    reopenEpic: function (id) {
+      var self = this;
+      return api('/api/tasks/' + encodeURIComponent(id) + '/reopen', 'POST')
+        .then(function (res) {
+          if (!res.ok) return toastRefusal(res, 'Could not reopen the epic.');
+          return self.loadEpics();
+        })
+        .catch(function () { toast('Could not reopen the epic.'); });
+    },
+    epicDoneText: function (epic) {
+      return (epic.children_done || 0) + ' of ' + (epic.children_total || 0) + ' done';
+    },
+    epicProgress: function (epic) {
+      var total = epic.children_total || 0;
+      var done = epic.children_done || 0;
+      var bar = document.createElement('span');
+      bar.className = 'tm-progress';
+      bar.setAttribute('role', 'progressbar');
+      bar.setAttribute('aria-label', 'Children done');
+      bar.setAttribute('aria-valuemin', '0');
+      bar.setAttribute('aria-valuemax', String(total));
+      bar.setAttribute('aria-valuenow', String(done));
+      var fill = document.createElement('span');
+      fill.className = 'tm-progress-fill';
+      fill.style.width = (total > 0 ? Math.min(100, (done * 100) / total) : 0) + '%';
+      bar.appendChild(fill);
+      var text = document.createElement('span');
+      text.className = 'epic-done';
+      text.textContent = this.epicDoneText(epic);
+      var line = document.createElement('div');
+      line.className = 'epic-progress';
+      line.appendChild(bar);
+      line.appendChild(text);
+      return line;
+    },
+    epicNameButton: function (epic) {
+      var name = document.createElement('button');
+      name.type = 'button';
+      name.className = 'epic-name';
+      name.title = 'Open the epic';
+      name.textContent = epic.name;
+      name.addEventListener('click', function () { openModal(epic.id); });
+      return name;
+    },
+    epicRow: function (epic, parent, kids) {
+      var self = this;
+      var lit = self.epicFilter === epic.id;
+      var row = document.createElement('div');
+      row.className = 'epic-row' + (lit ? ' is-lit' : '');
+      row.dataset.epicId = epic.id;
+      var head = document.createElement('div');
+      head.className = 'epic-head';
+      if (kids.length > 0) {
+        var folded = !!self.epicsFolded[epic.id];
+        var fold = document.createElement('button');
+        fold.type = 'button';
+        fold.className = 'epic-fold';
+        fold.setAttribute('aria-expanded', folded ? 'false' : 'true');
+        fold.setAttribute('aria-label', folded ? 'Show nested epics' : 'Hide nested epics');
+        fold.textContent = folded ? '▸' : '▾';
+        fold.addEventListener('click', function () {
+          self.epicsFolded[epic.id] = !self.epicsFolded[epic.id];
+          self.renderEpics();
+        });
+        head.appendChild(fold);
+      }
+      head.appendChild(self.epicNameButton(epic));
+      var funnel = document.createElement('button');
+      funnel.type = 'button';
+      funnel.className = 'board-bar-btn epic-funnel' + (lit ? ' is-lit' : '');
+      funnel.setAttribute('aria-pressed', lit ? 'true' : 'false');
+      funnel.dataset.epicId = epic.id;
+      funnel.addEventListener('click', function () {
+        self.filterOnEpic(self.epicFilter === epic.id ? '' : epic.id);
+      });
+      funnel.title = 'Filter the board to this epic';
+      funnel.setAttribute('aria-label', 'Filter the board to this epic');
+      funnel.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>';
+      head.appendChild(funnel);
+      row.appendChild(head);
+      if (parent) {
+        var inside = document.createElement('div');
+        inside.className = 'epic-inside';
+        inside.textContent = 'inside ' + parent.name;
+        row.appendChild(inside);
+      }
+      row.appendChild(self.epicProgress(epic));
+      return row;
+    },
+    markEpicsSeen: function (epic, byParent, seen) {
+      var self = this;
+      if (seen[epic.id]) return;
+      seen[epic.id] = true;
+      (byParent[epic.id] || []).forEach(function (kid) { self.markEpicsSeen(kid, byParent, seen); });
+    },
+    epicBranch: function (epic, parent, byParent, seen) {
+      var self = this;
+      var kids = (byParent[epic.id] || []).filter(function (kid) { return !seen[kid.id]; });
+      seen[epic.id] = true;
+      var branch = document.createElement('div');
+      branch.className = 'epic-branch';
+      branch.appendChild(this.epicRow(epic, parent, kids));
+      if (this.epicsFolded[epic.id]) {
+        kids.forEach(function (kid) { self.markEpicsSeen(kid, byParent, seen); });
+      } else if (kids.length > 0) {
+        var nest = document.createElement('div');
+        nest.className = 'epic-nest';
+        for (var i = 0; i < kids.length; i++) {
+          nest.appendChild(this.epicBranch(kids[i], epic, byParent, seen));
+        }
+        branch.appendChild(nest);
+      }
+      return branch;
+    },
+    canWrite: function () {
+      return !document.querySelector('.board-wrap[data-role="viewer"]');
+    },
+    epicsNewOpen: false,
+    epicsNewText: '',
+    epicsNewBusy: false,
+    closeNewEpic: function () {
+      this.epicsNewOpen = false;
+      this.epicsNewText = '';
+      this.renderEpics();
+    },
+    createEpic: function () {
+      var self = this;
+      var name = this.epicsNewText.trim();
+      var board = boardId();
+      if (!name || !board || this.epicsNewBusy) return Promise.resolve();
+      this.epicsNewBusy = true;
+      this.renderEpics();
+      return fetch('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ kind: 'epic', board_id: board, name: name, description: document.getElementById('epics-panel').dataset.epicTemplate }),
+      })
+        .then(function (res) {
+          return res.ok ? res.json() : toastRefusal(res, 'Could not create the epic.');
+        })
+        .then(function (task) {
+          if (!task) return;
+          self.epicsNewOpen = false;
+          self.epicsNewText = '';
+          self.renderEpics();
+          return self.loadEpics().then(function () { openModal(task.id); });
+        })
+        .catch(function () { toast('Could not create the epic.'); })
+        .then(function () {
+          self.epicsNewBusy = false;
+          self.renderEpics();
+        });
+    },
+    newEpicSection: function () {
+      var self = this;
+      var section = document.createElement('section');
+      section.className = 'filter-section';
+      section.setAttribute('aria-label', 'New epic');
+      if (!this.epicsNewOpen) {
+        var open = document.createElement('button');
+        open.type = 'button';
+        open.className = 'btn btn-sm btn-block epic-new-btn';
+        open.textContent = '+ New epic';
+        open.addEventListener('click', function () {
+          self.epicsNewOpen = true;
+          self.renderEpics();
+        });
+        section.appendChild(open);
+        return section;
+      }
+      var heading = document.createElement('h4');
+      heading.textContent = 'New epic';
+      var row = document.createElement('div');
+      row.className = 'filter-bookmarks-add epic-new-row';
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'epic-new-input';
+      input.maxLength = 500;
+      input.value = this.epicsNewText;
+      input.setAttribute('aria-label', 'Epic name');
+      input.addEventListener('input', function () { self.epicsNewText = input.value; });
+      input.disabled = this.epicsNewBusy;
+      input.addEventListener('keydown', function (e) {
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          self.epicsNewText = input.value;
+          self.createEpic();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          self.closeNewEpic();
+        }
+      });
+      var create = document.createElement('button');
+      create.type = 'button';
+      create.className = 'btn btn-sm btn-primary epic-new-create';
+      create.textContent = 'Create';
+      create.disabled = this.epicsNewBusy;
+      create.addEventListener('click', function () {
+        self.epicsNewText = input.value;
+        self.createEpic();
+      });
+      var cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'btn btn-sm btn-ghost epic-new-cancel';
+      cancel.textContent = 'Cancel';
+      cancel.disabled = this.epicsNewBusy;
+      cancel.addEventListener('click', function () { self.closeNewEpic(); });
+      row.appendChild(input);
+      row.appendChild(create);
+      row.appendChild(cancel);
+      section.appendChild(heading);
+      section.appendChild(row);
+      if (!this.epicsNewBusy) window.setTimeout(function () { input.focus(); }, 0);
+      return section;
+    },
+    renderEpics: function () {
+      var self = this;
+      var body = document.getElementById('epics-body');
+      if (!body) return;
+      var open = this.epics.filter(function (e) { return !e.closed; });
+      var closed = this.epics.filter(function (e) { return e.closed; });
+      var openIds = {};
+      open.forEach(function (e) { openIds[e.id] = true; });
+      var byParent = {};
+      var roots = [];
+      open.forEach(function (e) {
+        if (e.parent_id && openIds[e.parent_id] && e.parent_id !== e.id) {
+          (byParent[e.parent_id] = byParent[e.parent_id] || []).push(e);
+        } else {
+          roots.push(e);
+        }
+      });
+      body.textContent = '';
+      if (this.canWrite()) body.appendChild(this.newEpicSection());
+      var list = document.createElement('div');
+      list.className = 'epics-list';
+      var seen = {};
+      function addGroup(epic) {
+        if (seen[epic.id]) return;
+        var group = document.createElement('div');
+        group.className = 'epic-group';
+        group.appendChild(self.epicBranch(epic, null, byParent, seen));
+        list.appendChild(group);
+      }
+      roots.forEach(addGroup);
+      open.forEach(addGroup);
+      if (open.length === 0 && closed.length === 0) {
+        var empty = document.createElement('p');
+        empty.className = 'epics-empty';
+        empty.textContent = 'No epics yet';
+        list.appendChild(empty);
+      }
+      body.appendChild(list);
+      if (closed.length > 0) body.appendChild(this.renderClosedEpics(closed));
+    },
+    renderClosedEpics: function (closed) {
+      var self = this;
+      var section = document.createElement('div');
+      section.className = 'epics-closed';
+      var toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'filter-bookmarks-head epics-closed-toggle';
+      toggle.setAttribute('aria-expanded', this.epicsClosedOpen ? 'true' : 'false');
+      var label = document.createElement('span');
+      label.textContent = (this.epicsClosedOpen ? '▾ ' : '▸ ') + closed.length + ' closed ' + (closed.length === 1 ? 'epic' : 'epics');
+      toggle.appendChild(label);
+      toggle.addEventListener('click', function () {
+        self.epicsClosedOpen = !self.epicsClosedOpen;
+        self.renderEpics();
+      });
+      section.appendChild(toggle);
+      if (this.epicsClosedOpen) {
+        var ul = document.createElement('ul');
+        ul.className = 'filter-bookmarks-list epics-closed-list';
+        closed.forEach(function (epic) {
+          var li = document.createElement('li');
+          li.dataset.epicId = epic.id;
+          var info = document.createElement('span');
+          info.className = 'epics-closed-info';
+          info.appendChild(self.epicNameButton(epic));
+          var done = document.createElement('span');
+          done.className = 'epic-done';
+          done.textContent = self.epicDoneText(epic);
+          info.appendChild(done);
+          li.appendChild(info);
+          var reopen = document.createElement('button');
+          reopen.type = 'button';
+          reopen.className = 'filter-bookmark-apply epic-reopen';
+          reopen.textContent = 'Reopen';
+          reopen.addEventListener('click', function () {
+            reopen.disabled = true;
+            self.reopenEpic(epic.id).then(function () { reopen.disabled = false; });
+          });
+          if (self.canWrite()) li.appendChild(reopen);
+          ul.appendChild(li);
+        });
+        section.appendChild(ul);
+      }
+      return section;
+    },
+    syncEpicsBtn: function () {
+      var btn = document.getElementById('epics-btn');
+      var panel = document.getElementById('epics-panel');
+      if (!btn || !panel) return;
+      btn.classList.toggle('active', !panel.hidden);
+      btn.setAttribute('aria-expanded', panel.hidden ? 'false' : 'true');
     },
     showAllMembers: function () {
       var select = document.getElementById('f-user');
@@ -16781,8 +17602,55 @@
         else self.filterOnColor(target.dataset.colorValue);
       });
     },
+    fillEpicSelect: function () {
+      var select = document.getElementById('f-epic');
+      if (!select) return;
+      var chosen = this.epicFilter;
+      var known = {};
+      this.epics.forEach(function (e) { known[e.id] = e; });
+      select.textContent = '';
+      var all = document.createElement('option');
+      all.value = '';
+      all.textContent = 'Show all';
+      select.appendChild(all);
+      this.epics.forEach(function (e) {
+        if (e.closed && e.id !== chosen) return;
+        var option = document.createElement('option');
+        option.value = e.id;
+        option.textContent = e.closed ? e.name + ' (closed)' : e.name;
+        select.appendChild(option);
+      });
+      if (chosen && !known[chosen]) {
+        var pending = document.createElement('option');
+        pending.value = chosen;
+        pending.textContent = this.epicsLoaded ? 'Epic not found' : 'Selected epic';
+        select.appendChild(pending);
+      }
+      select.value = chosen;
+    },
+    setEpicFilter: function (id) {
+      this.epicFilter = id || '';
+      var select = document.getElementById('f-epic');
+      if (select) select.value = this.epicFilter;
+    },
+    filterOnEpic: function (id) {
+      this.setEpicFilter(id);
+      this.applyFilter();
+      this.maybeSaveFilter();
+    },
+    syncEpicFunnels: function () {
+      var chosen = this.epicFilter;
+      document.querySelectorAll('.epic-funnel').forEach(function (funnel) {
+        var lit = !!chosen && funnel.dataset.epicId === chosen;
+        funnel.classList.toggle('is-lit', lit);
+        funnel.setAttribute('aria-pressed', lit ? 'true' : 'false');
+        var row = funnel.closest('.epic-row');
+        if (row) row.classList.toggle('is-lit', lit);
+      });
+    },
     syncFilterBtn: function () {
       this.syncLegendFilter();
+      this.syncEpicFunnels();
       var btn = document.getElementById('filter-btn');
       var panel = document.getElementById('filter-panel');
       if (!btn || !panel) return;
@@ -16825,6 +17693,7 @@
       });
     },
     refreshMarks: function () {
+      this.scheduleEpicsRefresh();
       document.querySelectorAll('.columnHeader-marks').forEach(function (marks) {
         var colId = marks.closest('.columnHeader').dataset.columnId;
         var cards = document.querySelectorAll('.task-list[data-column-id="' + cssEscape(colId) + '"] .task-card');
@@ -16851,6 +17720,7 @@
       return this.columnLabelFiltering() || this.filterValue('f-user') !== 'all' ||
         this.filterValue('f-color') !== 'all' ||
         this.filterValue('f-date') !== 'all' ||
+        this.epicFilter !== '' ||
         this.filterLabels().length > 0 ||
         Object.keys(this.filterFields()).length > 0;
     },
@@ -16885,6 +17755,8 @@
       this.setRadio('f-date', 'all');
       this.setLabelMode(this.LABEL_MODE.AND);
       this.setFilterFields({});
+      this.setEpicFilter('');
+      this.setRadio('f-fold', this.FOLD_MODE.HIDE);
       document.querySelectorAll('input[name="f-label"]').forEach(function (box) {
         box.checked = false;
       });
@@ -16928,6 +17800,7 @@
       var anyLabel = this.filterLabelMode() === this.LABEL_MODE.OR;
       var fields = this.filterFields();
       var fieldKeys = Object.keys(fields);
+      var epic = this.epicFilter;
       var self = this;
       var activeTaskId = null;
       if (user === 'timer' && window.TimerUI && TimerUI.state && TimerUI.state.taskId) {
@@ -16957,6 +17830,10 @@
           try { cardFields = JSON.parse(card.dataset.filterFields || '{}'); } catch (e) { cardFields = {}; }
           if (!fieldKeys.every(function (k) { return cardFields[k] === fields[k]; })) show = false;
         }
+        if (show && epic) {
+          var tag = card.querySelector('.card-epic-tag');
+          if (!tag || tag.dataset.epicId !== epic) show = false;
+        }
         var list = card.closest('.task-list');
         var only = list ? self.columnLabels[list.dataset.columnId] : null;
         if (show && only) {
@@ -16966,8 +17843,71 @@
         }
         card.style.display = show ? '' : 'none';
       });
+      this.refold();
       this.refreshFilteredCounts();
       this.syncFilterBtn();
+    },
+    foldMode: function () {
+      return this.filterValue('f-fold') === this.FOLD_MODE.COLLAPSE ? this.FOLD_MODE.COLLAPSE : this.FOLD_MODE.HIDE;
+    },
+    removeFolds: function () {
+      document.querySelectorAll('.filter-fold').forEach(function (row) { row.remove(); });
+    },
+    unfold: function () {
+      this.closeFold();
+      this.removeFolds();
+    },
+    refold: function () {
+      this.openedFold = null;
+      this.removeFolds();
+      if (this.foldMode() !== this.FOLD_MODE.COLLAPSE || !this.isFiltering()) return;
+      document.querySelectorAll('.task-list').forEach(function (list) {
+        var run = [];
+        var flush = function () {
+          if (!run.length) return;
+          var row = document.createElement('div');
+          row.className = 'filter-fold';
+          row.textContent = run.length + ' other card' + (run.length === 1 ? '' : 's');
+          row._run = run;
+          row._list = list;
+          list.insertBefore(row, run[0]);
+          run = [];
+        };
+        Array.prototype.slice.call(list.children).forEach(function (el) {
+          if (!el.classList.contains('task-card')) { flush(); return; }
+          if (el.hidden) return;
+          if (el.style.display === 'none') run.push(el);
+          else flush();
+        });
+        flush();
+      });
+    },
+    openFold: function (row) {
+      if (this.openedFold === row) return;
+      this.closeFold();
+      row._run.forEach(function (card) { card.style.display = ''; });
+      row.style.display = 'none';
+      this.openedFold = row;
+    },
+    closeFold: function () {
+      var row = this.openedFold;
+      if (!row) return;
+      row._run.forEach(function (card) { card.style.display = 'none'; });
+      row.style.display = '';
+      this.openedFold = null;
+    },
+    foldDragOver: function (target) {
+      if (!target || !target.closest) return;
+      var row = target.closest('.filter-fold');
+      if (row) { this.openFold(row); return; }
+      var open = this.openedFold;
+      if (!open) return;
+      var list = target.closest('.task-list');
+      if (list && list === open._list) {
+        var card = target.closest('.task-card');
+        if (!card || open._run.indexOf(card) !== -1 || card.classList.contains('sortable-placeholder')) return;
+      }
+      this.closeFold();
     },
     // KF-161: column header counts reflect the currently filtered (visible)
     // card set, KanbanFlow parity. When no filter is active the
@@ -17152,7 +18092,9 @@
         date: this.filterValue('f-date'),
         labels: this.filterLabels(),
         labelMode: this.filterLabelMode(),
-        fields: this.filterFields()
+        fields: this.filterFields(),
+        epic: this.epicFilter,
+        fold: this.foldMode()
       });
       try { window.sessionStorage.setItem(this.sessionFilterKey(), state); } catch (e) {}
       try {
@@ -17176,6 +18118,9 @@
         this.setRadio('f-date', f.date);
         this.setLabelMode(f.labelMode);
         this.setFilterFields(f.fields);
+        this.setEpicFilter(kept && typeof f.epic === 'string' ? f.epic : '');
+        this.setRadio('f-fold', f.fold === this.FOLD_MODE.COLLAPSE ? this.FOLD_MODE.COLLAPSE : this.FOLD_MODE.HIDE);
+        this.fillEpicSelect();
         // Label checkboxes load async — apply them when they arrive.
         this._pendingLabelFilter = (f.labels && f.labels.length) ? f.labels : null;
         var remember = document.getElementById('filter-remember');
@@ -17663,6 +18608,8 @@
         if (e.key !== 'Escape') return;
         var panel = document.getElementById('filter-panel');
         if (panel && !panel.hidden) self.closeFilter();
+        var epics = document.getElementById('epics-panel');
+        if (epics && !epics.hidden) self.closeEpics();
       });
     }
   };
