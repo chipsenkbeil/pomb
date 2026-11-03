@@ -7,7 +7,11 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
-/// Allowlist for rendered markdown: no `input`, `img`, `style` or script-capable markup.
+use crate::image;
+use crate::models::TaskAttachment;
+
+/// Allowlist for rendered markdown: no `input`, `img`, `style` or script-capable markup. The only
+/// images a rendering holds are the ones [`render_in`] puts in after sanitizing.
 static SANITIZER: LazyLock<Builder<'static>> = LazyLock::new(|| {
     let mut builder = Builder::default();
     builder
@@ -30,6 +34,27 @@ enum Boxes {
     Tickable,
 }
 
+/// The task a rendering belongs to, which decides the attachment images it may show.
+#[derive(Copy, Clone, Debug)]
+pub struct Scope<'a> {
+    /// The id of the task whose text is rendered.
+    pub task_id: &'a str,
+    /// The attachments that task holds.
+    pub attachments: &'a [TaskAttachment],
+}
+
+impl Scope<'_> {
+    /// Returns the id `![alt](attachment:ID)` names when the task holds an attachment of that id
+    /// stored as a PNG, JPEG, WebP or GIF.
+    fn image_id(&self, dest: &str) -> Option<String> {
+        let id = dest.strip_prefix("attachment:")?;
+        self.attachments
+            .iter()
+            .any(|a| a.id == id && image::is_image_type(&a.mime))
+            .then(|| id.to_string())
+    }
+}
+
 /// Returns the parser options both [`render`] and [`toggle`] read the source with.
 fn options() -> Options {
     Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS
@@ -38,12 +63,35 @@ fn options() -> Options {
 /// Renders `source` as sanitized HTML with disabled task-list boxes, safe to emit without further
 /// escaping.
 pub fn render(source: &str) -> String {
-    render_with(source, Boxes::Disabled)
+    render_with(source, Boxes::Disabled, None)
 }
 
-/// Renders `source` like [`render`], with the task-list boxes enabled so a click can tick them.
-pub fn render_tickable(source: &str) -> String {
-    render_with(source, Boxes::Tickable)
+/// Renders `source` like [`render`], with `![alt](attachment:ID)` showing the image attachment `ID`
+/// of the task in `scope` as an `img` that loads from the image route, and any other image as a
+/// link to its source.
+#[must_use]
+pub fn render_in(source: &str, scope: Scope<'_>) -> String {
+    render_with(source, Boxes::Disabled, Some(scope))
+}
+
+/// Renders `source` like [`render_in`], with the task-list boxes enabled so a click can tick them.
+#[must_use]
+pub fn render_tickable_in(source: &str, scope: Scope<'_>) -> String {
+    render_with(source, Boxes::Tickable, Some(scope))
+}
+
+/// Returns the ids of the attachments `source` shows as images with `![alt](attachment:ID)`,
+/// which a code block or a code span never does.
+#[must_use]
+pub fn attachment_ids(source: &str) -> HashSet<String> {
+    Parser::new_ext(source, options())
+        .filter_map(|event| match event {
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                dest_url.strip_prefix("attachment:").map(str::to_string)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Returns the lowercase hex SHA-256 of `source`, which names one revision of a description.
@@ -76,35 +124,92 @@ pub fn toggle(source: &str, index: usize, checked: bool) -> Option<String> {
 
 /// Task-list boxes are marked with a random token drawn for this call, so source text cannot
 /// produce it. The marker survives sanitizing and becomes a checkbox afterwards, numbered by its
-/// place among the boxes. Images become links to their source.
-fn render_with(source: &str, boxes: Boxes) -> String {
+/// place among the boxes. An image of the task becomes a marker the same way and an `img` after
+/// sanitizing. Every other image becomes a link to its source.
+fn render_with(source: &str, boxes: Boxes, scope: Option<Scope<'_>>) -> String {
     let token = format!("cf{:032x}", rand::thread_rng().r#gen::<u128>());
     let mut next = 0usize;
-    let events = Parser::new_ext(source, options()).map(|event| match event {
-        Event::TaskListMarker(checked) => {
-            let state = if checked { 'x' } else { 'o' };
-            let marker = format!("{token}{state}{next}_");
-            next += 1;
-            Event::Text(marker.into())
+    let mut images: Vec<(String, String)> = Vec::new();
+    let mut capture: Option<(String, String, usize)> = None;
+    let mut events = Vec::new();
+    for event in Parser::new_ext(source, options()) {
+        if let Some((id, alt, depth)) = capture.as_mut() {
+            match event {
+                Event::Start(Tag::Image { .. }) => *depth += 1,
+                Event::End(TagEnd::Image) if *depth > 0 => *depth -= 1,
+                Event::End(TagEnd::Image) => {
+                    events.push(Event::Text(format!("{token}g{}_", images.len()).into()));
+                    images.push((std::mem::take(id), std::mem::take(alt)));
+                    capture = None;
+                }
+                Event::Text(text) | Event::Code(text) => alt.push_str(&text),
+                Event::SoftBreak | Event::HardBreak => alt.push(' '),
+                _ => {}
+            }
+            continue;
         }
-        Event::Start(Tag::Image {
-            link_type,
-            dest_url,
-            title,
-            id,
-        }) => Event::Start(Tag::Link {
-            link_type,
-            dest_url,
-            title,
-            id,
-        }),
-        Event::End(TagEnd::Image) => Event::End(TagEnd::Link),
-        other => other,
-    });
+        events.push(match event {
+            Event::TaskListMarker(checked) => {
+                let state = if checked { 'x' } else { 'o' };
+                let marker = format!("{token}{state}{next}_");
+                next += 1;
+                Event::Text(marker.into())
+            }
+            Event::Start(Tag::Image {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }) => {
+                if let Some(image) = scope.as_ref().and_then(|s| s.image_id(&dest_url)) {
+                    capture = Some((image, String::new(), 0));
+                    continue;
+                }
+                Event::Start(Tag::Link {
+                    link_type,
+                    dest_url,
+                    title,
+                    id,
+                })
+            }
+            Event::End(TagEnd::Image) => Event::End(TagEnd::Link),
+            other => other,
+        });
+    }
     let mut unsafe_html = String::new();
-    html::push_html(&mut unsafe_html, events);
+    html::push_html(&mut unsafe_html, events.into_iter());
     let clean = SANITIZER.clean(&unsafe_html).to_string();
-    put_boxes(&clean, &token, boxes)
+    let task_id = scope.map_or("", |scope| scope.task_id);
+    let shown = put_images(&clean, &token, task_id, &images);
+    put_boxes(&shown, &token, boxes)
+}
+
+/// Replaces each image marker `token` left in `clean` with an `img` that loads the image from the
+/// image route of task `task_id`.
+fn put_images(clean: &str, token: &str, task_id: &str, images: &[(String, String)]) -> String {
+    let prefix = format!("{token}g");
+    let mut out = String::with_capacity(clean.len());
+    let mut rest = clean;
+    while let Some(at) = rest.find(&prefix) {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at + prefix.len()..];
+        let parsed = tail.split_once('_').and_then(|(index, after)| {
+            let (id, alt) = images.get(index.parse::<usize>().ok()?)?;
+            Some((id, alt, after))
+        });
+        let Some((id, alt, after)) = parsed else {
+            rest = tail;
+            continue;
+        };
+        let alt = ammonia::clean_text(alt);
+        let _ = write!(
+            out,
+            r#"<img src="/api/tasks/{task_id}/attachments/{id}/image" alt="{alt}" loading="lazy">"#
+        );
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Replaces each marker `token` left in `clean` with its checkbox.
@@ -213,7 +318,11 @@ mod tests {
 
     #[test]
     fn render_tickable_should_leave_the_boxes_enabled() {
-        let out = render_tickable("- [ ] a");
+        let scope = Scope {
+            task_id: "t",
+            attachments: &[],
+        };
+        let out = render_tickable_in("- [ ] a", scope);
         assert!(
             out.contains(r#"<input type="checkbox" data-checklist-index="0"> a"#),
             "{out}"
@@ -376,5 +485,75 @@ mod tests {
     #[test]
     fn render_should_escape_plain_text() {
         assert_eq!(render("a < b & c"), "<p>a &lt; b &amp; c</p>\n");
+    }
+
+    fn attachment(id: &str, mime: &str) -> TaskAttachment {
+        TaskAttachment {
+            id: id.to_string(),
+            name: id.to_string(),
+            mime: mime.to_string(),
+            size: 0,
+            uploaded_by: String::new(),
+            token_name: None,
+            created_at: String::new(),
+            sha256: None,
+            url: None,
+            edited_at: None,
+            versions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn render_in_should_show_an_image_of_the_task_and_nothing_else() {
+        let attachments = [
+            attachment("a1", "image/png"),
+            attachment("t1", "text/plain"),
+        ];
+        let scope = Scope {
+            task_id: "task9",
+            attachments: &attachments,
+        };
+        let out = render_in(
+            "![a *b* \"c\"](attachment:a1) ![x](attachment:t1) ![y](attachment:zz) ![z](http://e.com/p.png)",
+            scope,
+        );
+        assert_eq!(out.matches("<img").count(), 1, "{out}");
+        assert!(
+            out.contains(r#"<img src="/api/tasks/task9/attachments/a1/image" alt="a&#32;b&#32;&quot;c&quot;" loading="lazy">"#),
+            "{out}"
+        );
+        assert!(out.contains(">x</a>") && out.contains(">y</a>"), "{out}");
+        assert!(!out.contains("attachment:"), "{out}");
+    }
+
+    #[test]
+    fn render_in_should_keep_raw_img_and_forged_markers_out() {
+        let attachments = [attachment("a1", "image/png")];
+        let scope = Scope {
+            task_id: "t",
+            attachments: &attachments,
+        };
+        let out = render_in(
+            "<img src=\"/api/tasks/t/attachments/a1/image\">\n\ncf00g0_ ![a](attachment:a1)",
+            scope,
+        );
+        assert_eq!(out.matches("<img").count(), 1, "{out}");
+        assert_eq!(render("![a](attachment:a1)").matches("<img").count(), 0);
+    }
+
+    #[test]
+    fn attachment_ids_should_list_the_images_outside_code() {
+        let ids = |source: &str| {
+            let mut ids: Vec<_> = attachment_ids(source).into_iter().collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(
+            ids("a ![x](attachment:a1) ![y](attachment:a10)"),
+            ["a1", "a10"]
+        );
+        assert!(ids("[x](attachment:a1)").is_empty());
+        assert!(ids("`![x](attachment:a1)`").is_empty());
+        assert!(ids("```\n![x](attachment:a1)\n```").is_empty());
     }
 }

@@ -1,0 +1,39 @@
+{% extends "shell.html" %}
+{% block title %}Timeline | Pomb{% endblock %}
+{% block shell_title %}Timeline{% endblock %}
+{% block shell_class %} tlp-page bshell-report{% endblock %}
+{% block shell_body %}
+<p class="settings-hint">
+  Tasks on <strong>{{ board_name }}</strong> with a start and an end date.
+</p>
+<div class="tlp-tools">
+  <label>Zoom <input type="range" id="tlp-zoom" min="30" max="80" step="5" value="30"></label>
+  <button type="button" class="btn" id="tlp-centre">Centre on today</button>
+</div>
+<div class="tlp-layout">
+{% if role.writes() %}
+  <aside class="tlp-panel" id="tlp-panel" aria-label="Tasks">
+    <div class="tlp-panel-bar">
+      <h2 class="tlp-panel-title">Tasks</h2>
+      <button type="button" class="tlp-panel-toggle" id="tlp-panel-toggle" aria-expanded="true" aria-controls="tlp-panel-body" aria-label="Collapse the Tasks panel">&#9662;</button>
+    </div>
+    <div id="tlp-panel-body">
+      <input type="search" class="tlp-search" id="tlp-search" placeholder="Search tasks" aria-label="Search tasks" autocomplete="off">
+      <div class="tlp-list" id="tlp-list"></div>
+    </div>
+  </aside>
+{% endif %}
+  <div class="tlp-scroll" id="tlp-scroll">
+    <div class="tlp-canvas" id="tlp-canvas" data-writes="{% if role.writes() %}true{% else %}false{% endif %}"></div>
+  </div>
+</div>
+<p id="tlp-empty" class="tlp-empty" role="status" hidden>{% if role.writes() %}Your timeline is empty. Click a task in the Tasks list on the left to add it.{% else %}Your timeline is empty.{% endif %}</p>
+<p id="tlp-status" class="settings-hint" role="status"></p>
+{% endblock %}
+{% block shell_scripts %}
+<div id="modal-root"></div>
+{% include "_task_modal_host.html" %}
+{% include "_task_dialogs.html" %}
+{% include "_manual_time_dialog.html" %}
+<div hidden data-page-init="TimelinePage" data-board-id="{{ board_id }}"></div>
+{% endblock %}

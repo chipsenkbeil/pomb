@@ -38,8 +38,8 @@ use crate::disk::{Clock as GuardClock, DiskGuard, DiskProbe, MIB};
 use crate::limit::Limits;
 use crate::models::{
     AccountId, ActiveTimer, Actor, ActorKind, AuthScope, BIN_RETENTION_DAYS, BoardAccess, Cap,
-    DiskLimits, InstanceMode, InstanceSettings, LinkKind, PruneSettings, Quota, Quotas, RateLimits,
-    SECONDS_PER_DAY, SubtaskTemplate, TaskCard, TaskClaim, TextCap, TimerMode,
+    DiskLimits, HistoryKind, InstanceMode, InstanceSettings, LinkKind, PruneSettings, Quota,
+    Quotas, RateLimits, SECONDS_PER_DAY, SubtaskTemplate, TaskCard, TaskClaim, TextCap, TimerMode,
 };
 use crate::passkey::CeremoniesFull;
 use crate::permissions::Permission;
@@ -1564,18 +1564,22 @@ async fn history_should_store_at_most_200_characters_of_any_text() {
 
     let stored = fx.db.task(&task).expect("read").expect("task");
     assert_eq!(stored.name, long);
-    for kind in ["renamed", "claimed", "claim_released"] {
+    for kind in [
+        HistoryKind::Renamed,
+        HistoryKind::Claimed,
+        HistoryKind::ClaimReleased,
+    ] {
         let event = stored
             .history
             .iter()
             .find(|event| event.kind == kind)
-            .unwrap_or_else(|| panic!("no {kind} event"));
+            .unwrap_or_else(|| panic!("no {kind:?} event"));
         assert_eq!(
             event.detail.chars().count(),
             MAX_HISTORY_TEXT_CHARS,
-            "{kind}"
+            "{kind:?}"
         );
-        assert!(event.detail.ends_with('…'), "{kind}: {}", event.detail);
+        assert!(event.detail.ends_with('…'), "{kind:?}: {}", event.detail);
     }
 
     let column = stored.column_id.clone();
@@ -1590,7 +1594,7 @@ async fn history_should_store_at_most_200_characters_of_any_text() {
     let event = stored
         .history
         .iter()
-        .find(|event| event.kind == "link_added")
+        .find(|event| event.kind == HistoryKind::LinkAdded)
         .expect("link_added event");
     assert!(event.detail.chars().count() <= MAX_HISTORY_TEXT_CHARS);
     assert!(
@@ -1701,7 +1705,7 @@ impl Fixture {
 }
 
 /// Returns the history details of `kind` on `task`.
-fn history_details(fx: &Fixture, task: &str, kind: &str) -> Vec<String> {
+fn history_details(fx: &Fixture, task: &str, kind: HistoryKind) -> Vec<String> {
     let row = fx.db.task(task).expect("read").expect("task");
     row.history
         .into_iter()
@@ -1816,10 +1820,13 @@ async fn save_subtask_template_should_replace_a_template_at_the_cap() {
 async fn delete_all_subtasks_should_write_nothing_for_a_task_without_subtasks() {
     let fx = Fixture::multi();
     let (_, task) = fx.member_task();
-    let before = history_details(&fx, &task, "subtask_deleted");
+    let before = history_details(&fx, &task, HistoryKind::SubtaskDeleted);
     let removed = fx.delete_all_subtasks(&task).await;
     assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
-    assert_eq!(history_details(&fx, &task, "subtask_deleted"), before);
+    assert_eq!(
+        history_details(&fx, &task, HistoryKind::SubtaskDeleted),
+        before
+    );
     assert!(before.is_empty());
 }
 
@@ -1845,7 +1852,7 @@ async fn delete_all_subtasks_should_log_one_event() {
     }
     fx.delete_all_subtasks(&task).await;
     assert_eq!(
-        history_details(&fx, &task, "subtask_deleted"),
+        history_details(&fx, &task, HistoryKind::SubtaskDeleted),
         ["Deleted all 3 subtasks"]
     );
 }
@@ -1915,7 +1922,7 @@ async fn add_subtasks_from_template_should_log_one_added_event_per_name() {
         .await;
     assert_eq!(added.status, StatusCode::OK, "{}", added.body);
     assert_eq!(
-        history_details(&fx, &target, "subtask_added"),
+        history_details(&fx, &target, HistoryKind::SubtaskAdded),
         ["Added subtask \"Build\"", "Added subtask \"Ship\""]
     );
 }
@@ -5268,7 +5275,7 @@ async fn update_subtask_should_record_a_members_event() {
     let fx = Fixture::multi();
     let (task, _, _) = fx.assigned_subtask().await;
     assert_eq!(
-        history_details(&fx, &task, "subtask_members_updated").len(),
+        history_details(&fx, &task, HistoryKind::SubtaskMembersUpdated).len(),
         1
     );
 }
@@ -5397,7 +5404,7 @@ async fn convert_subtask_should_record_a_converted_event() {
 
     fx.convert_with(&setup, "none").await;
     assert_eq!(
-        history_details(&fx, &setup.task, "subtask_converted"),
+        history_details(&fx, &setup.task, HistoryKind::SubtaskConverted),
         ["Converted subtask \"Step\" to a task"]
     );
 }

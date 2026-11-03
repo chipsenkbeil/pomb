@@ -6,10 +6,12 @@ use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::db::Db;
+use crate::models::{AccountId, ActiveTimer, HistoryKind, TimerMode};
 
 struct Fixture {
     app: axum::Router,
     db: Db,
+    owner: AccountId,
     cookie: String,
     board_id: String,
     column: String,
@@ -29,6 +31,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let fixture = Fixture {
         app,
         db,
+        owner: user_id,
         cookie: format!("session={session}"),
         board_id,
         column,
@@ -79,7 +82,7 @@ async fn new_task(fx: &Fixture) -> String {
 }
 
 /// Returns the `(from, to)` of each event of `kind` on `task`, oldest first.
-fn values(fx: &Fixture, task: &str, kind: &str) -> Vec<(Option<String>, Option<String>)> {
+fn values(fx: &Fixture, task: &str, kind: HistoryKind) -> Vec<(Option<String>, Option<String>)> {
     fx.db
         .task(task)
         .expect("read")
@@ -121,7 +124,7 @@ async fn a_move_to_another_swimlane_should_log_the_old_and_new_lane() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
-        values(&fx, &id, "swimlane_updated"),
+        values(&fx, &id, HistoryKind::SwimlaneUpdated),
         [pair("Main", "Urgent")]
     );
 }
@@ -144,7 +147,10 @@ async fn a_move_to_another_board_should_log_the_old_and_new_board() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(values(&fx, &id, "board_updated"), [pair("First", "Second")]);
+    assert_eq!(
+        values(&fx, &id, HistoryKind::BoardUpdated),
+        [pair("First", "Second")]
+    );
 }
 
 #[tokio::test]
@@ -162,7 +168,7 @@ async fn logged_time_should_record_the_time_spent_before_and_after() {
         assert_eq!(status, StatusCode::OK, "{body}");
     }
     assert_eq!(
-        values(&fx, &id, "time_logged"),
+        values(&fx, &id, HistoryKind::TimeLogged),
         [pair("0m", "30m"), pair("30m", "1h 30m")]
     );
 }
@@ -188,7 +194,10 @@ async fn deleting_a_time_entry_should_record_the_time_spent_before_and_after() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(values(&fx, &id, "time_deleted"), [pair("1h", "0m")]);
+    assert_eq!(
+        values(&fx, &id, HistoryKind::TimeDeleted),
+        [pair("1h", "0m")]
+    );
 }
 
 #[tokio::test]
@@ -213,19 +222,19 @@ async fn subtask_changes_should_record_the_progress_before_and_after() {
     assert_eq!(status, StatusCode::OK, "{body}");
 
     assert_eq!(
-        values(&fx, &id, "subtask_added"),
+        values(&fx, &id, HistoryKind::SubtaskAdded),
         [(None, Some("0 of 1 done".to_string()))]
     );
     assert_eq!(
-        values(&fx, &id, "subtask_done"),
+        values(&fx, &id, HistoryKind::SubtaskDone),
         [pair("0 of 1 done", "1 of 1 done")]
     );
     assert_eq!(
-        values(&fx, &id, "subtask_renamed"),
+        values(&fx, &id, HistoryKind::SubtaskRenamed),
         [pair("Draft", "Final")]
     );
     assert_eq!(
-        values(&fx, &id, "subtask_deleted"),
+        values(&fx, &id, HistoryKind::SubtaskDeleted),
         [(Some("1 of 1 done".to_string()), None)]
     );
 }
@@ -262,7 +271,7 @@ async fn a_subtask_template_should_record_the_progress_of_each_added_subtask() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
-        values(&fx, &target, "subtask_added"),
+        values(&fx, &target, HistoryKind::SubtaskAdded),
         [
             (None, Some("0 of 1 done".to_string())),
             pair("0 of 1 done", "0 of 2 done"),
@@ -291,5 +300,70 @@ async fn editing_a_time_entry_should_record_the_time_spent_before_and_after() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(values(&fx, &id, "time_edited"), [pair("1h", "2h 30m")]);
+    assert_eq!(
+        values(&fx, &id, HistoryKind::TimeEdited),
+        [pair("1h", "2h 30m")]
+    );
+}
+
+/// Returns the `detail` of each event of `kind` on `task`, oldest first.
+fn details(fx: &Fixture, task: &str, kind: HistoryKind) -> Vec<String> {
+    fx.db
+        .task(task)
+        .expect("read")
+        .expect("task")
+        .history
+        .iter()
+        .filter(|event| event.kind == kind)
+        .map(|event| event.detail.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn logging_time_by_hand_should_record_its_history_event_with_the_entry() {
+    let (_dir, fx) = fixture();
+    let id = new_task(&fx).await;
+    let (status, entry) = call(
+        &fx,
+        "POST",
+        "/api/time/manual",
+        Some(json!({"task_id": id, "date": "2020-01-01", "from": "08:00", "to": "09:00"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{entry}");
+    assert_eq!(fx.db.list_entries(&id).expect("entries").len(), 1);
+    assert_eq!(
+        values(&fx, &id, HistoryKind::TimeLogged),
+        [pair("0m", "1h")]
+    );
+    assert_eq!(
+        details(&fx, &id, HistoryKind::TimeLogged),
+        ["Manually logged 60m"]
+    );
+}
+
+#[tokio::test]
+async fn ending_a_timer_session_should_record_its_history_event_with_the_entry() {
+    let (_dir, fx) = fixture();
+    let id = new_task(&fx).await;
+    fx.db
+        .account(&fx.owner)
+        .set_active_timer(&ActiveTimer {
+            task_id: Some(id.clone()),
+            mode: TimerMode::Stopwatch,
+            started_at: chrono::Utc::now().timestamp() - 600,
+            duration_secs: None,
+        })
+        .expect("timer");
+    let (status, body) = call(&fx, "POST", "/api/timer/stop", Some(json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(fx.db.list_entries(&id).expect("entries").len(), 1);
+    assert_eq!(
+        values(&fx, &id, HistoryKind::TimeLogged),
+        [pair("0m", "10m")]
+    );
+    assert_eq!(
+        details(&fx, &id, HistoryKind::TimeLogged),
+        ["Stopwatch session logged (10m)"]
+    );
 }

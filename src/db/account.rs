@@ -16,16 +16,17 @@ use super::{
     AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardMember,
     BoardSnapshot, BookmarkAdd, BookmarkPatch, COLUMNS, COLUMNS_BY_BOARD, Change, ChangeOutcome,
     ChildLinks, ClaimOutcome, ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind,
-    ColumnPatch, CommentWrite, Commit, CopyTasks, Db, DbResult, DeviceGrant, EpicCloseOutcome,
-    EventRead, FIELD_DEFS, FeedAdd, FencedWrite, FieldCreateOutcome, Incoming, LINKS_BY_TARGET,
-    LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkRefusal, MemberSet, MoveGuards, MoveOutcome,
-    NewComment, NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage, OwnerChange,
-    PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome, Reads, RestoreOutcome, Rows, SWIMLANES,
-    SessionEndOutcome, SessionListing, SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
-    SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
-    TaskContext, TemplateDeleteOutcome, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board,
-    index_in, link_event_target, links_blocked_in, no_signed_in_account, read_in, redacted_history,
-    role_in, task_role_in,
+    ColumnPatch, CommentWrite, Commit, CopyTasks, Db, DbResult, DeviceGrant, EntryEdit,
+    EpicCloseOutcome, EventRead, FIELD_DEFS, FeedAdd, FencedWrite, FieldCreateOutcome,
+    INBOUND_ADDRESSES, Incoming, IssuedInbound, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome,
+    LinkEdit, LinkRefusal, MemberSet, MoveGuards, MoveOutcome, NewComment, NewInbound,
+    NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage, OwnerChange, PasskeyAddOutcome,
+    PasskeyDeleteOutcome, PurgeOutcome, Reads, RestoreOutcome, Rows, SWIMLANES, SessionEndOutcome,
+    SessionListing, SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
+    SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, TaskContext,
+    TemplateDeleteOutcome, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board, index_in,
+    link_event_target, links_blocked_in, no_signed_in_account, read_in, redacted_history, role_in,
+    task_role_in,
 };
 use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission, required_role,
@@ -33,7 +34,7 @@ use crate::auth::{
 use crate::models::{
     AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, AuthScope, Avatar, BinRow,
     BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange,
-    DeviceAuthRow, EventChange, EventKind, FieldDefRow, LinkKind, Numbering, PasskeyRow,
+    DeviceAuthRow, EventKind, FieldDefRow, InboundAddressRow, LinkKind, Numbering, PasskeyRow,
     PruneNotice, RecoveryCodeRow, ReportBookmark, Settings, SwimlaneRow, TaskAttachment, TaskBrief,
     TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
     WebhookRow,
@@ -117,6 +118,9 @@ pub type OwnedField = Owned<FieldDefRow>;
 
 /// A webhook on a board the bound account owns.
 pub type OwnedWebhook = Owned<WebhookRow>;
+
+/// An inbound address on a board the bound account owns.
+pub type OwnedInbound = Owned<InboundAddressRow>;
 
 /// A time entry the bound account logged.
 pub type OwnedEntry = Owned<TimeEntryRow>;
@@ -2239,35 +2243,6 @@ impl AccountDb {
             .delete_attachment(&task.row().id, attachment_id, actor)
     }
 
-    /// Appends a history event to a task.
-    pub fn log_event(
-        &self,
-        task: &OwnedTask,
-        kind: &str,
-        detail: &str,
-        actor: Actor<'_>,
-    ) -> DbResult<bool> {
-        self.db.log_event(&task.row().id, kind, detail, actor)
-    }
-
-    /// Appends a history event to a task that changed a value, recording `change` on it.
-    pub fn log_change_event(
-        &self,
-        task: &OwnedTask,
-        kind: &str,
-        detail: &str,
-        actor: Actor<'_>,
-        change: EventChange,
-    ) -> DbResult<bool> {
-        self.db
-            .log_change_event(&task.row().id, kind, detail, actor, change)
-    }
-
-    /// Returns the minutes the account logged on a task.
-    pub fn task_minutes(&self, task: &OwnedTask) -> DbResult<i64> {
-        self.db.task_minutes_of(&self.account, &task.row().id)
-    }
-
     /// Bumps a task's completed-pomodori counter.
     pub fn record_pomodoro_complete(&self, task: &OwnedTask) -> DbResult<()> {
         self.db.record_pomodoro_complete(&task.row().id)
@@ -2358,6 +2333,38 @@ impl AccountDb {
     /// Deletes a webhook.
     pub fn delete_webhook(&self, hook: &OwnedWebhook) -> DbResult<bool> {
         self.db.delete_webhook(&hook.row().id)
+    }
+
+    /// Returns inbound address `id` when the account owns its board.
+    pub fn inbound_address(&self, id: &str) -> DbResult<Option<OwnedInbound>> {
+        self.on_owned_board(INBOUND_ADDRESSES, id, |address: &InboundAddressRow| {
+            &address.board_id
+        })
+    }
+
+    /// Returns a board's inbound addresses, oldest first, and none for another account's board.
+    pub fn list_inbound(&self, board_id: &str) -> DbResult<Vec<InboundAddressRow>> {
+        self.on_own_board(board_id, || self.db.list_inbound(board_id))
+    }
+
+    /// Stores a new inbound address on a board, and refuses it while the board holds the most it
+    /// may.
+    pub fn create_inbound(&self, board: &OwnedBoard, new: NewInbound) -> DbResult<IssuedInbound> {
+        let new = NewInbound {
+            board_id: board.row().id.clone(),
+            ..new
+        };
+        self.db.create_inbound(new)
+    }
+
+    /// Gives an inbound address a new secret and returns the new address.
+    pub fn rotate_inbound(&self, address: &OwnedInbound) -> DbResult<Option<IssuedInbound>> {
+        self.db.rotate_inbound(&address.row().id)
+    }
+
+    /// Deletes an inbound address.
+    pub fn delete_inbound(&self, address: &OwnedInbound) -> DbResult<bool> {
+        self.db.delete_inbound(&address.row().id)
     }
 
     /// Returns time entry `id` when the account logged it and still holds a role on the board of
@@ -2462,16 +2469,21 @@ impl AccountDb {
         Ok(out)
     }
 
-    /// Logs `entry` on a task and its history event in one write.
+    /// Logs `entry` on a task and its history event, reading `detail`, in one write.
     pub fn log_task_time(
         &self,
         task: &OwnedTask,
         entry: NewTimeEntry<'_>,
+        detail: &str,
         actor: Actor<'_>,
-    ) -> DbResult<bool> {
+    ) -> DbResult<Option<String>> {
         let task_id = Some(task.row().id.as_str());
-        self.db
-            .log_task_time(&self.account, NewTimeEntry { task_id, ..entry }, actor)
+        self.db.log_task_time(
+            &self.account,
+            NewTimeEntry { task_id, ..entry },
+            detail,
+            actor,
+        )
     }
 
     /// Creates a time entry for the account; [`None`] when its task is gone or another account's.
@@ -2485,35 +2497,21 @@ impl AccountDb {
         self.db.create_entry_full(&self.account, entry)
     }
 
-    /// Creates the time entry `entry` on a task.
-    pub fn create_entry_at(
-        &self,
-        task: &OwnedTask,
-        entry: NewTimeEntry<'_>,
-    ) -> DbResult<Option<String>> {
-        let task_id = Some(task.row().id.as_str());
-        self.db
-            .create_entry_at(&self.account, NewTimeEntry { task_id, ..entry })
-    }
-
     /// Updates a time entry, moving it to `task` or making it task-less with [`None`].
     pub fn update_entry(
         &self,
         entry: &OwnedEntry,
         task: Option<&OwnedTask>,
-        seconds: i64,
-        note: &str,
-        started_at: &str,
-        labels: &[String],
+        edit: EntryEdit<'_>,
+        actor: Actor<'_>,
     ) -> DbResult<bool> {
         let task_id = task.map_or("", |task| task.row().id.as_str());
-        self.db
-            .update_entry(&entry.row().id, task_id, seconds, note, started_at, labels)
+        self.db.update_entry(&entry.row().id, task_id, edit, actor)
     }
 
-    /// Deletes a time entry.
-    pub fn delete_entry(&self, entry: &OwnedEntry) -> DbResult<bool> {
-        self.db.delete_entry(&entry.row().id)
+    /// Deletes a time entry and writes its history event in one write.
+    pub fn delete_entry(&self, entry: &OwnedEntry, actor: Actor<'_>) -> DbResult<bool> {
+        self.db.delete_entry(&entry.row().id, actor)
     }
 
     /// Returns the account's running timer, if one runs, refusing a timer on a task outside the

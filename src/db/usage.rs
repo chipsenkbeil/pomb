@@ -11,15 +11,15 @@ use super::notifications::txn_record_task_notifications;
 use super::outbox::txn_queue_events;
 use super::{
     ACCOUNT_USAGE, AVATARS, BOARDS, Bound, COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, Db,
-    DbResult, FIELD_DEFS, FIELDS_BY_BOARD, MAX_FIELD_DEF_ROW_BYTES, MAX_TASK_ROW_BYTES,
-    QuotaExceeded, Rows, SWIMLANES, SWIMLANES_BY_BOARD, Store, TASK_COLORS, TASKS, TASKS_BY_COLUMN,
-    TEMPLATES, TIME_ENTRIES, WEBHOOKS, board_use_in, read_in, rows_in, txn_member_quotas,
-    txn_mmap_get, txn_refuse_over_quota,
+    DbResult, FIELD_DEFS, FIELDS_BY_BOARD, INBOUND_ADDRESSES, MAX_FIELD_DEF_ROW_BYTES,
+    MAX_TASK_ROW_BYTES, QuotaExceeded, Rows, SWIMLANES, SWIMLANES_BY_BOARD, Store, TASK_COLORS,
+    TASKS, TASKS_BY_COLUMN, TEMPLATES, TIME_ENTRIES, WEBHOOKS, board_use_in, read_in, rows_in,
+    txn_member_quotas, txn_mmap_get, txn_refuse_over_quota,
 };
 use crate::disk::MIB;
 use crate::models::{
-    Actor, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, FieldDefRow, Quota, Quotas,
-    SwimlaneRow, TaskAttachment, TaskRow, TimeEntryRow, WebhookRow,
+    Actor, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, FieldDefRow, InboundAddressRow, Quota,
+    Quotas, SwimlaneRow, TaskAttachment, TaskRow, TimeEntryRow, WebhookRow,
 };
 
 /// Whether a write that takes its account past one of its quotas is refused. Writes the server
@@ -95,7 +95,13 @@ macro_rules! counted_by_board {
     )*};
 }
 
-counted_by_board!(ColumnRow, SwimlaneRow, ColorRow, WebhookRow);
+counted_by_board!(
+    ColumnRow,
+    SwimlaneRow,
+    ColorRow,
+    WebhookRow,
+    InboundAddressRow
+);
 
 impl Counted for FieldDefRow {
     const MAX_ROW: Option<(Bound, usize)> =
@@ -554,6 +560,7 @@ pub(super) fn txn_recount_usage(txn: &WriteTransaction) -> DbResult<()> {
         let (owner, image) = item?;
         *usage.entry(owner.value().to_string()).or_default() += image.value().len() as u64;
     }
+    count_owned::<InboundAddressRow>(txn, INBOUND_ADDRESSES, &mut usage)?;
     let mut table = txn.open_table(ACCOUNT_USAGE)?;
     table.retain(|_, _| false)?;
     for (owner, bytes) in usage {
@@ -611,8 +618,8 @@ mod tests {
 
     use super::*;
     use crate::db::{
-        ColumnDeleteOutcome, ColumnPatch, FieldCreateOutcome, META, NewWebhook, OwnerChange,
-        SCHEMA_VERSION_KEY, SwimlanePatch, WebhookPatch,
+        ColumnDeleteOutcome, ColumnPatch, EntryEdit, FieldCreateOutcome, META, NewWebhook,
+        OwnerChange, SCHEMA_VERSION_KEY, SwimlanePatch, WebhookPatch,
     };
     use crate::models::{
         AccountId, Actor, BIN_RETENTION_DAYS, BoardRole, FieldColumn, FieldKind, FieldOwner,
@@ -729,12 +736,22 @@ mod tests {
         let started = Utc::now().to_rfc3339();
         assert!(
             fx.db
-                .update_entry(&entry, &second, 600, &longer, &started, &[])
+                .update_entry(
+                    &entry,
+                    &second,
+                    EntryEdit {
+                        seconds: 600,
+                        note: &longer,
+                        started_at: &started,
+                        labels: &[],
+                    },
+                    Actor::SYSTEM,
+                )
                 .expect("update")
         );
         assert_counts_match(&fx.db);
         let other = fx.db.create_entry(&second, 3, "Other").expect("entry");
-        assert!(fx.db.delete_entry(&other).expect("delete"));
+        assert!(fx.db.delete_entry(&other, Actor::SYSTEM).expect("delete"));
         assert_counts_match(&fx.db);
         assert!(fx.db.delete_task(&task, Actor::SYSTEM).expect("delete"));
         assert_counts_match(&fx.db);

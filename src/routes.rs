@@ -2,6 +2,7 @@ mod board_history;
 mod calendar_export;
 mod docs;
 mod export;
+mod inbound;
 mod local_time;
 mod multipart;
 mod slot;
@@ -60,17 +61,18 @@ use crate::db::{
     AdminActionOutcome, BoardDenied, BookmarkAdd, BookmarkPatch, Bound, ChangeOutcome, ChildLinks,
     ChildRef, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, ColumnWatch,
     CommentWrite, Commit, CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll,
-    DuplicateAttachment, EpicCloseOutcome, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome,
-    FirstPasskeyOutcome, InstanceDb, LargestUse, LinkAddOutcome, LinkDeleteOutcome, LinkEdit,
-    LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards,
-    MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement,
-    NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedColumn, OwnedTask, OwnerChange,
-    PaletteStrandsColor, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome,
-    QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked, RoleDenied,
-    SessionEndOutcome, SessionListing, SessionRefused, SessionToken, SwimlaneDeleteOutcome,
-    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext, UmbrellaChange,
-    UmbrellaPart, UmbrellaRef, WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels,
-    local_day, merge_metadata, push_change_event, push_column_event, push_event, round_estimate,
+    DuplicateAttachment, EntryEdit, EpicCloseOutcome, EventRead, FeedAdd, FencedWrite,
+    FieldCreateOutcome, FirstPasskeyOutcome, InboundColumnMissing, InstanceDb, LargestUse,
+    LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD,
+    MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME,
+    NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted,
+    OwnedBoard, OwnedColumn, OwnedTask, OwnerChange, PaletteStrandsColor, PasskeyAddOutcome,
+    PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuotaExceeded, RecoverOutcome, RegisterOutcome,
+    RestoreOutcome, Revoked, RoleDenied, SessionEndOutcome, SessionListing, SessionRefused,
+    SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
+    SwimlaneUpdateOutcome, TaskContext, UmbrellaChange, UmbrellaPart, UmbrellaRef,
+    WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels, local_day, merge_metadata,
+    push_change_event, push_column_event, push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -84,7 +86,7 @@ use crate::passkey::{
 use crate::permissions::{Permission, Preset};
 use crate::rules::{self, ColumnRules, EntryRule};
 use crate::webhook::{HostCheck, ProbeError};
-use crate::{AppState, markdown, search, webhook};
+use crate::{AppState, image, markdown, search, webhook};
 
 /// Build the full router. The auth middleware layer is added *before*
 /// `/login` and `/setup` are registered, so those two stay public.
@@ -129,6 +131,7 @@ pub fn router(state: AppState) -> Router {
     let router = router
         .route("/b/:board_id/time-estimate", get(time_estimate_page))
         .route("/b/:board_id/time-in-column", get(time_in_column_page))
+        .route("/b/:board_id/timeline", get(timeline_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route("/api/search", get(search_cards))
         .route("/api/notifications", get(list_notifications))
@@ -227,6 +230,10 @@ pub fn router(state: AppState) -> Router {
             get(download_attachment),
         )
         .route(
+            "/api/tasks/:id/attachments/:attachment_id/image",
+            get(show_attachment_image),
+        )
+        .route(
             "/api/tasks/:id/attachments/:attachment_id",
             patch(rename_attachment).delete(delete_attachment),
         )
@@ -315,6 +322,18 @@ pub fn router(state: AppState) -> Router {
             patch(update_webhook).delete(delete_webhook),
         )
         .route("/api/webhooks/:id/secret", get(get_webhook_secret))
+        .route(
+            "/api/boards/:id/inbound-addresses",
+            post(inbound::create_inbound_address).get(inbound::list_inbound_addresses),
+        )
+        .route(
+            "/api/inbound-addresses/:id/rotate",
+            post(inbound::rotate_inbound_address),
+        )
+        .route(
+            "/api/inbound-addresses/:id",
+            delete(inbound::delete_inbound_address),
+        )
         .route("/api/boards/:id/webhooks/test-dns", post(test_webhook_dns))
         .route(
             "/api/boards/:id/webhooks/test-request",
@@ -539,6 +558,7 @@ pub fn router(state: AppState) -> Router {
     // Unauthenticated iCal feed (bearer token in the URL)
     let router = router
         .route("/api/calendar-feed/:token", get(serve_calendar_feed))
+        .route("/api/inbound/:address", post(inbound::receive_inbound_mail))
         .route("/setup", get(setup_page));
 
     // Static assets come from disk in debug builds so edits show without a rebuild, and are embedded in release builds
@@ -597,6 +617,10 @@ const SECURITY_POLICY: &str = concat!(
     "object-src 'none'; ",
     "base-uri 'none'",
 );
+
+/// What an attachment image tells the browser: load nothing, run nothing and treat the image as
+/// its own opaque origin if it is opened on its own.
+const IMAGE_POLICY: &str = "sandbox; default-src 'none'";
 
 /// What every response behind an `https` public URL tells the browser: reach the site only over
 /// HTTPS for a year.
@@ -701,10 +725,12 @@ async fn security_headers(State(state): State<AppState>, req: Request, next: Nex
     let headers = response.headers_mut();
     headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     headers.insert(REFERRER_POLICY, HeaderValue::from_static("same-origin"));
-    headers.insert(
-        CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(SECURITY_POLICY),
-    );
+    if !headers.contains_key(CONTENT_SECURITY_POLICY) {
+        headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(SECURITY_POLICY),
+        );
+    }
     let https = state
         .public_url
         .as_deref()
@@ -771,6 +797,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/b/:board_id/monte-carlo", Board, No),
         (Method::GET, "/b/:board_id/time-estimate", Board, No),
         (Method::GET, "/b/:board_id/time-in-column", Board, No),
+        (Method::GET, "/b/:board_id/timeline", Board, No),
         (Method::POST, "/api/tasks", Account, Grows),
         (Method::GET, "/api/tasks", Account, No),
         (Method::GET, "/api/search", Account, No),
@@ -915,6 +942,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             No,
         ),
         (
+            Method::GET,
+            "/api/tasks/:id/attachments/:attachment_id/image",
+            Task,
+            No,
+        ),
+        (
             Method::PATCH,
             "/api/tasks/:id/attachments/:attachment_id",
             Task,
@@ -995,6 +1028,21 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::PATCH, "/api/webhooks/:id", Entity, Grows),
         (Method::DELETE, "/api/webhooks/:id", Entity, Exempt),
         (Method::GET, "/api/webhooks/:id/secret", Entity, No),
+        (Method::GET, "/api/boards/:id/inbound-addresses", Board, No),
+        (
+            Method::POST,
+            "/api/boards/:id/inbound-addresses",
+            Board,
+            Grows,
+        ),
+        (
+            Method::POST,
+            "/api/inbound-addresses/:id/rotate",
+            Entity,
+            Grows,
+        ),
+        (Method::DELETE, "/api/inbound-addresses/:id", Entity, Exempt),
+        (Method::POST, "/api/inbound/:address", Public, Grows),
         (
             Method::POST,
             "/api/boards/:id/webhooks/test-dns",
@@ -1436,7 +1484,9 @@ impl From<Box<dyn std::error::Error>> for AppError {
         if let Some(refusal) = error.downcast_ref::<QuotaExceeded>() {
             return (*refusal).into();
         }
-        if error.downcast_ref::<WebhookColumnMissing>().is_some() {
+        if error.downcast_ref::<WebhookColumnMissing>().is_some()
+            || error.downcast_ref::<InboundColumnMissing>().is_some()
+        {
             return Self::bad_request(error.to_string());
         }
         if let Some(refusal) = error.downcast_ref::<PaletteStrandsColor>() {
@@ -2419,6 +2469,8 @@ struct AttachmentView {
     is_image: bool,
     /// Whether the attachment is the task's cover.
     is_cover: bool,
+    /// How many descriptions and comments of the task show it as an image.
+    references: usize,
 }
 
 /// Returns the type label an attachment shows, from its MIME type `mime`.
@@ -3002,6 +3054,10 @@ impl TaskView {
                 reactions: reaction_pills(&c.reactions, handle),
             })
             .collect();
+        let shown_in: Vec<HashSet<String>> = std::iter::once(row.description.as_str())
+            .chain(row.comments.iter().map(|c| c.body.as_str()))
+            .map(markdown::attachment_ids)
+            .collect();
         self.attachments = row
             .attachments
             .iter()
@@ -3023,6 +3079,7 @@ impl TaskView {
                     is_document: shown.is_document(),
                     is_image: shown.is_image(),
                     is_cover: row.cover_id.as_deref() == Some(shown.id.as_str()),
+                    references: shown_in.iter().filter(|ids| ids.contains(&a.id)).count(),
                 }
             })
             .collect();
@@ -4381,90 +4438,24 @@ const RELATION_KINDS: &[(LinkKind, &str)] = &[
 
 /// History kinds the History sub-view hides until "Show all events" is ticked, and the export
 /// leaves out unless asked for every event.
-const MINOR_HISTORY_KINDS: &[&str] = &[
-    "color_updated",
-    "due_done_updated",
-    "time_edited",
-    "time_deleted",
-    "subtask_renamed",
-    "subtask_due_set",
-    "subtask_due_cleared",
-    "subtask_members_updated",
-    "attachment_added",
-    "attachment_renamed",
-    "attachment_edited",
-    "attachment_deleted",
-    "comment_edited",
-    "watched",
-    "unwatched",
-    "claim_expired",
+const MINOR_HISTORY_KINDS: &[HistoryKind] = &[
+    HistoryKind::ColorUpdated,
+    HistoryKind::DueDoneUpdated,
+    HistoryKind::TimeEdited,
+    HistoryKind::TimeDeleted,
+    HistoryKind::SubtaskRenamed,
+    HistoryKind::SubtaskDueSet,
+    HistoryKind::SubtaskDueCleared,
+    HistoryKind::SubtaskMembersUpdated,
+    HistoryKind::AttachmentAdded,
+    HistoryKind::AttachmentRenamed,
+    HistoryKind::AttachmentEdited,
+    HistoryKind::AttachmentDeleted,
+    HistoryKind::CommentEdited,
+    HistoryKind::Watched,
+    HistoryKind::Unwatched,
+    HistoryKind::ClaimExpired,
 ];
-
-/// Readable label of each history kind the server logs.
-const HISTORY_KIND_LABELS: &[(&str, &str)] = &[
-    ("created", "Created"),
-    ("moved", "Column"),
-    ("board_updated", "Board"),
-    ("swimlane_updated", "Swimlane"),
-    ("deleted", "Task deleted"),
-    ("restored", "Task restored"),
-    ("renamed", "Name"),
-    ("description_updated", "Description"),
-    ("estimate_updated", "Time estimate"),
-    ("points_updated", "Points estimate"),
-    ("color_updated", "Color"),
-    ("labels_updated", "Labels"),
-    ("due_updated", "Due date"),
-    ("due_done_updated", "Due date done"),
-    ("members_updated", "Members"),
-    ("responsible_updated", "Responsible"),
-    ("grouping_date_updated", "Date group"),
-    ("timeline_updated", "Timeline"),
-    ("subtask_added", "Subtask added"),
-    ("subtask_deleted", "Subtask deleted"),
-    ("subtask_done", "Subtask completed"),
-    ("subtask_reopened", "Subtask reopened"),
-    ("subtask_renamed", "Subtask"),
-    ("subtask_due_set", "Subtask due date"),
-    ("subtask_due_cleared", "Subtask due date"),
-    ("subtask_members_updated", "Subtask members"),
-    ("subtask_converted", "Subtask converted"),
-    ("time_logged", "Time spent"),
-    ("time_edited", "Time edited"),
-    ("time_deleted", "Time deleted"),
-    ("comment", "Comment"),
-    ("comment_added", "Comment"),
-    ("comment_edited", "Comment edited"),
-    ("comment_deleted", "Comment deleted"),
-    ("attachment_added", "Attachment added"),
-    ("attachment_renamed", "Attachment renamed"),
-    ("attachment_edited", "Attachment edited"),
-    ("cover_set", "Cover image set"),
-    ("cover_removed", "Cover image removed"),
-    ("attachment_deleted", "Attachment deleted"),
-    ("link_added", "Link added"),
-    ("link_removed", "Link removed"),
-    ("claimed", "Claimed"),
-    ("claim_released", "Claim released"),
-    ("claim_expired", "Claim expired"),
-    ("swimlane_merged", "Swimlane merged"),
-    ("watched", "Watching"),
-    ("unwatched", "Stopped watching"),
-];
-
-/// Returns the readable label of a history `kind`. A kind without a label reads as its words, the
-/// first capitalised.
-fn history_kind_label(kind: &str) -> String {
-    if let Some((_, label)) = HISTORY_KIND_LABELS.iter().find(|(known, _)| *known == kind) {
-        return (*label).to_string();
-    }
-    let words = kind.replace('_', " ");
-    let mut chars = words.trim().chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
 
 /// What the From and To of an event read when it has no such value.
 const NO_VALUE: &str = "(none)";
@@ -4495,7 +4486,7 @@ impl HistoryEventView {
     fn new(event: &TaskEvent) -> Self {
         let initials = user_initials(&event.actor);
         Self {
-            label: history_kind_label(&event.kind),
+            label: event.kind.label().to_string(),
             detail: event.detail.clone(),
             actor: history_actor(event),
             initials: if initials.is_empty() {
@@ -4504,7 +4495,7 @@ impl HistoryEventView {
                 initials
             },
             created_display: LocalTime::of(Shape::DateTime, &event.created_at),
-            minor: MINOR_HISTORY_KINDS.contains(&event.kind.as_str()),
+            minor: MINOR_HISTORY_KINDS.contains(&event.kind),
             changed: event.from.is_some() || event.to.is_some(),
             from: event.from.clone().unwrap_or_else(|| NO_VALUE.to_string()),
             to: event.to.clone().unwrap_or_else(|| NO_VALUE.to_string()),
@@ -4697,17 +4688,6 @@ fn fallback_username(db: &AccountDb) -> String {
         .and_then(|users| users.into_iter().next())
         .map(|u| u.username)
         .unwrap_or_else(|| "admin".to_string())
-}
-
-/// Logs a `time_logged` event on `task` whose entry of `minutes` is already stored, with the time
-/// spent before and after it.
-fn log_time_spent(db: &AccountDb, task: &OwnedTask, detail: &str, minutes: i64, actor: Actor<'_>) {
-    let after = db.task_minutes(task).unwrap_or(minutes);
-    let change = EventChange {
-        from: Some(format_minutes((after - minutes).max(0))),
-        to: Some(format_minutes(after)),
-    };
-    let _ = db.log_change_event(task, "time_logged", detail, actor, change);
 }
 
 // ---- Page handlers ----
@@ -7995,7 +7975,7 @@ async fn create_task(
     // The event names the column so reports follow renames
     push_column_event(
         &mut row,
-        "created",
+        HistoryKind::Created,
         created,
         user.actor(),
         Some(&column.row().id),
@@ -8328,7 +8308,7 @@ fn subtask_change(before: &[Subtask], after: &[Subtask]) -> EventChange {
 }
 
 /// One history event of a task update, with the values it replaced and set.
-type UpdateEvent = (&'static str, String, EventChange);
+type UpdateEvent = (HistoryKind, String, EventChange);
 
 /// Returns `text` as an event value, or none when it is empty.
 fn event_value(text: &str) -> Option<String> {
@@ -8403,7 +8383,11 @@ fn update_history(
             from: Some(before.name.clone()),
             to: Some(after.name.clone()),
         };
-        events.push(("renamed", format!("Renamed to \"{}\"", after.name), change));
+        events.push((
+            HistoryKind::Renamed,
+            format!("Renamed to \"{}\"", after.name),
+            change,
+        ));
     }
     if after.description != before.description {
         let detail = if before.description.is_empty() {
@@ -8417,7 +8401,7 @@ fn update_history(
             from: event_value(&before.description),
             to: event_value(&after.description),
         };
-        events.push(("description_updated", detail.to_string(), change));
+        events.push((HistoryKind::DescriptionUpdated, detail.to_string(), change));
     }
     if after.estimate_hours != before.estimate_hours {
         let detail = match after.estimate_hours {
@@ -8428,7 +8412,7 @@ fn update_history(
             from: estimate_value(before),
             to: estimate_value(after),
         };
-        events.push(("estimate_updated", detail, change));
+        events.push((HistoryKind::EstimateUpdated, detail, change));
     } else if after.size != before.size && !size_from_color {
         let label = Size::from_i64(after.size).label();
         let change = EventChange {
@@ -8436,7 +8420,7 @@ fn update_history(
             to: size_value(after),
         };
         events.push((
-            "estimate_updated",
+            HistoryKind::EstimateUpdated,
             format!("Changed the time estimate to {label}"),
             change,
         ));
@@ -8450,7 +8434,7 @@ fn update_history(
             from: before.points.map(format_points),
             to: after.points.map(format_points),
         };
-        events.push(("points_updated", detail, change));
+        events.push((HistoryKind::PointsUpdated, detail, change));
     }
     if after.color_id != before.color_id {
         let change = EventChange {
@@ -8458,7 +8442,7 @@ fn update_history(
             to: color_value(after.color_id.as_deref(), colors),
         };
         events.push((
-            "color_updated",
+            HistoryKind::ColorUpdated,
             "Changed the task color".to_string(),
             change,
         ));
@@ -8473,7 +8457,7 @@ fn update_history(
             from: event_value(&before.labels.join(", ")),
             to: event_value(&after.labels.join(", ")),
         };
-        events.push(("labels_updated", detail, change));
+        events.push((HistoryKind::LabelsUpdated, detail, change));
     }
     if after.due_at != before.due_at || after.due_repeat != before.due_repeat {
         let detail = match after.due_at.as_deref() {
@@ -8490,7 +8474,7 @@ fn update_history(
             from: due_value(before),
             to: due_value(after),
         };
-        events.push(("due_updated", detail, change));
+        events.push((HistoryKind::DueUpdated, detail, change));
     }
     let due_cleared = after.due_at.is_none() && after.due_at != before.due_at;
     if after.due_target_column_id != before.due_target_column_id && !due_cleared {
@@ -8501,7 +8485,7 @@ fn update_history(
             }
             _ => "Cleared the due date target column".to_string(),
         };
-        events.push(("due_updated", detail, EventChange::default()));
+        events.push((HistoryKind::DueUpdated, detail, EventChange::default()));
     }
 
     // Due-date done flag flipped
@@ -8512,7 +8496,7 @@ fn update_history(
             "Marked the due date not done"
         };
         events.push((
-            "due_done_updated",
+            HistoryKind::DueDoneUpdated,
             detail.to_string(),
             EventChange::default(),
         ));
@@ -8527,7 +8511,7 @@ fn update_history(
             from: member_names(&before.member_ids, users),
             to: names,
         };
-        events.push(("members_updated", detail, change));
+        events.push((HistoryKind::MembersUpdated, detail, change));
     }
     if after.responsible != before.responsible {
         let to = responsible_name(after.responsible.as_ref(), users);
@@ -8539,7 +8523,7 @@ fn update_history(
             from: responsible_name(before.responsible.as_ref(), users),
             to,
         };
-        events.push(("responsible_updated", detail, change));
+        events.push((HistoryKind::ResponsibleUpdated, detail, change));
     }
     if after.grouping_date != before.grouping_date {
         let change = EventChange {
@@ -8547,7 +8531,7 @@ fn update_history(
             to: after.grouping_date.clone(),
         };
         events.push((
-            "grouping_date_updated",
+            HistoryKind::GroupingDateUpdated,
             "Changed the grouping date".to_string(),
             change,
         ));
@@ -8568,7 +8552,7 @@ fn update_history(
             from: value(before),
             to: value(after),
         };
-        events.push(("timeline_updated", detail, change));
+        events.push((HistoryKind::TimelineUpdated, detail, change));
     }
     events
 }
@@ -8818,7 +8802,7 @@ async fn update_task(
                         to: Some(kind.as_str().to_string()),
                     };
                     let detail = format!("Changed the kind to {}", kind.as_str());
-                    push_change_event(task, "kind_changed", detail, actor, change);
+                    push_change_event(task, HistoryKind::KindChanged, detail, actor, change);
                 }
                 if let Some(name) = input.name.as_deref() {
                     task.name = name.trim().to_string();
@@ -9701,7 +9685,7 @@ async fn bulk_tasks(
                         member_ids: Vec::new(),
                     });
                     let detail = format!("Added subtask \"{name}\"");
-                    push_event(task, "subtask_added", detail, actor);
+                    push_event(task, HistoryKind::SubtaskAdded, detail, actor);
                 }
                 if let Some(Some((column_name, rule))) = rules.get(&task.column_id) {
                     ensure_not_worse(column_name, rule, &before, task)?;
@@ -10231,9 +10215,9 @@ async fn watch_task(
 ) -> Result<Json<WatchTaskResponse>, AppError> {
     let input: WatchTaskInput = parse_body(&headers, body).await?;
     let (kind, detail) = if input.watched {
-        ("watched", "Started watching this task")
+        (HistoryKind::Watched, "Started watching this task")
     } else {
-        ("unwatched", "Stopped watching this task")
+        (HistoryKind::Unwatched, "Stopped watching this task")
     };
 
     // The flag and its history event are one write
@@ -10333,7 +10317,7 @@ async fn set_checklist_item(
                         if input.checked { "Ticked" } else { "Cleared" },
                         index + 1
                     );
-                    push_event(task, "description_updated", detail, actor);
+                    push_event(task, HistoryKind::DescriptionUpdated, detail, actor);
                     (Ok(task.description.clone()), true)
                 }
                 Ok(None) => (Ok(task.description.clone()), false),
@@ -11413,12 +11397,12 @@ fn subtask_members_event(
     name: &str,
     members: &[String],
     users: &[UserRow],
-) -> (&'static str, String) {
+) -> (HistoryKind, String) {
     let detail = match member_names(members, users) {
         Some(names) => format!("Assigned subtask \"{name}\" to {names}"),
         None => format!("Cleared the members of subtask \"{name}\""),
     };
-    ("subtask_members_updated", detail)
+    (HistoryKind::SubtaskMembersUpdated, detail)
 }
 
 /// Validate a subtask's requested due date against the task's board (a bare
@@ -11441,17 +11425,17 @@ fn resolve_subtask_due(
 }
 
 /// History kind and detail for a subtask's due date being set or cleared.
-fn subtask_due_event(name: &str, due: Option<&str>) -> (&'static str, String) {
+fn subtask_due_event(name: &str, due: Option<&str>) -> (HistoryKind, String) {
     match due {
         Some(at) => (
-            "subtask_due_set",
+            HistoryKind::SubtaskDueSet,
             format!(
                 "Set due date of subtask \"{name}\" to {}",
                 format_datetime(at)
             ),
         ),
         None => (
-            "subtask_due_cleared",
+            HistoryKind::SubtaskDueCleared,
             format!("Cleared due date of subtask \"{name}\""),
         ),
     }
@@ -11508,7 +11492,13 @@ async fn create_subtask(
             }
             let detail = format!("Added subtask \"{}\"", sub.name);
             let change = subtask_change(&before.subtasks, &task.subtasks);
-            push_change_event(task, "subtask_added", detail, user.actor(), change);
+            push_change_event(
+                task,
+                HistoryKind::SubtaskAdded,
+                detail,
+                user.actor(),
+                change,
+            );
             if let Some(at) = sub.due_at.as_deref() {
                 let (kind, detail) = subtask_due_event(&sub.name, Some(at));
                 push_event(task, kind, detail, user.actor());
@@ -11639,21 +11629,21 @@ async fn update_subtask(
             let sub = sub.clone();
             let event = match input.done {
                 Some(true) => Some((
-                    "subtask_done",
+                    HistoryKind::SubtaskDone,
                     format!("Completed subtask \"{}\"", sub.name),
                 )),
                 Some(false) => Some((
-                    "subtask_reopened",
+                    HistoryKind::SubtaskReopened,
                     format!("Reopened subtask \"{}\"", sub.name),
                 )),
                 None if input.name.is_some() => Some((
-                    "subtask_renamed",
+                    HistoryKind::SubtaskRenamed,
                     format!("Renamed subtask to \"{}\"", sub.name),
                 )),
                 None => None,
             };
             if let Some((kind, detail)) = event {
-                let change = if kind == "subtask_renamed" {
+                let change = if kind == HistoryKind::SubtaskRenamed {
                     EventChange {
                         from: before
                             .iter()
@@ -11804,7 +11794,13 @@ async fn convert_subtask(
         ensure_not_worse(column_name, rule, parent.row(), &without)?;
     }
     let created = format!("Task created in {}", column.row().name);
-    push_column_event(&mut row, "created", created, actor, Some(&column.row().id));
+    push_column_event(
+        &mut row,
+        HistoryKind::Created,
+        created,
+        actor,
+        Some(&column.row().id),
+    );
     let new_id = db
         .insert_task_checked(&column, row, placement, actor)
         .map_err(AppError::from)?
@@ -11847,7 +11843,7 @@ async fn convert_subtask(
         }
         let detail = format!("Converted subtask \"{}\" to a task", gone.name);
         let change = subtask_change(&before.subtasks, &task.subtasks);
-        push_change_event(task, "subtask_converted", detail, actor, change);
+        push_change_event(task, HistoryKind::SubtaskConverted, detail, actor, change);
         (ConvertRemoval::Removed, true)
     });
     let failure = match removal {
@@ -11950,7 +11946,13 @@ async fn delete_subtask(
             }
             let detail = format!("Deleted subtask \"{}\"", sub.name);
             let change = subtask_change(&before.subtasks, &task.subtasks);
-            push_change_event(task, "subtask_deleted", detail, user.actor(), change);
+            push_change_event(
+                task,
+                HistoryKind::SubtaskDeleted,
+                detail,
+                user.actor(),
+                change,
+            );
             (Ok(SubtaskDelete::Deleted), true)
         })
         .map_err(AppError::from)?
@@ -12000,7 +12002,13 @@ async fn delete_all_subtasks(
             }
             let detail = format!("Deleted all {count} subtasks");
             let change = subtask_change(&before.subtasks, &task.subtasks);
-            push_change_event(task, "subtask_deleted", detail, user.actor(), change);
+            push_change_event(
+                task,
+                HistoryKind::SubtaskDeleted,
+                detail,
+                user.actor(),
+                change,
+            );
             (Ok(()), true)
         })
         .map_err(AppError::from)?
@@ -12146,7 +12154,13 @@ async fn add_subtasks_from_template(
                 let detail = format!("Added subtask \"{}\"", sub.name);
                 let kept = before.subtasks.len() + index;
                 let change = subtask_change(&task.subtasks[..kept], &task.subtasks[..=kept]);
-                push_change_event(task, "subtask_added", detail, user.actor(), change);
+                push_change_event(
+                    task,
+                    HistoryKind::SubtaskAdded,
+                    detail,
+                    user.actor(),
+                    change,
+                );
             }
             (Ok(()), !created.is_empty())
         })
@@ -13136,35 +13150,134 @@ async fn store_json_upload(
         .ok_or_else(|| AppError::not_found("task not found"))
 }
 
+/// Most bytes of one image that `base64=true` returns.
+const LISTED_IMAGE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Most bytes of images that one `base64=true` reply returns.
+const LISTED_IMAGES_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Represents the query of the attachment list.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct ListAttachmentsQuery {
+    /// Whether to add `data_base64` to each image of a supported type, within the size limits.
+    base64: Option<bool>,
+}
+
+/// Represents one attachment of a task in the list, with the addresses that serve it.
+#[derive(Serialize, ToSchema)]
+struct AttachmentListing {
+    #[serde(flatten)]
+    attachment: TaskAttachment,
+    /// The address that downloads the file, absent for a link.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_url: Option<String>,
+    /// The address that shows the file inline, present for an image stored as an image type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_url: Option<String>,
+    /// The file's bytes as standard base64, present only with `base64=true`, for a PNG, JPEG,
+    /// WebP or GIF within the size limits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_base64: Option<String>,
+}
+
 /// Lists a task's attachments as JSON, oldest first.
 ///
 /// Each row holds the attachment's `id`, `name`, `size` in bytes, `mime` type, the account handle
 /// that uploaded it as `uploaded_by`, the `token_name` of the API token that uploaded it (null for
-/// a browser upload or an attachment from before this field), and `created_at`. A token limited
+/// a browser upload or an attachment from before this field), and `created_at`. A link has its
+/// address in `url`. Any other row has `file_url`, the address that downloads it, and an image has
+/// `image_url` too, the address that shows it inline. With `base64=true` each PNG, JPEG, WebP or
+/// GIF of at most 2 MiB also has `data_base64`, its bytes as standard base64, while the images before
+/// it add up to at most 8 MiB. A token limited
 /// to some boards gets 404 for a task on any other board.
 #[utoipa::path(
     get,
     path = "/api/tasks/{id}/attachments",
     operation_id = "list_attachments",
     tag = "Tasks",
-    params(("id" = String, Path, description = "Task id")),
+    params(("id" = String, Path, description = "Task id"), ListAttachmentsQuery),
     responses(
-        (status = 200, description = "The task's attachments, oldest first", body = Vec<TaskAttachment>),
+        (status = 200, description = "The task's attachments, oldest first", body = Vec<AttachmentListing>),
         (status = 404, description = "Task not found"),
         (status = 401, description = "Missing or invalid credentials"),
+        (status = 503, description = "`busy`: `base64=true` and 8 downloads are running, or 2 from this account's tasks, and this one waited more than 10 seconds for its turn"),
     ),
 )]
 async fn list_attachments(
+    State(state): State<AppState>,
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<TaskAttachment>>, AppError> {
+    Query(query): Query<ListAttachmentsQuery>,
+) -> Result<Response, AppError> {
     let task = found(account.task(&id), "task not found")?;
-    let mut attachments = task.into_row().attachments;
-    for attachment in &mut attachments {
-        show_account_handle(attachment, &user.handle);
+    let with_data = query.base64 == Some(true);
+    let _slot = if with_data {
+        match Slot::Download(account.account_id().as_str())
+            .acquire(&state)
+            .await
+        {
+            Ok(slot) => Some(slot),
+            Err(busy) => return Ok(*busy),
+        }
+    } else {
+        None
+    };
+    let mut budget = LISTED_IMAGES_TOTAL_BYTES;
+    let mut listing = Vec::with_capacity(task.row().attachments.len());
+    for stored in &task.row().attachments {
+        let mut attachment = stored.clone();
+        show_account_handle(&mut attachment, &user.handle);
+        let base = format!("/api/tasks/{id}/attachments/{}", attachment.id);
+        let file_url = attachment.url.is_none().then(|| format!("{base}/file"));
+        let image_url = (attachment.url.is_none() && image::is_image_type(&attachment.mime))
+            .then(|| format!("{base}/image"));
+        let wanted = with_data
+            && image_url.is_some()
+            && attachment.size <= LISTED_IMAGE_BYTES
+            && attachment.size <= budget;
+        let data_base64 = if wanted {
+            read_listed_image(&account, &task, &attachment.id, budget)
+                .await
+                .map(|bytes| {
+                    budget -= bytes.len() as u64;
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                })
+        } else {
+            None
+        };
+        listing.push(AttachmentListing {
+            attachment,
+            file_url,
+            image_url,
+            data_base64,
+        });
     }
-    Ok(Json(attachments))
+    Ok(Json(listing).into_response())
+}
+
+/// Reads the file of attachment `id` of `task` when it is a PNG, JPEG, WebP or GIF of at most
+/// `budget` and [`LISTED_IMAGE_BYTES`] bytes, and returns [`None`] for anything else, including a
+/// file that cannot be read.
+async fn read_listed_image(
+    account: &AccountDb,
+    task: &OwnedTask,
+    id: &str,
+    budget: u64,
+) -> Option<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let limit = budget.min(LISTED_IMAGE_BYTES);
+    let (file, _) = account.open_attachment(task, id).ok().flatten()?;
+    let mut bytes = Vec::new();
+    tokio::fs::File::from_std(file)
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    let head = &bytes[..bytes.len().min(image::PREFIX_BYTES)];
+    (bytes.len() as u64 <= limit && image::sniff(head).is_some()).then_some(bytes)
 }
 
 /// Replaces the `api-token` uploader of `attachment` with the account `handle`, unless the handle
@@ -13237,6 +13350,84 @@ async fn download_attachment(
             (CONTENT_DISPOSITION, attachment_disposition(&meta.name)),
         ],
         SlotBody::stream(tokio::fs::File::from_std(file), len, slot),
+    )
+        .into_response())
+}
+
+/// Shows an attachment that is a PNG, JPEG, WebP or GIF inline, so a page can embed it.
+///
+/// The server reads the type from the file's first bytes and ignores the type the upload stated.
+/// Any other file, an SVG, and an image whose header declares more than 8000 pixels on a side or
+/// 40 megapixels answer 415. The reply carries `nosniff`, an inline disposition and a policy that
+/// sandboxes it and loads nothing. It shares the download slots: 8 at once, 2 from one account's
+/// tasks, and one that waits more than 10 seconds gets 503 `busy`.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/attachments/{attachment_id}/image",
+    operation_id = "show_attachment_image",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("attachment_id" = String, Path, description = "Attachment id"),
+    ),
+    responses(
+        (status = 200, description = "The image bytes, with the sniffed `image/png`, `image/jpeg`, `image/webp` or `image/gif` type", content_type = "image/*", body = Vec<u8>),
+        (status = 404, description = "Task or attachment not found"),
+        (status = 415, description = "The attachment is not a PNG, JPEG, WebP or GIF within the size caps, or its frame header lies past the first MiB"),
+        (status = 503, description = "`busy`: 8 downloads are running, or 2 from this account's tasks, and this one waited more than 10 seconds for its turn"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn show_attachment_image(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path((id, attachment_id)): Path<(String, String)>,
+) -> Result<Response, AppError> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let db = &account;
+    let task = found(db.task(&id), "task not found")?;
+    if !task.row().attachments.iter().any(|a| a.id == attachment_id) {
+        return Err(AppError::not_found("attachment not found"));
+    }
+    let slot = match Slot::Download(db.account_id().as_str())
+        .acquire(&state)
+        .await
+    {
+        Ok(slot) => slot,
+        Err(busy) => return Ok(*busy),
+    };
+    let (file, len) = db
+        .open_attachment(&task, &attachment_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("attachment data missing"))?;
+    let mut file = tokio::fs::File::from_std(file);
+    let mut head = Vec::new();
+    (&mut file)
+        .take(image::PREFIX_BYTES as u64)
+        .read_to_end(&mut head)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let sniffed = image::sniff(&head).ok_or_else(|| {
+        AppError::with_status(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "the attachment is not a PNG, JPEG, WebP or GIF within the size caps",
+        )
+    })?;
+    file.rewind()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok((
+        StatusCode::OK,
+        [
+            (CONTENT_TYPE, sniffed),
+            (CONTENT_DISPOSITION, "inline"),
+            (CONTENT_SECURITY_POLICY, IMAGE_POLICY),
+            (CACHE_CONTROL, "private, no-cache"),
+            (VARY, "Cookie, Authorization"),
+        ],
+        SlotBody::stream(file, len, slot),
     )
         .into_response())
 }
@@ -13764,13 +13955,13 @@ fn csv_field(text: &str) -> String {
 fn history_csv(history: &[TaskEvent], all: bool) -> String {
     let mut csv = String::from("time,actor,event,detail,from,to\r\n");
     for event in history {
-        if !all && MINOR_HISTORY_KINDS.contains(&event.kind.as_str()) {
+        if !all && MINOR_HISTORY_KINDS.contains(&event.kind) {
             continue;
         }
         let fields = [
             event.created_at.as_str(),
             &history_actor(event),
-            &history_kind_label(&event.kind),
+            event.kind.label(),
             event.detail.as_str(),
             event.from.as_deref().unwrap_or_default(),
             event.to.as_deref().unwrap_or_default(),
@@ -13912,26 +14103,11 @@ async fn delete_time_entry(
     let db = &account;
     let entry = found(db.entry(&id), "entry not found")?;
     ensure_task_id_unlocked(db, &user, &entry.row().task_id)?;
-    let task = db.task(&entry.row().task_id).ok().flatten();
-    let before = task
-        .as_ref()
-        .and_then(|task| db.task_minutes(task).ok())
-        .unwrap_or(0);
-    if !db.delete_entry(&entry).map_err(AppError::from)? {
+    if !db
+        .delete_entry(&entry, user.actor())
+        .map_err(AppError::from)?
+    {
         return Err(AppError::not_found("entry not found"));
-    }
-    if let Some(task) = task {
-        let change = EventChange {
-            from: Some(format_minutes(before)),
-            to: Some(format_minutes((before - entry.row().minutes).max(0))),
-        };
-        let _ = db.log_change_event(
-            &task,
-            "time_deleted",
-            &format!("Deleted a {}m time entry", entry.row().minutes),
-            user.actor(),
-            change,
-        );
     }
     Ok(StatusCode::OK)
 }
@@ -14067,13 +14243,17 @@ async fn task_modal(
         None => Vec::new(),
     };
     let (user_fields, system_fields) = field_views(&defs, &row.row().fields);
+    let scope = markdown::Scope {
+        task_id: &id,
+        attachments: &row.row().attachments,
+    };
     for comment in &mut task.comments {
-        comment.body_html = markdown::render(&comment.body);
+        comment.body_html = markdown::render_in(&comment.body, scope);
     }
     let description_html = if user.has(Permission::TasksWrite) {
-        markdown::render_tickable(&task.description)
+        markdown::render_tickable_in(&task.description, scope)
     } else {
-        markdown::render(&task.description)
+        markdown::render_in(&task.description, scope)
     };
     let description_hash = markdown::hash(&task.description);
     let responsible_id = row
@@ -14277,9 +14457,11 @@ async fn log_time(
         role,
         token_name: user.token_name.as_deref(),
     };
-    if !db
-        .log_task_time(&task, entry, user.actor())
+    let logged = format!("Logged {}", logged_amount(seconds));
+    if db
+        .log_task_time(&task, entry, &logged, user.actor())
         .map_err(AppError::from)?
+        .is_none()
     {
         return Err(AppError::not_found("task not found"));
     }
@@ -14767,6 +14949,43 @@ async fn time_in_column_page(
         chrome,
         due_time: board.due_time().format("%H:%M").to_string(),
         colors,
+        board_id: board.id,
+        board_name: board.name,
+    })
+}
+
+/// Timeline page: the board's tasks with a start and end date as bars on a day ruler.
+#[derive(Template)]
+#[template(path = "timeline.html")]
+struct TimelineTemplate {
+    /// Top bar data.
+    chrome: ShellChrome,
+    board_id: String,
+    board_name: String,
+    /// The "HH:MM" a date-only due date gets, for the task dialogs.
+    due_time: String,
+    /// Enabled colors, for the bars and the task modal's color picker.
+    colors: Vec<ColorView>,
+    /// The role the signed-in account holds on this board.
+    role: BoardRole,
+}
+
+async fn timeline_page(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<TimelineTemplate, AppError> {
+    let found_board = found(account.board(&board_id), "board not found")?;
+    let role = account.board_role(&found_board).map_err(AppError::from)?;
+    let board = found_board.into_row();
+    let colors = modal_colors(&account, &board.id)?;
+    let chrome = shell_chrome(&state, &account, &user.username)?;
+    Ok(TimelineTemplate {
+        chrome,
+        due_time: board.due_time().format("%H:%M").to_string(),
+        colors,
+        role,
         board_id: board.id,
         board_name: board.name,
     })
@@ -15343,35 +15562,30 @@ async fn create_manual_time(
         return Err(AppError::bad_request("End time must be after start time"));
     }
 
+    let entry = NewTimeEntry {
+        task_id: None,
+        started_at: &started_at.to_rfc3339(),
+        minutes,
+        seconds: minutes * 60,
+        note: &input.note.unwrap_or_default(),
+        kind: EntryKind::Manual,
+        interrupted: false,
+        interrupt_reason: None,
+        labels: input.labels.as_deref().unwrap_or(&[]),
+        created_by: &user.handle,
+        activity_id: None,
+        role: None,
+        token_name: user.token_name.as_deref(),
+    };
     let id = db
-        .create_entry_at(
+        .log_task_time(
             &task,
-            NewTimeEntry {
-                task_id: None,
-                started_at: &started_at.to_rfc3339(),
-                minutes,
-                seconds: minutes * 60,
-                note: &input.note.unwrap_or_default(),
-                kind: EntryKind::Manual,
-                interrupted: false,
-                interrupt_reason: None,
-                labels: input.labels.as_deref().unwrap_or(&[]),
-                created_by: &user.handle,
-                activity_id: None,
-                role: None,
-                token_name: user.token_name.as_deref(),
-            },
+            entry,
+            &format!("Manually logged {minutes}m"),
+            user.actor(),
         )
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
-
-    log_time_spent(
-        db,
-        &task,
-        &format!("Manually logged {minutes}m"),
-        minutes,
-        user.actor(),
-    );
 
     Ok(Json(IdMinutesResult { id, minutes }))
 }
@@ -15465,37 +15679,21 @@ async fn update_time_entry(
         None => return Err(AppError::bad_request("task_id is required")),
     };
 
-    let before = task
-        .as_ref()
-        .and_then(|task| db.task_minutes(task).ok())
-        .unwrap_or(0);
     let updated = db
         .update_entry(
             &existing,
             task.as_ref(),
-            seconds,
-            &input.note.unwrap_or_default(),
-            &started_at.to_rfc3339(),
-            input.labels.as_deref().unwrap_or(&[]),
+            EntryEdit {
+                seconds,
+                note: &input.note.unwrap_or_default(),
+                started_at: &started_at.to_rfc3339(),
+                labels: input.labels.as_deref().unwrap_or(&[]),
+            },
+            user.actor(),
         )
         .map_err(AppError::from)?;
     if !updated {
         return Err(AppError::not_found("entry not found"));
-    }
-
-    if let Some(task) = &task {
-        let after = db.task_minutes(task).unwrap_or(before);
-        let change = EventChange {
-            from: Some(format_minutes(before)),
-            to: Some(format_minutes(after)),
-        };
-        let _ = db.log_change_event(
-            task,
-            "time_edited",
-            &format!("Edited a time entry ({minutes}m)"),
-            user.actor(),
-            change,
-        );
     }
 
     Ok(Json(IdMinutesResult { id, minutes }))
@@ -20314,6 +20512,8 @@ struct BoardSettingsTemplate {
     webhook_form: WebhookFormView,
     /// The account's API tokens, for the API & Webhooks tab.
     tokens: Vec<ApiTokenListItem>,
+    /// The board's inbound addresses, for the Add task from email tab.
+    inbound: Vec<InboundListItem>,
     /// The member new tasks start with: `none`, `creator` or a user id.
     default_member: String,
     /// What the Default member row shows.
@@ -20370,6 +20570,41 @@ struct WebhookListItem {
     /// The name of its column filter, or "All columns".
     column: String,
     enabled: bool,
+}
+
+/// One inbound address as the Add task from email tab lists it.
+#[derive(Clone, Debug)]
+struct InboundListItem {
+    /// The address's id.
+    id: String,
+    /// The name the settings show.
+    name: String,
+    /// The prefix that starts the address, or empty for none.
+    prefix: String,
+    /// The name of its column.
+    column: String,
+}
+
+/// Returns the rows the Add task from email tab lists for board `board_id`.
+fn inbound_list(
+    db: &AccountDb,
+    board_id: &str,
+    columns: &[SettingsColumnView],
+) -> Result<Vec<InboundListItem>, AppError> {
+    Ok(db
+        .list_inbound(board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|address| InboundListItem {
+            column: columns
+                .iter()
+                .find(|column| column.id == address.column_id)
+                .map_or_else(String::new, |column| column.name.clone()),
+            id: address.id,
+            name: address.name,
+            prefix: address.prefix,
+        })
+        .collect())
 }
 
 /// One event checkbox of the webhook form.
@@ -20626,6 +20861,11 @@ fn board_settings_context(
         Vec::new()
     };
     let profile = db.settings().map_err(AppError::from)?;
+    let inbound = if tab == "email" {
+        inbound_list(db, board_id, &columns)?
+    } else {
+        Vec::new()
+    };
     let members: Vec<MemberDetail> = db
         .list_users()
         .map_err(AppError::from)?
@@ -20663,6 +20903,7 @@ fn board_settings_context(
         webhooks,
         webhook_form: WebhookFormView::default(),
         tokens,
+        inbound,
         default_member_responsible: board.default_member_responsible(),
         default_member,
         default_member_label,
@@ -23844,14 +24085,13 @@ fn log_timer_session(
     timer: &ActiveTimer,
     session: TimerSession<'_>,
 ) -> Result<Option<(i64, bool)>, AppError> {
-    let actor = session.actor;
     let recorded = record_timer_session(db, timer, session)?;
     db.clear_active_timer().map_err(AppError::from)?;
     let Some((minutes, completed, task)) = recorded else {
         return Ok(None);
     };
     if let Some(task) = task {
-        log_task_session(db, &task, timer.mode, minutes, completed, actor)?;
+        record_task_session(db, &task, timer.mode, completed)?;
     }
     Ok(Some((minutes, completed)))
 }
@@ -23924,10 +24164,12 @@ fn record_timer_session(
         token_name: actor.token_name,
     };
     let logged_on_task = match task {
-        Some(task) => db
-            .create_entry_full(entry(task_id.as_deref()))
-            .map_err(AppError::from)?
-            .map(|_| task),
+        Some(task) => {
+            let detail = session_detail(timer.mode, minutes);
+            db.log_task_time(&task, entry(task_id.as_deref()), &detail, actor)
+                .map_err(AppError::from)?
+                .map(|_| task)
+        }
         None => None,
     };
 
@@ -23939,28 +24181,34 @@ fn record_timer_session(
     Ok(Some((minutes, completed, logged_on_task)))
 }
 
-/// Records a session of `mode` logged on `task` in the task's history and its pomodoro counts.
-fn log_task_session(
-    db: &AccountDb,
-    task: &OwnedTask,
-    mode: TimerMode,
-    minutes: i64,
-    completed: bool,
-    actor: Actor<'_>,
-) -> Result<(), AppError> {
+/// Returns the history detail of a session of `mode` that logged `minutes`.
+fn session_detail(mode: TimerMode, minutes: i64) -> String {
     let kind_label = match mode {
         TimerMode::Pomodoro => "Pomodoro",
         TimerMode::Stopwatch => "Stopwatch",
         TimerMode::ShortBreak => "Short break",
         TimerMode::LongBreak => "Long break",
     };
-    log_time_spent(
-        db,
-        task,
-        &format!("{kind_label} session logged ({minutes}m)"),
-        minutes,
-        actor,
-    );
+    format!("{kind_label} session logged ({minutes}m)")
+}
+
+/// Returns how long an entry of `seconds` reads in its history: seconds under a minute, minutes
+/// from there.
+fn logged_amount(seconds: i64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        format!("{}m", seconds / 60)
+    }
+}
+
+/// Records a session of `mode` logged on `task` in its pomodoro counts.
+fn record_task_session(
+    db: &AccountDb,
+    task: &OwnedTask,
+    mode: TimerMode,
+    completed: bool,
+) -> Result<(), AppError> {
     match mode {
         TimerMode::Pomodoro if completed => {
             db.record_pomodoro_complete(task).map_err(AppError::from)?;
@@ -24739,6 +24987,41 @@ merged onto none and stored in the same write as the task. Metadata changes are 
 the task history. A request carrying `metadata` whose body is over 64 KiB is a 400, as is a merged
 object over 64 KiB."#;
 
+/// Concept prose for the `Inbound` tag.
+const INBOUND_DOC: &str = r#"An inbound address turns mail that an inbound-mail service forwards to Pomb into
+tasks on one board. It is stored per board, at most 20 per board (the 21st is a 409
+`quota_exceeded`), and managing addresses needs the `inbound.manage` permission, which only the
+admin preset holds.
+
+An inbound address has:
+
+- `name`: 1 to 100 characters once trimmed.
+- `prefix`: optional, at most 32 lowercase letters, digits and hyphens that neither start nor end
+  with a hyphen. It starts the address so a person can tell addresses apart. An empty string means
+  none.
+- `column_id`: a column of the same board, where a task made from mail lands.
+- `address`: the prefix, a hyphen when there is a prefix, and 64 lowercase hex characters of
+  randomness (256 bits). The response to `POST /api/boards/{id}/inbound-addresses` and to
+  `POST /api/inbound-addresses/{id}/rotate` carries it with its `path`, and no other response
+  does. Pomb stores only the SHA-256 of the address, so it cannot show it again.
+
+Rotating an address makes a new secret and the old address stops working at once. Deleting the
+column an address names deletes the address. Deleting a board deletes its addresses. Addresses
+are not part of a board export or archive.
+
+`POST /api/inbound/{address}` is the endpoint an inbound-mail service posts to. The address in the
+path is the only credential, so it takes no token or cookie. The body is a JSON object of at most
+1 MiB with `subject` (`Subject`), `text` (`TextBody`, `body-plain`,
+`text_body`) and `html` (`HtmlBody`, `body-html`, `html_body`), all optional. The post makes one
+task in the address's column: the subject is its name (the first line, at most 500 characters, or
+`(no subject)`), and the text is its description, cut to 64 KiB. With no text, the description is
+the text of the HTML. The task follows the board's usual defaults, quotas and column entry rules.
+
+An address that does not exist, was rotated or deleted, or belongs to a suspended owner gets one
+empty 404 and creates nothing, whatever the reason. One client that posts too many unknown
+addresses gets a 429 with `Retry-After`, and one address takes at most 20 posts at once and one
+more each second before it gets a 429 too."#;
+
 /// Concept prose for the `Webhooks` tag.
 const WEBHOOKS_DOC: &str = r#"A webhook tells another server about events on one board. It is stored per board, at most
 20 per board (the 21st is a 409 `quota_exceeded`), and managing webhooks needs the
@@ -25012,6 +25295,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         list_document_versions,
         read_document_version,
         download_attachment,
+        show_attachment_image,
         list_attachments,
         rename_attachment,
         delete_attachment,
@@ -25064,6 +25348,11 @@ them, which the Backups section of the settings page calls after a confirmation.
         list_board_fields,
         update_board_field,
         delete_board_field,
+        inbound::create_inbound_address,
+        inbound::list_inbound_addresses,
+        inbound::rotate_inbound_address,
+        inbound::delete_inbound_address,
+        inbound::receive_inbound_mail,
         create_board_webhook,
         list_board_webhooks,
         update_webhook,
@@ -25216,6 +25505,7 @@ them, which the Backups section of the settings page calls after a confirmation.
             ReactInput,
             ActorKind,
             TaskAttachment,
+            AttachmentListing,
             MemberDetail,
             BoardMemberView,
             BoardMemberInput,
@@ -25238,6 +25528,11 @@ them, which the Backups section of the settings page calls after a confirmation.
             FieldOwner,
             CreateFieldInput,
             UpdateFieldInput,
+            inbound::InboundAddressView,
+            inbound::IssuedInboundView,
+            inbound::InboundMail,
+            inbound::ReceivedMail,
+            inbound::CreateInboundInput,
             WebhookView,
             WebhookEvent,
             CreatedWebhookView,
@@ -25336,6 +25631,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         (name = "Links", description = LINKS_DOC),
         (name = "Fields", description = FIELDS_DOC),
         (name = "Webhooks", description = WEBHOOKS_DOC),
+        (name = "Inbound", description = INBOUND_DOC),
         (name = "Time", description = TIME_DOC),
         (name = "Timer", description = TIMER_DOC),
         (name = "Boards", description = "Boards"),
@@ -25393,6 +25689,9 @@ mod epics_tests;
 
 #[cfg(test)]
 mod import_tests;
+
+#[cfg(test)]
+mod inbound_tests;
 
 #[cfg(test)]
 mod openapi;
@@ -25453,17 +25752,18 @@ mod tests {
         TimerSession, UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed,
         csv_field, entry_badge, estimate_hours_to_size, format_added, format_due,
         format_entry_duration, format_estimate_hours, format_pomodori, format_relative_day,
-        format_time_kf, format_timeline, generate_feed_token, history_kind_label, ical_escape,
-        ical_fold, is_overdue, log_timer_session, normalize_due_input, normalize_estimate_hours,
-        parse_manual_range, parse_repeat_cadence, reaction_pills, router, subtasks_on_face,
-        timer_status_view, version_info,
+        format_time_kf, format_timeline, generate_feed_token, ical_escape, ical_fold, is_overdue,
+        log_timer_session, normalize_due_input, normalize_estimate_hours, parse_manual_range,
+        parse_repeat_cadence, reaction_pills, router, subtasks_on_face, timer_status_view,
+        version_info,
     };
     use crate::db::{BootstrapToken, Db, NewTimeEntry};
     use crate::layouts::{LAYOUTS, chip_labels};
     use crate::models::{
         AccountId, Actor, ActorKind, ApiTokenRecord, AuthScope, BoardRole, ColumnRow, EntryKind,
-        FeedTask, FieldDefRow, FieldKind, FieldOwner, MAX_BOARD_FEEDS, MAX_REPORT_BOOKMARKS,
-        SECONDS_PER_DAY, TaskKind, TaskRow, TimeFormat, WebhookEvent, WebhookRow, WeekStart,
+        FeedTask, FieldDefRow, FieldKind, FieldOwner, HistoryKind, MAX_BOARD_FEEDS,
+        MAX_REPORT_BOOKMARKS, SECONDS_PER_DAY, TaskKind, TaskRow, TimeFormat, WebhookEvent,
+        WebhookRow, WeekStart,
     };
     use crate::{AppState, auth, markdown};
 
@@ -28614,6 +28914,29 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
     }
 
+    #[tokio::test]
+    async fn timeline_page_should_render_with_its_ruler_host() {
+        let (_dir, fx) = kf221_fixture();
+        let uri = format!("/b/{}/timeline", fx.board_id);
+        let (status, html) = send(&fx, "GET", &uri, None).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{html}");
+        for needle in [
+            "data-page-init=\"TimelinePage\"",
+            "id=\"tlp-canvas\"",
+            "id=\"tlp-empty\"",
+            "id=\"modal-root\"",
+            "id=\"timeline-dialog\"",
+            "id=\"board-colors\"",
+        ] {
+            assert!(html.contains(needle), "{needle}");
+        }
+        let (status, _) = send(&fx, "GET", "/b/missing/timeline", None).await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+        let (status, board) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(board.contains("data-bm=\"timeline\""));
+    }
+
     /// The Time in column Task column keeps a readable width and the table scrolls inside its box.
     #[test]
     fn time_in_column_task_column_should_keep_a_readable_width() {
@@ -31353,13 +31676,6 @@ mod tests {
         assert!(history.contains(">AD<"), "{history}");
     }
 
-    #[test]
-    fn history_kind_label_should_humanise_an_unknown_kind() {
-        assert_eq!(history_kind_label("moved"), "Column");
-        assert_eq!(history_kind_label("brand_new_kind"), "Brand new kind");
-        assert_eq!(history_kind_label(""), "");
-    }
-
     #[tokio::test]
     async fn history_view_should_show_from_and_to_after_an_update() {
         let (_dir, fx) = kf221_fixture();
@@ -31488,12 +31804,9 @@ mod tests {
         .await;
         let id = task["id"].as_str().expect("id").to_string();
         let uri = format!("/api/tasks/{id}");
-        let kinds = |fx: &Kf221Fixture| -> Vec<String> {
+        let kinds = |fx: &Kf221Fixture| -> Vec<HistoryKind> {
             let task = fx.db.task(&id).expect("read").expect("task");
-            task.history
-                .iter()
-                .map(|event| event.kind.clone())
-                .collect()
+            task.history.iter().map(|event| event.kind).collect()
         };
 
         let before = kinds(&fx).len();
@@ -31505,12 +31818,16 @@ mod tests {
         )
         .await;
         let after = kinds(&fx);
-        assert_eq!(&after[before..], ["color_updated"], "{after:?}");
+        assert_eq!(&after[before..], [HistoryKind::ColorUpdated], "{after:?}");
 
         let before = after.len();
         send(&fx, "PATCH", &uri, Some(serde_json::json!({"size": 2}))).await;
         let after = kinds(&fx);
-        assert_eq!(&after[before..], ["estimate_updated"], "{after:?}");
+        assert_eq!(
+            &after[before..],
+            [HistoryKind::EstimateUpdated],
+            "{after:?}"
+        );
 
         let before = after.len();
         send(
@@ -31521,7 +31838,11 @@ mod tests {
         )
         .await;
         let after = kinds(&fx);
-        assert_eq!(&after[before..], ["estimate_updated"], "{after:?}");
+        assert_eq!(
+            &after[before..],
+            [HistoryKind::EstimateUpdated],
+            "{after:?}"
+        );
 
         let before = after.len();
         send(
@@ -31532,7 +31853,11 @@ mod tests {
         )
         .await;
         let after = kinds(&fx);
-        assert_eq!(&after[before..], ["estimate_updated"], "{after:?}");
+        assert_eq!(
+            &after[before..],
+            [HistoryKind::EstimateUpdated],
+            "{after:?}"
+        );
     }
 
     #[tokio::test]
@@ -32331,7 +32656,7 @@ mod tests {
             let merged = task
                 .history
                 .iter()
-                .any(|event| event.kind == "swimlane_merged");
+                .any(|event| event.kind == HistoryKind::SwimlaneMerged);
             assert_eq!(merged, !was_main, "only the moved tasks get an event");
         }
         let (status, _) = send(

@@ -178,8 +178,17 @@ mod tests {
     use chrono::{FixedOffset, Local};
 
     use super::*;
-    use crate::db::{META, NewTimeEntry, SCHEMA_VERSION_KEY};
-    use crate::models::{EntryKind, InstanceMode, Quotas};
+    use crate::db::{EntryEdit, META, NewTimeEntry, SCHEMA_VERSION_KEY};
+    use crate::models::{Actor, EntryKind, InstanceMode, Quotas};
+
+    fn edit(started_at: &str) -> EntryEdit<'_> {
+        EntryEdit {
+            seconds: 60,
+            note: "",
+            started_at,
+            labels: &[],
+        }
+    }
 
     /// An open database with its admin and a member, in multi mode.
     struct Fixture {
@@ -291,7 +300,7 @@ mod tests {
         let now = Utc::now().to_rfc3339();
         assert!(
             fx.db
-                .update_entry(&id, "", 60, "", &now, &[])
+                .update_entry(&id, "", edit(&now), Actor::SYSTEM)
                 .expect("update")
         );
         assert_eq!(
@@ -301,7 +310,7 @@ mod tests {
                 .len(),
             1
         );
-        assert!(fx.db.delete_entry(&id).expect("delete"));
+        assert!(fx.db.delete_entry(&id, Actor::SYSTEM).expect("delete"));
         assert!(
             fx.db
                 .entries_today(&fx.member, &Local)
@@ -327,7 +336,7 @@ mod tests {
         let moved = log(&fx.db, &fx.admin, "2020-01-03T10:00:00Z")
             .expect("another day")
             .expect("id");
-        let refused = fx.db.update_entry(&moved, "", 60, "", day, &[]);
+        let refused = fx.db.update_entry(&moved, "", edit(day), Actor::SYSTEM);
         let refusal = refused.expect_err("a full day");
         assert_eq!(
             refusal

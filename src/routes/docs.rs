@@ -17,11 +17,11 @@ const COMPOSITIONS: [&str; 3] = ["oneOf", "anyOf", "allOf"];
 pub const SKILL: &str = include_str!("docs/skill.md");
 
 /// Version of [`SKILL`], carried in its frontmatter and reported as `skill_version`.
-pub const SKILL_VERSION: &str = "24";
+pub const SKILL_VERSION: &str = "25";
 
 /// SHA-256 of [`SKILL`] per version, oldest first.
 #[cfg(test)]
-const SKILL_FINGERPRINTS: [(&str, &str); 24] = [
+const SKILL_FINGERPRINTS: [(&str, &str); 25] = [
     (
         "1",
         "c935bab15837c98040da423a9e4479bee899b60c4a8eb39a8cad0338d4c2e57e",
@@ -117,6 +117,10 @@ const SKILL_FINGERPRINTS: [(&str, &str); 24] = [
     (
         "24",
         "9f1f3fcc00325964d4a07c00e03cd88ee5b42354b9c52b62c7d91d19153ce0f7",
+    ),
+    (
+        "25",
+        "cdb58f80c99d4f4cedb8b6991e8e6340a30e777cb1a90f14a0420feaab97dcd8",
     ),
 ];
 
@@ -530,8 +534,8 @@ mod tests {
         let version = format!("metadata:\n  version: \"{SKILL_VERSION}\"");
         assert!(frontmatter.contains(&version), "{frontmatter}");
         assert!(
-            SKILL.lines().count() <= 150,
-            "the skill runs past 150 lines"
+            SKILL.lines().count() <= 160,
+            "the skill runs past 160 lines"
         );
         assert!(
             LLMS_TXT.lines().count() <= 20,

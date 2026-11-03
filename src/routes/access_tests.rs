@@ -14,7 +14,7 @@ use crate::AppState;
 use crate::auth::{PENDING_ROUTES, new_api_token_record, required_permission, required_role};
 use crate::db::{
     AccountDb, BookmarkAdd, BootstrapToken, Change, Db, FeedAdd, FencedWrite, FieldCreateOutcome,
-    LinkAddOutcome, NewComment, NewWebhook,
+    LinkAddOutcome, NewComment, NewInbound, NewWebhook,
 };
 use crate::models::{
     AccountId, Actor, ActorKind, AuthScope, BoardAccess, BoardRole, FieldDefRow, FieldKind,
@@ -84,6 +84,8 @@ pub(super) struct Ids {
     field: String,
     /// A webhook on [`Ids::board`].
     webhook: String,
+    /// An inbound address on [`Ids::board`].
+    inbound: String,
     /// A time entry logged on [`Ids::task`].
     entry: String,
     /// A template saved from [`Ids::board`].
@@ -98,7 +100,7 @@ pub(super) struct Ids {
 
 impl Ids {
     /// Returns every id, for blanking them out of an answer.
-    fn all(&self) -> [&str; 23] {
+    fn all(&self) -> [&str; 24] {
         [
             &self.account,
             &self.board,
@@ -118,6 +120,7 @@ impl Ids {
             &self.bookmark,
             &self.field,
             &self.webhook,
+            &self.inbound,
             &self.entry,
             &self.template,
             &self.subtask_template,
@@ -281,6 +284,16 @@ fn seed_feed(db: &Db, board: &str, name: &str) -> String {
     }
 }
 
+fn seed_inbound(db: &Db, board: &str, column: &str) -> String {
+    let new = NewInbound {
+        board_id: board.to_string(),
+        name: "Mail".to_string(),
+        prefix: "mail".to_string(),
+        column_id: column.to_string(),
+    };
+    db.create_inbound(new).expect("inbound address").row.id
+}
+
 fn seed_webhook(db: &Db, board: &str) -> String {
     let hook = NewWebhook {
         board_id: board.to_string(),
@@ -356,6 +369,7 @@ pub(super) fn seed(
         bookmark: seed_bookmark(db, &board, account.as_str()),
         field: seed_field(db, &board),
         webhook: seed_webhook(db, &board),
+        inbound: seed_inbound(db, &board, &column),
         entry: db.create_entry(&task, 5, "secret note").expect("entry"),
         board,
         board2,
@@ -720,6 +734,7 @@ fn param<'a>(class: RouteClass, path: &str, name: &str, main: &'a Ids, sub: &'a 
             RouteClass::Entity if path.starts_with("/api/swimlanes/") => &main.lane,
             RouteClass::Entity if path.starts_with("/api/fields/") => &main.field,
             RouteClass::Entity if path.starts_with("/api/webhooks/") => &main.webhook,
+            RouteClass::Entity if path.starts_with("/api/inbound-addresses/") => &main.inbound,
             RouteClass::Entity if path.starts_with("/api/time/entries/") => &main.entry,
             RouteClass::Entity if path.starts_with("/api/templates/") => &main.template,
             _ => panic!("{path}: no id for :id on a {class:?} route"),
@@ -757,6 +772,9 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
             json!({"name": "New", "url": "https://example.com/new", "events": ["taskChanged"]})
         }
         (&Method::PATCH, "/api/webhooks/:id") => json!({"name": "Renamed"}),
+        (&Method::POST, "/api/boards/:id/inbound-addresses") => {
+            json!({"name": "New", "column_id": body_ids.column})
+        }
         (&Method::POST, "/api/boards/:id/save-as-template") => json!({"name": "Saved"}),
         (&Method::POST, "/api/boards/:id/colors") => json!({"value": "yellow"}),
         (&Method::POST, "/api/boards/:id/calendar-feeds") => json!({"label": "Sneak"}),
@@ -860,6 +878,7 @@ fn missing() -> Ids {
         bookmark: fresh(),
         field: fresh(),
         webhook: fresh(),
+        inbound: fresh(),
         entry: fresh(),
         template: fresh(),
         subtask_template: fresh(),
@@ -1526,6 +1545,11 @@ fn body_id_cases(b: &Ids) -> Vec<(Method, String, BodyOf)> {
             format!("/api/webhooks/{}", b.webhook),
             Box::new(|ids: &Ids| json!({"column_id": ids.column})),
         ),
+        (
+            Method::POST,
+            format!("/api/boards/{}/inbound-addresses", b.board),
+            Box::new(|ids: &Ids| json!({"name": "Sneak", "column_id": ids.column})),
+        ),
     ]
 }
 
@@ -1945,6 +1969,7 @@ fn route_of(uri: &str) -> &'static str {
         (Some("boards"), "copy-from") => "/api/boards/:id/colors/copy-from",
         (Some("boards"), "bulk") => "/api/boards/:id/tasks/bulk",
         (Some("boards"), "webhooks") => "/api/boards/:id/webhooks",
+        (Some("boards"), "inbound-addresses") => "/api/boards/:id/inbound-addresses",
         (Some("webhooks"), _) => "/api/webhooks/:id",
         other => panic!("{uri}: no route for {other:?}"),
     }

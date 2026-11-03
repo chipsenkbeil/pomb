@@ -8,7 +8,8 @@ use super::{load_history_page, router};
 use crate::AppState;
 use crate::db::Db;
 use crate::models::{
-    AccountId, Actor, ActorKind, BIN_RETENTION_DAYS, SECONDS_PER_DAY, TaskComment, TaskEvent,
+    AccountId, Actor, ActorKind, BIN_RETENTION_DAYS, HistoryKind, SECONDS_PER_DAY, TaskComment,
+    TaskEvent,
 };
 
 struct Fixture {
@@ -72,10 +73,10 @@ fn details(page: &Value) -> Vec<String> {
         .collect()
 }
 
-fn event(kind: &str, detail: &str, actor: &str, at: &str) -> TaskEvent {
+fn event(kind: HistoryKind, detail: &str, actor: &str, at: &str) -> TaskEvent {
     TaskEvent {
-        id: format!("{kind}-{at}"),
-        kind: kind.to_string(),
+        id: format!("{}-{at}", kind.as_str()),
+        kind,
         detail: detail.to_string(),
         actor: actor.to_string(),
         created_at: at.to_string(),
@@ -105,7 +106,7 @@ fn task_with(fx: &Fixture, name: &str, history: Vec<TaskEvent>) -> String {
 
 fn seeded(fx: &Fixture) {
     let mut moved = event(
-        "moved",
+        HistoryKind::Moved,
         "Moved from Todo to Doing",
         "ann",
         "2026-10-20T10:00:00Z",
@@ -117,14 +118,14 @@ fn seeded(fx: &Fixture) {
         "Alpha",
         vec![
             event(
-                "created",
+                HistoryKind::Created,
                 "Task created in Todo",
                 "ann",
                 "2026-10-10T10:00:00Z",
             ),
             moved,
             event(
-                "labels_updated",
+                HistoryKind::LabelsUpdated,
                 "Changed the labels",
                 "bob",
                 "2026-10-25T10:00:00Z",
@@ -136,13 +137,13 @@ fn seeded(fx: &Fixture) {
         "Beta",
         vec![
             event(
-                "created",
+                HistoryKind::Created,
                 "Task created in Todo",
                 "bob",
                 "2026-10-15T10:00:00Z",
             ),
             event(
-                "link_added",
+                HistoryKind::LinkAdded,
                 "Linked to Alpha",
                 "ann",
                 "2026-10-26T10:00:00Z",
@@ -213,7 +214,7 @@ async fn history_should_filter_by_event_property_and_user() {
 async fn history_should_give_the_old_and_new_value_of_a_change() {
     let (_dir, fx) = fixture();
     let mut legacy = event(
-        "moved",
+        HistoryKind::Moved,
         "Moved from Todo to Done",
         "ann",
         "2026-10-20T10:00:00Z",
@@ -242,7 +243,7 @@ async fn history_should_hold_comments_and_deleted_tasks() {
         &fx,
         "Gone",
         vec![event(
-            "created",
+            HistoryKind::Created,
             "Task created in Todo",
             "ann",
             "2026-10-10T10:00:00Z",
@@ -347,7 +348,7 @@ async fn history_should_leave_out_a_deleted_task_past_its_retention() {
         &fx,
         "Gone",
         vec![event(
-            "created",
+            HistoryKind::Created,
             "Task created in Todo",
             "ann",
             "2026-10-10T10:00:00Z",
@@ -385,7 +386,7 @@ async fn history_should_not_split_a_legacy_move_whose_column_name_holds_to() {
         &fx,
         "Odd",
         vec![event(
-            "moved",
+            HistoryKind::Moved,
             "Moved from Back to backlog to Done",
             "ann",
             "2026-10-20T10:00:00Z",

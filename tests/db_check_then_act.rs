@@ -190,7 +190,7 @@ fn create_entry_should_never_log_onto_a_deleted_task() {
                     None
                 }
                 _ => db
-                    .create_entry_at(
+                    .log_task_time(
                         &AccountId::ownerless(),
                         NewTimeEntry {
                             task_id: Some(&task),
@@ -207,6 +207,8 @@ fn create_entry_should_never_log_onto_a_deleted_task() {
                             role: None,
                             token_name: None,
                         },
+                        "Logged 5m",
+                        Actor::SYSTEM,
                     )
                     .expect("entry"),
             })

@@ -7,7 +7,9 @@ use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{Db, RestoreOutcome};
-use crate::models::{AccountId, Actor, AuthScope, BIN_RETENTION_DAYS, SECONDS_PER_DAY};
+use crate::models::{
+    AccountId, Actor, AuthScope, BIN_RETENTION_DAYS, HistoryKind, SECONDS_PER_DAY,
+};
 
 struct Fixture {
     app: axum::Router,
@@ -117,7 +119,7 @@ fn stored(fx: &Fixture) -> u64 {
         .unwrap_or_default()
 }
 
-fn kinds(fx: &Fixture, task: &str) -> Vec<String> {
+fn kinds(fx: &Fixture, task: &str) -> Vec<HistoryKind> {
     fx.db
         .task(task)
         .expect("read")
@@ -204,8 +206,8 @@ async fn restoring_should_return_the_task_with_its_id_entries_and_attachment() {
         Some(b"bytes".to_vec())
     );
     let history = kinds(&fx, &id);
-    assert!(history.iter().any(|kind| kind == "deleted"), "{history:?}");
-    assert!(history.iter().any(|kind| kind == "restored"), "{history:?}");
+    assert!(history.contains(&HistoryKind::Deleted), "{history:?}");
+    assert!(history.contains(&HistoryKind::Restored), "{history:?}");
     let (_, bin) = call(
         &fx,
         "GET",
@@ -645,7 +647,7 @@ async fn the_history_should_name_the_task_and_the_column_it_left_and_returned_to
         .expect("task")
         .history
         .into_iter()
-        .filter(|event| event.kind == "deleted" || event.kind == "restored")
+        .filter(|event| event.kind == HistoryKind::Deleted || event.kind == HistoryKind::Restored)
         .map(|event| event.detail)
         .collect();
     assert_eq!(

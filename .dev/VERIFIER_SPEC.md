@@ -27,6 +27,12 @@ Every verdict carries:
   settled (networkidle + fixed delay), animations settled, scrollbars
   accounted for (a scrollbar in one but not the other IS a deviation).
 
+Reference images come from the card. The KanbanFlow golden captures for a
+unit are attached to its card on the board, so read them from the card's
+attachments (`GET /api/tasks/{id}/attachments`) and name each one by its
+attachment name in the evidence. Use the golden folder named in the contract
+only when the card holds no file for that capture, and say so in the evidence.
+
 "Looks the same" is not a finding. Agent reports are hypotheses; exact
 commands, verbatim output, and screenshots are evidence.
 

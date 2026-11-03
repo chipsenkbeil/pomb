@@ -6,6 +6,7 @@ use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::db::Db;
+use crate::models::HistoryKind;
 
 struct Fixture {
     app: axum::Router,
@@ -357,14 +358,14 @@ async fn a_points_board_should_show_the_badge_not_the_estimate_and_offer_points(
 async fn a_points_change_should_log_a_points_estimate_event_and_leave_the_hours() {
     let (_dir, fx) = fixture();
     let id = estimated_task(&fx).await;
-    let kinds = || -> Vec<String> {
+    let kinds = || -> Vec<HistoryKind> {
         fx.db
             .task(&id)
             .expect("read")
             .expect("task")
             .history
             .iter()
-            .map(|event| event.kind.clone())
+            .map(|event| event.kind)
             .collect()
     };
     let before = kinds().len();
@@ -377,7 +378,7 @@ async fn a_points_change_should_log_a_points_estimate_event_and_leave_the_hours(
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let after = kinds();
-    assert_eq!(&after[before..], ["points_updated"], "{after:?}");
+    assert_eq!(&after[before..], [HistoryKind::PointsUpdated], "{after:?}");
     let row = fx.db.task(&id).expect("read").expect("task");
     assert_eq!(row.points, Some(8.0));
     assert_eq!(row.estimate_hours, Some(2.0));

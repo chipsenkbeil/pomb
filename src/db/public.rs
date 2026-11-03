@@ -6,12 +6,13 @@ use chrono::Utc;
 use webauthn_rs::prelude::Passkey;
 
 use super::{
-    AppState, Db, DbResult, DeviceAuthCreateOutcome, DevicePoll, FirstPasskeyOutcome, NewAccount,
-    RecoverOutcome, RegisterOutcome,
+    AccountDb, AppState, Db, DbResult, DeviceAuthCreateOutcome, DevicePoll, FirstPasskeyOutcome,
+    NewAccount, RecoverOutcome, RegisterOutcome,
 };
 use crate::models::{
     AccountId, AccountStatus, ApiTokenRecord, BoardRow, ColumnRow, DeviceAuthRow, FeedTask,
-    InviteRow, PasskeyRow, RecoveryCodeRow, RegistrationMode, TimeFormat, UserRow,
+    InboundAddressRow, InviteRow, PasskeyRow, RecoveryCodeRow, RegistrationMode, TimeFormat,
+    UserRow,
 };
 
 /// Sign-in, setup, device pairing and the calendar feed, plus the lookups the auth layer makes.
@@ -32,6 +33,24 @@ impl FeedGrant {
     #[must_use]
     pub fn owner_id(&self) -> &str {
         &self.0.owner_id
+    }
+}
+
+/// Proof that an inbound address names a board whose owner is active, through which mail becomes
+/// a task of that owner.
+#[derive(Debug)]
+pub struct InboundGrant {
+    /// The stored address row.
+    row: InboundAddressRow,
+    /// The account that owns the address's board.
+    owner: AccountId,
+}
+
+impl InboundGrant {
+    /// Returns the address row, which holds only the hash of the address.
+    #[must_use]
+    pub fn row(&self) -> &InboundAddressRow {
+        &self.row
     }
 }
 
@@ -260,6 +279,30 @@ impl PublicDb {
             tasks,
             board,
         }))
+    }
+
+    /// Returns the grant of the inbound address `address` when its board's owner is active.
+    pub fn inbound_grant(&self, address: &str) -> DbResult<Option<InboundGrant>> {
+        let Some(row) = self.db.inbound_by_address(address)? else {
+            return Ok(None);
+        };
+        let Some(board) = self.db.board(&row.board_id)? else {
+            return Ok(None);
+        };
+        let active = self
+            .db
+            .user(&board.owner_id)?
+            .is_some_and(|owner| owner.status == AccountStatus::Active);
+        Ok(active.then(|| InboundGrant {
+            row,
+            owner: AccountId::new(board.owner_id),
+        }))
+    }
+
+    /// Returns the handle bound to the account that owns the board of `grant`.
+    #[must_use]
+    pub fn inbound_account(&self, grant: &InboundGrant) -> AccountDb {
+        self.db.account(&grant.owner)
     }
 
     /// Returns the board whose calendar-feed token is `raw` when its owner is active.

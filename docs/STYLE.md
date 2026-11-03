@@ -1717,3 +1717,73 @@ Review
 /// A task as the API returns it, with its `Column` id.
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 ```
+
+### P5. Write new JavaScript in modern syntax
+
+New code in `static/` may use any modern JavaScript that every current browser
+supports: `const` and `let`, arrow functions, classes, modules and the like.
+Existing code stays as it is until it is touched for another reason.
+
+Review
+
+```js
+// Good
+const columns = tasks.map((task) => task.column);
+
+// Bad
+var columns = tasks.map(function (task) { return task.column; });
+```
+
+### P6. Apply rule 31 in test code too
+
+A test module imports a type with `use` at the top like any other code. A
+`#[cfg(test)]` module has no exemption from the ban on inline `super::` and
+`crate::` paths.
+
+Review
+
+```rust
+// Good
+#[cfg(test)]
+mod tests {
+    use crate::models::Quotas;
+
+    #[test]
+    fn default_should_pin_the_limit() {
+        assert_eq!(Quotas::default().stored_mib_per_board, 65_536);
+    }
+}
+
+// Bad
+assert_eq!(crate::models::Quotas::default().stored_mib_per_board, 65_536);
+```
+
+### P7. Use `pub(super)` only one level up
+
+A child of a parent module, such as a file under `src/routes/`, marks an item
+`pub(super)` when only that parent uses it. Never reach further: an item that
+needs `super::super::` is `pub(crate)` instead. This overrides the style
+skill's note that `pub(super)` is not used.
+
+Review
+
+```rust
+// src/routes/local_time.rs
+pub(super) fn format_local(at: Timestamp) -> String {
+```
+
+### P8. Name a module file in snake_case, two words when one is not enough
+
+A file may carry a two-word name when one word would be vague:
+`src/routes/local_time.rs`, like `calendar_export.rs`. Do not rename it to a
+single word. This overrides rule 15 for these files.
+
+Review
+
+```rust
+// Good
+mod local_time;
+
+// Bad
+mod time;
+```

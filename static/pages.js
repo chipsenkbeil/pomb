@@ -1994,6 +1994,65 @@
     });
   };
 
+  pages['board-settings-inbound'] = () => {
+    const errorBox = document.getElementById('ib-error');
+    const fail = (error) => { errorBox.textContent = error.message; errorBox.hidden = false; };
+    const overlay = document.getElementById('ib-address-overlay');
+    const value = document.getElementById('ib-address-value');
+    const copy = document.getElementById('ib-address-copy');
+    const deleteOverlay = document.getElementById('ib-delete-overlay');
+    let deleteId = null;
+    copy.addEventListener('click', () => {
+      value.select();
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(value.value).then(() => { copy.textContent = 'Copied'; });
+    });
+    overlay.addEventListener('click', (event) => {
+      if (event.target.closest('[data-close-dialog]')) window.location.reload();
+    });
+    const showAddress = (issued) => {
+      value.value = window.location.origin + issued.path;
+      copy.textContent = 'Copy';
+      overlay.hidden = false;
+      value.focus();
+      value.select();
+    };
+    const form = document.getElementById('ib-form');
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      errorBox.hidden = true;
+      const body = {
+        name: document.getElementById('ib-new-name').value,
+        prefix: document.getElementById('ib-new-prefix').value.trim(),
+        column_id: document.getElementById('ib-new-column').value
+      };
+      webhookRequest('POST', `/api/boards/${encodeURIComponent(form.dataset.boardId)}/inbound-addresses`, body)
+        .then(showAddress)
+        .catch(fail);
+    });
+    document.querySelectorAll('.inbound-row').forEach((row) => {
+      const id = row.dataset.inboundId;
+      row.querySelector('.ib-rotate').addEventListener('click', () => {
+        errorBox.hidden = true;
+        webhookRequest('POST', `/api/inbound-addresses/${encodeURIComponent(id)}/rotate`)
+          .then(showAddress)
+          .catch(fail);
+      });
+      row.querySelector('.ib-delete').addEventListener('click', () => {
+        deleteId = id;
+        document.getElementById('ib-delete-name').textContent = row.dataset.name;
+        deleteOverlay.hidden = false;
+        document.getElementById('ib-delete-ok').focus();
+      });
+    });
+    document.getElementById('ib-delete-ok').addEventListener('click', () => {
+      deleteOverlay.hidden = true;
+      webhookRequest('DELETE', `/api/inbound-addresses/${encodeURIComponent(deleteId)}`)
+        .then(() => { window.location.reload(); })
+        .catch(fail);
+    });
+  };
+
   pages['board-settings-webhook-form'] = function () {
     var form = document.getElementById('wh-form');
     var boardId = form.dataset.boardId;

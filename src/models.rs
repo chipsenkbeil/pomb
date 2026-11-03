@@ -252,6 +252,8 @@ impl TextCap {
     pub const FOLDED_GROUPS: Self = Self::items("modal_folded_groups", 64);
     /// An account's full name, in the account settings.
     pub const FULL_NAME: Self = Self::chars("full_name", 80);
+    /// An inbound address's name.
+    pub const INBOUND_NAME: Self = Self::chars("name", 100);
     /// One preset reason a timer may stop early, in the account settings, as long as the Timer
     /// settings reason editor allows. A reason typed when stopping is a [`TextCap::STOP_REASON`].
     pub const INTERRUPT_REASON: Self = Self::chars("interrupt_reasons", 80);
@@ -1554,6 +1556,39 @@ pub struct WebhookRow {
     pub created_at: String,
 }
 
+/// An address that turns mail forwarded to Pomb into tasks on one board.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct InboundAddressRow {
+    /// The address's id.
+    pub id: String,
+    /// The board the address belongs to.
+    pub board_id: String,
+    /// The name the settings show.
+    pub name: String,
+    /// Lowercase letters, digits and hyphens that start the address, or empty for none.
+    pub prefix: String,
+    /// The column a task made from mail lands in.
+    pub column_id: String,
+    /// Hex SHA-256 of the address, which is never stored itself.
+    pub token_hash: String,
+    /// RFC3339.
+    pub created_at: String,
+}
+
+impl fmt::Debug for InboundAddressRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InboundAddressRow")
+            .field("id", &self.id)
+            .field("board_id", &self.board_id)
+            .field("name", &self.name)
+            .field("prefix", &self.prefix)
+            .field("column_id", &self.column_id)
+            .field("token_hash", &"<redacted>")
+            .field("created_at", &self.created_at)
+            .finish()
+    }
+}
+
 /// One event waiting to be delivered to one webhook.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OutboxRow {
@@ -2089,12 +2124,299 @@ impl BinRow {
     }
 }
 
+/// What a task history event records.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryKind {
+    /// The `created` event.
+    Created,
+    /// The `moved` event.
+    Moved,
+    /// The `board_updated` event.
+    BoardUpdated,
+    /// The `swimlane_updated` event.
+    SwimlaneUpdated,
+    /// The `deleted` event.
+    Deleted,
+    /// The `restored` event.
+    Restored,
+    /// The `renamed` event.
+    Renamed,
+    /// The `description_updated` event.
+    DescriptionUpdated,
+    /// The `estimate_updated` event.
+    EstimateUpdated,
+    /// The `points_updated` event.
+    PointsUpdated,
+    /// The `color_updated` event.
+    ColorUpdated,
+    /// The `labels_updated` event.
+    LabelsUpdated,
+    /// The `due_updated` event.
+    DueUpdated,
+    /// The `due_done_updated` event.
+    DueDoneUpdated,
+    /// The `members_updated` event.
+    MembersUpdated,
+    /// The `responsible_updated` event.
+    ResponsibleUpdated,
+    /// The `grouping_date_updated` event.
+    GroupingDateUpdated,
+    /// The `timeline_updated` event.
+    TimelineUpdated,
+    /// The `subtask_added` event.
+    SubtaskAdded,
+    /// The `subtask_deleted` event.
+    SubtaskDeleted,
+    /// The `subtask_done` event.
+    SubtaskDone,
+    /// The `subtask_reopened` event.
+    SubtaskReopened,
+    /// The `subtask_renamed` event.
+    SubtaskRenamed,
+    /// The `subtask_due_set` event.
+    SubtaskDueSet,
+    /// The `subtask_due_cleared` event.
+    SubtaskDueCleared,
+    /// The `subtask_members_updated` event.
+    SubtaskMembersUpdated,
+    /// The `subtask_converted` event.
+    SubtaskConverted,
+    /// The `time_logged` event.
+    TimeLogged,
+    /// The `time_edited` event.
+    TimeEdited,
+    /// The `time_deleted` event.
+    TimeDeleted,
+    /// The `comment` event.
+    Comment,
+    /// The `comment_added` event.
+    CommentAdded,
+    /// The `comment_edited` event.
+    CommentEdited,
+    /// The `comment_deleted` event.
+    CommentDeleted,
+    /// The `attachment_added` event.
+    AttachmentAdded,
+    /// The `attachment_renamed` event.
+    AttachmentRenamed,
+    /// The `attachment_edited` event.
+    AttachmentEdited,
+    /// The `cover_set` event.
+    CoverSet,
+    /// The `cover_removed` event.
+    CoverRemoved,
+    /// The `attachment_deleted` event.
+    AttachmentDeleted,
+    /// The `link_added` event.
+    LinkAdded,
+    /// The `link_removed` event.
+    LinkRemoved,
+    /// The `claimed` event.
+    Claimed,
+    /// The `claim_released` event.
+    ClaimReleased,
+    /// The `claim_expired` event.
+    ClaimExpired,
+    /// The `swimlane_merged` event.
+    SwimlaneMerged,
+    /// The `watched` event.
+    Watched,
+    /// The `unwatched` event.
+    Unwatched,
+    /// The `kind_changed` event.
+    KindChanged,
+    /// The `closed` event.
+    Closed,
+    /// The `reopened` event.
+    Reopened,
+}
+
+impl HistoryKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [Self; 51] = [
+        Self::Created,
+        Self::Moved,
+        Self::BoardUpdated,
+        Self::SwimlaneUpdated,
+        Self::Deleted,
+        Self::Restored,
+        Self::Renamed,
+        Self::DescriptionUpdated,
+        Self::EstimateUpdated,
+        Self::PointsUpdated,
+        Self::ColorUpdated,
+        Self::LabelsUpdated,
+        Self::DueUpdated,
+        Self::DueDoneUpdated,
+        Self::MembersUpdated,
+        Self::ResponsibleUpdated,
+        Self::GroupingDateUpdated,
+        Self::TimelineUpdated,
+        Self::SubtaskAdded,
+        Self::SubtaskDeleted,
+        Self::SubtaskDone,
+        Self::SubtaskReopened,
+        Self::SubtaskRenamed,
+        Self::SubtaskDueSet,
+        Self::SubtaskDueCleared,
+        Self::SubtaskMembersUpdated,
+        Self::SubtaskConverted,
+        Self::TimeLogged,
+        Self::TimeEdited,
+        Self::TimeDeleted,
+        Self::Comment,
+        Self::CommentAdded,
+        Self::CommentEdited,
+        Self::CommentDeleted,
+        Self::AttachmentAdded,
+        Self::AttachmentRenamed,
+        Self::AttachmentEdited,
+        Self::CoverSet,
+        Self::CoverRemoved,
+        Self::AttachmentDeleted,
+        Self::LinkAdded,
+        Self::LinkRemoved,
+        Self::Claimed,
+        Self::ClaimReleased,
+        Self::ClaimExpired,
+        Self::SwimlaneMerged,
+        Self::Watched,
+        Self::Unwatched,
+        Self::KindChanged,
+        Self::Closed,
+        Self::Reopened,
+    ];
+
+    /// Returns the name the kind has in JSON.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Moved => "moved",
+            Self::BoardUpdated => "board_updated",
+            Self::SwimlaneUpdated => "swimlane_updated",
+            Self::Deleted => "deleted",
+            Self::Restored => "restored",
+            Self::Renamed => "renamed",
+            Self::DescriptionUpdated => "description_updated",
+            Self::EstimateUpdated => "estimate_updated",
+            Self::PointsUpdated => "points_updated",
+            Self::ColorUpdated => "color_updated",
+            Self::LabelsUpdated => "labels_updated",
+            Self::DueUpdated => "due_updated",
+            Self::DueDoneUpdated => "due_done_updated",
+            Self::MembersUpdated => "members_updated",
+            Self::ResponsibleUpdated => "responsible_updated",
+            Self::GroupingDateUpdated => "grouping_date_updated",
+            Self::TimelineUpdated => "timeline_updated",
+            Self::SubtaskAdded => "subtask_added",
+            Self::SubtaskDeleted => "subtask_deleted",
+            Self::SubtaskDone => "subtask_done",
+            Self::SubtaskReopened => "subtask_reopened",
+            Self::SubtaskRenamed => "subtask_renamed",
+            Self::SubtaskDueSet => "subtask_due_set",
+            Self::SubtaskDueCleared => "subtask_due_cleared",
+            Self::SubtaskMembersUpdated => "subtask_members_updated",
+            Self::SubtaskConverted => "subtask_converted",
+            Self::TimeLogged => "time_logged",
+            Self::TimeEdited => "time_edited",
+            Self::TimeDeleted => "time_deleted",
+            Self::Comment => "comment",
+            Self::CommentAdded => "comment_added",
+            Self::CommentEdited => "comment_edited",
+            Self::CommentDeleted => "comment_deleted",
+            Self::AttachmentAdded => "attachment_added",
+            Self::AttachmentRenamed => "attachment_renamed",
+            Self::AttachmentEdited => "attachment_edited",
+            Self::CoverSet => "cover_set",
+            Self::CoverRemoved => "cover_removed",
+            Self::AttachmentDeleted => "attachment_deleted",
+            Self::LinkAdded => "link_added",
+            Self::LinkRemoved => "link_removed",
+            Self::Claimed => "claimed",
+            Self::ClaimReleased => "claim_released",
+            Self::ClaimExpired => "claim_expired",
+            Self::SwimlaneMerged => "swimlane_merged",
+            Self::Watched => "watched",
+            Self::Unwatched => "unwatched",
+            Self::KindChanged => "kind_changed",
+            Self::Closed => "closed",
+            Self::Reopened => "reopened",
+        }
+    }
+
+    /// Returns the kind a name is, or [`None`] for a name no kind has.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == name)
+    }
+
+    /// Returns the readable label of the kind.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Created => "Created",
+            Self::Moved => "Column",
+            Self::BoardUpdated => "Board",
+            Self::SwimlaneUpdated => "Swimlane",
+            Self::Deleted => "Task deleted",
+            Self::Restored => "Task restored",
+            Self::Renamed => "Name",
+            Self::DescriptionUpdated => "Description",
+            Self::EstimateUpdated => "Time estimate",
+            Self::PointsUpdated => "Points estimate",
+            Self::ColorUpdated => "Color",
+            Self::LabelsUpdated => "Labels",
+            Self::DueUpdated => "Due date",
+            Self::DueDoneUpdated => "Due date done",
+            Self::MembersUpdated => "Members",
+            Self::ResponsibleUpdated => "Responsible",
+            Self::GroupingDateUpdated => "Date group",
+            Self::TimelineUpdated => "Timeline",
+            Self::SubtaskAdded => "Subtask added",
+            Self::SubtaskDeleted => "Subtask deleted",
+            Self::SubtaskDone => "Subtask completed",
+            Self::SubtaskReopened => "Subtask reopened",
+            Self::SubtaskRenamed => "Subtask",
+            Self::SubtaskDueSet => "Subtask due date",
+            Self::SubtaskDueCleared => "Subtask due date",
+            Self::SubtaskMembersUpdated => "Subtask members",
+            Self::SubtaskConverted => "Subtask converted",
+            Self::TimeLogged => "Time spent",
+            Self::TimeEdited => "Time edited",
+            Self::TimeDeleted => "Time deleted",
+            Self::Comment => "Comment",
+            Self::CommentAdded => "Comment",
+            Self::CommentEdited => "Comment edited",
+            Self::CommentDeleted => "Comment deleted",
+            Self::AttachmentAdded => "Attachment added",
+            Self::AttachmentRenamed => "Attachment renamed",
+            Self::AttachmentEdited => "Attachment edited",
+            Self::CoverSet => "Cover image set",
+            Self::CoverRemoved => "Cover image removed",
+            Self::AttachmentDeleted => "Attachment deleted",
+            Self::LinkAdded => "Link added",
+            Self::LinkRemoved => "Link removed",
+            Self::Claimed => "Claimed",
+            Self::ClaimReleased => "Claim released",
+            Self::ClaimExpired => "Claim expired",
+            Self::SwimlaneMerged => "Swimlane merged",
+            Self::Watched => "Watching",
+            Self::Unwatched => "Stopped watching",
+            Self::KindChanged => "Kind changed",
+            Self::Closed => "Closed",
+            Self::Reopened => "Reopened",
+        }
+    }
+}
+
 /// One activity-trail event on a task (KanbanFlow parity: History).
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TaskEvent {
     pub id: String,
-    /// Machine-readable kind, e.g. "created", "moved", "time_logged".
-    pub kind: String,
+    /// What the event records.
+    pub kind: HistoryKind,
     /// Human-readable one-liner, e.g. "Moved to Done".
     pub detail: String,
     /// Who caused it (username or "API").
@@ -4440,6 +4762,59 @@ mod custom_color_tests {
 }
 
 #[cfg(test)]
+mod history_kind_tests {
+    use super::*;
+
+    #[test]
+    fn as_str_should_be_the_serde_name_of_every_kind() {
+        for kind in HistoryKind::ALL {
+            let json = serde_json::to_string(&kind).expect("serialise");
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+            assert_eq!(HistoryKind::parse(kind.as_str()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn parse_should_refuse_a_name_no_kind_has() {
+        assert_eq!(HistoryKind::parse("brand_new_kind"), None);
+        assert_eq!(HistoryKind::parse(""), None);
+    }
+
+    #[test]
+    fn label_should_read_as_the_history_page_shows_it() {
+        assert_eq!(HistoryKind::Moved.label(), "Column");
+        assert_eq!(HistoryKind::TimeLogged.label(), "Time spent");
+        assert_eq!(HistoryKind::SubtaskDueCleared.label(), "Subtask due date");
+        assert_eq!(HistoryKind::Comment.label(), "Comment");
+    }
+
+    #[test]
+    fn an_event_stored_before_the_enum_should_still_read() {
+        let stored = r#"{"id":"e1","kind":"time_logged","detail":"Logged 5m","actor":"admin","created_at":"2026-01-01T00:00:00+00:00"}"#;
+        let event: TaskEvent = serde_json::from_str(stored).expect("older event");
+        assert_eq!(event.kind, HistoryKind::TimeLogged);
+        assert_eq!(event.kind.label(), "Time spent");
+    }
+
+    #[test]
+    fn an_epic_event_stored_before_the_enum_should_read_with_its_label() {
+        let cases = [
+            ("kind_changed", HistoryKind::KindChanged, "Kind changed"),
+            ("closed", HistoryKind::Closed, "Closed"),
+            ("reopened", HistoryKind::Reopened, "Reopened"),
+        ];
+        for (name, kind, label) in cases {
+            let stored = format!(
+                r#"{{"id":"e1","kind":"{name}","detail":"Closed the epic","actor":"admin","created_at":"2026-01-01T00:00:00+00:00"}}"#
+            );
+            let event: TaskEvent = serde_json::from_str(&stored).expect("older event");
+            assert_eq!(event.kind, kind);
+            assert_eq!(event.kind.label(), label);
+        }
+    }
+}
+
+#[cfg(test)]
 mod entry_kind_tests {
     use super::*;
 
@@ -4543,6 +4918,12 @@ mod attachment_limit_tests {
             let error = with(refused).validate().unwrap_err();
             assert!(error.contains("max_attachment_mib"), "{refused}: {error}");
         }
+    }
+
+    #[test]
+    fn default_should_hold_65536_mib_per_board() {
+        assert_eq!(Quotas::DEFAULT_STORED_MIB_PER_BOARD, 65_536);
+        assert_eq!(Quotas::default().stored_mib_per_board, 65_536);
     }
 
     #[test]

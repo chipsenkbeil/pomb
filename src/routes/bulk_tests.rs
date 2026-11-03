@@ -8,7 +8,7 @@ use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{ChangeOutcome, Commit, Db, NewWebhook};
 use crate::models::{
-    AccountId, Actor, AuthScope, LinkKind, TaskRow, WebhookEvent, color_value_to_size,
+    AccountId, Actor, AuthScope, HistoryKind, LinkKind, TaskRow, WebhookEvent, color_value_to_size,
 };
 
 struct Fixture {
@@ -172,7 +172,7 @@ async fn bulk_move_should_write_a_moved_event_for_each_task_that_changes_column(
         let task = fx.db.task(id).expect("read").expect("task");
         task.history
             .iter()
-            .filter(|event| event.kind == "moved")
+            .filter(|event| event.kind == HistoryKind::Moved)
             .map(|event| event.detail.clone())
             .collect()
     };
@@ -267,7 +267,7 @@ async fn bulk_color_should_recolor_every_task_and_write_an_event_for_each() {
         let events = task
             .history
             .iter()
-            .filter(|e| e.kind == "color_updated")
+            .filter(|e| e.kind == HistoryKind::ColorUpdated)
             .count();
         assert_eq!(events, 1);
     }
@@ -306,7 +306,7 @@ async fn bulk_members_should_add_and_remove_on_every_task_with_an_event_each() {
         let events = task
             .history
             .iter()
-            .filter(|e| e.kind == "members_updated")
+            .filter(|e| e.kind == HistoryKind::MembersUpdated)
             .count();
         assert_eq!(events, 1, "{:?}", task.history);
     }
@@ -385,7 +385,9 @@ async fn bulk_color_should_set_the_size_of_the_color_without_an_estimate_event()
     let task = fx.db.task(&a).expect("read").expect("task");
     assert_eq!(task.size, color_value_to_size("red"));
     assert!(
-        task.history.iter().all(|e| e.kind != "estimate_updated"),
+        task.history
+            .iter()
+            .all(|e| e.kind != HistoryKind::EstimateUpdated),
         "{:?}",
         task.history
     );
@@ -713,7 +715,7 @@ async fn bulk_labels_should_remove_and_add_on_every_task_with_an_event_each() {
         let events = task
             .history
             .iter()
-            .filter(|e| e.kind == "labels_updated")
+            .filter(|e| e.kind == HistoryKind::LabelsUpdated)
             .count();
         assert_eq!(events, 1);
     }
@@ -913,7 +915,12 @@ async fn bulk_dry_run_should_list_old_and_new_column_and_move_nothing() {
     assert_eq!(fx.cell(&board, &columns[0]), ["a"]);
     assert_eq!(fx.cell(&board, &columns[1]), ["b"]);
     let moved = fx.db.task(&a).expect("read").expect("task");
-    assert!(moved.history.iter().all(|event| event.kind != "moved"));
+    assert!(
+        moved
+            .history
+            .iter()
+            .all(|event| event.kind != HistoryKind::Moved)
+    );
 }
 
 #[tokio::test]
@@ -1054,7 +1061,7 @@ impl Fixture {
     }
 }
 
-fn events_of(task: &TaskRow, kind: &str) -> usize {
+fn events_of(task: &TaskRow, kind: HistoryKind) -> usize {
     task.history.iter().filter(|e| e.kind == kind).count()
 }
 
@@ -1080,8 +1087,8 @@ async fn bulk_subtasks_should_append_the_names_to_every_task_with_an_event_each(
     };
     assert_eq!(names(&a), ["old", "one", "two"]);
     assert_eq!(names(&b), ["one", "two"]);
-    assert_eq!(events_of(&fx.row(&a), "subtask_added"), 2);
-    assert_eq!(events_of(&fx.row(&b), "subtask_added"), 2);
+    assert_eq!(events_of(&fx.row(&a), HistoryKind::SubtaskAdded), 2);
+    assert_eq!(events_of(&fx.row(&b), HistoryKind::SubtaskAdded), 2);
 }
 
 #[tokio::test]
@@ -1145,7 +1152,7 @@ async fn bulk_due_add_should_skip_a_task_with_a_due_date_unless_told_to_replace(
         first.due_target_column_id.as_deref(),
         Some(columns[1].as_str())
     );
-    assert_eq!(events_of(&first, "due_updated"), 2);
+    assert_eq!(events_of(&first, HistoryKind::DueUpdated), 2);
     let second = fx.row(&b);
     assert_eq!(second.due_at, held.due_at);
     assert_eq!(second.updated_at, held.updated_at);
@@ -1220,7 +1227,7 @@ async fn bulk_due_delete_should_clear_the_date_and_its_target_and_list_it_in_a_d
     let first = fx.row(&a);
     assert_eq!(first.due_at, None);
     assert_eq!(first.due_target_column_id, None);
-    assert_eq!(events_of(&first, "due_updated"), 2);
+    assert_eq!(events_of(&first, HistoryKind::DueUpdated), 2);
 }
 
 #[tokio::test]
@@ -1281,8 +1288,8 @@ async fn bulk_relations_should_add_and_remove_links_on_every_task() {
             .map(|link| (link.kind.as_str(), link.target_id.as_str()))
             .collect();
         assert_eq!(links, [("blocked_by", hub.as_str())]);
-        assert_eq!(events_of(&task, "link_removed"), 1);
-        assert_eq!(events_of(&task, "link_added"), 2);
+        assert_eq!(events_of(&task, HistoryKind::LinkRemoved), 1);
+        assert_eq!(events_of(&task, HistoryKind::LinkAdded), 2);
     }
 }
 

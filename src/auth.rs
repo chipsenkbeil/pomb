@@ -492,6 +492,13 @@ pub fn hash_feed_token(token: &str) -> String {
     hex(&Sha256::digest(token.as_bytes()))
 }
 
+/// Returns the unsalted hex SHA-256 of an inbound address, which is its lookup key. The address is
+/// a long random secret and is never stored.
+#[must_use]
+pub fn hash_inbound_address(address: &str) -> String {
+    hex(&Sha256::digest(address.as_bytes()))
+}
+
 /// Returns the unsalted hex SHA-256 of a session cookie value, which is the key its session is
 /// stored under, so the table holds no value that signs a browser in.
 #[must_use]
@@ -792,6 +799,7 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/b/:board_id/time-in-column",
         Permission::BoardsRead,
     ),
+    (Method::GET, "/b/:board_id/timeline", Permission::BoardsRead),
     (
         Method::GET,
         "/b/:board_id/settings/delete",
@@ -841,7 +849,7 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::GET,
         "/b/:board_id/settings/add-from-email",
-        Permission::BoardsRead,
+        Permission::InboundManage,
     ),
     (Method::GET, "/boards/new", Permission::BoardsRead),
     (Method::GET, "/boards/archived", Permission::BoardsRead),
@@ -1030,6 +1038,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::GET,
         "/api/tasks/:id/attachments/:attachment_id/file",
+        Permission::AttachmentsRead,
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/attachments/:attachment_id/image",
         Permission::AttachmentsRead,
     ),
     (
@@ -1226,6 +1239,26 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         Method::POST,
         "/api/boards/:id/webhooks/test-request",
         Permission::WebhooksManage,
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/inbound-addresses",
+        Permission::InboundManage,
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/inbound-addresses",
+        Permission::InboundManage,
+    ),
+    (
+        Method::POST,
+        "/api/inbound-addresses/:id/rotate",
+        Permission::InboundManage,
+    ),
+    (
+        Method::DELETE,
+        "/api/inbound-addresses/:id",
+        Permission::InboundManage,
     ),
     (Method::GET, "/api/time/entries/:id", Permission::TimeRead),
     (Method::PUT, "/api/time/entries/:id", Permission::TimeEdit),
@@ -1546,6 +1579,7 @@ pub fn required_role(method: &Method, matched_path: &str) -> BoardRole {
         let owner_only = pattern.starts_with("/b/:board_id/settings")
             || pattern == "/api/boards/:id/calendar-feeds"
             || pattern == "/api/boards/:id/webhooks"
+            || pattern == "/api/boards/:id/inbound-addresses"
             || pattern.starts_with("/api/webhooks/");
         return if owner_only {
             BoardRole::Owner
@@ -2106,6 +2140,16 @@ mod tests {
             AuthScope::Admin,
         ),
         (Method::GET, "/api/boards/:id/webhooks", AuthScope::Admin),
+        (
+            Method::GET,
+            "/api/boards/:id/inbound-addresses",
+            AuthScope::Admin,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/settings/add-from-email",
+            AuthScope::Admin,
+        ),
         (Method::GET, "/api/webhooks/:id/secret", AuthScope::Admin),
         (
             Method::GET,

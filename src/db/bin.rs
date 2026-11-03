@@ -12,8 +12,8 @@ use super::{
     txn_task_bytes, unlink_deleted_tasks, write_one,
 };
 use crate::models::{
-    Actor, BIN_PERMANENT_DELETE_KEY, BinRow, BoardRow, ColorRow, ColumnRow, SECONDS_PER_DAY,
-    SwimlaneRow, TaskAttachment, TaskRow,
+    Actor, BIN_PERMANENT_DELETE_KEY, BinRow, BoardRow, ColorRow, ColumnRow, HistoryKind,
+    SECONDS_PER_DAY, SwimlaneRow, TaskAttachment, TaskRow,
 };
 
 /// Key of the Unix second the cleanup of the recycle bin last ran, in [`SETTINGS`].
@@ -175,7 +175,7 @@ fn bin_task_in(txn: &WriteTransaction, id: &str, actor: Actor<'_>) -> DbResult<O
     task.links.clear();
     task.claim = None;
     let detail = format!("Task {} was deleted from column {}", task.name, column.name);
-    push_event(&mut task, "deleted", detail, actor);
+    push_event(&mut task, HistoryKind::Deleted, detail, actor);
     let row = BinRow {
         task,
         entries,
@@ -320,7 +320,13 @@ impl Db {
             "Task {} was restored to column {}",
             row.task.name, column.name
         );
-        push_column_event(&mut row.task, "restored", detail, actor, Some(&column.id));
+        push_column_event(
+            &mut row.task,
+            HistoryKind::Restored,
+            detail,
+            actor,
+            Some(&column.id),
+        );
         let task = &mut row.task;
         task.column_id.clone_from(&column.id);
         task.swimlane_id = lane;

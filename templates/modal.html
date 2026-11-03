@@ -198,7 +198,7 @@
           </div>
           <div id="modal-attachments" class="tm-attachments" data-task-id="{{ task.id }}">
             {% for a in task.attachments %}
-            <div class="tm-attachment" data-attachment-id="{{ a.id }}" data-attachment-name="{{ a.name }}" data-attachment-suffix="{{ a.suffix }}">
+            <div class="tm-attachment" data-attachment-id="{{ a.id }}" data-attachment-name="{{ a.name }}" data-attachment-suffix="{{ a.suffix }}" data-attachment-refs="{{ a.references }}">
               <svg class="tm-attachment-icon" width="22" height="26" viewBox="0 0 22 26" aria-hidden="true" focusable="false"><path d="M3.5 1.5h10l5 5v18h-15z" fill="#ffffff" stroke="#b9c3d6" stroke-width="1.2"/><path d="M13.5 1.5v5h5" fill="none" stroke="#b9c3d6" stroke-width="1.2"/><path d="M6.5 11h9M6.5 14h9M6.5 17h9M6.5 20h6" stroke="#b9c3d6" stroke-width="1"/></svg>
               <div class="tm-attachment-main">
                 {% if a.is_document %}

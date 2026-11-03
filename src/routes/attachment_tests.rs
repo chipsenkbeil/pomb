@@ -8,7 +8,7 @@ use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::db::Db;
-use crate::models::TaskAttachment;
+use crate::models::{HistoryKind, TaskAttachment};
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -16,6 +16,7 @@ struct Fixture {
     db: Db,
     cookie: String,
     task: String,
+    column: String,
 }
 
 async fn fixture() -> Fixture {
@@ -34,6 +35,7 @@ async fn fixture() -> Fixture {
         db,
         cookie: format!("session={session}"),
         task: String::new(),
+        column: column.clone(),
     };
     let (status, task) = fixture
         .json(
@@ -126,7 +128,7 @@ async fn attaching_a_link_should_store_it_list_it_and_open_the_address_from_the_
     assert!(
         row.history
             .iter()
-            .any(|event| event.kind == "attachment_added")
+            .any(|event| event.kind == HistoryKind::AttachmentAdded)
     );
 }
 
@@ -311,12 +313,15 @@ async fn saving_a_document_should_keep_each_earlier_text_as_a_version() {
     assert_eq!(current, "four");
 
     let row = fx.db.task(&fx.task).expect("read").expect("task");
-    let kinds: Vec<&str> = row.history.iter().map(|e| e.kind.as_str()).collect();
+    let kinds: Vec<HistoryKind> = row.history.iter().map(|e| e.kind).collect();
     assert_eq!(
-        kinds.iter().filter(|k| **k == "attachment_edited").count(),
+        kinds
+            .iter()
+            .filter(|k| **k == HistoryKind::AttachmentEdited)
+            .count(),
         3
     );
-    assert!(kinds.contains(&"attachment_renamed"));
+    assert!(kinds.contains(&HistoryKind::AttachmentRenamed));
     assert_eq!(stored_files(&fx), 4);
 }
 
@@ -528,9 +533,15 @@ async fn setting_a_cover_should_show_it_on_the_card_and_the_row_and_log_the_chan
     assert!(!card.contains("card-cover"), "{card}");
 
     let row = fx.db.task(&fx.task).expect("read").expect("task");
-    let kinds: Vec<&str> = row.history.iter().map(|e| e.kind.as_str()).collect();
-    assert_eq!(kinds.iter().filter(|k| k.starts_with("cover_")).count(), 2);
-    assert!(kinds.contains(&"cover_set") && kinds.contains(&"cover_removed"));
+    let kinds: Vec<HistoryKind> = row.history.iter().map(|e| e.kind).collect();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| matches!(k, HistoryKind::CoverSet | HistoryKind::CoverRemoved))
+            .count(),
+        2
+    );
+    assert!(kinds.contains(&HistoryKind::CoverSet) && kinds.contains(&HistoryKind::CoverRemoved));
 }
 
 #[tokio::test]
@@ -562,7 +573,7 @@ async fn a_new_cover_should_replace_the_old_and_deleting_the_cover_should_clear_
     assert_eq!(
         row.history
             .iter()
-            .filter(|e| e.kind == "cover_removed")
+            .filter(|e| e.kind == HistoryKind::CoverRemoved)
             .count(),
         1
     );
@@ -583,4 +594,312 @@ async fn a_cover_should_refuse_a_file_that_is_not_an_image_and_an_unknown_attach
         .json("GET", &format!("/api/tasks/{}", fx.task), None)
         .await;
     assert_eq!(task["cover_id"], Value::Null);
+}
+
+async fn upload_bytes(fx: &Fixture, task: &str, name: &str, mime: &str, bytes: &[u8]) -> Value {
+    let data = json!({"name": name, "mime": mime, "data": STANDARD.encode(bytes)});
+    let uri = format!("/api/tasks/{task}/attachments");
+    let (status, attachment) = fx.json("POST", &uri, Some(data)).await;
+    assert_eq!(status, StatusCode::OK, "{attachment}");
+    attachment
+}
+
+async fn image_reply(
+    fx: &Fixture,
+    task: &str,
+    attachment: &Value,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let uri = format!(
+        "/api/tasks/{task}/attachments/{}/image",
+        attachment["id"].as_str().expect("id")
+    );
+    let request = axum::http::Request::builder()
+        .uri(uri)
+        .header("cookie", &fx.cookie)
+        .body(axum::body::Body::empty())
+        .expect("request");
+    let response = fx.app.clone().oneshot(request).await.expect("oneshot");
+    let (parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, 1 << 20).await.expect("body");
+    (parts.status, parts.headers, bytes.to_vec())
+}
+
+fn png(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    bytes.extend(width.to_be_bytes());
+    bytes.extend(height.to_be_bytes());
+    bytes.extend([8, 6, 0, 0, 0, 1, 2, 3]);
+    bytes
+}
+
+#[tokio::test]
+async fn the_image_route_should_serve_each_image_type_inline_with_the_sniffed_type() {
+    let fx = fixture().await;
+    let mut jpeg = vec![
+        0xFF, 0xD8, 0xFF, 0xC0, 0, 11, 8, 0, 20, 0, 30, 1, 1, 0x11, 0,
+    ];
+    jpeg.extend([0xFF, 0xD9]);
+    let mut gif = b"GIF89a".to_vec();
+    gif.extend([30, 0, 20, 0, 0, 0, 0]);
+    let mut webp = b"RIFF\0\0\0\0WEBPVP8L\0\0\0\0\x2F".to_vec();
+    webp.extend((29u32 | (19 << 14)).to_le_bytes());
+    let cases = [
+        ("a.bin", png(30, 20), "image/png"),
+        ("b.bin", jpeg, "image/jpeg"),
+        ("c.bin", gif, "image/gif"),
+        ("d.bin", webp, "image/webp"),
+    ];
+    for (name, bytes, expected) in cases {
+        let attachment = upload_bytes(&fx, &fx.task, name, "text/html", &bytes).await;
+        let (status, headers, body) = image_reply(&fx, &fx.task, &attachment).await;
+        assert_eq!(status, StatusCode::OK, "{name}");
+        let header = |name: &str| headers.get(name).map(|v| v.to_str().expect("ascii"));
+        assert_eq!(header("content-type"), Some(expected), "{name}");
+        assert_eq!(header("x-content-type-options"), Some("nosniff"), "{name}");
+        assert_eq!(header("content-disposition"), Some("inline"), "{name}");
+        assert_eq!(
+            header("content-security-policy"),
+            Some("sandbox; default-src 'none'"),
+            "{name}"
+        );
+        assert_eq!(body, bytes, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn the_image_route_should_refuse_text_svg_oversized_and_cut_off_images() {
+    let fx = fixture().await;
+    let svg = b"<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>";
+    let cases = [
+        ("a.png", "image/png", b"hello".to_vec()),
+        ("b.svg", "image/svg+xml", svg.to_vec()),
+        ("c.png", "image/png", png(8001, 10)),
+        ("d.png", "image/png", png(7000, 6000)),
+        ("e.png", "image/png", png(0, 10)),
+        ("f.png", "image/png", png(10, 10)[..14].to_vec()),
+    ];
+    for (name, mime, bytes) in cases {
+        let attachment = upload_bytes(&fx, &fx.task, name, mime, &bytes).await;
+        let (status, headers, _) = image_reply(&fx, &fx.task, &attachment).await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{name}");
+        assert_ne!(
+            headers.get("content-type").and_then(|v| v.to_str().ok()),
+            Some("image/png"),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_image_route_should_answer_404_for_another_tasks_or_a_missing_attachment() {
+    let fx = fixture().await;
+    let attachment = upload_bytes(&fx, &fx.task, "a.png", "image/png", &png(3, 3)).await;
+    let (_, other) = fx
+        .json(
+            "POST",
+            "/api/tasks",
+            Some(json!({"column_id": fx.column, "name": "Other"})),
+        )
+        .await;
+    let other = other["id"].as_str().expect("id").to_string();
+    let (status, _, _) = image_reply(&fx, &other, &attachment).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let missing = json!({"id": "nope"});
+    let (status, _, _) = image_reply(&fx, &fx.task, &missing).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = image_reply(&fx, "nope", &attachment).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_description_and_a_comment_should_show_only_the_images_of_their_own_task() {
+    let fx = fixture().await;
+    let mine = upload_bytes(&fx, &fx.task, "a.png", "image/png", &png(3, 3)).await;
+    let text = upload_bytes(&fx, &fx.task, "n.txt", "text/plain", b"hello").await;
+    let (_, other) = fx
+        .json(
+            "POST",
+            "/api/tasks",
+            Some(json!({"column_id": fx.column, "name": "Other"})),
+        )
+        .await;
+    let other = other["id"].as_str().expect("id").to_string();
+    let foreign = upload_bytes(&fx, &other, "b.png", "image/png", &png(3, 3)).await;
+    let mine = mine["id"].as_str().expect("id");
+    let text = text["id"].as_str().expect("id");
+    let foreign = foreign["id"].as_str().expect("id");
+    let source = format!(
+        "![shot](attachment:{mine})\n\n![note](attachment:{text})\n\n![theirs](attachment:{foreign})\n\n\
+         ![gone](attachment:nope)\n\n<img src=\"/x.png\" onerror=\"alert(1)\">\n\n\
+         ![web](http://e.com/p.png)\n\n![data](data:image/png;base64,AAAA)"
+    );
+    let uri = format!("/api/tasks/{}", fx.task);
+    let (status, body) = fx
+        .json("PATCH", &uri, Some(json!({"description": source})))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = fx
+        .json(
+            "POST",
+            &format!("{uri}/comments"),
+            Some(json!({"body": source})),
+        )
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+    let (_, modal) = fx.call("GET", &format!("{uri}/modal"), None).await;
+    let wanted =
+        format!("<img src=\"{uri}/attachments/{mine}/image\" alt=\"shot\" loading=\"lazy\">");
+    assert_eq!(modal.matches(&wanted).count(), 2, "{modal}");
+    assert_eq!(modal.matches("/image\"").count(), 2, "{modal}");
+    assert!(!modal.contains("<img src=\"/x.png\""), "{modal}");
+    assert!(!modal.contains("onerror=\"alert"), "{modal}");
+    assert!(!modal.contains("src=\"http://e.com"), "{modal}");
+    assert!(!modal.contains("src=\"data:"), "{modal}");
+    for alt in ["note", "theirs", "gone", "web", "data"] {
+        assert!(modal.contains(alt), "{alt}");
+    }
+}
+
+#[tokio::test]
+async fn the_modal_should_count_the_references_of_an_attachment_and_keep_the_alt_text_after_a_delete()
+ {
+    let fx = fixture().await;
+    let image = upload_bytes(&fx, &fx.task, "a.png", "image/png", &png(3, 3)).await;
+    let unused = upload_bytes(&fx, &fx.task, "b.png", "image/png", &png(4, 4)).await;
+    let image = image["id"].as_str().expect("id");
+    let unused = unused["id"].as_str().expect("id");
+    let uri = format!("/api/tasks/{}", fx.task);
+    let source = format!("![shot](attachment:{image})");
+    let (status, _) = fx
+        .json("PATCH", &uri, Some(json!({"description": source})))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    for body in [
+        source.clone(),
+        format!("{source} again"),
+        "`![shot](attachment:x)`".to_string(),
+    ] {
+        let (status, _) = fx
+            .json(
+                "POST",
+                &format!("{uri}/comments"),
+                Some(json!({"body": body})),
+            )
+            .await;
+        assert!(status.is_success());
+    }
+    let (_, modal) = fx.call("GET", &format!("{uri}/modal"), None).await;
+    assert!(
+        modal.contains(&format!("data-attachment-id=\"{image}\"")),
+        "{modal}"
+    );
+    assert!(modal.contains("data-attachment-refs=\"3\""), "{modal}");
+    assert!(modal.contains("data-attachment-refs=\"0\""), "{modal}");
+    assert!(modal.contains(unused));
+
+    let (status, _) = fx
+        .json("DELETE", &format!("{uri}/attachments/{image}"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, modal) = fx.call("GET", &format!("{uri}/modal"), None).await;
+    assert!(
+        !modal.contains(&format!("attachments/{image}/image")),
+        "{modal}"
+    );
+    assert!(modal.contains(">shot</a>"), "{modal}");
+    assert!(
+        modal.contains(&format!("![shot](attachment:{image})")),
+        "{modal}"
+    );
+}
+
+#[tokio::test]
+async fn listing_attachments_should_name_their_addresses_and_return_base64_only_on_request() {
+    let fx = fixture().await;
+    let bytes = png(3, 3);
+    let image = upload_bytes(&fx, &fx.task, "a.png", "image/png", &bytes).await;
+    let fake = upload_bytes(&fx, &fx.task, "b.png", "image/png", b"not an image").await;
+    let text = upload_bytes(&fx, &fx.task, "c.txt", "text/plain", b"hello").await;
+    let (status, _) = fx
+        .json(
+            "POST",
+            &format!("{}/link", fx.attachments()),
+            Some(json!({"name": "Spec", "url": "https://example.com"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let base = fx.attachments();
+    let image_id = image["id"].as_str().expect("id");
+
+    let (status, plain) = fx.json("GET", &base, None).await;
+    assert_eq!(status, StatusCode::OK, "{plain}");
+    assert_eq!(plain[0]["id"], image_id);
+    assert_eq!(plain[0]["name"], "a.png");
+    assert_eq!(plain[0]["mime"], "image/png");
+    assert_eq!(plain[0]["size"], bytes.len());
+    assert_eq!(plain[0]["file_url"], format!("{base}/{image_id}/file"));
+    assert_eq!(plain[0]["image_url"], format!("{base}/{image_id}/image"));
+    assert_eq!(
+        plain[2]["file_url"],
+        format!("{base}/{}/file", text["id"].as_str().expect("id"))
+    );
+    assert!(plain[2].get("image_url").is_none(), "{plain}");
+    assert!(plain[3].get("file_url").is_none(), "{plain}");
+    assert_eq!(plain[3]["url"], "https://example.com");
+    assert!(
+        plain
+            .as_array()
+            .expect("array")
+            .iter()
+            .all(|a| a.get("data_base64").is_none())
+    );
+
+    let (status, full) = fx.json("GET", &format!("{base}?base64=true"), None).await;
+    assert_eq!(status, StatusCode::OK, "{full}");
+    assert_eq!(full[0]["data_base64"], STANDARD.encode(&bytes));
+    assert!(full[1].get("data_base64").is_none(), "{full}");
+    assert_eq!(full[1]["id"], fake["id"]);
+    assert!(full[2].get("data_base64").is_none(), "{full}");
+}
+
+fn padded_png(len: usize, tag: u8) -> Vec<u8> {
+    let mut bytes = png(3, 3);
+    bytes.resize(len, tag);
+    bytes
+}
+
+#[tokio::test]
+async fn listing_base64_should_hold_to_the_per_image_cap_and_the_total_budget() {
+    let fx = fixture().await;
+    let cap = 2 * 1024 * 1024;
+    let mut names = Vec::new();
+    for (name, len, tag) in [
+        ("over.png", cap + 1, 1),
+        ("e1.png", cap, 2),
+        ("e2.png", cap, 3),
+        ("e3.png", cap, 4),
+        ("e4.png", cap, 5),
+        ("small.png", 100, 6),
+    ] {
+        upload_bytes(&fx, &fx.task, name, "image/png", &padded_png(len, tag)).await;
+        names.push(name);
+    }
+    let request = axum::http::Request::builder()
+        .uri(format!("{}?base64=true", fx.attachments()))
+        .header("cookie", &fx.cookie)
+        .body(axum::body::Body::empty())
+        .expect("request");
+    let response = fx.app.clone().oneshot(request).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 32 << 20)
+        .await
+        .expect("body");
+    let full: Value = serde_json::from_slice(&bytes).expect("json");
+    let has: Vec<bool> = full
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|a| a.get("data_base64").is_some())
+        .collect();
+    assert_eq!(has, [false, true, true, true, true, false], "{names:?}");
 }

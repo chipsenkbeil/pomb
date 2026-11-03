@@ -1351,7 +1351,6 @@ impl Builder<'_> {
             .into_iter()
             .map(|event| {
                 for (text, what) in [
-                    (Some(event.kind.as_str()), "an event kind"),
                     (Some(event.detail.as_str()), "an event detail"),
                     (Some(event.actor.as_str()), "an event actor"),
                     (event.token_name.as_deref(), "an event token name"),

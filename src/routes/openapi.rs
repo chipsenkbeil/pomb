@@ -59,7 +59,10 @@ fn annotated_handlers(source: &str) -> Vec<(String, Option<String>)> {
         } else if let Some(id) = &mut open {
             if let Some(rest) = line.strip_prefix("operation_id = \"") {
                 *id = rest.split('"').next().map(str::to_string);
-            } else if let Some(handler) = line.strip_prefix("async fn ") {
+            } else if let Some(handler) = line
+                .strip_prefix("pub(super) async fn ")
+                .or_else(|| line.strip_prefix("async fn "))
+            {
                 let name = handler.split('(').next().unwrap_or_default();
                 found.push((name.to_string(), id.take()));
                 open = None;
@@ -98,7 +101,8 @@ fn spec_should_expose_exactly_the_operation_ids_the_annotations_set() {
         .map(|(_, operation)| operation["operationId"].as_str().expect("operationId"))
         .collect();
 
-    let annotations = annotated_handlers(include_str!("../routes.rs"));
+    let mut annotations = annotated_handlers(include_str!("../routes.rs"));
+    annotations.extend(annotated_handlers(include_str!("inbound.rs")));
     let missing: Vec<_> = annotations
         .iter()
         .filter(|(_, id)| id.is_none())
@@ -253,6 +257,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "get_skill",
             "get_version",
             "poll_device_token",
+            "receive_inbound_mail",
             "start_device_auth",
             "start_recovery",
             "start_registration",

@@ -24,6 +24,7 @@ mod entries;
 mod events;
 mod files;
 mod import;
+mod inbound;
 mod instance;
 mod membership;
 mod notifications;
@@ -78,6 +79,8 @@ use self::events::txn_remove_events;
 pub use self::events::{EventRead, MAX_EVENTS_PER_BOARD};
 pub use self::files::{AttachmentFiles, Incoming};
 pub use self::import::{BoardImport, FileImport, TaskImport};
+pub use self::inbound::{InboundColumnMissing, IssuedInbound, MAX_PREFIX_CHARS, NewInbound};
+use self::inbound::{txn_drop_inbound, txn_remove_inbound};
 pub use self::instance::InstanceDb;
 pub use self::membership::{
     AccountAction, AccountDeleteOutcome, AccountSummary, AdminActionOutcome, ModeSwitch,
@@ -114,9 +117,9 @@ use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
     AttachmentVersion, AuthScope, BackupSettings, BackupStatus, BinRow, BoardAccess, BoardFeed,
     BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CommentReaction, CoverChange,
-    DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange, FieldDefRow, InstanceMode,
-    InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS,
-    MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
+    DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange, FieldDefRow, HistoryKind,
+    InboundAddressRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS,
+    MAX_CUSTOM_COLORS, MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
     MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NUMBERING_KEY, Numbering, PasskeyRow, Quota, Quotas,
     RecoveryCodeRow, ReportBookmark, Responsible, SessionRow, Settings, Subtask, SwimlaneRow,
     TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind, TaskLink, TaskRow,
@@ -522,6 +525,19 @@ pub enum EpicCloseOutcome {
     NotEpic,
     /// The task does not exist.
     NotFound,
+}
+
+/// The new values of an edited time entry. See [`Db::update_entry`].
+#[derive(Copy, Clone, Debug)]
+pub struct EntryEdit<'a> {
+    /// The new length in seconds.
+    pub seconds: i64,
+    /// Free-text note.
+    pub note: &'a str,
+    /// RFC3339 start of the session.
+    pub started_at: &'a str,
+    /// Labels of the entry.
+    pub labels: &'a [String],
 }
 
 /// The caller-supplied parts of a new time entry.
@@ -1330,8 +1346,20 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// bytes, so a task that had children before it is an epic and every other task is a plain, open
 /// task. A version-57 binary refuses the file, so its next task save cannot drop the new fields.
 ///
+/// Version 59 adds, over version 58:
+///
+/// 1. The tables `inbound_addresses` holding `InboundAddressRow` and `inbound_by_hash`, which maps
+///    the SHA-256 of each inbound address to its id, and the multimap `inbound_by_board`.
+/// 2. The `Permission` `inbound.manage`, which the upgrade grants to every token and device request
+///    that holds the whole admin preset of its scope.
+/// 3. `TaskEvent`: `kind` becomes the enum `HistoryKind`, whose names are the strings the events
+///    already store, so every stored event reads as before.
+///
+/// The upgrade rewrites no task row. A version-58 binary refuses the file, since it knows neither
+/// the inbound addresses nor the new permission.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 58;
+pub const SCHEMA_VERSION: u64 = 59;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1396,6 +1424,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "26879f4069c114a3dac70192954b9e787d42d63b504f1e1acdca47e1839868cf",
     "e7a53b9d817be858118e1204c0350d7ec3c1de04c6e251227c9f289704cdc4b2",
     "3e6c4600a02a4c61aa6e04a9f2eff3501e8ce6fe084b3560b780cfc87b5af6d7",
+    "5a3e907a0bb7f4d27fe1fb58d297b01392e3ce684e5990b93072a616be4a4f97",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1539,12 +1568,22 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
                 Permission::TasksBin,
                 Permission::LabelsManage,
                 Permission::EpicsManage,
+                Permission::InboundManage,
             ],
         )?;
     } else if from.is_some_and(|version| version < 51) {
-        grant_added_permissions(txn, &[Permission::LabelsManage, Permission::EpicsManage])?;
+        grant_added_permissions(
+            txn,
+            &[
+                Permission::LabelsManage,
+                Permission::EpicsManage,
+                Permission::InboundManage,
+            ],
+        )?;
     } else if from.is_some_and(|version| version < 58) {
-        grant_added_permissions(txn, &[Permission::EpicsManage])?;
+        grant_added_permissions(txn, &[Permission::EpicsManage, Permission::InboundManage])?;
+    } else if from.is_some_and(|version| version < 59) {
+        grant_added_permissions(txn, &[Permission::InboundManage])?;
     }
     if from.is_none_or(|version| version < 58) {
         mark_parents_as_epics(txn)?;
@@ -2046,8 +2085,8 @@ fn grant_added_permissions(txn: &WriteTransaction, added: &[Permission]) -> DbRe
     Ok(())
 }
 
-/// Adds `added` to `row` when it holds exactly the preset of its scope without them, and reports
-/// whether it did. A custom set and a preset below lead stay as they are.
+/// Gives `row` the whole preset of its scope when it holds that preset short only of permissions in
+/// `added`, and reports whether it did. A custom set and a full preset stay as they are.
 fn grant_to_preset(row: &mut JsonObject, added: &[Permission]) -> bool {
     let Some(scope) = row
         .get("scope")
@@ -2056,18 +2095,21 @@ fn grant_to_preset(row: &mut JsonObject, added: &[Permission]) -> bool {
     else {
         return false;
     };
-    let mut before = scope.permissions();
-    if !added.iter().all(|permission| before.remove(permission)) {
-        return false;
-    }
-    let held = row
+    let preset = scope.permissions();
+    let Some(held) = row
         .get("permissions")
         .cloned()
-        .and_then(|value| serde_json::from_value::<BTreeSet<Permission>>(value).ok());
-    if held != Some(before) {
+        .and_then(|value| serde_json::from_value::<BTreeSet<Permission>>(value).ok())
+    else {
+        return false;
+    };
+    let short_only_of_added = preset
+        .difference(&held)
+        .all(|permission| added.contains(permission));
+    if held == preset || !held.is_subset(&preset) || !short_only_of_added {
         return false;
     }
-    let Ok(granted) = serde_json::to_value(scope.permissions()) else {
+    let Ok(granted) = serde_json::to_value(preset) else {
         return false;
     };
     row.insert("permissions".to_string(), granted);
@@ -2142,6 +2184,11 @@ const DEVICE_AUTHS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("dev
 const FIELD_DEFS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("field_defs");
 /// webhook id -> `WebhookRow`.
 const WEBHOOKS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("webhooks");
+/// inbound address id -> `InboundAddressRow`.
+const INBOUND_ADDRESSES: TableDefinition<'_, &str, &[u8]> =
+    TableDefinition::new("inbound_addresses");
+/// SHA-256 of each inbound address -> its id.
+const INBOUND_BY_HASH: TableDefinition<'_, &str, &str> = TableDefinition::new("inbound_by_hash");
 /// delivery key -> [`OutboxRow`].
 const WEBHOOK_OUTBOX: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("webhook_outbox");
 /// passkey id -> [`PasskeyRow`].
@@ -2166,6 +2213,9 @@ const FIELDS_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
 /// board id -> webhook id for `WebhookRow` rows.
 const WEBHOOKS_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("webhooks_by_board");
+/// board id -> inbound address id for `InboundAddressRow` rows.
+const INBOUND_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("inbound_by_board");
 /// webhook id -> delivery key for [`OutboxRow`] rows.
 const WEBHOOK_OUTBOX_BY_HOOK: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("webhook_outbox_by_hook");
@@ -3121,7 +3171,7 @@ fn txn_unlink_children(
             let detail = link_event_detail(link, epic_name.as_deref(), |detail| {
                 format!("Removed link {detail}")
             });
-            push_event(&mut child, "link_removed", detail, actor);
+            push_event(&mut child, HistoryKind::LinkRemoved, detail, actor);
         }
         child.updated_at = Some(Utc::now().to_rfc3339());
         txn_store_task(txn, tasks, &child, OverQuota::Allow, actor)?;
@@ -3201,7 +3251,7 @@ fn unlink_deleted_tasks(txn: &WriteTransaction, deleted: &[String]) -> DbResult<
                     let detail = link_event_detail(&link, deleted_name.as_deref(), |detail| {
                         format!("Removed link {detail} (task deleted)")
                     });
-                    push_event(&mut holder, "link_removed", detail, Actor::SYSTEM);
+                    push_event(&mut holder, HistoryKind::LinkRemoved, detail, Actor::SYSTEM);
                 }
                 holder.updated_at = Some(Utc::now().to_rfc3339());
                 txn_store_task(txn, &mut tasks, &holder, OverQuota::Allow, Actor::SYSTEM)?;
@@ -3388,10 +3438,44 @@ fn cut_text(text: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
+/// Returns the minutes `account` logged on a task inside `txn`.
+fn txn_account_minutes(txn: &WriteTransaction, account: &str, task_id: &str) -> DbResult<i64> {
+    let mut total = 0;
+    for entry_id in txn_mmap_get(txn, ENTRIES_BY_TASK, task_id)? {
+        if let Some(held) = txn_read_one::<TimeEntryRow>(txn, TIME_ENTRIES, &entry_id)?
+            && held.account_id == account
+        {
+            total += held.minutes;
+        }
+    }
+    Ok(total)
+}
+
+/// Appends a history event that changed a value to the task `task_id` inside `txn`, storing the
+/// task under `over`. Returns false, writing nothing, when the task does not exist.
+fn txn_push_task_event(
+    txn: &WriteTransaction,
+    task_id: &str,
+    kind: HistoryKind,
+    detail: &str,
+    actor: Actor<'_>,
+    change: EventChange,
+    over: OverQuota,
+) -> DbResult<bool> {
+    let mut tasks = txn.open_table(TASKS)?;
+    let Some(mut task) = task_in(&tasks, task_id)? else {
+        return Ok(false);
+    };
+    push_change_event(&mut task, kind, detail.to_string(), actor, change);
+    task.updated_at = Some(Utc::now().to_rfc3339());
+    txn_store_task(txn, &mut tasks, &task, over, actor)?;
+    Ok(true)
+}
+
 /// [`push_event`] for an event that changed a value, recording `change` on it.
 pub fn push_change_event(
     task: &mut TaskRow,
-    kind: &str,
+    kind: HistoryKind,
     detail: String,
     actor: Actor<'_>,
     change: EventChange,
@@ -3409,7 +3493,7 @@ fn record_change(task: &mut TaskRow, change: EventChange) {
 }
 
 /// Append a history event, dropping the oldest past the cap.
-pub fn push_event(task: &mut TaskRow, kind: &str, detail: String, actor: Actor<'_>) {
+pub fn push_event(task: &mut TaskRow, kind: HistoryKind, detail: String, actor: Actor<'_>) {
     push_column_event(task, kind, detail, actor, None);
 }
 
@@ -3417,14 +3501,14 @@ pub fn push_event(task: &mut TaskRow, kind: &str, detail: String, actor: Actor<'
 /// through renames. Every text the event records is cut to [`MAX_HISTORY_TEXT_CHARS`].
 pub fn push_column_event(
     task: &mut TaskRow,
-    kind: &str,
+    kind: HistoryKind,
     detail: String,
     actor: Actor<'_>,
     column_id: Option<&str>,
 ) {
     task.history.push(TaskEvent {
         id: Uuid::new_v4().to_string(),
-        kind: kind.to_string(),
+        kind,
         detail: history_text(&detail),
         actor: history_text(actor.name),
         created_at: Utc::now().to_rfc3339(),
@@ -3535,16 +3619,19 @@ fn link_event_detail(
 }
 
 /// Returns whether an event of `kind` puts the task in a column.
-fn puts_in_column(kind: &str) -> bool {
-    matches!(kind, "created" | "moved" | "restored")
+fn puts_in_column(kind: HistoryKind) -> bool {
+    matches!(
+        kind,
+        HistoryKind::Created | HistoryKind::Moved | HistoryKind::Restored
+    )
 }
 
 /// Returns `event`, which put the task in a column on a board outside the token's set, without
 /// the names and ids of that board.
 fn redact_placed_outside(mut event: TaskEvent) -> TaskEvent {
-    event.detail = match event.kind.as_str() {
-        "created" => "Created on another board",
-        "restored" => "Restored on another board",
+    event.detail = match event.kind {
+        HistoryKind::Created => "Created on another board",
+        HistoryKind::Restored => "Restored on another board",
         _ => "Moved to another board",
     }
     .to_string();
@@ -3586,9 +3673,9 @@ fn redacted_history(
         let column = event
             .column_id
             .clone()
-            .filter(|_| puts_in_column(&event.kind));
+            .filter(|_| puts_in_column(event.kind));
         let Some(column) = column else {
-            visible.push(if left_outside && event.kind == "deleted" {
+            visible.push(if left_outside && event.kind == HistoryKind::Deleted {
                 redact_deleted_outside(event)
             } else {
                 event
@@ -3598,7 +3685,7 @@ fn redacted_history(
         let here = outside(&column)?;
         visible.push(if here {
             redact_placed_outside(event)
-        } else if left_outside && event.kind == "moved" {
+        } else if left_outside && event.kind == HistoryKind::Moved {
             redact_left_outside(event)
         } else {
             event
@@ -3611,14 +3698,17 @@ fn redacted_history(
 /// Returns the last word of a link event's detail: the id of the task it names, or a word no id
 /// matches when the other task is gone. Any other event names none.
 fn link_event_target(event: &TaskEvent) -> Option<&str> {
-    matches!(event.kind.as_str(), "link_added" | "link_removed")
-        .then(|| {
-            event
-                .detail
-                .rsplit([' ', '(', ')'])
-                .find(|word| !word.is_empty())
-        })
-        .flatten()
+    matches!(
+        event.kind,
+        HistoryKind::LinkAdded | HistoryKind::LinkRemoved
+    )
+    .then(|| {
+        event
+            .detail
+            .rsplit([' ', '(', ')'])
+            .find(|word| !word.is_empty())
+    })
+    .flatten()
 }
 
 /// Clear a stored claim whose `expires_at` has passed, appending one
@@ -3631,7 +3721,7 @@ fn expire_claim(task: &mut TaskRow, now: chrono::DateTime<Utc>) -> bool {
                 claim.claimant, claim.fence, claim.expires_at
             );
             task.claim = None;
-            push_event(task, "claim_expired", detail, Actor::SYSTEM);
+            push_event(task, HistoryKind::ClaimExpired, detail, Actor::SYSTEM);
             true
         }
         _ => false,
@@ -3703,6 +3793,7 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<St
     let color_ids = txn_mmap_get(txn, COLORS_BY_BOARD, id)?;
     let field_ids = txn_mmap_get(txn, FIELDS_BY_BOARD, id)?;
     let webhook_ids = txn_mmap_get(txn, WEBHOOKS_BY_BOARD, id)?;
+    let inbound_ids = txn_mmap_get(txn, INBOUND_BY_BOARD, id)?;
     for webhook_id in &webhook_ids {
         txn_remove_webhook_outbox(txn, webhook_id)?;
     }
@@ -3720,7 +3811,8 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<St
         + txn_rows_bytes(txn, SWIMLANES, &swimlane_ids)?
         + txn_rows_bytes(txn, TASK_COLORS, &color_ids)?
         + txn_rows_bytes(txn, FIELD_DEFS, &field_ids)?
-        + txn_rows_bytes(txn, WEBHOOKS, &webhook_ids)?;
+        + txn_rows_bytes(txn, WEBHOOKS, &webhook_ids)?
+        + txn_rows_bytes(txn, INBOUND_ADDRESSES, &inbound_ids)?;
     let mut attachment_ids = txn_attachment_ids(txn, &task_ids)?;
     unlink_deleted_tasks(txn, &task_ids)?;
     txn_prune_token_sets(txn, &board.owner_id, id)?;
@@ -3760,6 +3852,10 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<St
         for webhook_id in &webhook_ids {
             webhooks.remove(webhook_id.as_str())?;
             mmap_remove(txn, WEBHOOKS_BY_BOARD, id, webhook_id)?;
+        }
+        for inbound_id in &inbound_ids {
+            txn_drop_inbound(txn, inbound_id)?;
+            mmap_remove(txn, INBOUND_BY_BOARD, id, inbound_id)?;
         }
         let mut tasks = txn.open_table(TASKS)?;
         let mut entries = txn.open_table(TIME_ENTRIES)?;
@@ -4352,6 +4448,8 @@ pub enum Bound {
     Passkeys,
     /// The webhooks one board may hold, [`MAX_WEBHOOKS_PER_BOARD`].
     WebhooksPerBoard,
+    /// The inbound addresses one board may hold, [`MAX_INBOUND_PER_BOARD`].
+    InboundPerBoard,
 }
 
 impl Bound {
@@ -4378,6 +4476,7 @@ impl Bound {
             Self::EntriesPerDay => "time entries started per day",
             Self::Passkeys => "passkeys per account",
             Self::WebhooksPerBoard => "webhooks per board",
+            Self::InboundPerBoard => "inbound addresses per board",
         }
     }
 }
@@ -4578,6 +4677,9 @@ pub const MAX_PASSKEYS_PER_ACCOUNT: usize = 10;
 
 /// Most webhooks one board may hold.
 pub const MAX_WEBHOOKS_PER_BOARD: usize = 20;
+
+/// Most inbound addresses one board may hold.
+pub const MAX_INBOUND_PER_BOARD: usize = 20;
 
 /// Most bytes one task's stored row may take, so reading or rewriting a task stays cheap.
 pub const MAX_TASK_ROW_BYTES: usize = 1_048_576;
@@ -5442,6 +5544,9 @@ impl Db {
             txn.open_multimap_table(FIELDS_BY_BOARD)?;
             txn.open_table(WEBHOOKS)?;
             txn.open_multimap_table(WEBHOOKS_BY_BOARD)?;
+            txn.open_table(INBOUND_ADDRESSES)?;
+            txn.open_table(INBOUND_BY_HASH)?;
+            txn.open_multimap_table(INBOUND_BY_BOARD)?;
             txn.open_table(WEBHOOK_OUTBOX)?;
             txn.open_multimap_table(WEBHOOK_OUTBOX_BY_HOOK)?;
             txn.open_multimap_table(BOARDS_BY_OWNER)?;
@@ -5691,7 +5796,7 @@ impl Db {
                 let changed_by_hand = task
                     .history
                     .iter()
-                    .any(|event| event.kind == "responsible_updated");
+                    .any(|event| event.kind == HistoryKind::ResponsibleUpdated);
                 if task.responsible.is_none()
                     && !changed_by_hand
                     && let Some(id) = task.member_ids.first()
@@ -7016,6 +7121,17 @@ impl Db {
                 txn_store_owned(&txn, WEBHOOKS, &hook.id, &hook, OverQuota::Allow)?;
             }
         }
+        for address in txn_indexed_rows::<InboundAddressRow>(
+            &txn,
+            INBOUND_BY_BOARD,
+            &column.board_id,
+            INBOUND_ADDRESSES,
+        )? {
+            if address.column_id == id {
+                txn_remove_inbound(&txn, &address.id)?;
+                mmap_remove(&txn, INBOUND_BY_BOARD, &column.board_id, &address.id)?;
+            }
+        }
         txn_remove_owned::<ColumnRow>(&txn, COLUMNS, id)?;
         mmap_remove(&txn, COLUMNS_BY_BOARD, &column.board_id, id)?;
         txn.commit()?;
@@ -7184,7 +7300,12 @@ impl Db {
                 task.swimlane_id = Some(main_id.clone());
                 task.position = next + index as f64;
                 task.updated_at = Some(Utc::now().to_rfc3339());
-                push_event(&mut task, "swimlane_merged", detail.clone(), actor);
+                push_event(
+                    &mut task,
+                    HistoryKind::SwimlaneMerged,
+                    detail.clone(),
+                    actor,
+                );
                 txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow, actor)?;
                 moved += 1;
             }
@@ -8684,7 +8805,7 @@ impl Db {
             }
             task.comments.push(comment.clone());
             let detail = format!("{} added a comment", new.author);
-            push_event(&mut task, "comment_added", detail, actor);
+            push_event(&mut task, HistoryKind::CommentAdded, detail, actor);
             task.updated_at = Some(Utc::now().to_rfc3339());
             txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
         }
@@ -8709,7 +8830,12 @@ impl Db {
                 return (CommentWrite::NotOwner, false);
             }
             task.comments.retain(|c| c.id != comment_id);
-            push_event(task, "comment_deleted", "Deleted a comment".into(), actor);
+            push_event(
+                task,
+                HistoryKind::CommentDeleted,
+                "Deleted a comment".into(),
+                actor,
+            );
             (CommentWrite::Done(()), true)
         })?;
         Ok(outcome.unwrap_or(CommentWrite::NotFound))
@@ -8736,7 +8862,12 @@ impl Db {
             comment.body = body.to_string();
             comment.edited_at = Some(Utc::now().to_rfc3339());
             let edited = comment.clone();
-            push_event(task, "comment_edited", "Edited a comment".into(), actor);
+            push_event(
+                task,
+                HistoryKind::CommentEdited,
+                "Edited a comment".into(),
+                actor,
+            );
             (CommentWrite::Done(edited), true)
         })?;
         Ok(outcome.unwrap_or(CommentWrite::NotFound))
@@ -8871,7 +9002,7 @@ impl Db {
             let detail = link_event_detail(&link, Some(&other.name), |detail| {
                 format!("Added link {detail}")
             });
-            push_event(&mut holder, "link_added", detail, actor);
+            push_event(&mut holder, HistoryKind::LinkAdded, detail, actor);
             holder.updated_at = Some(now);
             txn_store_task(txn, &mut tbl, &holder, OverQuota::Refuse, actor)?;
             link
@@ -8915,7 +9046,7 @@ impl Db {
             let removed = link_event_detail(&old, old_name.as_deref(), |detail| {
                 format!("Removed link {detail}")
             });
-            push_event(&mut task, "link_removed", removed, actor);
+            push_event(&mut task, HistoryKind::LinkRemoved, removed, actor);
             let now = Utc::now().to_rfc3339();
             let link = TaskLink {
                 id: Uuid::new_v4().to_string(),
@@ -8929,7 +9060,7 @@ impl Db {
             let added = link_event_detail(&link, Some(&umbrella.name), |detail| {
                 format!("Added link {detail}")
             });
-            push_event(&mut task, "link_added", added, actor);
+            push_event(&mut task, HistoryKind::LinkAdded, added, actor);
             task.updated_at = Some(now);
             txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
             if !task
@@ -9117,7 +9248,7 @@ impl Db {
                 let detail = link_event_detail(&link, target_name.as_deref(), |detail| {
                     format!("Removed link {detail}")
                 });
-                push_event(&mut holder, "link_removed", detail, actor);
+                push_event(&mut holder, HistoryKind::LinkRemoved, detail, actor);
                 let still_linked = holder
                     .links
                     .iter()
@@ -9700,9 +9831,14 @@ impl Db {
             document.name = renamed;
         }
         let saved = document.clone();
-        push_event(&mut task, "attachment_edited", details.remove(0), actor);
+        push_event(
+            &mut task,
+            HistoryKind::AttachmentEdited,
+            details.remove(0),
+            actor,
+        );
         for detail in details {
-            push_event(&mut task, "attachment_renamed", detail, actor);
+            push_event(&mut task, HistoryKind::AttachmentRenamed, detail, actor);
         }
         task.updated_at = Some(now);
         let bytes = serde_json::to_vec(&task)?.len() as u64;
@@ -9834,7 +9970,7 @@ impl Db {
                     }
                     task.attachments.push(meta);
                     let detail = format!("Attached \"{name}\"");
-                    push_event(&mut task, "attachment_added", detail, uploaded_by);
+                    push_event(&mut task, HistoryKind::AttachmentAdded, detail, uploaded_by);
                     task.updated_at = Some(Utc::now().to_rfc3339());
                     txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, uploaded_by)?;
                     true
@@ -9982,7 +10118,7 @@ impl Db {
             let detail = format!("Renamed \"{}\" to \"{renamed}\"", attachment.name);
             attachment.name = renamed;
             let updated = attachment.clone();
-            push_event(&mut task, "attachment_renamed", detail, actor);
+            push_event(&mut task, HistoryKind::AttachmentRenamed, detail, actor);
             task.updated_at = Some(Utc::now().to_rfc3339());
             let bytes = serde_json::to_vec(&task)?.len() as u64;
             refuse_row_past(Bound::TaskRowBytes, MAX_TASK_ROW_BYTES, bytes, held)?;
@@ -10022,11 +10158,11 @@ impl Db {
                     task.attachments.retain(|a| a.id != attachment_id);
                     removed = files;
                     let detail = format!("Deleted \"{name}\"");
-                    push_event(&mut task, "attachment_deleted", detail, actor);
+                    push_event(&mut task, HistoryKind::AttachmentDeleted, detail, actor);
                     if task.cover_id.as_deref() == Some(attachment_id) {
                         task.cover_id = None;
                         let detail = format!("Removed \"{name}\" as the cover image");
-                        push_event(&mut task, "cover_removed", detail, actor);
+                        push_event(&mut task, HistoryKind::CoverRemoved, detail, actor);
                     }
                     task.updated_at = Some(Utc::now().to_rfc3339());
                     txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow, actor)?;
@@ -10066,41 +10202,13 @@ impl Db {
             if cover == CoverChange::Set {
                 task.cover_id = Some(attachment_id.to_string());
                 let detail = format!("Set \"{name}\" as the cover image");
-                push_event(task, "cover_set", detail, actor);
+                push_event(task, HistoryKind::CoverSet, detail, actor);
             } else {
                 task.cover_id = None;
                 let detail = format!("Removed \"{name}\" as the cover image");
-                push_event(task, "cover_removed", detail, actor);
+                push_event(task, HistoryKind::CoverRemoved, detail, actor);
             }
             (true, true)
-        })
-    }
-
-    /// Appends an event that changed a value to a task, recording `change` on it.
-    pub fn log_change_event(
-        &self,
-        task_id: &str,
-        kind: &str,
-        detail: &str,
-        actor: Actor<'_>,
-        change: EventChange,
-    ) -> DbResult<bool> {
-        mutate_task(&self.db, task_id, |task| {
-            push_change_event(task, kind, detail.to_string(), actor, change);
-        })
-    }
-
-    /// Append an activity-trail event to a task (KanbanFlow parity:
-    /// History report). No-op (Ok(false)) when the task does not exist.
-    pub fn log_event(
-        &self,
-        task_id: &str,
-        kind: &str,
-        detail: &str,
-        actor: Actor<'_>,
-    ) -> DbResult<bool> {
-        mutate_task(&self.db, task_id, |task| {
-            push_event(task, kind, detail.to_string(), actor);
         })
     }
 
@@ -10298,7 +10406,7 @@ impl Db {
                 "Claimed by {} (fence {}) until {}",
                 claim.claimant, claim.fence, claim.expires_at
             );
-            push_event(task, "claimed", detail, actor);
+            push_event(task, HistoryKind::Claimed, detail, actor);
             task.claim = Some(claim.clone());
             (ClaimOutcome::Granted(claim), RowWrite::Stamp)
         })?;
@@ -10322,9 +10430,9 @@ impl Db {
             }
             task.closed = closed;
             let (kind, detail) = if closed {
-                ("closed", "Closed the epic")
+                (HistoryKind::Closed, "Closed the epic")
             } else {
-                ("reopened", "Reopened the epic")
+                (HistoryKind::Reopened, "Reopened the epic")
             };
             push_event(task, kind, detail.to_string(), actor);
             (EpicCloseOutcome::Changed, RowWrite::Stamp)
@@ -10392,7 +10500,7 @@ impl Db {
                 Some(live) if live.fence == fence => {
                     let detail = format!("Claim by {} (fence {}) released", live.claimant, fence);
                     task.claim = None;
-                    push_event(task, "claim_released", detail, actor);
+                    push_event(task, HistoryKind::ClaimReleased, detail, actor);
                     (ClaimOutcome::Released, true)
                 }
                 None if (1..=task.claim_fence).contains(&fence) => {
@@ -10442,24 +10550,37 @@ impl Db {
         Ok(counts)
     }
 
-    /// Delete a time entry. Returns false when the entry does not exist.
-    pub fn delete_entry(&self, entry_id: &str) -> DbResult<bool> {
+    /// Deletes a time entry and writes a `time_deleted` event on its task, if the task exists, in
+    /// one write, past the stored-bytes quota so a full account can still free space. Returns false when the entry does not exist.
+    pub fn delete_entry(&self, entry_id: &str, actor: Actor<'_>) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
-        let mut removed = false;
+        let Some(entry) = txn_read_one::<TimeEntryRow>(&txn, TIME_ENTRIES, entry_id)? else {
+            return Ok(false);
+        };
+        let before = txn_account_minutes(&txn, &entry.account_id, &entry.task_id)?;
         {
             let mut tbl = txn.open_table(TIME_ENTRIES)?;
-            let entry: Option<TimeEntryRow> = tbl
-                .get(entry_id)?
-                .map(|guard| serde_json::from_slice(guard.value()))
-                .transpose()?;
-            if let Some(entry) = entry {
-                txn_remove_entry(&txn, &mut tbl, entry_id)?;
-                mmap_remove(&txn, ENTRIES_BY_TASK, &entry.task_id, entry_id)?;
-                removed = true;
-            }
+            txn_remove_entry(&txn, &mut tbl, entry_id)?;
+        }
+        mmap_remove(&txn, ENTRIES_BY_TASK, &entry.task_id, entry_id)?;
+        if !entry.task_id.is_empty() {
+            let change = EventChange {
+                from: Some(format_minutes(before)),
+                to: Some(format_minutes((before - entry.minutes).max(0))),
+            };
+            let detail = format!("Deleted a {}m time entry", entry.minutes);
+            txn_push_task_event(
+                &txn,
+                &entry.task_id,
+                HistoryKind::TimeDeleted,
+                &detail,
+                actor,
+                change,
+                OverQuota::Allow,
+            )?;
         }
         txn.commit()?;
-        Ok(removed)
+        Ok(true)
     }
 
     /// Moves a task to a new column/swimlane/position. Crossing into a done column stamps
@@ -10723,12 +10844,24 @@ impl Db {
         let logged = match guards.event {
             Some(detail) => {
                 let detail = format!("{detail}{dropped_note}");
-                push_column_event(&mut moved, "moved", detail, actor, Some(column_id));
+                push_column_event(
+                    &mut moved,
+                    HistoryKind::Moved,
+                    detail,
+                    actor,
+                    Some(column_id),
+                );
                 true
             }
             None if !dropped_note.is_empty() => {
                 let detail = format!("Moved to another board{dropped_note}");
-                push_column_event(&mut moved, "moved", detail, actor, Some(column_id));
+                push_column_event(
+                    &mut moved,
+                    HistoryKind::Moved,
+                    detail,
+                    actor,
+                    Some(column_id),
+                );
                 true
             }
             None => false,
@@ -10755,7 +10888,7 @@ impl Db {
                 "Moved to board {}",
                 change.to.as_deref().unwrap_or("(none)")
             );
-            push_change_event(&mut moved, "board_updated", detail, actor, change);
+            push_change_event(&mut moved, HistoryKind::BoardUpdated, detail, actor, change);
         }
         if new_swimlane_id != old_swimlane_id {
             let lane_name = |lane_id: Option<&str>| -> DbResult<Option<String>> {
@@ -10772,7 +10905,13 @@ impl Db {
                 "Moved to swimlane {}",
                 change.to.as_deref().unwrap_or("(none)")
             );
-            push_change_event(&mut moved, "swimlane_updated", detail, actor, change);
+            push_change_event(
+                &mut moved,
+                HistoryKind::SwimlaneUpdated,
+                detail,
+                actor,
+                change,
+            );
         }
 
         if column_id != old_column_id {
@@ -10930,57 +11069,57 @@ impl Db {
             .unwrap_or_default())
     }
 
-    /// Logs `entry` for `account` on its task and its `time_logged` history event in one write.
-    /// Returns false, writing nothing, when the entry names no task, the task does not exist or
-    /// `account` holds no role on its board.
+    /// Logs `entry` for `account` on its task and its `time_logged` history event, reading
+    /// `detail`, in one write, so a failed history write stores no entry. A manual entry is
+    /// refused at the stored-bytes quota, and a timer session's is stored past it as far as
+    /// [`OverQuota::TimerSession`] allows. Returns the entry id, or [`None`] with nothing written
+    /// when the entry names no task, the task does not exist or `account` holds no role on its
+    /// board.
     pub fn log_task_time(
         &self,
         account: &AccountId,
         entry: NewTimeEntry<'_>,
+        detail: &str,
         actor: Actor<'_>,
-    ) -> DbResult<bool> {
+    ) -> DbResult<Option<String>> {
         let Some(task_id) = entry.task_id else {
-            return Ok(false);
+            return Ok(None);
         };
-        let logged = if entry.seconds < 60 {
-            format!("Logged {}s", entry.seconds)
+        let over = if entry.kind == EntryKind::Manual {
+            OverQuota::Refuse
         } else {
-            format!("Logged {}m", entry.seconds / 60)
+            OverQuota::TimerSession
         };
         let txn = self.db.begin_write()?;
+        txn_refuse_stranded(&txn, account)?;
         if task_role_in(&txn, account, task_id)?.is_none() {
-            return Ok(false);
+            return Ok(None);
         }
         let entry = entry.into_row(
             Uuid::new_v4().to_string(),
             task_id,
             account.as_str().to_string(),
         );
-        let mut before = 0;
-        for entry_id in txn_mmap_get(&txn, ENTRIES_BY_TASK, task_id)? {
-            if let Some(held) = txn_read_one::<TimeEntryRow>(&txn, TIME_ENTRIES, &entry_id)?
-                && held.account_id == entry.account_id
-            {
-                before += held.minutes;
-            }
+        let before = txn_account_minutes(&txn, &entry.account_id, task_id)?;
+        let change = EventChange {
+            from: Some(format_minutes(before)),
+            to: Some(format_minutes(before + entry.minutes)),
+        };
+        if !txn_push_task_event(
+            &txn,
+            task_id,
+            HistoryKind::TimeLogged,
+            detail,
+            actor,
+            change,
+            over,
+        )? {
+            return Ok(None);
         }
-        {
-            let mut tasks = txn.open_table(TASKS)?;
-            let Some(mut task) = task_in(&tasks, task_id)? else {
-                return Ok(false);
-            };
-            let change = EventChange {
-                from: Some(format_minutes(before)),
-                to: Some(format_minutes(before + entry.minutes)),
-            };
-            push_change_event(&mut task, "time_logged", logged, actor, change);
-            task.updated_at = Some(Utc::now().to_rfc3339());
-            txn_store_task(&txn, &mut tasks, &task, OverQuota::Refuse, actor)?;
-        }
-        txn_store_entry(&txn, &entry, OverQuota::Refuse)?;
+        txn_store_entry(&txn, &entry, over)?;
         mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &entry.id)?;
         txn.commit()?;
-        Ok(true)
+        Ok(Some(entry.id))
     }
 
     /// Time entries for a task, newest first.
@@ -11222,40 +11361,16 @@ impl Db {
         Ok(Some(id))
     }
 
-    /// Creates the time entry `entry` on its task for `account`. Returns [`None`] when the entry
-    /// names no task, the task does not exist or `account` holds no role on its board.
-    pub fn create_entry_at(
-        &self,
-        account: &AccountId,
-        entry: NewTimeEntry<'_>,
-    ) -> DbResult<Option<String>> {
-        let Some(task_id) = entry.task_id else {
-            return Ok(None);
-        };
-        let txn = self.db.begin_write()?;
-        if task_role_in(&txn, account, task_id)?.is_none() {
-            return Ok(None);
-        }
-        let id = Uuid::new_v4().to_string();
-        let row = entry.into_row(id.clone(), task_id, account.as_str().to_string());
-        txn_store_entry(&txn, &row, OverQuota::Refuse)?;
-        mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
-        txn.commit()?;
-        Ok(Some(id))
-    }
-
-    /// Update a time entry (date/time, task reassignment, note, labels);
-    /// `seconds` is the new length. An empty `task_id` makes it task-less.
-    /// Returns false when the entry does not exist; the task must exist
-    /// (checked by the caller).
+    /// Updates a time entry (date/time, task reassignment, note, labels) and writes a
+    /// `time_edited` event on its task, if it has one, in one write.
+    /// An empty `task_id` makes it task-less. Returns false when the entry does not exist; the task
+    /// must exist (checked by the caller).
     pub fn update_entry(
         &self,
         entry_id: &str,
         task_id: &str,
-        seconds: i64,
-        note: &str,
-        started_at: &str,
-        labels: &[String],
+        edit: EntryEdit<'_>,
+        actor: Actor<'_>,
     ) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
         let tbl = txn.open_table(TIME_ENTRIES)?;
@@ -11269,13 +11384,14 @@ impl Db {
         };
         let old_task = row.task_id.clone();
         row.task_id = task_id.to_string();
-        row.seconds = seconds;
-        row.minutes = seconds / 60;
-        row.note = note.to_string();
-        row.started_at = started_at.to_string();
-        row.labels = labels.to_vec();
+        row.seconds = edit.seconds;
+        row.minutes = edit.seconds / 60;
+        row.note = edit.note.to_string();
+        row.started_at = edit.started_at.to_string();
+        row.labels = edit.labels.to_vec();
 
         drop(tbl);
+        let before = txn_account_minutes(&txn, &row.account_id, task_id)?;
         txn_store_entry(&txn, &row, OverQuota::Refuse)?;
 
         // Task-less entries (empty `task_id`) are not in the index
@@ -11286,6 +11402,23 @@ impl Db {
             if !task_id.is_empty() {
                 mmap_insert(&txn, ENTRIES_BY_TASK, task_id, entry_id)?;
             }
+        }
+        if !task_id.is_empty() {
+            let after = txn_account_minutes(&txn, &row.account_id, task_id)?;
+            let change = EventChange {
+                from: Some(format_minutes(before)),
+                to: Some(format_minutes(after)),
+            };
+            let detail = format!("Edited a time entry ({}m)", row.minutes);
+            txn_push_task_event(
+                &txn,
+                task_id,
+                HistoryKind::TimeEdited,
+                &detail,
+                actor,
+                change,
+                OverQuota::Refuse,
+            )?;
         }
         txn.commit()?;
         Ok(true)
@@ -11690,7 +11823,7 @@ mod swimlane_tests {
         assert_eq!(place(&board, &task).1, Some(board.lanes[0].clone()));
     }
 
-    fn event_kinds(board: &Board, task: &str) -> Vec<String> {
+    fn event_kinds(board: &Board, task: &str) -> Vec<HistoryKind> {
         let row = board.db.task(task).expect("read").expect("task");
         row.history.into_iter().map(|event| event.kind).collect()
     }
@@ -11743,8 +11876,8 @@ mod swimlane_tests {
             .db
             .merge_swimlanes(&board.id, Actor::SYSTEM)
             .expect("merge");
-        assert!(!event_kinds(&board, &own).contains(&"swimlane_merged".to_string()));
-        assert!(event_kinds(&board, &moved).contains(&"swimlane_merged".to_string()));
+        assert!(!event_kinds(&board, &own).contains(&HistoryKind::SwimlaneMerged));
+        assert!(event_kinds(&board, &moved).contains(&HistoryKind::SwimlaneMerged));
     }
 
     #[test]
@@ -12979,6 +13112,114 @@ mod schema_version_tests {
         assert!(token.permissions.contains(&Permission::TasksBin));
     }
 
+    /// A version-57 file's tokens, which hold neither `epics.manage` nor `inbound.manage`, gain
+    /// both at the admin preset and `epics.manage` alone at the lead preset.
+    #[test]
+    fn version_57_file_should_grant_inbound_management_to_admin_presets_beside_epics() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let presets = {
+            let db = Db::connect(&path).expect("connect");
+            let mut presets = Vec::new();
+            for scope in AuthScope::ALL {
+                let (record, _) = new_api_token_record(&account, scope.as_str(), scope, None);
+                db.create_api_token(&record).expect("token");
+                presets.push((scope, record.id));
+            }
+            presets
+        };
+        let strip = |object: &mut serde_json::Map<String, serde_json::Value>| {
+            object["permissions"]
+                .as_array_mut()
+                .expect("permissions")
+                .retain(|name| name != "epics.manage" && name != "inbound.manage");
+        };
+        for (_, id) in &presets {
+            edit_raw(&path, API_TOKENS, id, strip);
+        }
+        stamp(&path, 57);
+
+        let db = Db::connect(&path).expect("open version 57");
+        for (scope, id) in &presets {
+            let token: ApiTokenRecord = read_one(&db.db, API_TOKENS, id)
+                .expect("read")
+                .expect("row");
+            assert!(token.permissions == scope.permissions(), "{scope:?}");
+        }
+    }
+
+    /// A version-58 file's tokens at the admin preset gain `inbound.manage`, and a custom set and
+    /// the lower presets keep what they hold.
+    #[test]
+    fn version_58_file_should_grant_inbound_management_to_admin_presets_and_no_custom_set() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let (presets, custom) = {
+            let db = Db::connect(&path).expect("connect");
+            let mut presets = Vec::new();
+            for scope in AuthScope::ALL {
+                let (record, _) = new_api_token_record(&account, scope.as_str(), scope, None);
+                db.create_api_token(&record).expect("token");
+                presets.push((scope, record.id));
+            }
+            let (mut record, _) = new_api_token_record(&account, "custom", AuthScope::Work, None);
+            record.permissions.insert(Permission::TasksBin);
+            db.create_api_token(&record).expect("token");
+            (presets, record.id)
+        };
+        let strip = |object: &mut serde_json::Map<String, serde_json::Value>| {
+            object["permissions"]
+                .as_array_mut()
+                .expect("permissions")
+                .retain(|name| name != "inbound.manage");
+        };
+        for key in presets.iter().map(|(_, id)| id).chain([&custom]) {
+            edit_raw(&path, API_TOKENS, key, strip);
+        }
+        stamp(&path, 58);
+
+        let db = Db::connect(&path).expect("open version 58");
+        for (scope, id) in &presets {
+            let token: ApiTokenRecord = read_one(&db.db, API_TOKENS, id)
+                .expect("read")
+                .expect("row");
+            assert!(token.permissions == scope.permissions(), "{scope:?}");
+        }
+        let token: ApiTokenRecord = read_one(&db.db, API_TOKENS, &custom)
+            .expect("read")
+            .expect("row");
+        assert!(!token.permissions.contains(&Permission::InboundManage));
+        assert!(token.permissions.contains(&Permission::TasksBin));
+    }
+
+    /// A version-58 admin token without `inbound.manage` or `feeds.manage` keeps its trimmed set
+    /// through the upgrade.
+    #[test]
+    fn version_58_file_should_leave_a_trimmed_admin_set_without_inbound_or_feeds_management() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let trimmed = {
+            let db = Db::connect(&path).expect("connect");
+            let (record, _) = new_api_token_record(&account, "trimmed", AuthScope::Admin, None);
+            db.create_api_token(&record).expect("token");
+            record.id
+        };
+        edit_raw(&path, API_TOKENS, &trimmed, |object| {
+            object["permissions"]
+                .as_array_mut()
+                .expect("permissions")
+                .retain(|name| name != "inbound.manage" && name != "feeds.manage");
+        });
+        stamp(&path, 58);
+
+        let db = Db::connect(&path).expect("open version 58");
+        let token: ApiTokenRecord = read_one(&db.db, API_TOKENS, &trimmed)
+            .expect("read")
+            .expect("row");
+        assert!(!token.permissions.contains(&Permission::InboundManage));
+        assert!(!token.permissions.contains(&Permission::FeedsManage));
+    }
+
     /// A version-26 file's tokens and device requests gain the permissions of their scope's
     /// preset and all boards, and keep every other field and their lookups.
     #[test]
@@ -13466,14 +13707,14 @@ mod schema_version_tests {
             }
             mutate(&db.db, TASKS, &moved, |row: &mut TaskRow| {
                 for (kind, at) in [
-                    ("moved", "2026-01-02T03:04:05+00:00"),
-                    ("comment", "2026-02-01T00:00:00+00:00"),
-                    ("moved", "2026-01-09T10:00:00+00:00"),
-                    ("comment", "2026-02-02T00:00:00+00:00"),
+                    (HistoryKind::Moved, "2026-01-02T03:04:05+00:00"),
+                    (HistoryKind::Comment, "2026-02-01T00:00:00+00:00"),
+                    (HistoryKind::Moved, "2026-01-09T10:00:00+00:00"),
+                    (HistoryKind::Comment, "2026-02-02T00:00:00+00:00"),
                 ] {
                     row.history.push(TaskEvent {
                         id: at.to_string(),
-                        kind: kind.to_string(),
+                        kind,
                         detail: String::new(),
                         actor: "a".to_string(),
                         created_at: at.to_string(),
@@ -14235,6 +14476,7 @@ mod schema_fingerprint_tests {
             shape::<FieldColumn>("FieldColumn"),
             shape::<FieldDefRow>("FieldDefRow"),
             shape::<AccountStatus>("AccountStatus"),
+            shape::<InboundAddressRow>("InboundAddressRow"),
             shape::<InstanceSettings>("InstanceSettings"),
             shape::<InviteRow>("InviteRow"),
             shape::<NotificationRow>("NotificationRow"),
@@ -14290,6 +14532,8 @@ mod schema_fingerprint_tests {
             table(META),
             table(FIELD_DEFS),
             table(WEBHOOKS),
+            table(INBOUND_ADDRESSES),
+            table(INBOUND_BY_HASH),
             table(WEBHOOK_OUTBOX),
             table(DEVICE_AUTHS),
             table(PASSKEYS),
@@ -14325,6 +14569,7 @@ mod schema_fingerprint_tests {
             multimap(COLORS_BY_BOARD),
             multimap(FIELDS_BY_BOARD),
             multimap(WEBHOOKS_BY_BOARD),
+            multimap(INBOUND_BY_BOARD),
             multimap(WEBHOOK_OUTBOX_BY_HOOK),
             multimap(LINKS_BY_TARGET),
             table(BOARD_MEMBERS),
@@ -15959,7 +16204,7 @@ mod responsible_fill_tests {
         mutate_task(&db.db, &id, |row| {
             row.history.push(TaskEvent {
                 id: "e1".to_string(),
-                kind: "responsible_updated".to_string(),
+                kind: HistoryKind::ResponsibleUpdated,
                 detail: "Cleared the responsible".to_string(),
                 actor: "admin".to_string(),
                 created_at: "2026-10-31T10:00:00+00:00".to_string(),

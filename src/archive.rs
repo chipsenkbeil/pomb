@@ -22,8 +22,8 @@ pub use spool::Spool;
 use crate::db::{BoardSnapshot, DbResult, OfflineDb};
 use crate::models::{
     ActorKind, BoardRow, ColorRow, ColumnRow, FieldColumn, FieldDefRow, FieldKind, FieldOwner,
-    LaneLimit, LinkKind, Responsible, SwimlaneRow, TaskClaim, TaskKind, TaskLink, TaskRow,
-    TimeEntryRow,
+    HistoryKind, LaneLimit, LinkKind, Responsible, SwimlaneRow, TaskClaim, TaskKind, TaskLink,
+    TaskRow, TimeEntryRow,
 };
 use crate::taskjson::TaskArray;
 
@@ -450,7 +450,7 @@ struct EventInfo {
     /// The event's id.
     id: String,
     /// The machine-readable kind, such as `moved`.
-    kind: String,
+    kind: HistoryKind,
     /// The one-line description.
     detail: String,
     /// Who caused the event.
@@ -1521,7 +1521,7 @@ mod tests {
         let seeded = seed(dir.path());
         seeded
             .db
-            .create_entry_at(
+            .log_task_time(
                 &seeded.account,
                 NewTimeEntry {
                     task_id: Some(&seeded.task),
@@ -1538,6 +1538,8 @@ mod tests {
                     role: Some("reviewer"),
                     token_name: Some("ci-bot"),
                 },
+                "Logged 10m",
+                Actor::SYSTEM,
             )
             .expect("entry");
         let doc = document(&archive_of(&seeded));

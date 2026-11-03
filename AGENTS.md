@@ -26,12 +26,14 @@ or `cargo test` directly, and do not edit `.dev/lint.sh` above its
 
 | Command | Runs |
 |---|---|
-| `dev lint` | nightly `cargo fmt --check`, clippy with `-D warnings`, ast-grep, `cargo sort --check`, `cargo deny check bans`, the manifest, derive-order, module-doc and comment-spacing checks, then `node --check static/app.js` |
-| `dev test` | `cargo nextest run --all-features`, then `cargo test --doc` |
+| `dev lint` | nightly `cargo fmt --check`, clippy with `-D warnings`, ast-grep, `cargo sort --check`, `cargo deny check bans`, the manifest, derive-order, module-doc and comment-spacing checks, then `node --check` on `static/app.js`, `static/passkey.js` and `static/pages.js` |
+| `dev test` | `cargo nextest run --all-features` (it takes any arguments), then `cargo test --doc --all-features` (only without arguments), then each `tests/js/*.js` with `node` against `static/app.js` |
 | `dev fmt` | `cargo +nightly fmt` with `rustfmt.toml` |
 | `dev build` | `cargo build --release` |
-| `dev release <commit> --batch N --summary "..."` | applies a verified commit to main on the remote of record, which mirrors to GitHub, in `.dev/worktrees/release-N`, commits `Release batch-N: ...`, runs `dev lint --remote`, `dev test --remote` and `dev build --remote` one at a time on ci, checks for attribution, pushes to main on the remote of record, then prints the sha, nix hash (300 second limit, three attempts) and condition for the homelab request (`--hash-only <sha>` reprints the block for a pushed sha without touching git, `--env KEY=VALUE` lists service env changes, `--dry-run` skips the push and hash) |
-| `dev verify <sha> --backup <file>` | read-only post-switch checks on green-box (build_sha, app.js, cross-site 403, journal, `/login`, OpenAPI server URL, `token_invalid`; `--cleanup <worktree>...` removes worktrees and merged branches) |
+| `dev release <commit> --batch N --summary "..."` | applies a verified commit to main on the remote of record, which mirrors to GitHub, in `.dev/worktrees/release-N`, commits `Release batch-N: ...`, runs `dev lint --remote`, `dev test --remote`, `dev nixcheck --remote` and `dev build --remote` one at a time on ci, checks for attribution, pushes to main on the remote of record, then prints the sha, nix hash and condition for the homelab request (`--hash-only <sha>` reprints the block for a pushed sha without touching git, `--env KEY=VALUE` lists service env changes, `--dry-run` skips the push and hash) |
+| `dev nixcheck` | builds a nextest archive, then runs the tests in a user, mount and network namespace with no `/usr/bin/env` and only the tools the Nix derivation provides on PATH, so a missing tool fails before release. Linux only |
+| `dev regress [REV]` | diffs this tree's screenshots against REV (default main on the remote of record) with the ci `regress` job on a browser runner and keeps the report as an artifact (`ci artifacts last`) |
+| `dev verify <sha> --backup <file>` | read-only post-switch checks on green-box (build_sha, app.js, cross-site 403, journal, `/login`, OpenAPI server URL, `token_invalid`; `--cleanup <worktree>...` removes worktrees and merged branches, `--delete-branch <branch>` also deletes an unmerged one) |
 
 `dev lint` and `dev test` exit 0 before a change is done. Rust style follows
 `docs/STYLE.md`. `.cargo/config.toml` sets `TZ=UTC` for the test run.

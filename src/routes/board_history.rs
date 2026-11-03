@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use super::{HISTORY_KIND_LABELS, NO_VALUE, history_actor, history_kind_label};
-use crate::models::{BinRow, TaskComment, TaskEvent, TaskRow};
+use super::{NO_VALUE, history_actor};
+use crate::models::{BinRow, HistoryKind, TaskComment, TaskEvent, TaskRow};
 
 /// The titles of the columns of a history export.
 const HEADER: [&str; 8] = [
@@ -18,19 +18,19 @@ const HEADER: [&str; 8] = [
 ];
 
 /// The kinds the event group `comment` holds.
-const COMMENT_KINDS: &[&str] = &[
-    "comment",
-    "comment_added",
-    "comment_edited",
-    "comment_deleted",
+const COMMENT_KINDS: &[HistoryKind] = &[
+    HistoryKind::Comment,
+    HistoryKind::CommentAdded,
+    HistoryKind::CommentEdited,
+    HistoryKind::CommentDeleted,
 ];
 /// The kinds the event group `relation` holds.
-const RELATION_KINDS: &[&str] = &["link_added", "link_removed"];
+const RELATION_KINDS: &[HistoryKind] = &[HistoryKind::LinkAdded, HistoryKind::LinkRemoved];
 /// The kinds the event group `attachment` holds.
-const ATTACHMENT_KINDS: &[&str] = &[
-    "attachment_added",
-    "attachment_renamed",
-    "attachment_deleted",
+const ATTACHMENT_KINDS: &[HistoryKind] = &[
+    HistoryKind::AttachmentAdded,
+    HistoryKind::AttachmentRenamed,
+    HistoryKind::AttachmentDeleted,
 ];
 
 /// A group of history kinds a filter names.
@@ -96,11 +96,11 @@ impl Group {
     }
 
     /// Returns the group of a history `kind`.
-    fn of(kind: &str) -> Self {
+    fn of(kind: HistoryKind) -> Self {
         match kind {
-            "created" => Self::Created,
-            "deleted" => Self::Deleted,
-            "restored" => Self::Restored,
+            HistoryKind::Created => Self::Created,
+            HistoryKind::Deleted => Self::Deleted,
+            HistoryKind::Restored => Self::Restored,
             _ if COMMENT_KINDS.contains(&kind) => Self::Comment,
             _ if RELATION_KINDS.contains(&kind) => Self::Relation,
             _ if ATTACHMENT_KINDS.contains(&kind) => Self::Attachment,
@@ -119,10 +119,10 @@ pub(super) fn event_groups() -> Vec<(&'static str, &'static str)> {
 
 /// Returns the `(kind, label)` pairs of the properties the group `changed` holds.
 pub(super) fn changed_properties() -> Vec<(&'static str, &'static str)> {
-    HISTORY_KIND_LABELS
-        .iter()
-        .filter(|(kind, _)| Group::of(kind) == Group::Changed)
-        .copied()
+    HistoryKind::ALL
+        .into_iter()
+        .filter(|kind| Group::of(*kind) == Group::Changed)
+        .map(|kind| (kind.as_str(), kind.label()))
         .collect()
 }
 
@@ -166,11 +166,11 @@ pub(super) struct Filter {
 impl Filter {
     /// Returns whether `row` passes every part of the filter except the user.
     fn keeps(&self, row: &HistoryRow, at: DateTime<Utc>) -> bool {
-        self.event.is_none_or(|event| Group::of(&row.kind) == event)
+        self.event.is_none_or(|event| Group::of(row.kind) == event)
             && self
                 .property
                 .as_deref()
-                .is_none_or(|property| row.kind == property)
+                .is_none_or(|property| row.kind.as_str() == property)
             && self.from.is_none_or(|from| at >= from)
             && self.to.is_none_or(|to| at < to)
     }
@@ -189,7 +189,7 @@ pub(super) struct HistoryRow {
     /// The readable label of the kind of event.
     pub(super) event: String,
     /// The machine-readable kind of the event.
-    pub(super) kind: String,
+    pub(super) kind: HistoryKind,
     /// What happened, in one sentence, or the text of a comment.
     pub(super) detail: String,
     /// Whether the event replaced one value with another, so `old_value` and `new_value` hold
@@ -222,7 +222,7 @@ fn moved_values(detail: &str) -> Option<(String, String)> {
 /// Shapes a history `event` of the task `task`.
 fn event_row(task: &str, event: &TaskEvent) -> HistoryRow {
     let (from, to) = match (&event.from, &event.to) {
-        (None, None) if event.kind == "moved" => match moved_values(&event.detail) {
+        (None, None) if event.kind == HistoryKind::Moved => match moved_values(&event.detail) {
             Some((from, to)) => (Some(from), Some(to)),
             None => (None, None),
         },
@@ -232,8 +232,8 @@ fn event_row(task: &str, event: &TaskEvent) -> HistoryRow {
         time: event.created_at.clone(),
         user: history_actor(event),
         task: task.to_string(),
-        event: history_kind_label(&event.kind),
-        kind: event.kind.clone(),
+        event: event.kind.label().to_string(),
+        kind: event.kind,
         detail: event.detail.clone(),
         changed: from.is_some() || to.is_some(),
         old_value: from.unwrap_or_else(|| NO_VALUE.to_string()),
@@ -244,7 +244,10 @@ fn event_row(task: &str, event: &TaskEvent) -> HistoryRow {
 
 /// Appends the rows of a task's comments and its visible history `events` to `rows`.
 fn task_rows(rows: &mut Vec<HistoryRow>, task: &TaskRow, events: &[TaskEvent]) {
-    for event in events.iter().filter(|event| event.kind != "comment_added") {
+    for event in events
+        .iter()
+        .filter(|event| event.kind != HistoryKind::CommentAdded)
+    {
         rows.push(event_row(&task.name, event));
     }
     for comment in &task.comments {
@@ -262,8 +265,8 @@ fn comment_row(task: &str, comment: &TaskComment) -> HistoryRow {
         time: comment.created_at.clone(),
         user,
         task: task.to_string(),
-        event: history_kind_label("comment"),
-        kind: "comment".to_string(),
+        event: HistoryKind::Comment.label().to_string(),
+        kind: HistoryKind::Comment,
         detail: comment.body.clone(),
         changed: false,
         old_value: NO_VALUE.to_string(),

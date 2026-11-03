@@ -545,9 +545,46 @@
       {% else if tab == "email" %}
       <section class="settings-section">
         <h2>Add task from email</h2>
-        <p class="settings-hint">Pomb does not support creating tasks by email. To add tasks
-          programmatically, use the API with a token from
-          <a href="/settings#api-tokens">Settings &rarr; API tokens</a>.</p>
+        <p class="settings-hint">An inbound-mail service forwards each message to the web address of one
+          of these inbound addresses. The address is a secret: Pomb keeps only its hash, shows it
+          when you create or rotate it, and a rotated address stops working at once.</p>
+        <div id="ib-error" class="form-error" role="alert" hidden></div>
+        <div class="bshell-scroll"><table class="kf-table" id="inbound-table">
+          <thead><tr><th>Name</th><th>Prefix</th><th>Column</th><th></th></tr></thead>
+          <tbody>
+            {% for a in inbound %}
+            <tr class="inbound-row" data-inbound-id="{{ a.id }}" data-name="{{ a.name }}">
+              <td class="ib-name">{{ a.name }}</td>
+              <td class="ib-prefix">{% if a.prefix.is_empty() %}<span class="settings-hint">none</span>{% else %}<code>{{ a.prefix }}</code>{% endif %}</td>
+              <td class="ib-column">{{ a.column }}</td>
+              <td class="color-cell-actions">
+                <button type="button" class="kf-btn ib-rotate">Rotate</button>
+                <button type="button" class="kf-btn ib-delete">Delete</button>
+              </td>
+            </tr>
+            {% endfor %}
+            {% if inbound.is_empty() %}
+            <tr><td colspan="4" class="settings-hint" id="ib-empty">No inbound addresses yet.</td></tr>
+            {% endif %}
+          </tbody>
+        </table></div>
+        <h3>Add an inbound address</h3>
+        <form id="ib-form" class="bshell-form" data-board-id="{{ board_id }}">
+          <label>Name
+            <input type="text" id="ib-new-name" maxlength="100" required>
+          </label>
+          <label>Prefix (optional)
+            <input type="text" id="ib-new-prefix" maxlength="32" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" autocomplete="off">
+          </label>
+          <label>Column
+            <select id="ib-new-column" required>
+              {% for c in columns %}
+              <option value="{{ c.id }}">{{ c.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <div class="kf-btn-row"><button type="submit" class="kf-btn kf-btn-success" id="ib-add">Add address</button></div>
+        </form>
       </section>
       {% endif %}
 {% endblock %}
@@ -647,6 +684,36 @@
 {% endif %}
 {% if tab == "labels" %}
 <div hidden data-page="board-settings-labels"></div>
+{% endif %}
+{% if tab == "email" %}
+<div id="ib-address-overlay" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Inbound address">
+    <div class="dlg-title">Inbound address
+      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
+    </div>
+    <p class="settings-hint">Point your inbound-mail service at this web address. It is shown only
+      now: Pomb keeps just its hash.</p>
+    <textarea id="ib-address-value" class="wh-secret-value" rows="3" readonly spellcheck="false" aria-label="Inbound address"></textarea>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="ib-address-copy">Copy</button>
+      <button type="button" class="btn btn-primary" data-close-dialog>Done</button>
+    </div>
+  </div>
+</div>
+<div id="ib-delete-overlay" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Delete inbound address">
+    <div class="dlg-title">Delete inbound address
+      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
+    </div>
+    <p class="settings-hint">Delete the inbound address <strong id="ib-delete-name"></strong>? Mail
+      sent to it creates nothing afterwards. This cannot be undone.</p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-danger" id="ib-delete-ok">Delete</button>
+    </div>
+  </div>
+</div>
+<div hidden data-page="board-settings-inbound"></div>
 {% endif %}
 {% if tab == "fields" %}
 <div id="bf-delete-overlay" class="dlg-overlay" hidden>

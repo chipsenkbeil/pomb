@@ -10,7 +10,8 @@ use super::{
     txn_mmap_get, write_one,
 };
 use crate::models::{
-    Actor, ActorKind, ColumnRow, OutboxRow, TaskComment, TaskRow, WebhookEvent, WebhookRow,
+    Actor, ActorKind, ColumnRow, HistoryKind, OutboxRow, TaskComment, TaskRow, WebhookEvent,
+    WebhookRow,
 };
 
 /// Most queued events one webhook keeps. Past it each new event drops the webhook's oldest.
@@ -25,8 +26,12 @@ const OUTBOX_SEQ_KEY: &str = "webhook_outbox_seq";
 /// Digits of a sequence number in a key, which sorts the oldest event first.
 const SEQ_DIGITS: usize = 20;
 
-/// Prefix of the history kinds that report a comment rather than a change to the task.
-const COMMENT_HISTORY_PREFIX: &str = "comment_";
+/// The history kinds that report a comment rather than a change to the task.
+const COMMENT_HISTORY_KINDS: [HistoryKind; 3] = [
+    HistoryKind::CommentAdded,
+    HistoryKind::CommentEdited,
+    HistoryKind::CommentDeleted,
+];
 
 /// Something a task write did that a webhook can hear about.
 enum Happening<'a> {
@@ -81,7 +86,7 @@ fn happenings<'a>(before: Option<&'a TaskRow>, after: &'a TaskRow) -> Vec<Happen
         .map(|event| event.id.as_str())
         .collect();
     let logged = after.history.iter().any(|event| {
-        !known.contains(event.id.as_str()) && !event.kind.starts_with(COMMENT_HISTORY_PREFIX)
+        !known.contains(event.id.as_str()) && !COMMENT_HISTORY_KINDS.contains(&event.kind)
     });
     if logged || tracked(before, "") != tracked(after, "") {
         found.push(Happening::Changed(before));
@@ -417,7 +422,7 @@ mod tests {
     use crate::db::{
         FencedWrite, MoveGuards, NewComment, NewTaskPlacement, NewWebhook, TASKS, push_event,
     };
-    use crate::models::{AccountId, InstanceMode, Subtask};
+    use crate::models::{AccountId, HistoryKind, InstanceMode, Subtask};
 
     const USER: Actor<'static> = Actor {
         name: "owner",
@@ -523,7 +528,7 @@ mod tests {
             self.db
                 .apply_task_change(task, USER, |row| {
                     row.name = name.to_string();
-                    push_event(row, "renamed", "Renamed".to_string(), USER);
+                    push_event(row, HistoryKind::Renamed, "Renamed".to_string(), USER);
                     ((), true)
                 })
                 .expect("rename");
@@ -619,7 +624,7 @@ mod tests {
                 },
                 |row| {
                     row.name = "By bob".to_string();
-                    push_event(row, "renamed", "Renamed".to_string(), USER);
+                    push_event(row, HistoryKind::Renamed, "Renamed".to_string(), USER);
                     ((), true)
                 },
             )
@@ -627,7 +632,7 @@ mod tests {
         fx.db
             .apply_task_change(&task, TOKEN, |row| {
                 row.name = "By token".to_string();
-                push_event(row, "renamed", "Renamed".to_string(), TOKEN);
+                push_event(row, HistoryKind::Renamed, "Renamed".to_string(), TOKEN);
                 ((), true)
             })
             .expect("rename");

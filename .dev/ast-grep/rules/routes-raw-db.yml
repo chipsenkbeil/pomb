@@ -20,6 +20,7 @@ ignores:
   - src/routes/events_tests.rs
   - src/routes/import_tests.rs
   - src/routes/labels_tests.rs
+  - src/routes/inbound_tests.rs
   - src/routes/limits_tests.rs
   - src/routes/members_tests.rs
   - src/routes/roles_tests.rs

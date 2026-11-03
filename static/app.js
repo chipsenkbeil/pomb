@@ -4645,6 +4645,7 @@
     var input = document.getElementById('desc-editor-input');
     if (!wrap || !input) return;
     input.value = wrap.dataset.description || '';
+    pastedImages = false;
     document.getElementById('description-dialog').hidden = false;
     input.focus();
   }
@@ -4717,6 +4718,10 @@
     var next = document.importNode(fresh, true);
     block.replaceWith(next);
     bindDescriptionBlock(next);
+    Array.prototype.forEach.call(doc.querySelectorAll('.tm-attachment[data-attachment-refs]'), function (fresh) {
+      var row = document.querySelector('.tm-attachment[data-attachment-id="' + cssEscape(fresh.getAttribute('data-attachment-id')) + '"]');
+      if (row) row.setAttribute('data-attachment-refs', fresh.getAttribute('data-attachment-refs'));
+    });
   }
 
   function saveDescriptionEditor() {
@@ -4730,6 +4735,14 @@
       .then(function () {
         modalDirty = true;
         document.getElementById('description-dialog').hidden = true;
+        if (pastedImages) {
+          pastedImages = false;
+          var draft = document.getElementById('modal-comment-input');
+          pendingCommentDraft = draft ? draft.value : null;
+          refreshModal();
+          toast('Description saved.');
+          return Promise.resolve();
+        }
         return reloadDescription(id)
           .then(function () { toast('Description saved.'); }, function () {
             toast('Saved, but the view could not refresh.');
@@ -5716,6 +5729,7 @@
     var commentInput = document.getElementById('modal-comment-input');
     if (commentInput) {
       wireMentions(commentInput);
+      bindImagePaste(commentInput);
       commentInput.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); addModalComment(); }
       });
@@ -9678,6 +9692,7 @@
   var TimelineDialog = (function () {
     var DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     var taskId = null;
+    var afterSave = null;
     var loaded = false;
     var startISO = '';
     var endISO = '';
@@ -9772,9 +9787,13 @@
       api('/api/tasks/' + encodeURIComponent(taskId), 'PATCH', patch).then(function (res) {
         if (!res.ok) throw new Error('save failed');
       }).then(function () {
-        modalDirty = true;
         qs('timeline-dialog').hidden = true;
-        openModal(taskId, true);
+        if (afterSave) {
+          afterSave();
+        } else {
+          modalDirty = true;
+          openModal(taskId, true);
+        }
         toast(verb + '.');
       }).catch(function () { toast('Could not save the timeline.'); });
     }
@@ -9782,10 +9801,11 @@
     return {
       defaultRange: defaultRange,
       problem: problem,
-      open: function () {
-        var id = modalTaskId();
+      open: function (forTaskId, onSaved) {
+        var id = forTaskId || modalTaskId();
         if (!id) return;
         taskId = id;
+        afterSave = forTaskId ? onSaved : null;
         api('/api/tasks/' + encodeURIComponent(id), 'GET')
           .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
           .then(function (detail) {
@@ -9905,6 +9925,7 @@
     save.addEventListener('click', submit);
     cancel.addEventListener('click', editor.cancel);
     wireMentions(ta);
+    bindImagePaste(ta);
     ta.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); submit(); }
     });
@@ -10035,12 +10056,96 @@
     });
   }
 
+  var PASTE_IMAGE_TYPE = /^image\/(png|jpeg|webp|gif)$/;
+  var pastedImages = false;
+  var BYTES_PER_MIB = 1048576;
+
+  function imageFiles(list) {
+    return Array.prototype.filter.call(list || [], function (file) {
+      return PASTE_IMAGE_TYPE.test(file.type);
+    });
+  }
+
+  function imageAlt(name) {
+    return name.replace(/\.[A-Za-z0-9]+$/, '').replace(/[\[\]\\`*_<>\r\n]+/g, ' ').trim() || 'image';
+  }
+
+  function insertAtCaret(el, text) {
+    var start = el.selectionStart == null ? el.value.length : el.selectionStart;
+    var end = el.selectionEnd == null ? start : el.selectionEnd;
+    el.value = el.value.slice(0, start) + text + el.value.slice(end);
+    el.selectionStart = el.selectionEnd = start + text.length;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function uploadImage(id, file, label) {
+    var ext = file.type.split('/')[1].replace('jpeg', 'jpg');
+    var name = /^image\.\w+$/.test(file.name) ? 'pasted-' + Date.now() + '-' + label + '.' + ext : file.name;
+    var url = '/api/tasks/' + encodeURIComponent(id) + '/attachments?name=' +
+      encodeURIComponent(name) + '&mime=' + encodeURIComponent(file.type);
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+    }).then(function (res) {
+      if (res.ok) return res.json();
+      var input = document.getElementById('modal-attachment-file');
+      var max = input ? parseInt(input.getAttribute('data-max-bytes'), 10) : 0;
+      return attachmentRefusal(res, name, Math.round(max / BYTES_PER_MIB)).then(function () { return null; });
+    }).catch(function () {
+      toast('Could not upload ' + name + '.');
+      return null;
+    });
+  }
+
+  function attachPastedImages(el, files) {
+    var id = modalTaskId();
+    if (!id) return;
+    files.reduce(function (done, file, at) {
+      return done.then(function () {
+        return uploadImage(id, file, at).then(function (attachment) {
+          if (!attachment) return;
+          modalDirty = true;
+          if (!el.isConnected || el.closest('[hidden]') || modalTaskId() !== id) {
+            toast(attachment.name + ' was attached, but the text it belonged to is gone.');
+            return;
+          }
+          if (el.id === 'desc-editor-input') pastedImages = true;
+          insertAtCaret(el, '![' + imageAlt(file.name) + '](attachment:' + attachment.id + ')\n');
+        });
+      });
+    }, Promise.resolve());
+  }
+
+  function bindImagePaste(el) {
+    el.addEventListener('paste', function (e) {
+      var board = e.clipboardData;
+      var files = imageFiles(board && board.files);
+      var types = board && board.types ? Array.prototype.slice.call(board.types) : [];
+      if (!files.length || types.indexOf('text/plain') !== -1) return;
+      e.preventDefault();
+      attachPastedImages(el, files);
+    });
+    el.addEventListener('dragover', function (e) {
+      if (hasFiles(e)) e.preventDefault();
+    });
+    el.addEventListener('drop', function (e) {
+      var dropped = e.dataTransfer && e.dataTransfer.files;
+      var files = imageFiles(dropped);
+      if (!files.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (dropped.length > files.length) toast('Only images can be dropped into text. The other files were skipped.');
+      attachPastedImages(el, files);
+    });
+  }
+
   function uploadAttachments(files) {
     var id = modalTaskId();
     if (!id || !files || !files.length) return;
     var input = document.getElementById('modal-attachment-file');
     var max = input ? parseInt(input.getAttribute('data-max-bytes'), 10) : 0;
-    var limitMiB = Math.round(max / 1048576);
+    var limitMiB = Math.round(max / BYTES_PER_MIB);
     var queue = Array.prototype.slice.call(files);
     var uploaded = 0;
     function next() {
@@ -10075,10 +10180,18 @@
     next();
   }
 
+  function deleteAttachmentMessage(refs) {
+    if (!refs) return 'Delete this attachment?';
+    var where = refs === 1 ? '1 description or comment shows' : refs + ' descriptions and comments show';
+    return 'Delete this attachment? ' + where + ' it. Their text keeps the image name.';
+  }
+
   function deleteModalAttachment(attachmentId) {
     var id = modalTaskId();
     if (!id || !attachmentId) return;
-    showConfirmDialog('Delete attachment', 'Delete this attachment?', 'Delete', function () {
+    var row = document.querySelector('.tm-attachment[data-attachment-id="' + cssEscape(attachmentId) + '"]');
+    var refs = row ? parseInt(row.getAttribute('data-attachment-refs'), 10) || 0 : 0;
+    showConfirmDialog('Delete attachment', deleteAttachmentMessage(refs), 'Delete', function () {
       api('/api/tasks/' + encodeURIComponent(id) + '/attachments/' + encodeURIComponent(attachmentId), 'DELETE')
         .then(function (res) {
           if (!res.ok) throw new Error('delete failed');
@@ -10631,6 +10744,7 @@
     var descSave = document.getElementById('desc-editor-save');
     if (descSave) descSave.addEventListener('click', saveDescriptionEditor);
     var descInput = document.getElementById('desc-editor-input');
+    if (descInput) bindImagePaste(descInput);
     if (descInput) descInput.addEventListener('keydown', function (e) {
       // Ctrl/Cmd+Enter saves from the editor. stopPropagation keeps the
       // document-level keydown handler from also blurring + closing the
@@ -14261,6 +14375,404 @@
     return { init: init };
   })();
 
+  const TimelinePage = (() => {
+    const DAY_MS = 86400000;
+    const MIN_ZOOM = 30;
+    const MAX_ZOOM = 80;
+    const ROW_HEIGHT = 28;
+    const LEAD_DAYS = 7;
+    const TRAIL_DAYS = 14;
+    const MIN_DAYS = 45;
+    const MIN_ROWS = 3;
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    let initialized = false;
+    let firstLoad = true;
+    let dayWidth = MIN_ZOOM;
+    let viewFirst = 0;
+    let query = '';
+    const folded = new Set();
+    let boardId = '';
+    let bars = [];
+    let columns = [];
+    let tasks = [];
+
+    const qs = (id) => document.getElementById(id);
+    const setStatus = (message) => { qs('tlp-status').textContent = message; };
+
+    const make = (tag, className, text) => {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+
+    const dayNumber = (year, month, day) => Date.UTC(year, month, day) / DAY_MS;
+    const localDay = (date) => dayNumber(date.getFullYear(), date.getMonth(), date.getDate());
+    const dayDate = (number) => new Date(number * DAY_MS);
+    const isoDay = (iso) => {
+      const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+      return match ? dayNumber(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : null;
+    };
+    const isoOf = (number) => dayDate(number).toISOString().slice(0, 10);
+    const canWrite = () => qs('tlp-canvas').dataset.writes === 'true';
+    const clampDelta = (bar, mode, delta) => {
+      if (mode === 'start') return Math.min(delta, bar.end - bar.start);
+      if (mode === 'end') return Math.max(delta, bar.start - bar.end);
+      return delta;
+    };
+    const shifted = (bar, mode, delta) => {
+      const step = clampDelta(bar, mode, delta);
+      return {
+        start: mode === 'end' ? bar.start : bar.start + step,
+        end: mode === 'start' ? bar.end : bar.end + step,
+      };
+    };
+    const isWeekend = (number) => [0, 6].includes(dayDate(number).getUTCDay());
+
+    const palette = () => {
+      const byId = new Map();
+      let fallback = null;
+      document.querySelectorAll('#board-colors span[data-id]').forEach((node) => {
+        const entry = { background: node.dataset.bg, border: node.dataset.border };
+        byId.set(node.dataset.id, entry);
+        if (node.dataset.default === 'true') fallback = entry;
+      });
+      return { byId, fallback };
+    };
+
+    const cardsOf = (tasks) => (tasks || []).filter((task) => task.kind !== 'epic');
+
+    const collectBars = (data) => {
+      const columns = new Map((data.columns || []).map((column) => [column.id, column.name]));
+      const colors = palette();
+      return (data.tasks || []).flatMap((task) => {
+        const start = isoDay(task.timeline_start);
+        const end = isoDay(task.timeline_end);
+        if (start === null || end === null || end < start) return [];
+        const due = task.due_at ? new Date(task.due_at) : null;
+        return [{
+          id: task.id,
+          name: task.name,
+          column: columns.get(task.column_id) || '',
+          start,
+          end,
+          due: due && !Number.isNaN(due.getTime()) ? localDay(due) : null,
+          color: colors.byId.get(task.color_id) || colors.fallback,
+        }];
+      }).sort((a, b) => a.start - b.start || a.end - b.end || a.name.localeCompare(b.name));
+    };
+
+    const rangeOf = (list, today) => {
+      let first = today;
+      let last = today;
+      list.forEach((bar) => {
+        first = Math.min(first, bar.start, bar.due ?? bar.start);
+        last = Math.max(last, bar.end, bar.due ?? bar.end);
+      });
+      first -= LEAD_DAYS;
+      last += TRAIL_DAYS;
+      return { first, last: Math.max(last, first + MIN_DAYS - 1) };
+    };
+
+    const monthRow = (first, last) => {
+      const row = make('div', 'tlp-months');
+      let cursor = first;
+      while (cursor <= last) {
+        const date = dayDate(cursor);
+        const next = dayNumber(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
+        const end = Math.min(next - 1, last);
+        const cell = make('div', 'tlp-month', `${MONTHS[date.getUTCMonth()]} ${date.getUTCFullYear()}`);
+        cell.style.width = `${(end - cursor + 1) * dayWidth}px`;
+        row.append(cell);
+        cursor = end + 1;
+      }
+      return row;
+    };
+
+    const dayRow = (first, last, today) => {
+      const row = make('div', 'tlp-days');
+      for (let day = first; day <= last; day++) {
+        const cell = make('div', 'tlp-day', String(dayDate(day).getUTCDate()));
+        cell.style.width = `${dayWidth}px`;
+        if (isWeekend(day)) cell.classList.add('tlp-weekend');
+        if (day === today) cell.classList.add('tlp-today-day');
+        row.append(cell);
+      }
+      return row;
+    };
+
+    const barNode = (bar, index, first) => {
+      const node = make('div', 'tlp-bar');
+      node.setAttribute('role', 'button');
+      node.tabIndex = 0;
+      node.dataset.taskId = bar.id;
+      node.style.left = `${(bar.start - first) * dayWidth}px`;
+      node.style.width = `${(bar.end - bar.start + 1) * dayWidth}px`;
+      node.style.top = `${index * ROW_HEIGHT}px`;
+      if (bar.color) {
+        node.style.background = bar.color.background;
+        node.style.borderColor = bar.color.border;
+      }
+      node.title = bar.column ? `${bar.name} (${bar.column})` : bar.name;
+      node.append(make('span', 'tlp-bar-name', bar.name));
+      if (bar.column) node.append(make('span', 'tlp-bar-column', bar.column));
+      if (canWrite()) {
+        ['start', 'end'].forEach((edge) => {
+          const handle = make('span', `tlp-handle tlp-handle-${edge}`);
+          handle.dataset.edge = edge;
+          node.append(handle);
+        });
+      }
+      return node;
+    };
+
+    const dueNode = (bar, index, first) => {
+      const dot = make('span', 'tlp-due');
+      dot.style.left = `${(bar.due - first) * dayWidth + dayWidth / 2}px`;
+      dot.style.top = `${index * ROW_HEIGHT + ROW_HEIGHT / 2}px`;
+      dot.title = `Due ${MONTHS[dayDate(bar.due).getUTCMonth()]} ${dayDate(bar.due).getUTCDate()}`;
+      return dot;
+    };
+
+    const render = () => {
+      const today = localDay(new Date());
+      const { first, last } = rangeOf(bars, today);
+      const days = last - first + 1;
+      viewFirst = first;
+      const canvas = qs('tlp-canvas');
+      canvas.replaceChildren();
+      canvas.style.width = `${days * dayWidth}px`;
+      canvas.append(monthRow(first, last), dayRow(first, last, today));
+
+      const body = make('div', 'tlp-body');
+      body.style.height = `${Math.max(bars.length, MIN_ROWS) * ROW_HEIGHT}px`;
+      for (let day = first; day <= last; day++) {
+        if (!isWeekend(day)) continue;
+        const shade = make('div', 'tlp-weekend-shade');
+        shade.style.left = `${(day - first) * dayWidth}px`;
+        shade.style.width = `${dayWidth}px`;
+        body.append(shade);
+      }
+      const line = make('div', 'tlp-today');
+      line.style.left = `${(today - first) * dayWidth + dayWidth / 2 - 1}px`;
+      body.append(line);
+      bars.forEach((bar, index) => body.append(barNode(bar, index, first)));
+      bars.forEach((bar, index) => {
+        if (bar.due !== null) body.append(dueNode(bar, index, first));
+      });
+      canvas.append(body);
+
+      qs('tlp-empty').hidden = bars.length > 0;
+      setStatus(bars.length === 0 ? '' : `${bars.length} ${bars.length === 1 ? 'task' : 'tasks'} on the timeline.`);
+    };
+
+    const centreOn = (day) => {
+      const scroll = qs('tlp-scroll');
+      scroll.scrollLeft = (day - viewFirst) * dayWidth + dayWidth / 2 - scroll.clientWidth / 2;
+    };
+    const centreOnToday = () => centreOn(localDay(new Date()));
+    const centreDay = () => {
+      const scroll = qs('tlp-scroll');
+      return viewFirst + (scroll.scrollLeft + scroll.clientWidth / 2) / dayWidth;
+    };
+    const clampZoom = (value) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(Number(value)) || MIN_ZOOM));
+    const setZoom = (value) => {
+      const centre = centreDay();
+      dayWidth = clampZoom(value);
+      render();
+      centreOn(centre);
+    };
+
+    const renderPanel = () => {
+      const list = qs('tlp-list');
+      if (!list) return;
+      list.replaceChildren();
+      columns.forEach((column) => {
+        const needle = query.trim().toLowerCase();
+        const members = tasks.filter((task) => task.column_id === column.id
+          && task.name.toLowerCase().includes(needle));
+        if (needle && members.length === 0) return;
+        const head = make('button', 'tlp-group-head');
+        head.type = 'button';
+        head.dataset.columnId = column.id;
+        head.setAttribute('aria-expanded', String(!folded.has(column.id)));
+        head.append(make('span', 'tlp-group-name', column.name), make('span', 'tlp-group-count', String(members.length)));
+        const rows = make('ul', 'tlp-rows');
+        rows.hidden = folded.has(column.id);
+        members.forEach((task) => {
+          const item = make('li');
+          const button = make('button', 'tlp-row', task.name);
+          button.type = 'button';
+          button.dataset.taskId = task.id;
+          item.append(button);
+          rows.append(item);
+        });
+        const group = make('section', 'tlp-group');
+        group.append(head, rows);
+        list.append(group);
+      });
+    };
+
+    const load = () => fetch(`/api/boards/${encodeURIComponent(boardId)}/export-data`, {
+      headers: { Accept: 'application/json' },
+    }).then((response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    }).then((data) => {
+      columns = data.columns || [];
+      tasks = cardsOf(data.tasks);
+      bars = collectBars({ ...data, tasks });
+      render();
+      renderPanel();
+      if (firstLoad) {
+        firstLoad = false;
+        centreOnToday();
+      }
+    }).catch((error) => setStatus(`Could not load task data: ${error.message}`));
+
+    const save = (bar, range, focusId) => {
+      const refocus = () => {
+        const node = qs('tlp-canvas').querySelector(`.tlp-bar[data-task-id="${CSS.escape(focusId)}"]`);
+        if (node) node.focus();
+      };
+      return api(`/api/tasks/${encodeURIComponent(bar.id)}`, 'PATCH', {
+        timeline_start: isoOf(range.start),
+        timeline_end: isoOf(range.end),
+      }).then((response) => {
+        if (!response.ok) throw new Error('save failed');
+        const centre = centreDay();
+        Object.assign(bar, range);
+        bars.sort((a, b) => a.start - b.start || a.end - b.end || a.name.localeCompare(b.name));
+        render();
+        centreOn(centre);
+      }).catch(() => {
+        render();
+        toast('Could not save the timeline.');
+      }).finally(refocus);
+    };
+
+    let saving = false;
+    let drag = null;
+    let suppressClick = false;
+
+    const commit = (bar, mode, delta, focusId) => {
+      if (saving || delta === 0) return;
+      saving = true;
+      save(bar, shifted(bar, mode, delta), focusId).finally(() => { saving = false; });
+    };
+
+    const startDrag = (event) => {
+      const node = event.target.closest('.tlp-bar');
+      if (!node || !canWrite() || saving || event.button !== 0) return;
+      const handle = event.target.closest('.tlp-handle');
+      drag = {
+        node,
+        bar: bars.find((entry) => entry.id === node.dataset.taskId),
+        mode: handle ? handle.dataset.edge : 'move',
+        x: event.clientX,
+        delta: 0,
+        left: node.offsetLeft,
+        width: node.offsetWidth,
+      };
+      suppressClick = false;
+      node.setPointerCapture(event.pointerId);
+    };
+
+    const moveDrag = (event) => {
+      if (!drag) return;
+      const raw = event.clientX - drag.x;
+      if (Math.abs(raw) > 3) suppressClick = true;
+      drag.delta = clampDelta(drag.bar, drag.mode, Math.round(raw / dayWidth));
+      const shift = drag.delta * dayWidth;
+      drag.node.style.left = `${drag.mode === 'end' ? drag.left : drag.left + shift}px`;
+      drag.node.style.width = `${drag.mode === 'move' ? drag.width : drag.mode === 'start' ? drag.width - shift : drag.width + shift}px`;
+    };
+
+    const cancelDrag = () => {
+      if (!drag) return;
+      drag = null;
+      render();
+    };
+
+    const endDrag = () => {
+      if (!drag) return;
+      const { bar, mode, delta } = drag;
+      drag = null;
+      commit(bar, mode, delta, bar.id);
+    };
+
+    const keyBar = (event) => {
+      const node = event.target.closest('.tlp-bar');
+      if (!node) return;
+      const arrow = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+      if (arrow !== undefined && canWrite()) {
+        event.preventDefault();
+        const bar = bars.find((entry) => entry.id === node.dataset.taskId);
+        const mode = !event.shiftKey ? 'move' : event.altKey ? 'start' : 'end';
+        commit(bar, mode, arrow, bar.id);
+        return;
+      }
+      openBar(event);
+    };
+
+    const openBar = (event) => {
+      const bar = event.target.closest('.tlp-bar');
+      if (!bar) return;
+      if (event.type === 'keydown') {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+      }
+      if (event.type === 'click' && suppressClick) {
+        suppressClick = false;
+        return;
+      }
+      openModal(bar.dataset.taskId);
+    };
+
+    const init = (id) => {
+      if (initialized) return;
+      initialized = true;
+      boardId = id;
+      const canvas = qs('tlp-canvas');
+      canvas.addEventListener('click', openBar);
+      canvas.addEventListener('keydown', keyBar);
+      canvas.addEventListener('pointerdown', startDrag);
+      canvas.addEventListener('pointermove', moveDrag);
+      canvas.addEventListener('pointerup', endDrag);
+      canvas.addEventListener('pointercancel', cancelDrag);
+      qs('tlp-zoom').addEventListener('input', (event) => setZoom(event.target.value));
+      qs('tlp-centre').addEventListener('click', centreOnToday);
+      const list = qs('tlp-list');
+      if (list) {
+        list.addEventListener('click', (event) => {
+          const head = event.target.closest('.tlp-group-head');
+          if (head) {
+            const id = head.dataset.columnId;
+            if (!folded.delete(id)) folded.add(id);
+            renderPanel();
+            list.querySelector(`.tlp-group-head[data-column-id="${CSS.escape(id)}"]`)?.focus();
+            return;
+          }
+          const row = event.target.closest('.tlp-row');
+          if (row) TimelineDialog.open(row.dataset.taskId, load);
+        });
+        qs('tlp-search').addEventListener('input', (event) => {
+          query = event.target.value;
+          renderPanel();
+        });
+        qs('tlp-panel-toggle').addEventListener('click', (event) => {
+          const body = qs('tlp-panel-body');
+          body.hidden = !body.hidden;
+          event.currentTarget.setAttribute('aria-expanded', String(!body.hidden));
+        });
+      }
+      load();
+    };
+
+    return { init, rangeOf, isoDay, isoOf, shifted, clampZoom, cardsOf };
+  })();
+
   var BoardHistoryPage = (function () {
     var initialized = false;
     var boardId = '';
@@ -16767,6 +17279,9 @@
           break;
         case 'recycle':
           this.openBin();
+          break;
+        case 'timeline':
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/timeline';
           break;
         case 'dark':
           this.toggleDark();
@@ -20654,6 +21169,7 @@
   window.CumulativeFlowPage = CumulativeFlowPage;
   window.CycleLeadPage = CycleLeadPage;
   window.DueDatePage = DueDatePage;
+  window.TimelinePage = TimelinePage;
   window.BoardHistoryPage = BoardHistoryPage;
   window.CalendarPage = CalendarPage;
   window.MonteCarloPage = MonteCarloPage;

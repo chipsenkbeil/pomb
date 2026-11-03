@@ -8,7 +8,8 @@ use crate::AppState;
 use crate::auth::{new_api_token_record, required_role};
 use crate::db::{Db, LinkAddOutcome, NewTimeEntry};
 use crate::models::{
-    AccountId, ActiveTimer, Actor, AuthScope, BoardRole, EntryKind, LinkKind, TimerMode,
+    AccountId, ActiveTimer, Actor, AuthScope, BoardRole, EntryKind, HistoryKind, LinkKind,
+    TimerMode,
 };
 
 /// A board of alice with a column and a task, a member bob, a viewer carol and a stranger dave.
@@ -126,6 +127,7 @@ fn required_role_should_hold_the_owner_settings_pages_and_the_calendar_secret_at
         "/b/:board_id/settings/rules",
         "/b/:board_id/settings/delete",
         "/api/boards/:id/calendar-feeds",
+        "/api/boards/:id/inbound-addresses",
     ] {
         assert_eq!(
             required_role(&Method::GET, pattern),
@@ -150,7 +152,7 @@ fn required_role_should_fail_closed_for_a_route_the_table_does_not_list() {
 #[tokio::test]
 async fn routes_should_let_each_role_do_only_what_it_may() {
     let fx = Fixture::new();
-    let rows: [(&str, &str, Option<Value>, BoardRole); 9] = [
+    let rows: [(&str, &str, Option<Value>, BoardRole); 10] = [
         ("GET", "/api/tasks/{task}", None, BoardRole::Viewer),
         ("GET", "/api/boards/{board}/tasks", None, BoardRole::Viewer),
         (
@@ -192,6 +194,12 @@ async fn routes_should_let_each_role_do_only_what_it_may() {
         (
             "GET",
             "/api/boards/{board}/calendar-feeds",
+            None,
+            BoardRole::Owner,
+        ),
+        (
+            "GET",
+            "/api/boards/{board}/inbound-addresses",
             None,
             BoardRole::Owner,
         ),
@@ -961,7 +969,7 @@ async fn a_time_logged_event_should_carry_only_the_logging_account_time() {
     let history = fx.db.task(&fx.task).expect("read").expect("task").history;
     let values: Vec<_> = history
         .iter()
-        .filter(|event| event.kind == "time_logged")
+        .filter(|event| event.kind == HistoryKind::TimeLogged)
         .map(|event| (event.from.as_deref(), event.to.as_deref()))
         .collect();
     assert_eq!(
@@ -1094,4 +1102,32 @@ async fn an_owner_should_not_leave_or_be_removed_from_its_own_board() {
         .send(OWNER, "GET", &fx.fill("/api/tasks/{task}"), None)
         .await;
     assert!(task.status.is_success(), "{}", task.body);
+}
+
+#[tokio::test]
+async fn timeline_page_should_tell_a_viewer_nothing_about_adding_tasks() {
+    let fx = Fixture::new();
+    for (who, writes) in [(OWNER, true), (MEMBER, true), (VIEWER, false)] {
+        let page = fx
+            .send(who, "GET", &fx.fill("/b/{board}/timeline"), None)
+            .await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+        let html = page.body.as_str().expect("html");
+        assert!(html.contains("data-page-init=\"TimelinePage\""), "{who}");
+        assert!(html.contains("id=\"tlp-canvas\""), "{who}");
+        assert!(html.contains("Your timeline is empty."), "{who}");
+        assert_eq!(html.contains("id=\"tlp-panel\""), writes, "{who}");
+        assert_eq!(html.contains("id=\"tlp-search\""), writes, "{who}");
+        assert!(html.contains("id=\"tlp-zoom\""), "{who}");
+        assert!(html.contains("id=\"tlp-centre\""), "{who}");
+        assert_eq!(
+            html.contains("Click a task in the Tasks list on the left to add it."),
+            writes,
+            "{who}"
+        );
+    }
+    let stranger = fx
+        .send(STRANGER, "GET", &fx.fill("/b/{board}/timeline"), None)
+        .await;
+    assert_eq!(stranger.status, StatusCode::NOT_FOUND);
 }

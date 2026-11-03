@@ -10,7 +10,7 @@ use crate::auth::new_api_token_record;
 use crate::db::{BootstrapToken, FencedWrite, NewComment};
 use crate::models::{
     AccountId, ActiveTimer, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind,
-    FieldOwner, SECONDS_PER_DAY, TimeEntryRow, TimerMode,
+    FieldOwner, HistoryKind, SECONDS_PER_DAY, TimeEntryRow, TimerMode,
 };
 use crate::permissions::Permission;
 use crate::{AppState, markdown};
@@ -1496,13 +1496,13 @@ async fn claim(fx: &Fixture, task: &str, body: Value) -> (StatusCode, Value) {
 }
 
 /// History event kinds on a task, oldest first.
-fn event_kinds(fx: &Fixture, task: &str) -> Vec<String> {
+fn event_kinds(fx: &Fixture, task: &str) -> Vec<HistoryKind> {
     let row = fx.db.task(task).expect("read").expect("task");
     row.history.into_iter().map(|event| event.kind).collect()
 }
 
-fn count(kinds: &[String], kind: &str) -> usize {
-    kinds.iter().filter(|k| *k == kind).count()
+fn count(kinds: &[HistoryKind], kind: HistoryKind) -> usize {
+    kinds.iter().filter(|k| **k == kind).count()
 }
 
 #[tokio::test]
@@ -1555,7 +1555,7 @@ async fn claim_should_grant_a_lease_and_refuse_other_claimants() {
     )
     .await;
     assert_eq!(list[0]["claim"]["claimant"], "builder-i");
-    assert_eq!(count(&event_kinds(&fx, &id), "claimed"), 1);
+    assert_eq!(count(&event_kinds(&fx, &id), HistoryKind::Claimed), 1);
 }
 
 #[tokio::test]
@@ -1571,7 +1571,7 @@ async fn claim_should_renew_only_with_the_current_fence_and_bump_it_per_new_clai
     assert_eq!(renewed["started_at"], first["started_at"]);
     assert!(renewed["expires_at"].as_str() > first["expires_at"].as_str());
     assert_eq!(
-        count(&event_kinds(&fx, &id), "claimed"),
+        count(&event_kinds(&fx, &id), HistoryKind::Claimed),
         1,
         "renewal is not a claim"
     );
@@ -1737,7 +1737,7 @@ async fn release_should_clear_the_claim_and_be_idempotent_for_its_fence() {
     .await;
     assert_eq!(status, StatusCode::OK, "already released by that fence");
     let kinds = event_kinds(&fx, &id);
-    assert_eq!(count(&kinds, "claim_released"), 1);
+    assert_eq!(count(&kinds, HistoryKind::ClaimReleased), 1);
 
     claim(&fx, &id, json!({"claimant": "b", "ttl_seconds": 60})).await;
     let (status, _) = request(
@@ -1778,7 +1778,7 @@ async fn expired_claims_should_read_as_null_and_log_one_expiry_event() {
     let (_, unclaimed) = call_list(&fx, "GET", &format!("{base}?claimed=false"), None).await;
     assert_eq!(ids(&unclaimed), vec![id.as_str()]);
     assert_eq!(
-        count(&event_kinds(&fx, &id), "claim_expired"),
+        count(&event_kinds(&fx, &id), HistoryKind::ClaimExpired),
         0,
         "reads write nothing"
     );
@@ -1793,7 +1793,7 @@ async fn expired_claims_should_read_as_null_and_log_one_expiry_event() {
     assert_eq!(status, StatusCode::CONFLICT);
     let kinds = event_kinds(&fx, &id);
     assert_eq!(
-        count(&kinds, "claim_expired"),
+        count(&kinds, HistoryKind::ClaimExpired),
         1,
         "logged once, by the first call to see it"
     );
@@ -1808,9 +1808,9 @@ async fn expired_claims_should_read_as_null_and_log_one_expiry_event() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(next["fence"], 2);
     let kinds = event_kinds(&fx, &id);
-    assert_eq!(count(&kinds, "claim_expired"), 1);
-    assert_eq!(count(&kinds, "claim_released"), 0);
-    assert_eq!(count(&kinds, "claimed"), 2);
+    assert_eq!(count(&kinds, HistoryKind::ClaimExpired), 1);
+    assert_eq!(count(&kinds, HistoryKind::ClaimReleased), 0);
+    assert_eq!(count(&kinds, HistoryKind::Claimed), 2);
 }
 
 #[tokio::test]
@@ -1823,14 +1823,15 @@ async fn a_new_claim_should_log_the_expiry_of_the_old_one_first() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(next["fence"], 2);
     let kinds = event_kinds(&fx, &id);
-    let tail: Vec<&str> = kinds
-        .iter()
-        .rev()
-        .take(3)
-        .rev()
-        .map(String::as_str)
-        .collect();
-    assert_eq!(tail, vec!["claimed", "claim_expired", "claimed"]);
+    let tail: Vec<HistoryKind> = kinds.iter().rev().take(3).rev().copied().collect();
+    assert_eq!(
+        tail,
+        vec![
+            HistoryKind::Claimed,
+            HistoryKind::ClaimExpired,
+            HistoryKind::Claimed
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1865,7 +1866,7 @@ async fn concurrent_claims_should_grant_exactly_one() {
         assert_eq!((granted, refused), (1, 15), "round {round}: {statuses:?}");
         let row = fx.db.task(&id).expect("read").expect("task");
         assert_eq!(row.claim_fence, 1, "round {round}: one fence issued");
-        assert_eq!(count(&event_kinds(&fx, &id), "claimed"), 1);
+        assert_eq!(count(&event_kinds(&fx, &id), HistoryKind::Claimed), 1);
     }
 }
 
@@ -1952,7 +1953,7 @@ async fn task_card_should_show_the_live_claimant() {
 }
 
 /// History events of one kind on a task, as their detail strings.
-fn event_details(fx: &Fixture, task: &str, kind: &str) -> Vec<String> {
+fn event_details(fx: &Fixture, task: &str, kind: HistoryKind) -> Vec<String> {
     let row = fx.db.task(task).expect("read").expect("task");
     row.history
         .into_iter()
@@ -1969,14 +1970,14 @@ async fn link_add_and_remove_should_log_events_on_the_holding_task() {
 
     let (_, created) = link(&fx, &b, "blocks", &a).await;
     assert_eq!(
-        event_details(&fx, &a, "link_added"),
+        event_details(&fx, &a, HistoryKind::LinkAdded),
         vec![format!("Added link blocked_by \"Blocker\" ({b})")],
         "a blocks link is held, and logged, by the blocked task"
     );
-    assert!(event_details(&fx, &b, "link_added").is_empty());
+    assert!(event_details(&fx, &b, HistoryKind::LinkAdded).is_empty());
     link(&fx, &a, "blocked_by", &b).await;
     assert_eq!(
-        event_details(&fx, &a, "link_added").len(),
+        event_details(&fx, &a, HistoryKind::LinkAdded).len(),
         1,
         "no event for an existing link"
     );
@@ -1987,7 +1988,7 @@ async fn link_add_and_remove_should_log_events_on_the_holding_task() {
     );
     call(&fx, "DELETE", &uri, None).await;
     assert_eq!(
-        event_details(&fx, &a, "link_removed"),
+        event_details(&fx, &a, HistoryKind::LinkRemoved),
         vec![format!("Removed link blocked_by \"Blocker\" ({b})")]
     );
     let row = fx.db.task(&a).expect("read").expect("task");
@@ -2003,7 +2004,7 @@ async fn deleting_a_linked_task_should_log_link_removed_on_the_other_task() {
     link(&fx, &a, "related", &b).await;
     call(&fx, "DELETE", &format!("/api/tasks/{b}"), None).await;
     assert_eq!(
-        event_details(&fx, &a, "link_removed"),
+        event_details(&fx, &a, HistoryKind::LinkRemoved),
         vec![format!(
             "Removed link related \"Gone\" ({b}) (task deleted)"
         )]
@@ -3794,7 +3795,7 @@ async fn renaming_an_attachment_should_keep_its_extension_and_log_the_change() {
     let renames: Vec<&str> = row
         .history
         .iter()
-        .filter(|event| event.kind == "attachment_renamed")
+        .filter(|event| event.kind == HistoryKind::AttachmentRenamed)
         .map(|event| event.detail.as_str())
         .collect();
     assert_eq!(renames.len(), 5);
@@ -3989,14 +3990,14 @@ async fn task_extras_should_save_their_change_and_history_event_together() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Extras"})).await;
     let base = format!("/api/tasks/{id}");
-    let history = |fx: &Fixture| -> Vec<String> {
+    let history = |fx: &Fixture| -> Vec<HistoryKind> {
         let row = fx.db.task(&id).expect("read").expect("task");
         row.history.into_iter().map(|e| e.kind).collect()
     };
     let mut expected = history(&fx);
-    let mut step = |fx: &Fixture, kind: &str| {
-        expected.push(kind.to_string());
-        assert_eq!(history(fx), expected, "after {kind}");
+    let mut step = |fx: &Fixture, kind: HistoryKind| {
+        expected.push(kind);
+        assert_eq!(history(fx), expected, "after {kind:?}");
     };
 
     call(
@@ -4006,7 +4007,7 @@ async fn task_extras_should_save_their_change_and_history_event_together() {
         Some(json!({"watched": true})),
     )
     .await;
-    step(&fx, "watched");
+    step(&fx, HistoryKind::Watched);
     let (status, _) = request(
         &fx,
         As::Admin,
@@ -4017,7 +4018,7 @@ async fn task_extras_should_save_their_change_and_history_event_together() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    step(&fx, "time_logged");
+    step(&fx, HistoryKind::TimeLogged);
     assert_eq!(fx.db.list_entries(&id).expect("entries").len(), 1);
     let (_, sub) = call(
         &fx,
@@ -4026,16 +4027,16 @@ async fn task_extras_should_save_their_change_and_history_event_together() {
         Some(json!({"name": "One"})),
     )
     .await;
-    step(&fx, "subtask_added");
+    step(&fx, HistoryKind::SubtaskAdded);
     let sub_uri = format!("{base}/subtasks/{}", sub["id"].as_str().expect("id"));
     let (_, done) = call(&fx, "PATCH", &sub_uri, Some(json!({"done": true}))).await;
     assert_eq!(done["done"], true);
-    step(&fx, "subtask_done");
+    step(&fx, HistoryKind::SubtaskDone);
     let (_, renamed) = call(&fx, "PATCH", &sub_uri, Some(json!({"name": "Uno"}))).await;
     assert_eq!(renamed["name"], "Uno");
-    step(&fx, "subtask_renamed");
+    step(&fx, HistoryKind::SubtaskRenamed);
     call(&fx, "DELETE", &sub_uri, None).await;
-    step(&fx, "subtask_deleted");
+    step(&fx, HistoryKind::SubtaskDeleted);
     let data = base64::engine::general_purpose::STANDARD.encode(b"x");
     let (_, attachment) = call(
         &fx,
@@ -4044,22 +4045,22 @@ async fn task_extras_should_save_their_change_and_history_event_together() {
         Some(json!({"name": "a.txt", "data": data})),
     )
     .await;
-    step(&fx, "attachment_added");
+    step(&fx, HistoryKind::AttachmentAdded);
     let attachment_uri = format!(
         "{base}/attachments/{}",
         attachment["id"].as_str().expect("id")
     );
     let (_, renamed) = call(&fx, "PATCH", &attachment_uri, Some(json!({"name": "b"}))).await;
     assert_eq!(renamed["name"], "b.txt");
-    step(&fx, "attachment_renamed");
+    step(&fx, HistoryKind::AttachmentRenamed);
     call(&fx, "DELETE", &attachment_uri, None).await;
-    step(&fx, "attachment_deleted");
+    step(&fx, HistoryKind::AttachmentDeleted);
     let row = fx.db.task(&id).expect("read").expect("task");
     assert!(row.watched && row.subtasks.is_empty() && row.attachments.is_empty());
     let deleted = row
         .history
         .iter()
-        .find(|event| event.kind == "attachment_deleted")
+        .find(|event| event.kind == HistoryKind::AttachmentDeleted)
         .map(|event| event.detail.as_str());
     assert_eq!(deleted, Some("Deleted \"b.txt\""));
 }
@@ -4114,7 +4115,7 @@ async fn a_cross_board_move_should_keep_valid_shared_fields_and_record_the_dropp
         json!({"note": "hi"}),
         "only the valid shared key survives"
     );
-    let moved = event_details(&fx, &a, "moved");
+    let moved = event_details(&fx, &a, HistoryKind::Moved);
     assert_eq!(
         moved.last().expect("moved event"),
         "Moved from Todo to To-do; dropped fields: {\"flag\":true,\"only_here\":\"x\",\"stage\":\"review\"}",
@@ -4135,7 +4136,7 @@ async fn a_cross_board_move_should_keep_valid_shared_fields_and_record_the_dropp
     .await;
     assert_eq!(detail(&fx, &b).await["fields"], json!({"stage": "draft"}));
     assert_eq!(
-        event_details(&fx, &b, "moved"),
+        event_details(&fx, &b, HistoryKind::Moved),
         vec!["Moved from Todo to To-do".to_string()]
     );
 
@@ -4152,7 +4153,7 @@ async fn a_cross_board_move_should_keep_valid_shared_fields_and_record_the_dropp
         "same board: untouched"
     );
     assert_eq!(
-        event_details(&fx, &c, "moved"),
+        event_details(&fx, &c, HistoryKind::Moved),
         vec!["Moved from Todo to Shipped".to_string()]
     );
 }
@@ -4427,7 +4428,7 @@ async fn a_heartbeat_that_finds_an_expired_claim_should_record_the_expiry() {
         updated_at(&fx, &id) > before,
         "the documented exception: expiry is recorded"
     );
-    assert_eq!(count(&event_kinds(&fx, &id), "claim_expired"), 1);
+    assert_eq!(count(&event_kinds(&fx, &id), HistoryKind::ClaimExpired), 1);
 }
 
 #[tokio::test]
@@ -4847,8 +4848,8 @@ async fn claims_releases_and_patches_should_survive_a_neighbour_moving_in_and_ou
     );
     let row = fx.db.task(&s).expect("read").expect("task");
     assert_eq!(row.claim_fence, 60);
-    assert_eq!(count(&event_kinds(&fx, &s), "claimed"), 60);
-    assert_eq!(count(&event_kinds(&fx, &s), "claim_released"), 60);
+    assert_eq!(count(&event_kinds(&fx, &s), HistoryKind::Claimed), 60);
+    assert_eq!(count(&event_kinds(&fx, &s), HistoryKind::ClaimReleased), 60);
     let metadata = row.metadata.expect("metadata");
     assert_eq!(metadata.len(), 60, "no metadata write was lost");
 }
@@ -5071,7 +5072,7 @@ async fn a_same_claimant_renewal_should_change_only_the_lease() {
         claimed,
         "a renewal is lease-only, like a heartbeat"
     );
-    assert_eq!(count(&event_kinds(&fx, &id), "claimed"), 1);
+    assert_eq!(count(&event_kinds(&fx, &id), HistoryKind::Claimed), 1);
 }
 
 fn token_with(fx: &Fixture, name: &str, scope: AuthScope) -> String {
@@ -5719,7 +5720,7 @@ async fn every_history_event_should_name_the_token_and_cookie_and_bootstrap_even
         .expect("oneshot");
     assert!(response.status().is_success());
 
-    let events = |task: &str| -> Vec<(String, Option<String>)> {
+    let events = |task: &str| -> Vec<(HistoryKind, Option<String>)> {
         let row = fx.db.task(task).expect("read").expect("task");
         row.history
             .into_iter()
@@ -5729,27 +5730,27 @@ async fn every_history_event_should_name_the_token_and_cookie_and_bootstrap_even
     let name = Some("claude-code@laptop".to_string());
     let history = events(&id);
     for kind in [
-        "claimed",
-        "comment_added",
-        "time_logged",
-        "link_added",
-        "attachment_added",
-        "claim_released",
+        HistoryKind::Claimed,
+        HistoryKind::CommentAdded,
+        HistoryKind::TimeLogged,
+        HistoryKind::LinkAdded,
+        HistoryKind::AttachmentAdded,
+        HistoryKind::ClaimReleased,
     ] {
         assert!(
-            history.contains(&(kind.to_string(), name.clone())),
-            "{kind} lacks the token name: {history:?}"
+            history.contains(&(kind, name.clone())),
+            "{kind:?} lacks the token name: {history:?}"
         );
     }
     for (kind, token) in events(&other) {
-        if kind == "comment_added" {
+        if kind == HistoryKind::CommentAdded {
             assert_eq!(token, None, "cookie and bootstrap comments carry no name");
         }
     }
     assert_eq!(
         events(&other)
             .iter()
-            .filter(|(kind, _)| kind == "comment_added")
+            .filter(|(kind, _)| *kind == HistoryKind::CommentAdded)
             .count(),
         2
     );
@@ -8200,7 +8201,7 @@ async fn ticking_a_checklist_box_should_rewrite_only_that_box_and_record_history
 
     let row = fx.db.task(&id).expect("read").expect("task");
     let last = row.history.last().expect("history");
-    assert_eq!(last.kind, "description_updated");
+    assert_eq!(last.kind, HistoryKind::DescriptionUpdated);
     assert_eq!(last.detail, "Ticked checklist item 3");
     assert_eq!(
         row.history.len(),
@@ -8812,8 +8813,8 @@ async fn changing_the_umbrella_should_replace_the_parent_link_in_one_call() {
     assert_eq!(detail(&fx, &kid).await["parent"]["id"], new.as_str());
     assert_eq!(detail(&fx, &old).await["children_total"], 0);
     assert_eq!(detail(&fx, &new).await["children_total"], 2);
-    assert_eq!(event_details(&fx, &kid, "link_removed").len(), 1);
-    assert_eq!(event_details(&fx, &kid, "link_added").len(), 2);
+    assert_eq!(event_details(&fx, &kid, HistoryKind::LinkRemoved).len(), 1);
+    assert_eq!(event_details(&fx, &kid, HistoryKind::LinkAdded).len(), 2);
 
     let (status, same) = change_umbrella(&fx, &kid, &new).await;
     assert_eq!(status, StatusCode::OK, "{same}");
@@ -9959,7 +9960,7 @@ async fn only_an_admin_token_should_detach_an_attachment_and_free_its_storage() 
     assert!(
         row.history
             .iter()
-            .any(|event| event.kind == "attachment_deleted")
+            .any(|event| event.kind == HistoryKind::AttachmentDeleted)
     );
     assert!(
         stored(&fx) + 4096 <= before,
@@ -9972,7 +9973,7 @@ fn responsible_events(fx: &Fixture, id: &str) -> Vec<String> {
     let row = fx.db.task(id).expect("read").expect("task");
     row.history
         .iter()
-        .filter(|event| event.kind == "responsible_updated")
+        .filter(|event| event.kind == HistoryKind::ResponsibleUpdated)
         .map(|event| event.detail.clone())
         .collect()
 }
@@ -10702,8 +10703,8 @@ async fn a_person_should_claim_and_release_an_agents_stuck_claim_from_the_browse
     assert_eq!(status, StatusCode::OK);
     assert!(modal_html(&fx, &id).await.contains("Not claimed"));
     let kinds = event_kinds(&fx, &id);
-    assert_eq!(count(&kinds, "claimed"), 1);
-    assert_eq!(count(&kinds, "claim_released"), 1);
+    assert_eq!(count(&kinds, HistoryKind::Claimed), 1);
+    assert_eq!(count(&kinds, HistoryKind::ClaimReleased), 1);
 }
 
 #[tokio::test]
@@ -11195,14 +11196,15 @@ async fn a_lapsed_person_claim_should_leave_the_modal_unclaimed_and_the_history_
     let (status, _) = claim(&fx, &id, json!({"claimant": "admin", "ttl_seconds": 60})).await;
     assert_eq!(status, StatusCode::OK);
     let kinds = event_kinds(&fx, &id);
-    let tail: Vec<&str> = kinds
-        .iter()
-        .rev()
-        .take(3)
-        .rev()
-        .map(String::as_str)
-        .collect();
-    assert_eq!(tail, vec!["claimed", "claim_expired", "claimed"]);
+    let tail: Vec<HistoryKind> = kinds.iter().rev().take(3).rev().copied().collect();
+    assert_eq!(
+        tail,
+        vec![
+            HistoryKind::Claimed,
+            HistoryKind::ClaimExpired,
+            HistoryKind::Claimed
+        ]
+    );
 }
 
 #[test]
@@ -11575,7 +11577,7 @@ async fn unlink_children_should_leave_the_children_unlinked_and_the_epic_a_plain
         let (status, child_detail) = call(&fx, "GET", &format!("/api/tasks/{child}"), None).await;
         assert_eq!(status, StatusCode::OK, "{child_detail}");
         assert!(child_detail["parent"].is_null(), "{child_detail}");
-        assert!(event_kinds(&fx, child).contains(&"link_removed".to_string()));
+        assert!(event_kinds(&fx, child).contains(&HistoryKind::LinkRemoved));
     }
     assert!(links_of(&fx, &epic).await.is_empty());
 }
@@ -11753,14 +11755,14 @@ async fn the_owner_should_close_and_reopen_an_epic_with_history_events() {
     assert_eq!(after["closed"], true);
     assert_eq!(after["column_id"], before["column_id"]);
     assert_eq!(after["completed_at"], before["completed_at"]);
-    assert_eq!(count(&event_kinds(&fx, &epic), "closed"), 1);
+    assert_eq!(count(&event_kinds(&fx, &epic), HistoryKind::Closed), 1);
     assert_eq!(links_of(&fx, &children[0]).await.len(), 1);
 
     let (status, detail) = post_epic(&fx, As::Admin, &epic, "reopen").await;
     assert_eq!(status, StatusCode::OK, "{detail}");
     assert_eq!(detail["closed"], false);
     assert_eq!(stored(&fx, &epic)["closed"], false);
-    assert_eq!(count(&event_kinds(&fx, &epic), "reopened"), 1);
+    assert_eq!(count(&event_kinds(&fx, &epic), HistoryKind::Reopened), 1);
 }
 
 #[tokio::test]
@@ -11775,8 +11777,8 @@ async fn closing_a_closed_epic_or_reopening_an_open_one_should_be_a_400_without_
     let (status, error) = post_epic(&fx, As::Admin, &epic, "close").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
     let kinds = event_kinds(&fx, &epic);
-    assert_eq!(count(&kinds, "closed"), 1);
-    assert_eq!(count(&kinds, "reopened"), 0);
+    assert_eq!(count(&kinds, HistoryKind::Closed), 1);
+    assert_eq!(count(&kinds, HistoryKind::Reopened), 0);
 }
 
 #[tokio::test]
@@ -11791,7 +11793,10 @@ async fn closing_or_reopening_a_plain_card_should_be_a_400_and_a_missing_task_a_
     }
     assert_eq!(stored(&fx, &card)["closed"], false);
     let kinds = event_kinds(&fx, &card);
-    assert_eq!(count(&kinds, "closed") + count(&kinds, "reopened"), 0);
+    assert_eq!(
+        count(&kinds, HistoryKind::Closed) + count(&kinds, HistoryKind::Reopened),
+        0
+    );
 }
 
 #[tokio::test]
@@ -11832,7 +11837,7 @@ async fn an_epic_whose_children_are_all_done_should_stay_open_until_someone_clos
     assert_eq!(status, StatusCode::OK, "{detail}");
     assert_eq!(detail["closed"], false);
     assert_eq!(stored(&fx, &epic)["closed"], false);
-    assert!(!event_kinds(&fx, &epic).contains(&"closed".to_string()));
+    assert!(!event_kinds(&fx, &epic).contains(&HistoryKind::Closed));
 }
 
 #[tokio::test]

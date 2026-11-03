@@ -293,7 +293,7 @@ mod tests {
         BOARD_EVENTS, EVENT_WAKEUPS, META, MoveGuards, NewComment, NewTaskPlacement,
         SCHEMA_VERSION, SCHEMA_VERSION_KEY, push_event, read_schema_version,
     };
-    use crate::models::{API_TOKEN_ACTOR, AccountId, ActorKind};
+    use crate::models::{API_TOKEN_ACTOR, AccountId, ActorKind, HistoryKind};
 
     /// A board with a Todo and a Done column.
     struct Fixture {
@@ -456,7 +456,7 @@ mod tests {
                 row.name = "New".to_string();
                 row.size = 3;
                 row.labels = vec!["b".to_string(), "c".to_string()];
-                push_event(row, "renamed", "Renamed".to_string(), TOKEN);
+                push_event(row, HistoryKind::Renamed, "Renamed".to_string(), TOKEN);
                 ((), true)
             })
             .expect("change");

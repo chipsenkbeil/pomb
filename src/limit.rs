@@ -50,6 +50,8 @@ impl Refusal {
 pub enum CredentialKey {
     Token(String),
     Bootstrap,
+    /// Every request to one inbound address.
+    Inbound(String),
     /// Every session and token of one account.
     Account(String),
 }
@@ -228,6 +230,8 @@ pub enum IpScope {
     DeviceStart,
     /// Registering an account through an invite.
     Register,
+    /// Posting mail to an inbound address that does not exist.
+    InboundMiss,
     /// Recovering an account with its recovery code.
     Recover,
 }
@@ -259,15 +263,21 @@ impl IpScope {
 pub struct Limits {
     credentials: Buckets,
     accounts: Buckets,
+    inbound: Buckets,
     device_start: Window,
     login: Window,
     register: Window,
     recover: Window,
+    inbound_misses: Window,
     settings: Arc<RwLock<RateLimits>>,
     clock: Clock,
 }
 
 impl Limits {
+    /// Requests one inbound address takes at once from a full bucket.
+    pub const INBOUND_BURST: u32 = 20;
+    /// Requests added back to an inbound address's bucket each second.
+    pub const INBOUND_PER_SECOND: u32 = 1;
     /// How long a per-IP request counts against the limit.
     pub const WINDOW: Duration = Duration::from_secs(60);
 
@@ -282,10 +292,12 @@ impl Limits {
         Self {
             credentials: Buckets::new(now),
             accounts: Buckets::new(now),
+            inbound: Buckets::new(now),
             device_start: Window::new(Self::WINDOW, now),
             login: Window::new(Self::WINDOW, now),
             register: Window::new(Self::WINDOW, now),
             recover: Window::new(Self::WINDOW, now),
+            inbound_misses: Window::new(Self::WINDOW, now),
             settings: Arc::new(RwLock::new(RateLimits::default())),
             clock,
         }
@@ -323,6 +335,13 @@ impl Limits {
         self.accounts.check(&key, (self.clock)(), rate)
     }
 
+    /// Spends one request from the bucket of inbound address `id`.
+    pub fn check_inbound(&self, id: &str) -> Result<(), Refusal> {
+        let rate = Rate::new(Self::INBOUND_BURST, Self::INBOUND_PER_SECOND);
+        let key = CredentialKey::Inbound(id.to_string());
+        self.inbound.check(&key, (self.clock)(), rate)
+    }
+
     /// Records a request from `ip` against the limit for `scope`.
     pub fn check_ip(&self, scope: IpScope, ip: IpAddr) -> Result<(), Refusal> {
         let window = match scope {
@@ -330,6 +349,7 @@ impl Limits {
             IpScope::DeviceStart => &self.device_start,
             IpScope::Register => &self.register,
             IpScope::Recover => &self.recover,
+            IpScope::InboundMiss => &self.inbound_misses,
         };
         let max_hits = self.settings().ip_per_minute as usize;
         window.check(ip, (self.clock)(), max_hits)
