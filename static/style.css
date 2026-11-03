@@ -8694,13 +8694,6 @@ body.dark .tic-page .tic-row:hover, body.dark .tic-page .tic-row:focus { backgro
 .labels-all-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.2rem; cursor: pointer; }
 #labels-dialog.dlg-overlay--popover .dlg { min-width: 0; }
 
-.first-hints { display: flex; flex-direction: column; gap: 6px; padding: 8px 16px 0; }
-.first-hint {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  max-width: 520px; padding: 8px 12px; border-radius: 4px;
-  background: #fff8d6; border: 1px solid #e6d58a; color: #3b3000; font-size: 13px;
-}
-body.dark .first-hint { background: #3a3417; border-color: #6e6224; color: #f3e9b5; }
 .owner-avatar img, .user-avatar img, .card-avatar img, .tm-member-disc img,
 .addMembersPop-avatar img, .member-avatar img {
   display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover;
@@ -8801,3 +8794,10 @@ body.dark .first-hint { background: #3a3417; border-color: #6e6224; color: #f3e9
 .mu-preview { width: 100%; border-collapse: collapse; }
 .mu-preview th,
 .mu-preview td { text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid #f3f4f6; overflow-wrap: anywhere; }
+
+#help-btn { position: relative; }
+#help-btn.has-tips::after {
+  content: ""; position: absolute; top: 3px; right: 3px; width: 8px; height: 8px;
+  border-radius: 50%; background: #e5533d; box-shadow: 0 0 0 2px #515151;
+}
+.help-tip { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 13px; }

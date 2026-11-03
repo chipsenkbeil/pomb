@@ -16595,6 +16595,29 @@
       var self = this;
       var btn = document.getElementById('help-btn');
       if (btn) btn.addEventListener('click', function () { self.openHelp(); });
+      var refreshTips = function () {
+        var tips = document.getElementById('help-tips');
+        if (tips && !tips.querySelector('.help-tip')) { tips.remove(); tips = null; }
+        if (btn) btn.classList.toggle('has-tips', !!tips);
+      };
+      refreshTips();
+      document.querySelectorAll('.help-tip-dismiss').forEach(function (button) {
+        button.addEventListener('click', function () {
+          var tip = button.closest('.help-tip');
+          fetch('/api/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ dismiss_hint: tip.dataset.hint })
+          }).then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            tip.remove();
+            refreshTips();
+          }).catch(function (ex) {
+            toast('Could not dismiss the tip: ' + ex.message);
+          });
+        });
+      });
       // KF-475: only a click that starts and ends on the backdrop closes,
       // so a drag between the dialog and the backdrop keeps it open.
       var dlg = document.getElementById('help-dialog');

@@ -42,17 +42,6 @@
   <button type="button" id="board-menu-btn" class="board-bar-btn" aria-haspopup="menu" aria-expanded="false" title="Menu" aria-label="Menu"><svg class="menu-bars" aria-hidden="true" width="19" height="13" viewBox="0 0 19 13" fill="none"><rect x="0" y="0" width="19" height="2" fill="#494949"/><rect x="0" y="5.5" width="19" height="2" fill="#494949"/><rect x="0" y="11" width="19" height="2" fill="#494949"/></svg><span class="menu-label">Menu</span></button>
 </div>
 
-{% if chrome.hint_shown("members") || chrome.hint_shown("timer") %}
-<div class="first-hints" data-page="first-hints">
-  {% if chrome.hint_shown("members") %}
-  <div class="first-hint" role="note" data-hint="members"><span>Manage board members here. Click plus icon to add members.</span><button type="button" class="kf-btn first-hint-dismiss">Got it!</button></div>
-  {% endif %}
-  {% if chrome.hint_shown("timer") %}
-  <div class="first-hint" role="note" data-hint="timer"><span>Start a pomodoro from the clock icon, or from a card.</span><button type="button" class="kf-btn first-hint-dismiss">Got it!</button></div>
-  {% endif %}
-</div>
-{% endif %}
-
 <!-- Board Filter panel (KF-134 / KF-096): right-side panel -->
 <aside id="filter-panel" class="filter-panel" hidden role="dialog" aria-label="Filter board">
   <!-- KF-215: KanbanFlow's board-menu header: back arrow, centred
@@ -1071,6 +1060,17 @@
     </div>
     <div class="help-body">
       <section data-help-panel="quick">
+        {% if chrome.hint_shown("members") || chrome.hint_shown("timer") %}
+        <div class="help-tips" id="help-tips">
+          <h3 class="help-group">Tips</h3>
+          {% if chrome.hint_shown("members") %}
+          <div class="help-tip" data-hint="members"><span>Add people to a board with the plus button beside its name.</span><button type="button" class="kf-btn help-tip-dismiss">Got it</button></div>
+          {% endif %}
+          {% if chrome.hint_shown("timer") %}
+          <div class="help-tip" data-hint="timer"><span>Start a pomodoro from the clock icon, or from a card.</span><button type="button" class="kf-btn help-tip-dismiss">Got it</button></div>
+          {% endif %}
+        </div>
+        {% endif %}
         <input type="search" id="help-search" class="help-search" placeholder="Search" autocomplete="off">
         <h3 class="help-group">Tasks</h3>
         <details class="help-subject"><summary>Add task</summary><p>Click the green + in a column header, type the name and press Enter.</p></details>

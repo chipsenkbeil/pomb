@@ -87,27 +87,6 @@
     });
   };
 
-  pages['first-hints'] = function () {
-    document.querySelectorAll('.first-hint-dismiss').forEach(function (button) {
-      button.addEventListener('click', function () {
-        var hint = button.closest('.first-hint');
-        fetch('/api/settings', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({ dismiss_hint: hint.dataset.hint })
-        }).then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          var strip = hint.parentNode;
-          hint.remove();
-          if (!strip.querySelector('.first-hint')) strip.remove();
-        }).catch(function (ex) {
-          console.error('Could not dismiss the hint: ' + ex.message);
-        });
-      });
-    });
-  };
-
   pages['admin'] = function () {
     var panes = document.querySelectorAll('.settings-pane');
     var navItems = document.querySelectorAll('.bshell-nav-item');

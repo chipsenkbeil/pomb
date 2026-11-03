@@ -216,9 +216,15 @@ async fn hints_should_show_until_dismissed_for_good() {
     let fx = Fixture::new();
     let uri = format!("/b/{}", fx.board);
     let fresh = fx.page(&uri).await;
-    assert!(fresh.contains(r#"data-hint="members""#), "{fresh}");
-    assert!(fresh.contains(r#"data-hint="timer""#), "{fresh}");
-    assert!(fresh.contains("Got it!"), "{fresh}");
+    assert!(
+        fresh.contains(r#"class="help-tip" data-hint="members""#),
+        "{fresh}"
+    );
+    assert!(
+        fresh.contains(r#"class="help-tip" data-hint="timer""#),
+        "{fresh}"
+    );
+    assert!(!fresh.contains("first-hint"), "{fresh}");
     let dismissed = fx
         .send(
             "PUT",
@@ -237,7 +243,10 @@ async fn hints_should_show_until_dismissed_for_good() {
     assert_eq!(again.body["dismissed_hints"], json!(["members"]));
     let after = fx.page(&uri).await;
     assert!(!after.contains(r#"data-hint="members""#), "{after}");
-    assert!(after.contains(r#"data-hint="timer""#), "{after}");
+    assert!(
+        after.contains(r#"class="help-tip" data-hint="timer""#),
+        "{after}"
+    );
     fx.send(
         "PUT",
         "/api/settings",
@@ -246,6 +255,7 @@ async fn hints_should_show_until_dismissed_for_good() {
     .await;
     let none = fx.page(&uri).await;
     assert!(!none.contains(r#"data-hint="#), "{none}");
+    assert!(!none.contains(r#"id="help-tips""#), "{none}");
 }
 
 #[tokio::test]
