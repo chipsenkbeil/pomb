@@ -19,8 +19,9 @@ use axum::extract::{
     DefaultBodyLimit, Extension, FromRequestParts, MatchedPath, Path, Query, Request, State,
 };
 use axum::http::header::{
-    ACCEPT, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE,
-    REFERRER_POLICY, SET_COOKIE, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS,
+    ACCEPT, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_SECURITY_POLICY,
+    CONTENT_TYPE, REFERRER_POLICY, SET_COOKIE, STRICT_TRANSPORT_SECURITY, VARY,
+    X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
@@ -60,14 +61,16 @@ use crate::db::{
     FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LargestUse, LinkAddOutcome,
     LinkDeleteOutcome, LinkReads, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards,
     MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement,
-    NewTimeEntry, NewWebhook, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome,
-    PublicDb, PurgeOutcome, QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome,
-    Revoked, SessionEndOutcome, SessionListing, SessionRefused, SessionToken,
-    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext,
-    UmbrellaChange, UmbrellaPart, UmbrellaRef, WebhookColumnMissing, WebhookPatch, carry_fields,
-    clean_labels, local_day, merge_metadata, push_change_event, push_column_event, push_event,
+    NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedTask, PaletteStrandsColor,
+    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuotaExceeded, RecoverOutcome,
+    RegisterOutcome, RestoreOutcome, Revoked, SessionEndOutcome, SessionListing, SessionRefused,
+    SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
+    SwimlaneUpdateOutcome, TaskContext, UmbrellaChange, UmbrellaPart, UmbrellaRef,
+    WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels, local_day, merge_metadata,
+    push_change_event, push_column_event, push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
+use crate::labels::{self, LabelSettings};
 use crate::limit::ClientIp;
 use crate::models::*;
 use crate::passkey::{
@@ -191,6 +194,24 @@ pub fn router(state: AppState) -> Router {
                 .layer(middleware::from_fn_with_state(state.clone(), queue_upload))
                 .get(list_attachments),
         )
+        .route("/api/tasks/:id/attachments/link", post(attach_link))
+        .route("/api/tasks/:id/attachments/document", post(create_document))
+        .route(
+            "/api/tasks/:id/attachments/:attachment_id/cover",
+            put(set_cover_image).delete(remove_cover_image),
+        )
+        .route(
+            "/api/tasks/:id/attachments/:attachment_id/document",
+            put(save_document),
+        )
+        .route(
+            "/api/tasks/:id/attachments/:attachment_id/versions",
+            get(list_document_versions),
+        )
+        .route(
+            "/api/tasks/:id/attachments/:attachment_id/versions/:version_id",
+            get(read_document_version),
+        )
         .route(
             "/api/tasks/:id/attachments/:attachment_id/file",
             get(download_attachment),
@@ -223,6 +244,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/timer/time-spent", get(api_time_spent))
         .route("/api/timer/statistics", get(api_timer_statistics))
         .route("/api/settings", get(api_settings).put(api_update_settings))
+        .route("/api/avatar", get(get_avatar).put(upload_avatar))
         .route("/api/columns", post(create_column))
         .route(
             "/api/columns/:id",
@@ -248,6 +270,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/boards/:id/rules",
             get(get_board_rules).put(update_board_rules),
+        )
+        .route(
+            "/api/boards/:id/label-settings",
+            get(get_label_settings).put(update_label_settings),
         )
         .route("/api/boards/:id/columns", get(list_board_columns))
         .route("/api/boards/:id/bin", get(list_bin))
@@ -334,6 +360,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/b/:board_id/settings/fields",
             get(board_settings_fields_page),
+        )
+        .route(
+            "/b/:board_id/settings/labels",
+            get(board_settings_labels_page),
         )
         .route(
             "/b/:board_id/settings/rules",
@@ -802,6 +832,43 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         ),
         (Method::GET, "/api/tasks/:id/attachments", Task, No),
         (Method::POST, "/api/tasks/:id/attachments", Task, Grows),
+        (Method::POST, "/api/tasks/:id/attachments/link", Task, Grows),
+        (
+            Method::POST,
+            "/api/tasks/:id/attachments/document",
+            Task,
+            Grows,
+        ),
+        (
+            Method::PUT,
+            "/api/tasks/:id/attachments/:attachment_id/document",
+            Task,
+            Grows,
+        ),
+        (
+            Method::PUT,
+            "/api/tasks/:id/attachments/:attachment_id/cover",
+            Task,
+            Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/tasks/:id/attachments/:attachment_id/cover",
+            Task,
+            Grows,
+        ),
+        (
+            Method::GET,
+            "/api/tasks/:id/attachments/:attachment_id/versions",
+            Task,
+            No,
+        ),
+        (
+            Method::GET,
+            "/api/tasks/:id/attachments/:attachment_id/versions/:version_id",
+            Task,
+            No,
+        ),
         (
             Method::GET,
             "/api/tasks/:id/attachments/:attachment_id/file",
@@ -842,6 +909,8 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/api/timer/statistics", Account, No),
         (Method::GET, "/api/settings", Account, No),
         (Method::PUT, "/api/settings", Account, Grows),
+        (Method::GET, "/api/avatar", Account, No),
+        (Method::PUT, "/api/avatar", Account, Grows),
         (Method::POST, "/api/columns", Account, Grows),
         (Method::PATCH, "/api/columns/:id", Entity, Grows),
         (Method::DELETE, "/api/columns/:id", Entity, Exempt),
@@ -862,6 +931,9 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/api/boards/:id", Board, No),
         (Method::DELETE, "/api/boards/:id", Board, Exempt),
         (Method::PUT, "/api/boards/:id/config", Board, Grows),
+        (Method::GET, "/api/boards/:id/label-settings", Board, No),
+        (Method::PUT, "/api/boards/:id/label-settings", Board, Grows),
+        (Method::GET, "/b/:board_id/settings/labels", Board, No),
         (Method::GET, "/api/boards/:id/rules", Board, No),
         (Method::PUT, "/api/boards/:id/rules", Board, Grows),
         (Method::GET, "/b/:board_id/settings/rules", Board, No),
@@ -1293,6 +1365,12 @@ impl From<Box<dyn std::error::Error>> for AppError {
         }
         if error.downcast_ref::<WebhookColumnMissing>().is_some() {
             return Self::bad_request(error.to_string());
+        }
+        if let Some(refusal) = error.downcast_ref::<PaletteStrandsColor>() {
+            return Self::bad_request(refusal.to_string());
+        }
+        if error.downcast_ref::<NumberingExhausted>().is_some() {
+            return Self::conflict(error.to_string());
         }
         if let Some(duplicate) = error.downcast_ref::<DuplicateAttachment>() {
             return Self::conflict(duplicate.to_string()).with_code(ErrorCode::DuplicateAttachment);
@@ -1877,6 +1955,13 @@ struct TaskView {
     /// Hour-based estimate label, e.g. "4h". None when no hour estimate is set, and the modal then
     /// omits Time estimate.
     estimate_label: Option<String>,
+    /// The points estimate as a number, e.g. "5", or None when no points are set.
+    points_label: Option<String>,
+    /// The unit the task's board estimates in. Points hide the estimate on the time chip and show
+    /// the points badge.
+    unit: EstimateUnit,
+    /// The task's number such as "PS-1", or None when it has none.
+    number: Option<String>,
     /// Resolved per-board color value, e.g. "yellow".
     color_value: String,
     /// Resolved per-board color label, e.g. "1 Pomodoro".
@@ -1971,6 +2056,8 @@ struct TaskView {
     attachments: Vec<AttachmentView>,
     /// How many attachments the task holds, which a card marks without listing them.
     attachment_count: usize,
+    /// The id of the image attachment a card shows above its name, or empty.
+    cover_id: String,
     /// Pretty-printed metadata for the modal's read-only block; None when
     /// unset or empty.
     metadata_pretty: Option<String>,
@@ -2000,6 +2087,32 @@ struct TaskView {
     /// The values of the dropdown custom fields as a JSON object, rendered as the card's
     /// `data-filter-fields` attribute so the board filter can match them.
     filter_fields_json: String,
+    /// The board's highlighted labels the task carries, in the board's order, for the card's flags.
+    flags: Vec<LabelMark>,
+    /// The color of the first flag, which the card's edge stripe draws in.
+    stripe: Option<String>,
+    /// Every label of the task as a chip when the board shows all labels, otherwise empty.
+    chips: Vec<LabelMark>,
+}
+
+/// A label with the color the board highlights it in, if it does.
+#[derive(Clone, Debug)]
+struct LabelMark {
+    /// The label.
+    label: String,
+    /// The `#rrggbb` color, or none for a label the board does not highlight.
+    color: Option<String>,
+}
+
+/// One highlighted label's count in a column header.
+#[derive(Clone, Debug)]
+struct ColumnMark {
+    /// The label.
+    label: String,
+    /// The `#rrggbb` color.
+    color: String,
+    /// How many tasks of the column carry the label.
+    count: usize,
 }
 
 /// Represents where an archiving column places a card.
@@ -2180,11 +2293,20 @@ struct AttachmentView {
     details: String,
     /// The fixed file extension with its dot (`.txt`), or empty if the name has none.
     suffix: String,
+    /// The address a link attachment opens, or empty for a file.
+    url: String,
+    /// Whether the attachment is a text document the modal opens in its editor.
+    is_document: bool,
+    /// Whether the attachment is an image, which can be the task's cover.
+    is_image: bool,
+    /// Whether the attachment is the task's cover.
+    is_cover: bool,
 }
 
 /// Returns the type label an attachment shows, from its MIME type `mime`.
 fn attachment_kind(mime: &str) -> &'static str {
     match (mime.split('/').next().unwrap_or_default(), mime) {
+        (_, TaskAttachment::LINK_MIME) => "Link",
         ("image", _) => "Image",
         ("audio", _) => "Audio",
         ("video", _) => "Video",
@@ -2195,12 +2317,54 @@ fn attachment_kind(mime: &str) -> &'static str {
     }
 }
 
-/// One assigned member as shown on a card: username + avatar initial.
+/// How an avatar renders: its text on its colours, or the uploaded image.
+#[derive(Clone, Debug, Default, Serialize, ToSchema)]
+struct AvatarView {
+    /// The text on the avatar: its own, or the initials of the name, e.g. "AU".
+    text: String,
+    /// The inline style that sets the colours, empty for the defaults.
+    style: String,
+    /// Where the uploaded image is served from, when the avatar shows it.
+    image: Option<String>,
+}
+
+impl AvatarView {
+    /// Returns how `settings` draw the avatar of the member shown as `name`.
+    fn of(settings: &Settings, name: &str) -> Self {
+        let avatar = &settings.avatar;
+        let text = if avatar.text.is_empty() {
+            user_initials(name)
+        } else {
+            avatar.text.clone()
+        };
+        let mut style = String::new();
+        for (property, color) in [
+            ("color", &avatar.text_color),
+            ("background", &avatar.background),
+        ] {
+            if is_hex_color(color) {
+                style.push_str(&format!("{property}:{color};"));
+            }
+        }
+        let image = (avatar.kind == AvatarKind::Image)
+            .then(|| format!("/api/avatar?v={}", avatar.image_version));
+        Self { text, style, image }
+    }
+}
+
+/// Returns whether `color` is `#rrggbb`.
+fn is_hex_color(color: &str) -> bool {
+    color.len() == 7
+        && color.starts_with('#')
+        && color[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// One assigned member as shown on a card: username + avatar.
 #[derive(Clone, Debug)]
 struct MemberChip {
     username: String,
-    /// The same initials as the header avatar, e.g. "AU".
-    initials: String,
+    /// How the member's avatar renders.
+    avatar: AvatarView,
 }
 
 /// Which task properties a column shows on its cards: the "Task properties to display on board"
@@ -2222,15 +2386,46 @@ struct CardContent {
     description: bool,
     /// Whether the labels show.
     labels: bool,
-    /// Whether the subtasks show.
-    subtasks: bool,
+    /// Which of the subtasks show.
+    subtasks: SubtaskDisplay,
+}
+
+/// Which subtasks a column shows on its cards.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+enum SubtaskDisplay {
+    /// No subtask shows.
+    #[default]
+    Hide,
+    /// The first this many unfinished subtasks.
+    NextUnfinished(usize),
+    /// Every unfinished subtask.
+    Unfinished,
+    /// Every subtask, folding the done ones of a long list.
+    All,
+}
+
+impl SubtaskDisplay {
+    /// Most unfinished subtasks a "next N" display lists.
+    const MAX_NEXT: usize = 5;
+
+    /// Reads a `prop_subtasks` value: "show", "unfinished", "next_N" with N from 1 to 5, or
+    /// anything else for hidden.
+    fn parse(value: &str) -> Self {
+        match value {
+            "show" => Self::All,
+            "unfinished" => Self::Unfinished,
+            _ => value
+                .strip_prefix("next_")
+                .and_then(|n| n.parse().ok())
+                .filter(|n| (1..=Self::MAX_NEXT).contains(n))
+                .map_or(Self::Hide, Self::NextUnfinished),
+        }
+    }
 }
 
 /// Which dates a column shows on its cards.
 #[derive(Clone, Debug, Default)]
 struct CardDates {
-    /// Whether the due date shows.
-    due: bool,
     /// Whether the creation date shows.
     created: bool,
     /// Whether the date the task was added to its column shows.
@@ -2247,16 +2442,18 @@ impl TaskCardDisplay {
             content: CardContent {
                 description: show("prop_description"),
                 labels: show("prop_labels"),
-                subtasks: show("prop_subtasks"),
+                subtasks: SubtaskDisplay::parse(get("prop_subtasks")),
             },
             dates: CardDates {
-                // Any non-"hide" value shows due dates; the default (empty)
-                // is KanbanFlow's "Show active due in 7 days".
-                due: due_mode != "hide",
                 created: show("prop_created"),
                 added: show("prop_added"),
             },
-            due_within_days: if due_mode == "show" { None } else { Some(7) },
+            // The default (empty) is KanbanFlow's "Show active due in 7 days"
+            due_within_days: match due_mode {
+                "show" => None,
+                "overdue" => Some(0),
+                _ => Some(7),
+            },
         }
     }
 }
@@ -2398,11 +2595,58 @@ fn task_color_view(
     Ok((fields, false))
 }
 
+/// Config key of the board setting that estimates in points instead of hours.
+const ESTIMATE_IN_POINTS_KEY: &str = "estimate_in_points";
+
+/// What a board estimates its tasks in.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+enum EstimateUnit {
+    /// Hours, the default.
+    #[default]
+    Hours,
+    /// Story points.
+    Points,
+}
+
+impl EstimateUnit {
+    /// Returns the unit that board `row` estimates in.
+    fn of(row: &BoardRow) -> Self {
+        if row.config_bool(ESTIMATE_IN_POINTS_KEY) {
+            Self::Points
+        } else {
+            Self::Hours
+        }
+    }
+
+    /// Returns whether the unit is points.
+    fn is_points(self) -> bool {
+        self == Self::Points
+    }
+}
+
+/// Returns the estimate `points` as the modal shows it, such as "5 points".
+#[must_use]
+fn format_points(points: f64) -> String {
+    let unit = if points == 1.0 { "point" } else { "points" };
+    format!("{points} {unit}")
+}
+
 /// Most bytes of a description a card face renders.
 const CARD_DESCRIPTION_BYTES: usize = 600;
 
 /// Longest subtask list a card shows in full.
 const CARD_SUBTASKS_SHOWN: usize = 3;
+
+/// Returns the subtasks a card lists for the column's Subtasks `display`.
+fn subtasks_on_face(subtasks: &[Subtask], display: SubtaskDisplay) -> Vec<&Subtask> {
+    let unfinished = subtasks.iter().filter(|subtask| !subtask.done);
+    match display {
+        SubtaskDisplay::Hide => Vec::new(),
+        SubtaskDisplay::NextUnfinished(n) => unfinished.take(n).collect(),
+        SubtaskDisplay::Unfinished => unfinished.collect(),
+        SubtaskDisplay::All => subtasks.iter().collect(),
+    }
+}
 
 /// Reports whether a card hides its done subtasks behind "N hidden (N done)".
 ///
@@ -2564,7 +2808,17 @@ impl TaskView {
     /// Whether the card folds its done subtasks under "N hidden
     /// (N done)", see [`folds_done_subtasks`].
     fn subtasks_fold(&self) -> bool {
-        folds_done_subtasks(&self.subtasks)
+        self.display.content.subtasks == SubtaskDisplay::All && folds_done_subtasks(&self.subtasks)
+    }
+
+    /// Returns the subtasks the card face lists under its column's Subtasks display.
+    fn face_subtasks(&self) -> Vec<&Subtask> {
+        subtasks_on_face(&self.subtasks, self.display.content.subtasks)
+    }
+
+    /// Returns whether the card face lists every subtask, so ticking one can refold the list.
+    fn lists_all_subtasks(&self) -> bool {
+        self.display.content.subtasks == SubtaskDisplay::All
     }
 
     /// Returns the head of the description, at most [`CARD_DESCRIPTION_BYTES`] bytes, as HTML for a
@@ -2644,7 +2898,15 @@ impl TaskView {
                         format_comment_datetime(&shown.created_at),
                         attachment_kind(&shown.mime)
                     ),
-                    suffix: TaskAttachment::extension(&shown.name).to_string(),
+                    suffix: if shown.url.is_some() {
+                        String::new()
+                    } else {
+                        TaskAttachment::extension(&shown.name).to_string()
+                    },
+                    url: shown.url.clone().unwrap_or_default(),
+                    is_document: shown.is_document(),
+                    is_image: shown.is_image(),
+                    is_cover: row.cover_id.as_deref() == Some(shown.id.as_str()),
                 }
             })
             .collect();
@@ -2669,6 +2931,9 @@ impl TaskView {
             name: row.name.clone(),
             description: row.description.clone(),
             estimate_label: row.estimate_hours.map(format_estimate_hours),
+            points_label: row.points.map(|points| points.to_string()),
+            unit: EstimateUnit::Hours,
+            number: row.number.clone(),
             color_value: value.to_string(),
             color_label: size.label().to_string(),
             show_color_name: false,
@@ -2725,6 +2990,7 @@ impl TaskView {
             comment_count: row.comments,
             attachments: Vec::new(),
             attachment_count: row.attachments,
+            cover_id: row.cover_id.clone().unwrap_or_default(),
             metadata_pretty: None,
             link_count: 0,
             umbrella: None,
@@ -2751,6 +3017,33 @@ impl TaskView {
             fields_incomplete: false,
             filter_fields_json: serde_json::to_string(&row.fields)
                 .unwrap_or_else(|_| "{}".to_string()),
+            flags: Vec::new(),
+            stripe: None,
+            chips: Vec::new(),
+        }
+    }
+
+    /// Fills in the flags, the stripe and the chips from the board's label `settings`.
+    fn mark_labels(&mut self, settings: &LabelSettings) {
+        self.flags = settings
+            .highlights
+            .iter()
+            .filter(|highlight| self.labels.contains(&highlight.label))
+            .map(|highlight| LabelMark {
+                label: highlight.label.clone(),
+                color: Some(highlight.color.clone()),
+            })
+            .collect();
+        self.stripe = self.flags.first().and_then(|flag| flag.color.clone());
+        if settings.show_all {
+            self.chips = self
+                .labels
+                .iter()
+                .map(|label| LabelMark {
+                    label: label.clone(),
+                    color: settings.color_of(label).map(str::to_string),
+                })
+                .collect();
         }
     }
 
@@ -2770,8 +3063,15 @@ impl TaskView {
         let mut card = TaskCard::from(row);
         let select_keys = select_field_keys(db, board_id)?;
         card.fields.retain(|key, _| select_keys.contains(key));
-        let mut view = Self::from_card_in_board(db, &mut reads, board_id, &card, incomplete)?
+        let board = db.board(board_id).map_err(AppError::from)?;
+        let unit = board
+            .as_ref()
+            .map_or(EstimateUnit::Hours, |board| EstimateUnit::of(board.row()));
+        let mut view = Self::from_card_in_board(db, &mut reads, board_id, &card, incomplete, unit)?
             .with_full(row, handle);
+        if let Some(board) = &board {
+            view.mark_labels(&LabelSettings::from_config(&board.row().config_json));
+        }
         let links = reads.task_links(&row.id).map_err(AppError::from)?;
         view.children = reads.children(&links).map_err(AppError::from)?;
         clear_own_board_of_children(board_id, &mut view.children);
@@ -2780,15 +3080,22 @@ impl TaskView {
 
     /// Returns the view of the card `row` resolved on board `board_id`, as
     /// [`TaskView::from_row_in_board`] resolves a row. `incomplete` says whether a required field
-    /// of the task is empty. Linked tasks are read through `reads`, so a board reads each once.
+    /// of the task is empty, and `unit` picks whether the estimate shows hours or points. Linked
+    /// tasks are read through `reads`, so a board reads each once.
     fn from_card_in_board(
         db: &AccountDb,
         reads: &mut LinkReads,
         board_id: &str,
         row: &TaskCard,
         incomplete: bool,
+        unit: EstimateUnit,
     ) -> Result<Self, AppError> {
         let mut view = Self::from_card(row);
+        if unit.is_points() {
+            view.unit = unit;
+            view.time_kf = format_time_kf(row.total_minutes, None);
+            view.estimate_label = row.points.map(format_points);
+        }
         let links = reads.task_links(&row.id).map_err(AppError::from)?;
         if !links.is_empty() {
             view.link_count = links.len();
@@ -2819,12 +3126,10 @@ impl TaskView {
                 view.due_state.in_window = DateTime::parse_from_rfc3339(due)
                     .map_or(true, |due| due <= Local::now() + Duration::days(days));
             }
-            if view.display.dates.due {
-                view.due_display = row
-                    .due_at
-                    .as_deref()
-                    .and_then(|d| format_due(d, view.display.due_within_days));
-            }
+            view.due_display = row
+                .due_at
+                .as_deref()
+                .and_then(|d| format_due(d, view.display.due_within_days));
         }
 
         // The parenthetical names the due date's target column
@@ -2837,13 +3142,17 @@ impl TaskView {
         }
         if !row.member_ids.is_empty()
             && let Ok(users) = db.list_users()
+            && let Ok(settings) = db.settings()
         {
             view.member_chips = users
                 .into_iter()
                 .filter(|u| row.member_ids.iter().any(|m| m == &u.id))
-                .map(|u| MemberChip {
-                    initials: user_initials(&u.username),
-                    username: u.username,
+                .map(|u| {
+                    let name = settings.display_name(&u.username);
+                    MemberChip {
+                        avatar: AvatarView::of(&settings, &name),
+                        username: name,
+                    }
                 })
                 .collect();
         }
@@ -2851,15 +3160,12 @@ impl TaskView {
     }
 }
 
-/// "Sep 28, 2026 1:25 PM" rendering of a stored RFC3339 timestamp (12h
-/// clock, KanbanFlow parity for time ranges and history).
+/// "Sep 28, 2026 1:25 PM" rendering of a stored RFC3339 timestamp (on the account's clock,
+/// 12-hour unless it chose 24-hour).
 fn format_datetime(rfc3339: &str) -> String {
+    let pattern = format!("%b %d, %Y {}", TimeFormat::current().clock());
     DateTime::parse_from_rfc3339(rfc3339)
-        .map(|dt| {
-            dt.with_timezone(&Local)
-                .format("%b %d, %Y %-I:%M %p")
-                .to_string()
-        })
+        .map(|dt| dt.with_timezone(&Local).format(&pattern).to_string())
         .unwrap_or_else(|_| rfc3339.to_string())
 }
 
@@ -2872,7 +3178,7 @@ fn format_comment_datetime(rfc3339: &str) -> String {
             format!(
                 "{} {}",
                 day_label(local.date_naive()),
-                local.format("%-I:%M %p")
+                local.format(TimeFormat::current().clock())
             )
         }
         Err(_) => rfc3339.to_string(),
@@ -3011,12 +3317,13 @@ fn format_due_card(rfc3339: &str) -> Option<String> {
 
 fn format_due_card_at(rfc3339: &str, now: DateTime<Local>) -> Option<String> {
     let (due, kind) = due_day(rfc3339, now)?;
+    let clock = TimeFormat::current().clock();
     let format = match kind {
-        DueDay::Today => "Today %-I:%M %p",
-        DueDay::ThisWeek => "%A %-I:%M %p",
-        DueDay::Other => "%-d %B %-I:%M %p",
+        DueDay::Today => format!("Today {clock}"),
+        DueDay::ThisWeek => format!("%A {clock}"),
+        DueDay::Other => format!("%-d %B {clock}"),
     };
-    Some(due.format(format).to_string())
+    Some(due.format(&format).to_string())
 }
 
 /// KanbanFlow's modal due text: like the card, except other dates read "Oct 2 at 11:00 PM".
@@ -3031,12 +3338,13 @@ fn format_due_modal_at(
     now: DateTime<Local>,
 ) -> Option<String> {
     let (due, kind) = due_day(rfc3339, now)?;
+    let clock = TimeFormat::current().clock();
     let format = match kind {
-        DueDay::Today => "Today %-I:%M %p",
-        DueDay::ThisWeek => "%A %-I:%M %p",
-        DueDay::Other => "%b %-d at %-I:%M %p",
+        DueDay::Today => format!("Today {clock}"),
+        DueDay::ThisWeek => format!("%A {clock}"),
+        DueDay::Other => format!("%b %-d at {clock}"),
     };
-    let mut text = due.format(format).to_string();
+    let mut text = due.format(&format).to_string();
     if let Some(suffix) = suffix {
         text.push_str(&format!(" ({suffix})"));
     }
@@ -3450,6 +3758,10 @@ struct ColumnHead {
     description: String,
     collapsed: bool,
     wip_limit: Option<i64>,
+    /// "count" or "hours", what the WIP limit counts.
+    limit_unit: &'static str,
+    /// The header's "used / limit" text, empty without a WIP limit.
+    limit_label: String,
     count: usize,
     over_limit: bool,
     /// Tasks in this column whose due timestamp has passed and that are not completed (overdue
@@ -3463,12 +3775,23 @@ struct ColumnHead {
     config_json: String,
     /// The header badge, absent for Column sum "None" (KanbanFlow shows no count there), the task
     /// count for "Task count", or the column's estimate total for "Estimated hours", e.g. "12h".
+    /// A points board shows no hours total.
     sum_label: Option<String>,
     /// "count" or "hours", so client-side count updates leave an hours badge alone.
     sum_kind: &'static str,
     /// The column's estimate total in minutes, the unfiltered base for client-side "Estimated
     /// hours" updates.
     estimate_minutes: i64,
+    /// Each of the board's highlighted labels with the number of the column's tasks that carry
+    /// it.
+    marks: Vec<ColumnMark>,
+}
+
+impl ColumnHead {
+    /// Reports whether any task of the column carries a highlighted label.
+    fn holds_marks(&self) -> bool {
+        self.marks.iter().any(|mark| mark.count > 0)
+    }
 }
 
 /// One color slot as JSON (also used by the color-admin page template).
@@ -3501,6 +3824,12 @@ impl ColorView {
             &self.label
         }
     }
+
+    /// Returns whether the color is a custom one, which can be disabled but not deleted.
+    #[must_use]
+    fn is_custom(&self) -> bool {
+        is_custom_color(&self.value)
+    }
 }
 
 impl From<&ColorRow> for ColorView {
@@ -3512,7 +3841,10 @@ impl From<&ColorRow> for ColorView {
                 .iter()
                 .find(|(v, _, _, _, _)| *v == color.value)
                 .map(|(_, _, _, _, label)| label.to_string())
-                .unwrap_or_else(|| color.value.clone()),
+                .unwrap_or_else(|| match color.value.strip_prefix("custom") {
+                    Some(number) => format!("Custom {number}"),
+                    None => color.value.clone(),
+                }),
             label: color.label.clone(),
             description: color.description.clone(),
             enabled: color.enabled,
@@ -3598,6 +3930,10 @@ struct BoardTemplate {
     default_member_ids: String,
     /// Registered users, one filter User option each.
     members: Vec<MemberDetail>,
+    /// The style rules of the board's custom colors, enabled or not.
+    custom_css: String,
+    /// What the board estimates in.
+    estimate_unit: EstimateUnit,
     /// The board's dropdown custom fields, one filter select each.
     filter_fields: Vec<FilterField>,
 }
@@ -3804,9 +4140,31 @@ struct ModalTemplate {
     relation_kinds: &'static [(LinkKind, &'static str)],
     /// The avatar chips of each subtask's members, by subtask id.
     subtask_chips: HashMap<String, Vec<MemberChip>>,
+    /// The style rules of the board's custom colors, enabled or not.
+    custom_css: String,
 }
 
 impl ModalTemplate {
+    /// Returns whether the task holds nothing but its color, so the modal shows only that.
+    fn is_bare(&self) -> bool {
+        let task = &self.task;
+        task.description.is_empty()
+            && task.comments.is_empty()
+            && task.subtasks.is_empty()
+            && task.labels.is_empty()
+            && task.attachments.is_empty()
+            && task.due_modal.is_none()
+            && task.timeline_display.is_none()
+            && task.estimate_label.is_none()
+            && task.total_minutes == 0
+            && task.umbrella.is_none()
+            && task.children_total == 0
+            && task.claim_fence.is_none()
+            && self.assigned_members.is_empty()
+            && self.responsible_session.is_none()
+            && self.relation_count == 0
+    }
+
     /// Returns the avatar chips of the members assigned to subtask `id`.
     fn chips_of(&self, id: &str) -> &[MemberChip] {
         self.subtask_chips.get(id).map_or(&[], Vec::as_slice)
@@ -3864,6 +4222,7 @@ const MINOR_HISTORY_KINDS: &[&str] = &[
     "subtask_members_updated",
     "attachment_added",
     "attachment_renamed",
+    "attachment_edited",
     "attachment_deleted",
     "comment_edited",
     "watched",
@@ -3880,6 +4239,7 @@ const HISTORY_KIND_LABELS: &[(&str, &str)] = &[
     ("renamed", "Renamed"),
     ("description_updated", "Description"),
     ("estimate_updated", "Time estimate"),
+    ("points_updated", "Points estimate"),
     ("color_updated", "Color"),
     ("labels_updated", "Labels"),
     ("due_updated", "Due date"),
@@ -3906,6 +4266,9 @@ const HISTORY_KIND_LABELS: &[(&str, &str)] = &[
     ("comment_deleted", "Comment deleted"),
     ("attachment_added", "Attachment added"),
     ("attachment_renamed", "Attachment renamed"),
+    ("attachment_edited", "Attachment edited"),
+    ("cover_set", "Cover image set"),
+    ("cover_removed", "Cover image removed"),
     ("attachment_deleted", "Attachment deleted"),
     ("link_added", "Link added"),
     ("link_removed", "Link removed"),
@@ -4073,7 +4436,8 @@ struct TimeLogViewTemplate {
 #[derive(Clone, Debug)]
 struct MemberView {
     username: String,
-    initials: String,
+    /// How the member's avatar renders.
+    avatar: AvatarView,
     /// True for the member the task is the responsibility of.
     responsible: bool,
 }
@@ -4110,21 +4474,18 @@ fn fetch_entries(
                 entry_badge(&row.kind, row.interrupted, row.interrupt_reason.as_deref());
             let local_start =
                 DateTime::parse_from_rfc3339(&row.started_at).map(|dt| dt.with_timezone(&Local));
+            let clock = TimeFormat::current().clock();
             let started_display = local_start
                 .as_ref()
-                .map(|dt| dt.format("%b %d, %Y %H:%M").to_string())
+                .map(|dt| dt.format(&format!("%b %d, %Y {clock}")).to_string())
                 .unwrap_or_else(|_| row.started_at.clone());
 
-            // The From-To range in 12h, derived server-side from started_at + minutes
+            // The From-To range, derived server-side from started_at + minutes
             let range_display = local_start
                 .as_ref()
                 .map(|start| {
                     let end = *start + chrono::Duration::seconds(row.duration_seconds());
-                    format!(
-                        "{} - {}",
-                        start.format("%-I:%M %p"),
-                        end.format("%-I:%M %p")
-                    )
+                    format!("{} - {}", start.format(clock), end.format(clock))
                 })
                 .unwrap_or_default();
             let member_name = if row.created_by.is_empty() {
@@ -4266,17 +4627,12 @@ fn board_template(
             .then_with(|| a.id.cmp(&b.id))
     });
 
+    let label_settings = LabelSettings::from_config(&board.row().config_json);
+    let unit = EstimateUnit::of(board.row());
     let column_heads: Vec<ColumnHead> = columns
         .iter()
         .map(|col| {
             let count = tasks.iter().filter(|t| t.column_id == col.id).count();
-
-            // The warning is a *violation*, so it fires only when the count exceeds the limit and
-            // not when it merely reaches it
-            let over_limit = col
-                .wip_limit
-                .map(|limit| count as i64 > limit)
-                .unwrap_or(false);
 
             // Overdue means the due time has passed and the task is not completed, and the count
             // feeds the collapsed-strip indicator
@@ -4299,12 +4655,32 @@ fn board_template(
                 .filter(|t| t.column_id == col.id)
                 .map(|t| estimate_minutes(t.estimate_hours))
                 .sum();
+
+            // The warning is a *violation*, so it fires only when the used amount exceeds the
+            // limit and not when it merely reaches it
+            let in_hours = col.wip_limit_in_hours();
+            let over_limit = col.wip_limit.is_some_and(|limit| {
+                if in_hours {
+                    estimate_total > limit * 60
+                } else {
+                    count as i64 > limit
+                }
+            });
+            let limit_label = match col.wip_limit {
+                Some(limit) if in_hours => {
+                    format!("{} / {limit}h", format_column_hours(estimate_total))
+                }
+                Some(limit) => format!("{count} / {limit}"),
+                None => String::new(),
+            };
             ColumnHead {
                 id: col.id.clone(),
                 name: col.name.clone(),
                 description: col.description.clone(),
                 collapsed: col.collapsed,
                 wip_limit: col.wip_limit,
+                limit_unit: if in_hours { "hours" } else { "count" },
+                limit_label,
                 count,
                 over_limit,
                 overdue_count,
@@ -4312,6 +4688,7 @@ fn board_template(
                 watched: col.watched_by(db.account_id().as_str()),
                 config_json: col.config_json.clone(),
                 sum_label: match ColumnSettings::from_column(col).sum {
+                    ColumnSum::EstimatedHours if unit.is_points() => None,
                     ColumnSum::EstimatedHours => Some(format_column_hours(estimate_total)),
                     ColumnSum::TaskCount => Some(count.to_string()),
                     ColumnSum::None => None,
@@ -4321,6 +4698,20 @@ fn board_template(
                     ColumnSum::None | ColumnSum::TaskCount => "count",
                 },
                 estimate_minutes: estimate_total,
+                marks: label_settings
+                    .highlights
+                    .iter()
+                    .map(|highlight| ColumnMark {
+                        label: highlight.label.clone(),
+                        color: highlight.color.clone(),
+                        count: tasks
+                            .iter()
+                            .filter(|t| {
+                                t.column_id == col.id && t.labels.contains(&highlight.label)
+                            })
+                            .count(),
+                    })
+                    .collect(),
             }
         })
         .collect();
@@ -4351,7 +4742,18 @@ fn board_template(
                 .into_iter()
                 .map(|task| {
                     let is_incomplete = incomplete.contains(&task.id);
-                    TaskView::from_card_in_board(db, &mut reads, &board_id, task, is_incomplete)
+                    TaskView::from_card_in_board(
+                        db,
+                        &mut reads,
+                        &board_id,
+                        task,
+                        is_incomplete,
+                        unit,
+                    )
+                    .map(|mut view| {
+                        view.mark_labels(&label_settings);
+                        view
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -4417,6 +4819,7 @@ fn board_template(
     let due_time = board.row().due_time().format("%H:%M").to_string();
 
     let chrome = shell_chrome(&state, db, &user.username)?;
+    let profile = db.settings().map_err(AppError::from)?;
     Ok(BoardTemplate {
         board_id: board.row().id.clone(),
         board_name: board.row().name.clone(),
@@ -4435,6 +4838,8 @@ fn board_template(
             .row()
             .default_member_ids(db.account_id().as_str())
             .join(","),
+        custom_css: board_custom_css(&account, &board_id)?,
+        estimate_unit: unit,
         colors: db
             .list_colors(&board_id)
             .map_err(AppError::from)?
@@ -4455,9 +4860,14 @@ fn board_template(
             .list_users()
             .map_err(AppError::from)?
             .into_iter()
-            .map(|user| MemberDetail {
-                id: user.id,
-                username: user.username,
+            .map(|user| {
+                let display_name = profile.display_name(&user.username);
+                MemberDetail {
+                    id: user.id,
+                    avatar: AvatarView::of(&profile, &display_name),
+                    display_name,
+                    username: user.username,
+                }
             })
             .collect(),
     })
@@ -4511,10 +4921,18 @@ fn dropdown_boards(db: &AccountDb) -> Result<Vec<ChromeBoard>, AppError> {
 struct ShellChrome {
     /// Unarchived boards for the Boards dropdown.
     boards: Vec<ChromeBoard>,
-    /// Display name of the signed-in user.
+    /// Handle of the signed-in user.
     username: String,
-    /// Avatar initials of the signed-in user.
-    username_initial: String,
+    /// What members show the signed-in user as: the full name, or the handle without one.
+    display_name: String,
+    /// Ids of the first-visit hints the signed-in user dismissed.
+    dismissed_hints: Vec<String>,
+    /// How the signed-in user's times of day are written.
+    time_format: TimeFormat,
+    /// The first day of the week for the signed-in user.
+    week_start: WeekStart,
+    /// The avatar of the signed-in user.
+    avatar: AvatarView,
     /// Whether the account menu offers Sign out, which only a passkey sign-in has.
     sign_out: bool,
     /// Whether the page asks the account to create its recovery code, which a multi-mode account
@@ -4524,6 +4942,13 @@ struct ShellChrome {
     storage_full: Option<String>,
     /// The version and commit this server was built from.
     build: Build,
+}
+
+impl ShellChrome {
+    /// Returns whether the first-visit hint `id` still shows.
+    fn hint_shown(&self, id: &str) -> bool {
+        !self.dismissed_hints.iter().any(|hint| hint == id)
+    }
 }
 
 /// The version and commit a server was built from, which `GET /api/v1/version` reports and
@@ -4568,14 +4993,20 @@ impl Build {
 
 /// Loads the top bar data for the signed-in user.
 fn shell_chrome(state: &AppState, db: &AccountDb, username: &str) -> Result<ShellChrome, AppError> {
+    let settings = db.settings().map_err(AppError::from)?;
+    let display_name = settings.display_name(username);
     Ok(ShellChrome {
+        dismissed_hints: settings.dismissed_hints.clone(),
+        time_format: settings.time_format,
+        week_start: settings.week_start,
         build: Build::current(),
         boards: dropdown_boards(db)?,
         sign_out: state.sign_in.mode() == AuthMode::Passkey,
         recovery_banner: state.is_multi() && db.recovery_code()?.is_none(),
         storage_full: state.disk.cached_full(state.mode).map(|full| full.detail()),
         username: username.to_string(),
-        username_initial: user_initials(username),
+        avatar: AvatarView::of(&settings, &display_name),
+        display_name,
     })
 }
 
@@ -6886,6 +7317,9 @@ struct CreateTaskInput {
     /// Hour-based time estimate, e.g. 4.0 for "4h". Positive values set the estimate, and the
     /// pomodoro `size` is derived from it unless `size` is also given.
     estimate_hours: Option<f64>,
+    /// Points estimate, a positive number. Kept beside `estimate_hours`, so a board that switches
+    /// its estimation unit loses neither.
+    points: Option<f64>,
     /// Due date/time in one of the forms under Due dates in the Tasks section. Absent, null, empty
     /// or whitespace-only means no due date.
     due_at: Option<String>,
@@ -7169,6 +7603,7 @@ fn run_search(
         (status = 201, description = "Created task", body = TaskDetail),
         (status = 400, description = "Invalid input: empty name or unparseable due_at"),
         (status = 404, description = "Column not found"),
+        (status = 409, description = "The board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -7253,6 +7688,11 @@ async fn create_task(
         .estimate_hours
         .map(|raw| normalize_estimate_hours(raw).map_err(AppError::bad_request))
         .transpose()?;
+    let points = input
+        .points
+        .map(|raw| normalize_points(raw).map_err(AppError::bad_request))
+        .transpose()?
+        .flatten();
 
     // Build the whole row, then store it in one write
     let mut row = AccountDb::new_task_row(
@@ -7266,12 +7706,13 @@ async fn create_task(
     // An estimate given without an explicit size derives the pomodoro size (the color above already
     // resolved).
     if let Some(hours) = estimate {
-        row.estimate_hours = hours.map(crate::db::round_estimate);
+        row.estimate_hours = hours.map(round_estimate);
         if let (None, Some(hours)) = (input.size, hours) {
             let pomodoro_minutes = db.settings().map(|s| s.pomodoro_minutes).unwrap_or(25);
             row.size = estimate_hours_to_size(hours, pomodoro_minutes);
         }
     }
+    row.points = points.map(round_estimate);
 
     // Optional due date at creation (same format rules as the PATCH path). A repeat without a due
     // date is dropped.
@@ -7408,6 +7849,14 @@ fn new_task_placement(db: &AccountDb, board_id: &str) -> Result<NewTaskPlacement
     })
 }
 
+/// Returns the cell index that puts a task at `placement`, past the end for the bottom.
+fn placement_index(placement: NewTaskPlacement) -> f64 {
+    match placement {
+        NewTaskPlacement::Top => 0.0,
+        NewTaskPlacement::Bottom => f64::from(u32::MAX),
+    }
+}
+
 /// Returns the id of swimlane `id` when it lies on the caller's board `board_id`, or the 400 an
 /// unknown swimlane gets.
 fn lane_on_board(db: &AccountDb, id: &str, board_id: &str) -> Result<String, AppError> {
@@ -7540,6 +7989,9 @@ struct UpdateTaskInput {
     /// Hour-based time estimate in hours. Positive values set it (deriving `size` unless `size` is
     /// also given) and exactly 0 clears it. Absent leaves it unchanged.
     estimate_hours: Option<f64>,
+    /// Points estimate. Positive values set it and exactly 0 clears it. Absent leaves it
+    /// unchanged, and the hour estimate is never touched.
+    points: Option<f64>,
     /// JSON object merged into the task's metadata (see Fields). Null clears all metadata, and
     /// absent leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
@@ -7570,6 +8022,7 @@ impl UpdateTaskInput {
             due_done,
             due_target_column_id,
             estimate_hours,
+            points,
             metadata,
             fields,
             timeline_start,
@@ -7588,6 +8041,7 @@ impl UpdateTaskInput {
             && due_done.is_none()
             && due_target_column_id.is_none()
             && estimate_hours.is_none()
+            && points.is_none()
             && metadata.is_none()
             && fields.is_none()
             && timeline_start.is_none()
@@ -7729,6 +8183,17 @@ fn update_history(
             format!("Changed the time estimate to {label}"),
             change,
         ));
+    }
+    if after.points != before.points {
+        let detail = match after.points {
+            Some(points) => format!("Changed the points estimate to {}", format_points(points)),
+            None => "Cleared the points estimate".to_string(),
+        };
+        let change = EventChange {
+            from: before.points.map(format_points),
+            to: after.points.map(format_points),
+        };
+        events.push(("points_updated", detail, change));
     }
     if after.color_id != before.color_id {
         let change = EventChange {
@@ -7972,6 +8437,10 @@ async fn update_task(
         .estimate_hours
         .map(|raw| normalize_estimate_hours(raw).map_err(AppError::bad_request))
         .transpose()?;
+    let points = input
+        .points
+        .map(|raw| normalize_points(raw).map_err(AppError::bad_request))
+        .transpose()?;
     let users = db.list_users().map_err(AppError::from)?;
     if input.labels.is_some() && (input.labels_add.is_some() || input.labels_remove.is_some()) {
         return Err(AppError::bad_request(
@@ -8060,10 +8529,13 @@ async fn update_task(
                 // Setting the estimate derives the pomodoro size unless `size` was given explicitly
                 // in the same request.
                 if let Some(hours) = estimate {
-                    task.estimate_hours = hours.map(crate::db::round_estimate);
+                    task.estimate_hours = hours.map(round_estimate);
                     if let (None, Some(hours)) = (size, hours) {
                         task.size = estimate_hours_to_size(hours, context.pomodoro_minutes);
                     }
+                }
+                if let Some(points) = points {
+                    task.points = points.map(round_estimate);
                 }
                 if let Some(member_ids) = &input.member_ids {
                     task.set_members(member_ids.clone());
@@ -8386,6 +8858,20 @@ fn normalize_estimate_hours(raw: f64) -> Result<Option<f64>, &'static str> {
     }
 }
 
+/// Normalizes a points estimate from the API: a value that rounds to a positive hundredth or more
+/// sets it, exactly 0 clears it, anything else (negative, NaN, infinite, below a hundredth) is
+/// invalid.
+pub(crate) fn normalize_points(raw: f64) -> Result<Option<f64>, &'static str> {
+    let rounded = round_estimate(raw);
+    if raw == 0.0 {
+        Ok(None)
+    } else if rounded.is_finite() && rounded > 0.0 {
+        Ok(Some(rounded))
+    } else {
+        Err("points must be a number of at least 0.01 (0 clears the estimate)")
+    }
+}
+
 /// Derives the pomodoro size (1..=4) from an hour estimate using the configured pomodoro length.
 /// Hours stay the canonical estimate, and `size` remains the derived/display concept for the
 /// pomodoro legend and legacy size-based coloring.
@@ -8425,8 +8911,9 @@ struct MoveTaskInput {
     swimlane_id: Option<String>,
     /// Index among the target cell's other tasks. In a Done column it counts them in on-screen
     /// order (date groups: Today first, then future and past days newest first, undated last) and
-    /// the task lands beside a neighbor from its own date group.
-    position: f64,
+    /// the task lands beside a neighbor from its own date group. Without one the task goes where a
+    /// new task goes, the top or bottom of the cell per the board's "Position of new tasks".
+    position: Option<f64>,
 }
 
 /// Moves a task to a new column/swimlane/position. Crossing into the Done column stamps
@@ -8449,7 +8936,7 @@ struct MoveTaskInput {
         (status = 200, description = "Moved task detail", body = TaskDetail),
         (status = 400, description = "Unknown column"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit). `stale_fence`: a live claim holds another fence"),
+        (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit). `stale_fence`: a live claim holds another fence. Without a code: the target board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -8487,6 +8974,11 @@ async fn move_task(
         .filter(|s| !s.is_empty())
         .map(|id| lane_on_board(db, &id, &to_column.row().board_id))
         .transpose()?;
+
+    let requested = match input.position {
+        Some(position) => position,
+        None => placement_index(new_task_placement(db, &to_column.row().board_id)?),
+    };
 
     // An archiving cell shows its tasks grouped by date, so its drop index counts on-screen cards
     // rather than board order.
@@ -8547,11 +9039,11 @@ async fn move_task(
             Local::now().date_naive(),
             &siblings,
             moved,
-            input.position,
+            requested,
             current,
         ) as f64
     } else {
-        input.position
+        requested
     };
 
     // Crossing into the Done column stamps `completed_at` and crossing out clears it. The move,
@@ -8626,9 +9118,10 @@ struct BulkTasksInput {
     /// `move`: the target swimlane on the target board. Without one each task keeps its lane, or
     /// takes the target board's first lane when the column is on another board.
     swimlane_id: Option<String>,
-    /// `move`: the index the first task takes among the target cell's other tasks, 0 when
-    /// absent. The next tasks follow it in the order of `task_ids`. An archiving column takes the
-    /// tasks at its end.
+    /// `move`: the index the first task takes among the target cell's other tasks. When absent
+    /// the tasks go where new tasks go, the top or bottom of the cell per the board's "Position of
+    /// new tasks". The next tasks follow it in the order of `task_ids`. An archiving column takes
+    /// the tasks at its end.
     position: Option<f64>,
     /// `color`: the color slot id on the board.
     color_id: Option<String>,
@@ -8759,7 +9252,10 @@ async fn bulk_tasks(
             let position = if ColumnSettings::from_column(column.row()).archiving {
                 f64::from(u32::MAX)
             } else {
-                input.position.unwrap_or(0.0)
+                match input.position {
+                    Some(position) => position,
+                    None => placement_index(new_task_placement(db, &column.row().board_id)?),
+                }
             };
             match db
                 .move_tasks_logged(&tasks, &column, swimlane_id.as_deref(), position, actor)
@@ -9261,6 +9757,8 @@ struct TaskDetail {
     timeline_start: Option<String>,
     /// Last day of the task's timeline as `YYYY-MM-DD`, never before `timeline_start`, or null.
     timeline_end: Option<String>,
+    /// The id of the image attachment shown as the task's cover, or null.
+    cover_id: Option<String>,
     /// Watch flag: task More menu "Watch" (KanbanFlow parity).
     watched: bool,
     subtasks: Vec<SubtaskDetail>,
@@ -9275,6 +9773,10 @@ struct TaskDetail {
     due_done: bool,
     /// The column the task should reach by its due date, where null means "Any archived column".
     due_target_column_id: Option<String>,
+    /// The points estimate, or null when none is set.
+    points: Option<f64>,
+    /// The task's number such as `PS-1`, or null when it was created without numbering.
+    number: Option<String>,
     /// Caller-owned JSON object, or null when unset.
     #[schema(value_type = Option<Object>)]
     metadata: Option<serde_json::Map<String, serde_json::Value>>,
@@ -9408,6 +9910,7 @@ impl TaskDetail {
             grouping_date: task.grouping_date,
             timeline_start: task.timeline_start,
             timeline_end: task.timeline_end,
+            cover_id: task.cover_id,
             watched: task.watched,
             subtasks: task.subtasks.iter().map(SubtaskDetail::from).collect(),
             labels: task.labels,
@@ -9415,6 +9918,8 @@ impl TaskDetail {
             due_repeat: task.due_repeat,
             due_done: task.due_done,
             due_target_column_id: task.due_target_column_id,
+            points: task.points,
+            number: task.number,
             metadata: task.metadata,
             links,
             blocked,
@@ -10664,7 +11169,12 @@ async fn add_subtasks_from_template(
 #[derive(serde::Serialize, ToSchema)]
 struct MemberDetail {
     id: String,
+    /// The account's handle.
     username: String,
+    /// The name to show: the account's full name, or its handle without one.
+    display_name: String,
+    /// How the member's avatar renders.
+    avatar: AvatarView,
 }
 
 // ---- Task extras: labels, due dates, comments, attachments, history ---- (KanbanFlow parity)
@@ -11288,7 +11798,7 @@ async fn upload_attachment(
         store_json_upload(&account, &task, &user, &headers, body, limit).await?
     };
     show_account_handle(&mut attachment, &user.handle);
-    Ok(Json(UploadReply::One(attachment)).into_response())
+    Ok(Json(UploadReply::One(Box::new(attachment))).into_response())
 }
 
 /// The reply to an upload: the stored attachment, or the results of a multipart body.
@@ -11296,7 +11806,7 @@ async fn upload_attachment(
 #[serde(untagged)]
 enum UploadReply {
     /// A raw or JSON upload stored one file.
-    One(TaskAttachment),
+    One(Box<TaskAttachment>),
     /// A multipart upload answered per file.
     Many(UploadResults),
 }
@@ -11800,6 +12310,334 @@ async fn delete_attachment(
     Ok(StatusCode::OK)
 }
 
+/// Request body to attach a link to a task.
+#[derive(Deserialize, ToSchema)]
+struct AttachLinkInput {
+    /// The link's name, at most 255 bytes, without `/` or `\`.
+    name: String,
+    /// The address, an `http://` or `https://` URL of at most 2000 characters.
+    url: String,
+}
+
+/// Attaches a named link to a task and returns its metadata. A link is an attachment whose `url`
+/// is set and whose file holds the address, so it counts toward the task's attachments and
+/// downloads as a `text/uri-list` file. The task refuses a second link to the same address, or a
+/// second attachment with the same name, with 409 `duplicate_attachment`. The attachment adds an
+/// `attachment_added` event to the task's history, and a rename never changes the address.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/attachments/link",
+    operation_id = "attach_link",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = AttachLinkInput,
+    responses(
+        (status = 200, description = "The stored link's attachment metadata", body = TaskAttachment),
+        (status = 400, description = "The name is empty, too long, or contains `/` or `\\`, or the address is not an `http://` or `https://` URL"),
+        (status = 404, description = "Task not found"),
+        (status = 409, description = "`quota_exceeded`: the task holds its most attachments. `duplicate_attachment`: the task already holds this address or a file with this name"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn attach_link(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskAttachment>, AppError> {
+    let input: AttachLinkInput = parse_body(&headers, body).await?;
+    let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err(AppError::bad_request("link name is required"));
+    }
+    if name.contains(['/', '\\']) {
+        return Err(AppError::bad_request("link name must not contain / or \\"));
+    }
+    TextCap::ATTACHMENT_NAME.check(name)?;
+    let url = TaskAttachment::link_url(&input.url).map_err(AppError::bad_request)?;
+    let mut attachment = account
+        .add_link(&task, name, &url, user.actor())
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    show_account_handle(&mut attachment, &user.handle);
+    Ok(Json(attachment))
+}
+
+/// Request body to create a text document attachment.
+#[derive(Deserialize, ToSchema)]
+struct CreateDocumentInput {
+    /// The document's name, at most 255 bytes, without `/` or `\`. `.txt` is appended unless the
+    /// name ends with it.
+    name: String,
+    /// The document's markdown text, which the request body limit of 256 KiB bounds.
+    #[serde(default)]
+    text: String,
+}
+
+/// Request body to save a text document.
+#[derive(Deserialize, ToSchema)]
+struct SaveDocumentInput {
+    /// A new name for the document, which keeps its extension. Absent keeps the name.
+    name: Option<String>,
+    /// The document's markdown text, which the request body limit of 256 KiB bounds.
+    text: String,
+}
+
+/// Returns the name `name` trimmed, or the 400 that refuses an empty one or one with `/` or `\`.
+fn document_name(name: &str) -> Result<&str, AppError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::bad_request("document name is required"));
+    }
+    if name.contains(['/', '\\']) {
+        return Err(AppError::bad_request(
+            "document name must not contain / or \\",
+        ));
+    }
+    Ok(name)
+}
+
+/// Creates a text document attachment holding markdown `text` and returns its metadata. The
+/// document is an attachment with the `text/markdown` type and a `.txt` name, so it lists,
+/// downloads, renames and deletes like a file, and the creation adds an `attachment_added` event
+/// to the task's history. A document holds at most 256 KiB, and two documents on one task cannot
+/// share a name.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/attachments/document",
+    operation_id = "create_document",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = CreateDocumentInput,
+    responses(
+        (status = 200, description = "The stored document's attachment metadata", body = TaskAttachment),
+        (status = 400, description = "The name is empty, too long, or contains `/` or `\\`"),
+        (status = 404, description = "Task not found"),
+        (status = 409, description = "`quota_exceeded`: the task holds its most attachments, or the account or the board its most stored bytes. `duplicate_attachment`: the task already holds an attachment with this name"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn create_document(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskAttachment>, AppError> {
+    let input: CreateDocumentInput = parse_body(&headers, body).await?;
+    let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let name = document_name(&input.name)?;
+    let mut document = account
+        .add_document(&task, name, &input.text, user.actor())
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    show_account_handle(&mut document, &user.handle);
+    Ok(Json(document))
+}
+
+/// Saves the text of a text document and returns its metadata. The earlier text stays as a
+/// version, at most 50 of them, the oldest dropped first, and the save adds an
+/// `attachment_edited` event to the task's history. A `name` renames the document in the same
+/// save and keeps its extension.
+#[utoipa::path(
+    put,
+    path = "/api/tasks/{id}/attachments/{attachment_id}/document",
+    operation_id = "save_document",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("attachment_id" = String, Path, description = "Attachment id of the text document"),
+    ),
+    request_body = SaveDocumentInput,
+    responses(
+        (status = 200, description = "The saved document's attachment metadata", body = TaskAttachment),
+        (status = 400, description = "The name is empty, too long, or contains `/` or `\\`, or the attachment is not a text document"),
+        (status = 404, description = "Task or attachment not found"),
+        (status = 409, description = "`quota_exceeded`: the account or the board holds its most stored bytes"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn save_document(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path((id, attachment_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskAttachment>, AppError> {
+    let input: SaveDocumentInput = parse_body(&headers, body).await?;
+    let task = found(account.task(&id), "task or attachment not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let held = task
+        .row()
+        .attachments
+        .iter()
+        .find(|a| a.id == attachment_id)
+        .ok_or_else(|| AppError::not_found("task or attachment not found"))?;
+    if !held.is_document() {
+        return Err(AppError::bad_request(
+            "the attachment is not a text document",
+        ));
+    }
+    let name = input.name.as_deref().map(document_name).transpose()?;
+    let mut document = account
+        .save_document(&task, &attachment_id, name, &input.text, user.actor())
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task or attachment not found"))?;
+    show_account_handle(&mut document, &user.handle);
+    Ok(Json(document))
+}
+
+/// Lists the earlier texts of a text document, newest first. The current text is the document's
+/// file, and its `edited_at` says when it was saved.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/attachments/{attachment_id}/versions",
+    operation_id = "list_document_versions",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("attachment_id" = String, Path, description = "Attachment id of the text document"),
+    ),
+    responses(
+        (status = 200, description = "The earlier texts, newest first", body = Vec<AttachmentVersion>),
+        (status = 404, description = "Task or attachment not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_document_versions(
+    account: AccountDb,
+    Path((id, attachment_id)): Path<(String, String)>,
+) -> Result<Json<Vec<AttachmentVersion>>, AppError> {
+    let task = found(account.task(&id), "task or attachment not found")?;
+    let document = task
+        .row()
+        .attachments
+        .iter()
+        .find(|a| a.id == attachment_id)
+        .ok_or_else(|| AppError::not_found("task or attachment not found"))?;
+    Ok(Json(document.versions.iter().rev().cloned().collect()))
+}
+
+/// Returns the text of one earlier version of a text document as `text/plain`.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/attachments/{attachment_id}/versions/{version_id}",
+    operation_id = "read_document_version",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("attachment_id" = String, Path, description = "Attachment id of the text document"),
+        ("version_id" = String, Path, description = "Version id from the version list"),
+    ),
+    responses(
+        (status = 200, description = "The version's text", content_type = "text/plain"),
+        (status = 404, description = "Task, attachment or version not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn read_document_version(
+    account: AccountDb,
+    Path((id, attachment_id, version_id)): Path<(String, String, String)>,
+) -> Result<Response, AppError> {
+    let task = found(account.task(&id), "task not found")?;
+    let bytes = account
+        .read_document_version(&task, &attachment_id, &version_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("version not found"))?;
+    Ok((
+        StatusCode::OK,
+        [(CONTENT_TYPE, "text/plain; charset=utf-8")],
+        bytes,
+    )
+        .into_response())
+}
+
+/// Makes an image attachment the task's cover image and returns its metadata. The task holds at
+/// most one cover, so a new one replaces the old, and the change adds a `cover_set` event to the
+/// task's history. Deleting the cover attachment removes the cover with a `cover_removed` event.
+#[utoipa::path(
+    put,
+    path = "/api/tasks/{id}/attachments/{attachment_id}/cover",
+    operation_id = "set_cover_image",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("attachment_id" = String, Path, description = "Attachment id of an image"),
+    ),
+    responses(
+        (status = 200, description = "The task's attachment now shown as its cover", body = TaskAttachment),
+        (status = 400, description = "The attachment is not an image"),
+        (status = 404, description = "Task or attachment not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn set_cover_image(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path((id, attachment_id)): Path<(String, String)>,
+) -> Result<Json<TaskAttachment>, AppError> {
+    change_cover(&account, &user, &id, &attachment_id, CoverChange::Set).await
+}
+
+/// Stops an image attachment being the task's cover image, which adds a `cover_removed` event to
+/// the task's history. An attachment that is not the cover stays as it is.
+#[utoipa::path(
+    delete,
+    path = "/api/tasks/{id}/attachments/{attachment_id}/cover",
+    operation_id = "remove_cover_image",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("attachment_id" = String, Path, description = "Attachment id of an image"),
+    ),
+    responses(
+        (status = 200, description = "The attachment, no longer the cover", body = TaskAttachment),
+        (status = 400, description = "The attachment is not an image"),
+        (status = 404, description = "Task or attachment not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn remove_cover_image(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path((id, attachment_id)): Path<(String, String)>,
+) -> Result<Json<TaskAttachment>, AppError> {
+    change_cover(&account, &user, &id, &attachment_id, CoverChange::Clear).await
+}
+
+/// Sets or clears the cover of task `id` on its image attachment `attachment_id`.
+async fn change_cover(
+    account: &AccountDb,
+    user: &AuthUser,
+    id: &str,
+    attachment_id: &str,
+    cover: CoverChange,
+) -> Result<Json<TaskAttachment>, AppError> {
+    let task = found(account.task(id), "task or attachment not found")?;
+    ensure_unlocked(account, user, task.board_id(), task.row())?;
+    let mut attachment = task
+        .row()
+        .attachments
+        .iter()
+        .find(|a| a.id == attachment_id)
+        .cloned()
+        .ok_or_else(|| AppError::not_found("task or attachment not found"))?;
+    if !attachment.is_image() {
+        return Err(AppError::bad_request("the attachment is not an image"));
+    }
+    account
+        .set_cover(&task, attachment_id, cover, user.actor())
+        .map_err(AppError::from)?
+        .filter(|held| *held)
+        .ok_or_else(|| AppError::not_found("task or attachment not found"))?;
+    show_account_handle(&mut attachment, &user.handle);
+    Ok(Json(attachment))
+}
+
 /// Dedicated in-modal time-log sub-view: "← {task name}" back header, "Time log" title, "+ ADD
 /// ENTRY", and day-grouped entries, each with avatar + member name + duration + 12h From-To range +
 /// red trash icon.
@@ -12060,13 +12898,19 @@ async fn list_members(
     account: AccountDb,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<Vec<MemberDetail>>, AppError> {
+    let settings = account.settings().map_err(AppError::from)?;
     let members = account
         .list_users()
         .map_err(AppError::from)?
         .into_iter()
-        .map(|user| MemberDetail {
-            id: user.id,
-            username: user.username,
+        .map(|user| {
+            let display_name = settings.display_name(&user.username);
+            MemberDetail {
+                id: user.id,
+                avatar: AvatarView::of(&settings, &display_name),
+                display_name,
+                username: user.username,
+            }
         })
         .collect();
     Ok(Json(members))
@@ -12088,6 +12932,7 @@ async fn task_card(
 fn subtask_member_chips(
     subtasks: &[Subtask],
     users: &[UserRow],
+    settings: &Settings,
 ) -> HashMap<String, Vec<MemberChip>> {
     subtasks
         .iter()
@@ -12096,9 +12941,12 @@ fn subtask_member_chips(
             let chips = users
                 .iter()
                 .filter(|user| sub.member_ids.contains(&user.id))
-                .map(|user| MemberChip {
-                    initials: user_initials(&user.username),
-                    username: user.username.clone(),
+                .map(|user| {
+                    let name = settings.display_name(&user.username);
+                    MemberChip {
+                        avatar: AvatarView::of(settings, &name),
+                        username: name,
+                    }
                 })
                 .collect();
             (sub.id.clone(), chips)
@@ -12179,20 +13027,24 @@ async fn task_modal(
         .as_ref()
         .and_then(Responsible::member_id);
     let users = db.list_users().map_err(AppError::from)?;
+    let settings = db.settings().map_err(AppError::from)?;
     let assigned_members: Vec<MemberView> = users
         .iter()
         .filter(|user| task.member_ids.iter().any(|m| m == &user.id))
-        .map(|user| MemberView {
-            username: user.username.clone(),
-            initials: user_initials(&user.username),
-            responsible: responsible_id == Some(user.id.as_str()),
+        .map(|user| {
+            let name = settings.display_name(&user.username);
+            MemberView {
+                avatar: AvatarView::of(&settings, &name),
+                username: name,
+                responsible: responsible_id == Some(user.id.as_str()),
+            }
         })
         .collect();
     let responsible_session = match &row.row().responsible {
         Some(Responsible::Session { name }) => Some(name.clone()),
         _ => None,
     };
-    let subtask_chips = subtask_member_chips(&row.row().subtasks, &users);
+    let subtask_chips = subtask_member_chips(&row.row().subtasks, &users, &settings);
     let board_id = column
         .as_ref()
         .map(|c| c.row().board_id.clone())
@@ -12203,7 +13055,9 @@ async fn task_modal(
         .map(|board| board.row().name.clone())
         .unwrap_or_default();
     let groups = relation_groups(db, &board_id, &id)?;
+    let custom_css = board_custom_css(db, &board_id)?;
     Ok(ModalTemplate {
+        custom_css,
         board_id,
         board_name,
         relation_count: groups.iter().map(|group| group.rows.len()).sum(),
@@ -12216,7 +13070,7 @@ async fn task_modal(
         responsible_session,
         column_name,
         created_short,
-        composer_initials: user_initials(&user.username),
+        composer_initials: user_initials(&settings.display_name(&user.username)),
         claim_as: user.username.clone(),
         user_fields,
         system_fields,
@@ -12569,6 +13423,29 @@ struct BurndownTemplate {
     chrome: ShellChrome,
 }
 
+/// Returns the style rules that paint the custom colors of board `board_id`.
+fn board_custom_css(db: &AccountDb, board_id: &str) -> Result<String, AppError> {
+    let mut css = String::new();
+    for color in db.list_colors(board_id).map_err(AppError::from)? {
+        if !is_custom_color(&color.value) {
+            continue;
+        }
+        let (value, bg, border, light) = (
+            &color.value,
+            &color.background_hex,
+            &color.border_hex,
+            &color.light_hex,
+        );
+        css.push_str(&format!(
+            ".taskColor-{value}{{background-color:{bg}}}\
+             .taskBorderColor-{value}{{border-color:{border}}}\
+             .taskBorderColorBg-{value}{{background-color:{border}}}\
+             .taskColorVars-{value}{{--taskColor:{bg};--taskColorBorder:{border};--taskColorLight:{light}}}"
+        ));
+    }
+    Ok(css)
+}
+
 /// The enabled colors a report page hands to the task modal it can open.
 fn modal_colors(db: &AccountDb, board_id: &str) -> Result<Vec<ColorView>, AppError> {
     Ok(db
@@ -12908,14 +13785,11 @@ async fn api_timer_log(
                     Ok(dt) => {
                         let local = dt.with_timezone(&Local);
                         let end = local + Duration::seconds(e.duration_seconds());
+                        let clock = TimeFormat::current().clock();
                         (
                             local.format("%b %d, %Y").to_string(),
-                            end.format("%-I:%M %p").to_string(),
-                            format!(
-                                "{} - {}",
-                                local.format("%-I:%M %p"),
-                                end.format("%-I:%M %p")
-                            ),
+                            end.format(clock).to_string(),
+                            format!("{} - {}", local.format(clock), end.format(clock)),
                         )
                     }
                     Err(_) => (e.started_at.clone(), String::new(), String::new()),
@@ -13622,7 +14496,10 @@ struct UpdateColumnInput {
     /// Settings bag for the column dialog, sent as a string of valid JSON. The keys with an effect
     /// are `sorting` (`none`, `due`, `color`, `name`, `created` or `added`) for the order of the
     /// column's tasks, `column_sum` (`none`, `count` or `hours`) for the header badge, and
-    /// `group_by_date` (true or false, true by default for a Done column) for date headers.
+    /// `group_by_date` (true or false, true by default for a Done column) for date headers, and
+    /// `wip_limit_type` (`count` by default, or `hours`) for what `wip_limit` counts. The card
+    /// display keys are `prop_subtasks` (`hide`, `next_1` to `next_5`, `unfinished` or `show`) and
+    /// `prop_due_dates` (`overdue`, `active_7d` or `show`).
     config_json: Option<String>,
 }
 
@@ -16951,8 +17828,8 @@ struct BoardConfigInput {
     due_time: Option<String>,
     /// Archive/unarchive the board. When present, it is merged into the board's opaque config bag.
     archived: Option<bool>,
-    /// "Position of new tasks": true puts new tasks at the top of their column, false (the default)
-    /// at the bottom.
+    /// "Position of new tasks": true puts new tasks, and tasks moved without a position, at the top
+    /// of their column, false (the default) at the bottom.
     new_tasks_at_top: Option<bool>,
     /// Folds the swimlane names into a narrow rotated column, or shows them in full.
     lane_names_folded: Option<bool>,
@@ -16966,6 +17843,147 @@ struct BoardConfigInput {
     /// Whether the default member also becomes the task's responsible member. True when never
     /// set.
     default_member_responsible: Option<bool>,
+    /// "Estimation unit": true estimates in points instead of hours and false (the default) in
+    /// hours. It switches at once in either direction, and each task keeps both its hour estimate
+    /// and its points.
+    estimate_in_points: Option<bool>,
+    /// "Task numbering". An object activates the numbering of a board that has none, with a
+    /// `name`, a `prefix` and a `start` value, and renames or re-prefixes the numbering of a board
+    /// that has one. `null` deletes the numbering. A prefix change and a delete leave the numbers
+    /// the tasks already hold alone.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    #[schema(value_type = Option<NumberingInput>)]
+    numbering: Option<Option<NumberingInput>>,
+}
+
+/// The settings of a board's task numbering.
+#[derive(Deserialize, ToSchema)]
+struct NumberingInput {
+    /// What the numbering is called, 1 to 50 characters. Required to activate.
+    name: Option<String>,
+    /// The letters and digits that start every number, 1 to 10 of them, as in `PS`. Required to
+    /// activate.
+    prefix: Option<String>,
+    /// The number the first new task takes, 1 when absent. When the board's tasks already hold
+    /// numbers under the prefix, numbering resumes after the highest, so no number is reused.
+    /// At most 9007199254740991, the largest integer a JSON client reads exactly.
+    /// Only activating takes it.
+    start: Option<u64>,
+}
+
+/// What a config save does to a board's numbering, checked before anything is written.
+enum NumberingChange {
+    /// Removes the numbering.
+    Remove,
+    /// Gives the board a numbering.
+    Activate {
+        /// What the numbering is called.
+        name: String,
+        /// The letters and digits that start every number.
+        prefix: String,
+        /// The number the first new task takes.
+        start: u64,
+    },
+    /// Renames the numbering or changes its prefix.
+    Update {
+        /// The new name, or none to keep it.
+        name: Option<String>,
+        /// The new prefix, or none to keep it.
+        prefix: Option<String>,
+    },
+}
+
+impl NumberingChange {
+    /// Returns the change that `input` asks of `board`, or the refusal of an input that breaks a
+    /// rule, including a prefix under which the board's tasks hold the last number.
+    fn plan(db: &AccountDb, board: &OwnedBoard, input: NumberingInput) -> Result<Self, AppError> {
+        match board.row().numbering() {
+            Some(_) if input.start.is_some() => Err(AppError::bad_request(
+                "start applies only when the numbering is activated",
+            )),
+            Some(current) => {
+                let (_, prefix) = db
+                    .validate_numbering(
+                        input.name.as_deref().unwrap_or(&current.name),
+                        input.prefix.as_deref().unwrap_or(&current.prefix),
+                    )
+                    .map_err(AppError::bad_request)?;
+                if prefix != current.prefix {
+                    let highest = db
+                        .highest_task_number(board, &prefix)
+                        .map_err(AppError::from)?;
+                    Numbering::resume_at(current.next, highest).map_err(AppError::bad_request)?;
+                }
+                Ok(Self::Update {
+                    name: input.name,
+                    prefix: input.prefix,
+                })
+            }
+            None => {
+                let (Some(name), Some(prefix)) = (input.name, input.prefix) else {
+                    return Err(AppError::bad_request(
+                        "activating a numbering needs a name and a prefix",
+                    ));
+                };
+                let (_, held) = db
+                    .validate_numbering(&name, &prefix)
+                    .map_err(AppError::bad_request)?;
+                let start = input.start.unwrap_or(1).max(1);
+                let highest = db
+                    .highest_task_number(board, &held)
+                    .map_err(AppError::from)?;
+                Numbering::resume_at(start, highest).map_err(AppError::bad_request)?;
+                Ok(Self::Activate {
+                    name,
+                    prefix,
+                    start,
+                })
+            }
+        }
+    }
+
+    /// Writes the change to `board`, answering a refused activation or update as a bad request.
+    fn apply(self, db: &AccountDb, board: &OwnedBoard) -> Result<(), AppError> {
+        match self {
+            Self::Remove => db.delete_numbering(board).map(drop).map_err(AppError::from),
+            Self::Activate {
+                name,
+                prefix,
+                start,
+            } => db
+                .activate_numbering(board, &name, &prefix, start)
+                .map(drop)
+                .map_err(|error| AppError::bad_request(error.to_string())),
+            Self::Update { name, prefix } => db
+                .update_numbering(board, name.as_deref(), prefix.as_deref())
+                .map(drop)
+                .map_err(|error| AppError::bad_request(error.to_string())),
+        }
+    }
+}
+
+/// A board's task numbering as the config shows it.
+#[derive(Serialize, ToSchema)]
+struct NumberingView {
+    /// What the numbering is called.
+    name: String,
+    /// The letters and digits that start every number.
+    prefix: String,
+    /// The number the next new task takes.
+    next: u64,
+    /// The label the next new task takes, such as `PS-4`.
+    example: String,
+}
+
+impl From<Numbering> for NumberingView {
+    fn from(numbering: Numbering) -> Self {
+        Self {
+            example: Numbering::label(&numbering.prefix, numbering.next),
+            name: numbering.name,
+            prefix: numbering.prefix,
+            next: numbering.next,
+        }
+    }
 }
 
 #[derive(Serialize, ToSchema)]
@@ -16990,6 +18008,10 @@ struct BoardConfigView {
     default_member: String,
     /// Whether the default member also becomes responsible.
     default_member_responsible: bool,
+    /// Whether the board estimates in points instead of hours.
+    estimate_in_points: bool,
+    /// The board's task numbering, or null when it has none.
+    numbering: Option<NumberingView>,
 }
 
 /// Merges per-board UI settings into the board's opaque config bag (the Color legend Menu toggle
@@ -17068,6 +18090,12 @@ async fn update_board_config(
             serde_json::Value::Bool(responsible),
         );
     }
+    if let Some(in_points) = input.estimate_in_points {
+        updates.insert(
+            ESTIMATE_IN_POINTS_KEY.to_string(),
+            serde_json::Value::Bool(in_points),
+        );
+    }
     if let Some(raw) = input.due_time.as_deref() {
         let time = parse_due_time(raw.trim()).ok_or_else(|| {
             AppError::bad_request(format!("invalid due_time \"{raw}\": use 24-hour HH:MM"))
@@ -17077,6 +18105,11 @@ async fn update_board_config(
             serde_json::Value::String(time.format("%H:%M").to_string()),
         );
     }
+    let numbering = match input.numbering {
+        None => None,
+        Some(None) => Some(NumberingChange::Remove),
+        Some(Some(requested)) => Some(NumberingChange::plan(db, &board, requested)?),
+    };
     db.set_board_config(&board, &updates).map_err(|e| {
         if e.to_string().contains("last active board") {
             AppError::bad_request(e.to_string())
@@ -17084,6 +18117,9 @@ async fn update_board_config(
             AppError::from(e)
         }
     })?;
+    if let Some(change) = numbering {
+        change.apply(db, &board)?;
+    }
     let board = found(db.board(&id), "board not found")?;
     Ok(Json(BoardConfigView {
         legend_visible: board.row().config_bool("legend_visible"),
@@ -17094,6 +18130,8 @@ async fn update_board_config(
         bin_permanent_delete: board.row().config_bool(BIN_PERMANENT_DELETE_KEY),
         default_member: board.row().default_member(),
         default_member_responsible: board.row().default_member_responsible(),
+        estimate_in_points: board.row().config_bool(ESTIMATE_IN_POINTS_KEY),
+        numbering: board.row().numbering().map(NumberingView::from),
     }))
 }
 
@@ -17158,6 +18196,65 @@ async fn update_board_rules(
         .map_err(AppError::bad_request)?;
     let mut updates = serde_json::Map::new();
     updates.insert(rules::CONFIG_KEY.to_string(), stored.to_config_value());
+    db.set_board_config(&board, &updates)
+        .map_err(AppError::from)?;
+    Ok(Json(stored))
+}
+
+/// Returns the board's label settings: the highlighted labels with their colors, the show-all
+/// flag, and the labels kept before any card uses them.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/label-settings",
+    operation_id = "get_label_settings",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "The board's label settings", body = LabelSettings),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn get_label_settings(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<LabelSettings>, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    Ok(Json(LabelSettings::from_config(&board.row().config_json)))
+}
+
+/// Replaces the board's label settings. A highlighted label draws a stripe on the edge of its
+/// cards, a flag by the card name and a count in each column header, in its color. `added` keeps
+/// labels no card carries yet, which the filter and the label picker then offer. Needs
+/// `labels.manage`, which the lead and admin presets hold.
+#[utoipa::path(
+    put,
+    path = "/api/boards/{id}/label-settings",
+    operation_id = "update_label_settings",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = LabelSettings,
+    responses(
+        (status = 200, description = "The settings as stored", body = LabelSettings),
+        (status = 400, description = "A color that is not `#rrggbb`, a label over 50 characters, more than 30 highlights or 100 added labels, or an unknown property"),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn update_label_settings(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<LabelSettings>, AppError> {
+    let db = &account;
+    let board = found(db.board(&id), "board not found")?;
+    let input: LabelSettings = parse_body(&headers, body).await?;
+    let stored = input.validated().map_err(AppError::bad_request)?;
+    let mut updates = serde_json::Map::new();
+    updates.insert(labels::CONFIG_KEY.to_string(), stored.to_config_value());
     db.set_board_config(&board, &updates)
         .map_err(AppError::from)?;
     Ok(Json(stored))
@@ -17538,7 +18635,7 @@ async fn delete_template(
 struct BoardSettingsTemplate {
     board_id: String,
     board_name: String,
-    /// "general" | "layout" | "colors" | "task" | "advanced" | "fields" | "rules" | "api" | "webhook" | "email"
+    /// "general" | "layout" | "colors" | "task" | "advanced" | "fields" | "rules" | "labels" | "api" | "webhook" | "email"
     tab: String,
     colors: Vec<ColorView>,
     /// Other boards, for the Colors tab's "Copy from board" dialog.
@@ -17553,6 +18650,10 @@ struct BoardSettingsTemplate {
     new_tasks_at_top: bool,
     /// Whether the board's owner may delete tasks from its recycle bin for good.
     bin_permanent_delete: bool,
+    /// What the board estimates in.
+    estimate_unit: EstimateUnit,
+    /// The board's task numbering, or none.
+    numbering: Option<NumberingView>,
     board_position: i64,
     /// True right after the General tab's rename form saved (?saved=1).
     saved: bool,
@@ -17579,6 +18680,37 @@ struct BoardSettingsTemplate {
     rules_labels: String,
     /// Each column with its entry rule, for the Column rules tab.
     rules_columns: Vec<RulesColumnView>,
+    /// The Labels tab.
+    labels_tab: LabelsTabView,
+}
+
+/// What the Labels tab shows.
+struct LabelsTabView {
+    /// Every label of the board with its card count.
+    rows: Vec<LabelRowView>,
+    /// The colors a new highlight starts with, comma separated.
+    palette: String,
+    /// Whether cards list all their labels.
+    show_all: bool,
+}
+
+/// Colours a newly highlighted label starts with, in turn.
+const HIGHLIGHT_COLORS: [&str; 6] = [
+    "#b8461f", "#2d6cc0", "#2e8b57", "#8a4fbf", "#c28a00", "#c2418a",
+];
+
+/// One label as the Labels tab lists it.
+struct LabelRowView {
+    /// The label.
+    name: String,
+    /// How many cards carry it.
+    cards: usize,
+    /// Whether the board highlights it.
+    highlighted: bool,
+    /// The color it is highlighted in, or the one a highlight would start with.
+    color: String,
+    /// Whether no card carries it, so the tab may remove it.
+    removable: bool,
 }
 
 /// One saved webhook as the API & Webhooks tab lists it.
@@ -17727,6 +18859,26 @@ fn board_settings_context(
 ) -> Result<BoardSettingsTemplate, AppError> {
     let board = found(db.board(board_id), "board not found")?.into_row();
     let rules = ColumnRules::from_config(&board.config_json);
+    let label_settings = LabelSettings::from_config(&board.config_json);
+    let label_rows: Vec<LabelRowView> = db
+        .board_label_counts(board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, cards))| {
+            let current = label_settings.color_of(&name);
+            LabelRowView {
+                highlighted: current.is_some(),
+                color: current.map_or_else(
+                    || HIGHLIGHT_COLORS[index % HIGHLIGHT_COLORS.len()].to_string(),
+                    str::to_string,
+                ),
+                removable: cards == 0,
+                name,
+                cards,
+            }
+        })
+        .collect();
     let board_fields = db.list_fields(board_id).map_err(AppError::from)?;
     let rules_columns: Vec<RulesColumnView> = db
         .list_columns(board_id)
@@ -17817,6 +18969,8 @@ fn board_settings_context(
         .unwrap_or_default();
     let new_tasks_at_top = board.config_bool("new_tasks_at_top");
     let bin_permanent_delete = board.config_bool(BIN_PERMANENT_DELETE_KEY);
+    let estimate_unit = EstimateUnit::of(&board);
+    let numbering = board.numbering().map(NumberingView::from);
     let due_time = board.due_time();
     let chrome = shell_chrome(state, db, username)?;
     let webhooks = if tab == "api" {
@@ -17824,13 +18978,19 @@ fn board_settings_context(
     } else {
         Vec::new()
     };
+    let profile = db.settings().map_err(AppError::from)?;
     let members: Vec<MemberDetail> = db
         .list_users()
         .map_err(AppError::from)?
         .into_iter()
-        .map(|user| MemberDetail {
-            id: user.id,
-            username: user.username,
+        .map(|user| {
+            let display_name = profile.display_name(&user.username);
+            MemberDetail {
+                id: user.id,
+                avatar: AvatarView::of(&profile, &display_name),
+                display_name,
+                username: user.username,
+            }
         })
         .collect();
     let default_member = board.default_member();
@@ -17840,7 +19000,7 @@ fn board_settings_context(
         id => members
             .iter()
             .find(|member| member.id == id)
-            .map_or_else(|| "None".to_string(), |member| member.username.clone()),
+            .map_or_else(|| "None".to_string(), |member| member.display_name.clone()),
     };
     Ok(BoardSettingsTemplate {
         webhooks,
@@ -17850,7 +19010,7 @@ fn board_settings_context(
         default_member_label,
         members,
         due_time: due_time.format("%H:%M").to_string(),
-        due_time_label: due_time.format("%-I:%M %p").to_string(),
+        due_time_label: due_time.format(TimeFormat::current().clock()).to_string(),
         board_id: board.id,
         board_name: board.name,
         tab: tab.to_string(),
@@ -17863,12 +19023,19 @@ fn board_settings_context(
         done_column_name,
         new_tasks_at_top,
         bin_permanent_delete,
+        estimate_unit,
+        numbering,
         board_position: board.position,
         saved,
         error: None,
         fields: board_fields.into_iter().map(FieldDef::from).collect(),
         rules_labels: rules.locked_labels.join("\n"),
         rules_columns,
+        labels_tab: LabelsTabView {
+            rows: label_rows,
+            palette: HIGHLIGHT_COLORS.join(","),
+            show_all: label_settings.show_all,
+        },
     })
 }
 
@@ -17899,6 +19066,7 @@ board_settings_tab!(board_settings_task_page, "task");
 board_settings_tab!(board_settings_advanced_page, "advanced");
 board_settings_tab!(board_settings_fields_page, "fields");
 board_settings_tab!(board_settings_rules_page, "rules");
+board_settings_tab!(board_settings_labels_page, "labels");
 board_settings_tab!(board_settings_api_page, "api");
 board_settings_tab!(board_settings_email_page, "email");
 
@@ -18015,7 +19183,7 @@ struct CountResult {
     request_body = CopyColorsInput,
     responses(
         (status = 200, description = "Number of colors copied", body = CountResult),
-        (status = 400, description = "Invalid input: unknown board or self-copy"),
+        (status = 400, description = "Invalid input: unknown board, self-copy, or a task of the target board uses a custom color the source board lacks by value and hex"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -18080,16 +19248,21 @@ async fn list_board_colors(
 struct CreateColorInput {
     /// Standard color value: yellow | green | blue | red | orange |
     /// purple | magenta | cyan | brown | white. Hex values are fixed per
-    /// value and never user-editable.
-    value: String,
-    /// Defaults to the capitalized color name when empty.
+    /// value and never user-editable. Leave it out and send `hex` to add a custom color.
+    value: Option<String>,
+    /// Background of a custom color, as `#rrggbb`. The board assigns the internal id, the lowest
+    /// free one from `custom1` to `custom10`, and needs a `label`.
+    hex: Option<String>,
+    /// Defaults to the capitalized color name when empty. Required for a custom color.
     label: Option<String>,
     /// Legend tooltip text.
     description: Option<String>,
 }
 
-/// Adds a color slot for a standard value. Errors with 400 when the value is unknown or the board
-/// already has a slot for it.
+/// Adds a color slot for a standard value, or a custom color when `hex` is given. Errors with 400
+/// when the value is unknown or the board already has a slot for it, when the board holds ten custom
+/// colors, or when the hex has a low contrast to black and gray text, in which case the message
+/// ends with a lighter hex to send instead.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/colors",
@@ -18115,10 +19288,21 @@ async fn create_board_color(
     let db = &account;
 
     let board = found(db.board(&id), "board not found")?;
-    if standard_color(&input.value).is_none() {
+    let (value, hex) = match (input.value.as_deref(), input.hex.as_deref()) {
+        (Some(value), None) => (value, None),
+        (None, Some(hex)) => ("", Some(hex)),
+        _ => return Err(AppError::bad_request("send either value or hex")),
+    };
+    if let Some(hex) = hex {
+        let label = input.label.as_deref().unwrap_or_default();
+        let id = db
+            .create_custom_color(&board, hex, label, input.description.as_deref())
+            .map_err(|error| AppError::bad_request(error.to_string()))?;
+        return Ok(Json(IdResult { id }));
+    }
+    if standard_color(value).is_none() {
         return Err(AppError::bad_request(format!(
-            "unknown color value: {}",
-            input.value
+            "unknown color value: {value}"
         )));
     }
     if let Some(label) = input.label.as_deref()
@@ -18130,7 +19314,7 @@ async fn create_board_color(
     let id = db
         .create_color(
             &board,
-            &input.value,
+            value,
             input.label.as_deref(),
             input.description.as_deref(),
         )
@@ -18146,6 +19330,8 @@ struct UpdateColorInput {
     description: Option<String>,
     /// Whether the task color picker offers this color.
     enabled: Option<bool>,
+    /// New background of a custom color, as `#rrggbb`. A standard color refuses it.
+    hex: Option<String>,
     /// True makes this the board's default color.
     is_default: Option<bool>,
     /// Desired position; the board's colors are renumbered densely.
@@ -18190,6 +19376,20 @@ async fn update_board_color(
     if let Some(label) = input.label.as_deref() {
         AccountDb::validate_color_label(label).map_err(AppError::bad_request)?;
     }
+    if let Some(description) = input.description.as_deref() {
+        TextCap::COLOR_DESCRIPTION.check(description)?;
+    }
+    if let Some(hex) = input.hex.as_deref() {
+        AccountDb::validate_custom_hex(hex).map_err(AppError::bad_request)?;
+        if !db
+            .set_custom_color_hex(&color, hex)
+            .map_err(AppError::from)?
+        {
+            return Err(AppError::bad_request(
+                "only a custom color has a hex to change",
+            ));
+        }
+    }
     if !db
         .update_color(
             &color,
@@ -18208,7 +19408,8 @@ async fn update_board_color(
     Ok(StatusCode::OK)
 }
 
-/// Deletes a color slot. Refuses with 400 when it's the board default or tasks still use it.
+/// Deletes a color slot. Refuses with 400 when it's the board default, tasks still use it, or it is
+/// a custom color, which can only be disabled.
 #[utoipa::path(
     delete,
     path = "/api/boards/{id}/colors/{color_id}",
@@ -18220,7 +19421,7 @@ async fn update_board_color(
     ),
     responses(
         (status = 200, description = "Color deleted"),
-        (status = 400, description = "Cannot delete the default color or a color tasks use"),
+        (status = 400, description = "Cannot delete the default color, a color tasks use, or a custom color"),
         (status = 404, description = "Board or color not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -18248,6 +19449,9 @@ async fn delete_board_color(
         ColorDeleteOutcome::NotFound => Err(AppError::not_found("color not found")),
         ColorDeleteOutcome::RefusedDefault => Err(AppError::bad_request(
             "cannot delete the board's default color; pick another default first",
+        )),
+        ColorDeleteOutcome::RefusedCustom => Err(AppError::bad_request(
+            "a custom color cannot be deleted; disable it instead",
         )),
         ColorDeleteOutcome::RefusedInUse(count) => Err(AppError::bad_request(format!(
             "cannot delete color with {count} task(s) using it; recolor them first"
@@ -18742,6 +19946,11 @@ async fn settings_submit(
         modal_folded_groups: current.modal_folded_groups,
         muted_notifications: current.muted_notifications,
         subtask_templates: current.subtask_templates,
+        full_name: current.full_name,
+        dismissed_hints: current.dismissed_hints,
+        avatar: current.avatar,
+        time_format: current.time_format,
+        week_start: current.week_start,
     };
     account.update_settings(&settings).map_err(AppError::from)?;
     Ok(Redirect::to("/settings?saved=1").into_response())
@@ -18836,6 +20045,32 @@ struct SettingsUpdate {
     /// and an id kept only when it names a stored template not yet kept, else regenerated. A list
     /// past 50 templates, or a template past 200 subtask names, is refused with 400.
     subtask_templates: Option<Vec<SubtaskTemplate>>,
+    /// The name members show as, in place of the handle. Trimmed; empty means the handle. A name
+    /// past 80 characters is refused with 400.
+    full_name: Option<String>,
+    /// A first-visit hint to dismiss for good: `members` or `timer`. Any other id is refused with
+    /// 400.
+    dismiss_hint: Option<String>,
+    /// Makes the avatar text on colours, and deletes an uploaded image.
+    avatar: Option<TextAvatar>,
+    /// Whether times of day show on a `12h` or a `24h` clock.
+    time_format: Option<TimeFormat>,
+    /// The first day of the week in calendars and weekly reports: `monday` or `sunday`.
+    week_start: Option<WeekStart>,
+}
+
+/// An avatar of text on colours.
+#[derive(Debug, Deserialize, ToSchema)]
+struct TextAvatar {
+    /// Up to 3 characters. Empty means the initials of the name.
+    #[serde(default)]
+    text: String,
+    /// The text colour as `#rrggbb`. Empty means the default colour.
+    #[serde(default)]
+    text_color: String,
+    /// The background colour as `#rrggbb`. Empty means the default colour.
+    #[serde(default)]
+    background: String,
 }
 
 /// Updates the app settings. Only the fields present change.
@@ -18996,7 +20231,138 @@ async fn api_update_settings(
             })
             .collect();
     }
-    account.update_settings(&settings).map_err(AppError::from)?;
+    if let Some(name) = patch.full_name {
+        settings.full_name = name.trim().to_string();
+    }
+    if let Some(format) = patch.time_format {
+        settings.time_format = format;
+    }
+    if let Some(start) = patch.week_start {
+        settings.week_start = start;
+    }
+    let patched_avatar = patch.avatar.is_some();
+    if let Some(text) = patch.avatar {
+        for color in [&text.text_color, &text.background] {
+            if !color.is_empty() && !is_hex_color(color) {
+                return Err(bad("avatar colours must be #rrggbb"));
+            }
+        }
+        settings.avatar = Avatar {
+            kind: AvatarKind::Text,
+            text: text.text.trim().to_string(),
+            text_color: text.text_color,
+            background: text.background,
+            image_version: settings.avatar.image_version,
+        };
+    }
+    if let Some(hint) = patch.dismiss_hint {
+        if !HINT_IDS.contains(&hint.as_str()) {
+            return Err(bad("invalid dismiss_hint"));
+        }
+        if !settings.dismissed_hints.contains(&hint) {
+            settings.dismissed_hints.push(hint);
+        }
+    }
+    if patched_avatar {
+        account
+            .update_settings_with_text_avatar(&settings, settings.avatar.clone())
+            .map_err(AppError::from)?;
+    } else {
+        account.update_settings(&settings).map_err(AppError::from)?;
+    }
+    Ok(Json(without_hidden_favorites(&account, settings)?))
+}
+
+/// Most bytes of an uploaded avatar image.
+const MAX_AVATAR_BYTES: usize = 128 * 1024;
+
+/// Returns the type of the image `bytes` start as: a PNG, JPEG, GIF or WebP.
+fn avatar_content_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// Serves the account's uploaded avatar image.
+#[utoipa::path(
+    get,
+    path = "/api/avatar",
+    operation_id = "get_avatar",
+    tag = "Settings",
+    responses(
+        (status = 200, description = "The avatar image, a PNG, JPEG, GIF or WebP", content_type = "image/*", body = Vec<u8>),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "The account uploaded no avatar image"),
+    ),
+)]
+async fn get_avatar(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+) -> Result<Response, AppError> {
+    let image = account
+        .avatar_image()
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("no avatar image"))?;
+    let content_type = avatar_content_type(&image).unwrap_or("application/octet-stream");
+    Ok((
+        [
+            (CONTENT_TYPE, content_type),
+            (CACHE_CONTROL, "private, max-age=86400"),
+            (VARY, "Cookie, Authorization"),
+        ],
+        image,
+    )
+        .into_response())
+}
+
+/// Uploads the account's avatar image and makes the avatar show it.
+#[utoipa::path(
+    put,
+    path = "/api/avatar",
+    operation_id = "upload_avatar",
+    tag = "Settings",
+    request_body(content = Vec<u8>, content_type = "image/*", description = "The image: a PNG, JPEG, GIF or WebP of at most 128 KiB, sent with its own `Content-Type`"),
+    responses(
+        (status = 200, description = "Updated app settings", body = Settings),
+        (status = 400, description = "Not a PNG, JPEG, GIF or WebP, or the `Content-Type` names another type"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 409, description = "`quota_exceeded`: the account has no room for the image in its stored-bytes quota"),
+        (status = 413, description = "The image is over 128 KiB"),
+    ),
+)]
+async fn upload_avatar(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Settings>, AppError> {
+    if body.len() > MAX_AVATAR_BYTES {
+        return Err(AppError::with_status(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("the image is over {} KiB", MAX_AVATAR_BYTES / 1024),
+        ));
+    }
+    let content_type = avatar_content_type(&body)
+        .ok_or_else(|| AppError::bad_request("the image must be a PNG, JPEG, GIF or WebP"))?;
+    let declared = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap_or_default().trim());
+    if declared != Some(content_type) {
+        return Err(AppError::bad_request(format!(
+            "the Content-Type must be {content_type}"
+        )));
+    }
+    account.set_avatar_image(&body).map_err(AppError::from)?;
+    let settings = account.settings().map_err(AppError::from)?;
     Ok(Json(without_hidden_favorites(&account, settings)?))
 }
 
@@ -20930,14 +22296,15 @@ async fn timer_today(
                 Some(EntryKind::Manual) | None => "Time",
             }
             .to_string();
+            let clock = TimeFormat::current().clock();
             let started_display = DateTime::parse_from_rfc3339(&entry.started_at)
-                .map(|dt| dt.with_timezone(&Local).format("%-I:%M %p").to_string())
+                .map(|dt| dt.with_timezone(&Local).format(clock).to_string())
                 .unwrap_or(entry.started_at.clone());
             let ended_display = DateTime::parse_from_rfc3339(&entry.started_at)
                 .map(|dt| {
                     (dt + chrono::Duration::seconds(entry.duration_seconds()))
                         .with_timezone(&Local)
-                        .format("%-I:%M %p")
+                        .format(clock)
                         .to_string()
                 })
                 .unwrap_or_default();
@@ -21849,6 +23216,13 @@ them, which the Backups section of the settings page calls after a confirmation.
         edit_comment,
         delete_comment,
         upload_attachment,
+        attach_link,
+        create_document,
+        save_document,
+        set_cover_image,
+        remove_cover_image,
+        list_document_versions,
+        read_document_version,
         download_attachment,
         list_attachments,
         rename_attachment,
@@ -21869,8 +23243,12 @@ them, which the Backups section of the settings page calls after a confirmation.
         api_settings,
         api_timer_settings,
         api_update_settings,
+        get_avatar,
+        upload_avatar,
         delete_board_api,
         update_board_config,
+        get_label_settings,
+        update_label_settings,
         get_board_rules,
         update_board_rules,
         create_column,
@@ -22128,8 +23506,12 @@ them, which the Backups section of the settings page calls after a confirmation.
             SaveTemplateInput,
             CreateColorInput,
             BoardConfigInput,
+            NumberingInput,
+            NumberingView,
             ColumnRules,
             EntryRule,
+            LabelSettings,
+            labels::Highlight,
             BoardConfigView,
             UpdateColorInput,
             ImportedBoard,
@@ -22167,7 +23549,13 @@ struct ApiDoc;
 mod access_tests;
 
 #[cfg(test)]
+mod account_tests;
+
+#[cfg(test)]
 mod agentctl_tests;
+
+#[cfg(test)]
+mod attachment_tests;
 
 #[cfg(test)]
 mod backup_tests;
@@ -22215,6 +23603,9 @@ mod reauth_tests;
 mod search_tests;
 
 #[cfg(test)]
+mod labels_tests;
+
+#[cfg(test)]
 mod rules_tests;
 
 #[cfg(test)]
@@ -22224,6 +23615,9 @@ mod webhook_tests;
 mod server;
 
 #[cfg(test)]
+mod units_tests;
+
+#[cfg(test)]
 mod tests {
     use chrono::{DateTime, Duration, Local, Timelike, Utc};
     use utoipa::OpenApi;
@@ -22231,20 +23625,21 @@ mod tests {
     use super::docs::SKILL_VERSION;
     use super::server::passkey_mode;
     use super::{
-        ApiDoc, Build, COMPLETION_GRACE_SECS, ColorView, CreatedWebhookView, RepeatCadence,
-        TaskCardDisplay, TimerSession, UpdateColumnInput, UpdateTaskInput, build_board_export_data,
-        build_ical_feed, csv_field, entry_badge, estimate_hours_to_size, format_added, format_due,
-        format_due_card, format_entry_duration, format_estimate_hours, format_pomodori,
-        format_relative_day, format_time_kf, format_timeline, generate_feed_token,
-        history_kind_label, ical_escape, ical_fold, is_overdue, log_timer_session,
-        normalize_due_input, normalize_estimate_hours, parse_manual_range, parse_repeat_cadence,
-        router, timer_status_view, version_info,
+        ApiDoc, AvatarView, Build, COMPLETION_GRACE_SECS, ColorView, CreatedWebhookView,
+        EstimateUnit, RepeatCadence, SubtaskDisplay, TaskCardDisplay, TimerSession,
+        UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed, csv_field,
+        entry_badge, estimate_hours_to_size, format_added, format_due, format_due_card,
+        format_entry_duration, format_estimate_hours, format_pomodori, format_relative_day,
+        format_time_kf, format_timeline, generate_feed_token, history_kind_label, ical_escape,
+        ical_fold, is_overdue, log_timer_session, normalize_due_input, normalize_estimate_hours,
+        parse_manual_range, parse_repeat_cadence, router, subtasks_on_face, timer_status_view,
+        version_info,
     };
     use crate::db::{BootstrapToken, Db, NewTimeEntry};
     use crate::models::{
         AccountId, Actor, ActorKind, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, FeedTask,
-        FieldDefRow, FieldKind, FieldOwner, MAX_BOARD_FEEDS, SECONDS_PER_DAY, TaskRow,
-        WebhookEvent, WebhookRow,
+        FieldDefRow, FieldKind, FieldOwner, MAX_BOARD_FEEDS, SECONDS_PER_DAY, TaskRow, TimeFormat,
+        WebhookEvent, WebhookRow, WeekStart,
     };
     use crate::{AppState, auth, markdown};
 
@@ -22401,7 +23796,11 @@ mod tests {
                 chrome: ShellChrome {
                     boards: Vec::new(),
                     username: "audit".into(),
-                    username_initial: "AU".into(),
+                    avatar: AvatarView::default(),
+                    display_name: "audit".into(),
+                    dismissed_hints: Vec::new(),
+                    time_format: TimeFormat::default(),
+                    week_start: WeekStart::default(),
                     sign_out: true,
                     recovery_banner: false,
                     storage_full: None,
@@ -22442,7 +23841,11 @@ mod tests {
             chrome: ShellChrome {
                 boards: Vec::new(),
                 username: "audit".into(),
-                username_initial: "AU".into(),
+                avatar: AvatarView::default(),
+                display_name: "audit".into(),
+                dismissed_hints: Vec::new(),
+                time_format: TimeFormat::default(),
+                week_start: WeekStart::default(),
                 sign_out: true,
                 recovery_banner: false,
                 storage_full: None,
@@ -22532,8 +23935,7 @@ mod tests {
         let d = TaskCardDisplay::from_config_json("{}");
         assert!(!d.content.description);
         assert!(!d.content.labels);
-        assert!(!d.content.subtasks);
-        assert!(d.dates.due);
+        assert_eq!(d.content.subtasks, SubtaskDisplay::Hide);
         assert_eq!(d.due_within_days, Some(7));
         assert!(!d.dates.created);
         assert!(!d.dates.added);
@@ -22546,17 +23948,64 @@ mod tests {
         );
         assert!(d.content.description);
         assert!(d.content.labels);
-        assert!(d.content.subtasks);
-        assert!(d.dates.due);
+        assert_eq!(d.content.subtasks, SubtaskDisplay::All);
         assert_eq!(d.due_within_days, None);
         assert!(d.dates.created);
         assert!(d.dates.added);
     }
 
     #[test]
-    fn card_display_hide_due_dates_should_disable_them() {
-        let d = TaskCardDisplay::from_config_json(r#"{"prop_due_dates":"hide"}"#);
-        assert!(!d.dates.due);
+    fn card_display_overdue_due_dates_should_show_only_the_past() {
+        let d = TaskCardDisplay::from_config_json(r#"{"prop_due_dates":"overdue"}"#);
+        assert_eq!(d.due_within_days, Some(0));
+        let past = local_at(2020, 1, 1, 12);
+        let soon = (Local::now() + Duration::hours(5)).to_rfc3339();
+        assert!(format_due(&past, d.due_within_days).is_some());
+        assert!(format_due(&soon, d.due_within_days).is_none());
+    }
+
+    #[test]
+    fn card_display_should_parse_each_subtasks_option() {
+        use SubtaskDisplay::{All, Hide, NextUnfinished, Unfinished};
+        let parse = |value: &str| {
+            let bag = format!(r#"{{"prop_subtasks":"{value}"}}"#);
+            TaskCardDisplay::from_config_json(&bag).content.subtasks
+        };
+        assert_eq!(parse("hide"), Hide);
+        assert_eq!(parse("next_1"), NextUnfinished(1));
+        assert_eq!(parse("next_5"), NextUnfinished(5));
+        assert_eq!(parse("next_6"), Hide);
+        assert_eq!(parse("unfinished"), Unfinished);
+        assert_eq!(parse("show"), All);
+    }
+
+    #[test]
+    fn face_subtasks_should_list_the_unfinished_ones_a_column_asks_for() {
+        use SubtaskDisplay::{All, Hide, NextUnfinished, Unfinished};
+        let sub = |name: &str, done: bool| crate::models::Subtask {
+            id: name.into(),
+            name: name.into(),
+            done,
+            due_at: None,
+            token_id: None,
+            member_ids: Vec::new(),
+        };
+        let subtasks = vec![
+            sub("a", true),
+            sub("b", false),
+            sub("c", false),
+            sub("d", false),
+        ];
+        let names = |display| {
+            subtasks_on_face(&subtasks, display)
+                .iter()
+                .map(|subtask| subtask.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(names(Hide).is_empty());
+        assert_eq!(names(NextUnfinished(2)), ["b", "c"]);
+        assert_eq!(names(Unfinished), ["b", "c", "d"]);
+        assert_eq!(names(All), ["a", "b", "c", "d"]);
     }
 
     /// "active_7d" shows overdue and near-future dues and hides far-future ones, "show" shows
@@ -22970,6 +24419,8 @@ mod tests {
             due_done: false,
             due_target_column_id: None,
             estimate_hours: None,
+            points: None,
+            number: None,
             labels: Vec::new(),
             subtasks: Vec::new(),
             member_ids: Vec::new(),
@@ -22981,6 +24432,7 @@ mod tests {
             column_entered_at: None,
             comments: Vec::new(),
             attachments: Vec::new(),
+            cover_id: None,
             history: Vec::new(),
             updated_at: None,
             metadata: None,
@@ -24528,6 +25980,8 @@ mod tests {
                 description: String::new(),
                 collapsed: collapsed.contains(&i),
                 wip_limit: None,
+                limit_unit: "count",
+                limit_label: String::new(),
                 count: 0,
                 over_limit: false,
                 overdue_count: usize::from(i == 1),
@@ -24537,6 +25991,7 @@ mod tests {
                 sum_label: None,
                 sum_kind: "count",
                 estimate_minutes: 0,
+                marks: Vec::new(),
             })
             .collect();
         let mut bands: Vec<BandView> = lanes
@@ -24602,10 +26057,16 @@ mod tests {
                 light: "#d6e9ff".into(),
             }],
             legend_visible,
+            custom_css: String::new(),
+            estimate_unit: EstimateUnit::Hours,
             chrome: ShellChrome {
                 boards: Vec::new(),
                 username: "audit".into(),
-                username_initial: "AU".into(),
+                avatar: AvatarView::default(),
+                display_name: "audit".into(),
+                dismissed_hints: Vec::new(),
+                time_format: TimeFormat::default(),
+                week_start: WeekStart::default(),
                 sign_out: true,
                 recovery_banner: false,
                 storage_full: None,
@@ -27189,7 +28650,11 @@ mod tests {
             "the Attachment entry is enabled"
         );
         assert!(empty.contains("Upload file from computer"));
-        for absent in ["New text document", "Dropbox", "Google Drive", "OneDrive"] {
+        assert!(
+            empty.contains("<button type=\"button\" data-tm-act=\"new-document\">"),
+            "the New text document entry is enabled"
+        );
+        for absent in ["Dropbox", "Google Drive", "OneDrive"] {
             assert!(!empty.contains(absent), "{absent}");
         }
         assert!(empty.contains("id=\"modal-attachment-file\""));
@@ -28951,9 +30416,11 @@ mod tests {
                 "default_member",
                 "default_member_responsible",
                 "due_time",
+                "estimate_in_points",
                 "lane_names_folded",
                 "legend_visible",
                 "new_tasks_at_top",
+                "numbering",
             ]
         );
     }

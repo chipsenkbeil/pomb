@@ -5740,3 +5740,55 @@ async fn task_link_should_refuse_boards_outside_the_token_set() {
     let upper = task_link(&fx, "CC0000", &bearer).await;
     assert_eq!(upper.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn an_avatar_image_should_count_against_the_stored_bytes_quota() {
+    const FILE_BYTES: usize = 1000 * 1024;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: 1,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "a.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let png = |len: usize| {
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.resize(len, 7);
+        bytes
+    };
+    let put = |len: usize| {
+        let auth = [
+            ("authorization", fx.member_bearer.as_str()),
+            ("content-type", "image/png"),
+        ];
+        let image = png(len);
+        let app = fx.app.clone();
+        async move { send_bytes(&app, "PUT", "/api/avatar", &auth, None, image).await }
+    };
+    let usage = || fx.db.stored_bytes_by_account().expect("usage")[fx.member.as_str()];
+
+    let before = usage();
+    let refused = put(40_000).await;
+    assert_quota(&refused, Quota::StoredMibPerAccount, 1);
+    assert_eq!(usage(), before, "a refused image counts nothing");
+
+    let stored = put(10_000).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    assert_eq!(usage(), before + 10_000);
+
+    let replaced = put(12_000).await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    assert_eq!(usage(), before + 12_000, "a replaced image counts once");
+
+    let text = fx
+        .member(
+            "PUT",
+            "/api/settings",
+            Some(json!({"avatar": {"text": "BO"}})),
+        )
+        .await;
+    assert_eq!(text.status, StatusCode::OK, "{}", text.body);
+    assert_eq!(usage(), before, "a deleted image frees its bytes");
+}

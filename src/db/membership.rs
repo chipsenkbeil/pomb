@@ -6,7 +6,7 @@ use super::activity::txn_mark_boards_used;
 use super::notifications::txn_remove_notifications;
 use super::usage::OverQuota;
 use super::{
-    ACCOUNT_SETTINGS, ACCOUNT_USAGE, ACTIVE_TIMER, ACTIVITY, API_TOKENS, BOARDS_BY_OWNER,
+    ACCOUNT_SETTINGS, ACCOUNT_USAGE, ACTIVE_TIMER, ACTIVITY, API_TOKENS, AVATARS, BOARDS_BY_OWNER,
     BUILT_IN_TEMPLATES, DEVICE_AUTHS, DEVICES_BY_ACCOUNT, DEVICES_BY_USER_CODE, Db, DbResult,
     ENTRIES_BY_ACCOUNT, INSTANCE_SETTINGS_KEY, INVITES, PASSKEYS_BY_USER, RECOVERY_CODES, Rows,
     SETTINGS, STARTER_BOARD_NAME, SUSPENDED_TOKENS, TEMPLATES_BY_OWNER, TIME_ENTRIES,
@@ -230,7 +230,13 @@ pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbRe
     txn_end_sessions_of(txn, id, None)?;
     txn_remove_passkeys_of(txn, id)?;
     remove_rows(txn, INVITES, |invite: &InviteRow| invite.created_by == id)?;
-    for table in [RECOVERY_CODES, ACCOUNT_SETTINGS, ACTIVE_TIMER, USERS] {
+    for table in [
+        RECOVERY_CODES,
+        ACCOUNT_SETTINGS,
+        AVATARS,
+        ACTIVE_TIMER,
+        USERS,
+    ] {
         txn.open_table(table)?.remove(id)?;
     }
     txn.open_table(ACTIVITY)?.remove(id)?;

@@ -3,6 +3,7 @@ var start = src.indexOf('  var CalendarPage = (function () {');
 var end = src.indexOf('\n  })();', start) + '\n  })();'.length;
 if (start < 0 || end < start) throw new Error('CalendarPage not found');
 var document = { getElementById: function () { return null; } };
+var accountPrefs = { hour12: true, weekStart: 0 };
 function escapeHtml(s) { return String(s); }
 function parseDueAt(s) { return new Date(s); }
 eval(src.slice(start, end));

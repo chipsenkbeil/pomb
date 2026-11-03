@@ -192,8 +192,11 @@ impl AttachmentFiles {
         });
         let placed = written.and_then(|()| self.settle(&part, &target));
         if placed.is_err() {
+            let renamed = !part.exists();
             drop(fs::remove_file(&part));
-            drop(fs::remove_file(&target));
+            if renamed {
+                drop(fs::remove_file(&target));
+            }
         }
         Ok(placed?)
     }
@@ -826,6 +829,9 @@ mod tests {
                 token_name: None,
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 sha256: None,
+                url: None,
+                edited_at: None,
+                versions: Vec::new(),
             });
             let raw = serde_json::to_vec(&row).expect("json");
             tasks.insert(task.as_str(), raw.as_slice()).expect("insert");

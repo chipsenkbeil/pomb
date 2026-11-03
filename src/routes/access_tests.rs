@@ -36,6 +36,7 @@ const SUB_ID_PARAMS: &[&str] = &[
     "link_id",
     "comment_id",
     "attachment_id",
+    "version_id",
     "color_id",
     "feed_id",
     "webhook_id",
@@ -66,8 +67,10 @@ pub(super) struct Ids {
     link: String,
     /// A comment on [`Ids::task`].
     comment: String,
-    /// An attachment on [`Ids::task`].
+    /// A text document on [`Ids::task`].
     attachment: String,
+    /// An earlier content of [`Ids::attachment`].
+    version: String,
     /// A color in the palette of [`Ids::board`].
     color: String,
     /// A calendar feed of [`Ids::board`].
@@ -90,7 +93,7 @@ pub(super) struct Ids {
 
 impl Ids {
     /// Returns every id, for blanking them out of an answer.
-    fn all(&self) -> [&str; 21] {
+    fn all(&self) -> [&str; 22] {
         [
             &self.account,
             &self.board,
@@ -104,6 +107,7 @@ impl Ids {
             &self.link,
             &self.comment,
             &self.attachment,
+            &self.version,
             &self.color,
             &self.feed,
             &self.field,
@@ -203,14 +207,18 @@ fn seed_comment(owned: &AccountDb, task: &str, author: &str) -> String {
     }
 }
 
-/// Attaches a file to `task` and returns the attachment's id.
-fn seed_attachment(owned: &AccountDb, task: &str) -> String {
+/// Adds a text document with one earlier content to `task` and returns its id and the version's.
+fn seed_attachment(owned: &AccountDb, task: &str) -> (String, String) {
     let task = owned.task(task).expect("read").expect("owned task");
-    owned
-        .add_attachment(&task, "a.txt", "text/plain", b"secret", Actor::SYSTEM)
+    let document = owned
+        .add_document(&task, "a.txt", "secret", Actor::SYSTEM)
         .expect("attachment")
-        .expect("task")
-        .id
+        .expect("task");
+    let saved = owned
+        .save_document(&task, &document.id, None, "secret", Actor::SYSTEM)
+        .expect("save")
+        .expect("document");
+    (document.id, saved.versions[0].id.clone())
 }
 
 /// Adds a text field to `board` and returns the field's id.
@@ -312,11 +320,13 @@ pub(super) fn seed(
         subtasks: vec!["Step".to_string()],
     });
     db.update_settings(account, &settings).expect("settings");
+    let (attachment, version) = seed_attachment(&owned, &task);
     Ids {
         account: account.as_str().to_string(),
         link: seed_link(&owned, &task, &task2),
         comment: seed_comment(&owned, &task, name),
-        attachment: seed_attachment(&owned, &task),
+        attachment,
+        version,
         color: db.list_colors(&board).expect("colors")[1].id.clone(),
         feed: seed_feed(db, &board, name),
         field: seed_field(db, &board),
@@ -671,6 +681,7 @@ fn param<'a>(class: RouteClass, path: &str, name: &str, main: &'a Ids, sub: &'a 
         "link_id" => &sub.link,
         "comment_id" => &sub.comment,
         "attachment_id" => &sub.attachment,
+        "version_id" => &sub.version,
         "color_id" => &sub.color,
         "feed_id" => &sub.feed,
         "webhook_id" => &sub.webhook,
@@ -759,6 +770,15 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
         (&Method::POST, "/api/tasks/:id/comments") => json!({"body": "hello"}),
         (&Method::PATCH, "/api/tasks/:id/comments/:comment_id") => json!({"body": "edited"}),
         (&Method::PATCH, "/api/tasks/:id/attachments/:attachment_id") => json!({"name": "b"}),
+        (&Method::POST, "/api/tasks/:id/attachments/document") => {
+            json!({"name": "notes", "text": "hi"})
+        }
+        (&Method::PUT, "/api/tasks/:id/attachments/:attachment_id/document") => {
+            json!({"text": "hi"})
+        }
+        (&Method::POST, "/api/tasks/:id/attachments/link") => {
+            json!({"name": "b", "url": "https://example.com"})
+        }
         (&Method::POST, "/api/tasks/:id/attachments") => {
             json!({"name": "b.txt", "data": "aGk="})
         }
@@ -795,6 +815,7 @@ fn missing() -> Ids {
         link: fresh(),
         comment: fresh(),
         attachment: fresh(),
+        version: fresh(),
         color: fresh(),
         feed: fresh(),
         field: fresh(),

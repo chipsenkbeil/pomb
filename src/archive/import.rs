@@ -20,13 +20,13 @@ use super::{
 use crate::db::{AccountDb, BoardImport, Db, FileImport, MAX_HISTORY_TEXT_CHARS, TaskImport};
 use crate::models::{
     AccountId, BreakActivity, ColorRow, ColumnRow, EntryKind, FieldDefRow, FieldKind, LaneLimit,
-    LinkKind, MAIN_SWIMLANE_KEY, Quotas, Responsible, Subtask, SwimlaneRow, TaskAttachment,
-    TaskComment, TaskEvent, TaskLink, TaskRow, TextCap, TimeEntryRow, parse_due_time,
-    standard_color, valid_field_key,
+    LinkKind, MAIN_SWIMLANE_KEY, NUMBERING_KEY, Numbering, Quotas, Responsible, Subtask,
+    SwimlaneRow, TaskAttachment, TaskComment, TaskEvent, TaskLink, TaskRow, TextCap, TimeEntryRow,
+    custom_color_hexes, is_custom_color, parse_due_time, standard_color, valid_field_key,
 };
 use crate::routes::{
     LANE_HEIGHT_MAX_PX, LANE_HEIGHT_MIN_PX, MAX_COMMENT_AUTHOR_CHARS, MAX_COMMENT_BYTES,
-    MAX_COMMENT_KIND_CHARS,
+    MAX_COMMENT_KIND_CHARS, normalize_points,
 };
 use crate::rules;
 
@@ -428,7 +428,7 @@ impl Builder<'_> {
         let colors = self.colors(document.colors)?;
         let columns = self.columns(document.columns)?;
         let mut swimlanes = self.swimlanes(document.swimlanes)?;
-        let mut settings = self.settings(document.board.settings)?;
+        let mut settings = self.settings(document.board.settings, &document.tasks)?;
         if swimlanes.is_empty() {
             let id = fresh_id();
             settings.insert(MAIN_SWIMLANE_KEY.to_string(), Value::String(id.clone()));
@@ -474,7 +474,8 @@ impl Builder<'_> {
         let mut rows = Vec::with_capacity(colors.len());
         for color in colors {
             let id = register(&mut self.colors, &color.id, "color")?;
-            if standard_color(&color.value).is_none() {
+            let custom = is_custom_color(&color.value);
+            if !custom && standard_color(&color.value).is_none() {
                 return Err(ImportError::invalid(format!(
                     "the color {:?} is not in the palette",
                     color.value
@@ -494,6 +495,16 @@ impl Builder<'_> {
                 "color description",
             )?;
             defaults += usize::from(color.is_default);
+            let (background_hex, border_hex, light_hex) = if custom {
+                custom_color_hexes(&color.background_hex).ok_or_else(|| {
+                    ImportError::invalid(format!(
+                        "the color {}: {:?} is not a hex color",
+                        color.value, color.background_hex
+                    ))
+                })?
+            } else {
+                Default::default()
+            };
             rows.push(
                 ColorRow {
                     id,
@@ -501,9 +512,9 @@ impl Builder<'_> {
                     value: color.value,
                     label: color.label,
                     description: color.description,
-                    background_hex: String::new(),
-                    border_hex: String::new(),
-                    light_hex: String::new(),
+                    background_hex,
+                    border_hex,
+                    light_hex,
                     enabled: color.enabled,
                     is_default: color.is_default,
                     sort_order: color.sort_order,
@@ -630,7 +641,11 @@ impl Builder<'_> {
     ///
     /// The column rules name the column ids of the board that exported them, and only the owner's
     /// browser session may set them, so an import never carries them over.
-    fn settings(&self, mut bag: Map<String, Value>) -> Result<Map<String, Value>, ImportError> {
+    fn settings(
+        &self,
+        mut bag: Map<String, Value>,
+        tasks: &[TaskInfo],
+    ) -> Result<Map<String, Value>, ImportError> {
         bag.remove("archived");
         bag.remove(rules::CONFIG_KEY);
         without_secrets(&mut bag);
@@ -653,12 +668,35 @@ impl Builder<'_> {
         {
             return Err(ImportError::invalid("due_time is not a time written HH:MM"));
         }
+        if let Some(raw) = bag.remove(NUMBERING_KEY) {
+            let numbering = Self::numbering(raw, tasks)?;
+            let value = serde_json::to_value(numbering)
+                .map_err(|error| ImportError::invalid(error.to_string()))?;
+            bag.insert(NUMBERING_KEY.to_string(), value);
+        }
         capped(
             &Value::Object(bag.clone()).to_string(),
             TextCap::CONFIG,
             "board settings",
         )?;
         Ok(bag)
+    }
+
+    /// Returns the numbering `raw` with its name and prefix checked as a save checks them and its
+    /// next number past every number that `tasks` hold under the prefix.
+    fn numbering(raw: Value, tasks: &[TaskInfo]) -> Result<Numbering, ImportError> {
+        let stored: Numbering = serde_json::from_value(raw).map_err(|error| {
+            ImportError::invalid(format!("the numbering is not valid: {error}"))
+        })?;
+        let (name, prefix) =
+            Db::validate_numbering(&stored.name, &stored.prefix).map_err(ImportError::invalid)?;
+        let highest = tasks
+            .iter()
+            .filter_map(|task| Numbering::number_of(task.number.as_deref()?, &prefix))
+            .max()
+            .unwrap_or(0);
+        let next = Numbering::resume_at(stored.next, highest).map_err(ImportError::invalid)?;
+        Ok(Numbering { name, prefix, next })
     }
 
     /// Returns the field definition rows of `fields`.
@@ -769,6 +807,12 @@ impl Builder<'_> {
                 "{label} has an estimate that is not a positive number of hours"
             )));
         }
+        let points = task
+            .points
+            .map(normalize_points)
+            .transpose()
+            .map_err(|reason| ImportError::invalid(format!("{label}: {reason}")))?
+            .flatten();
         for (text, what) in [
             (Some(task.created_at.as_str()), "created_at"),
             (task.updated_at.as_deref(), "updated_at"),
@@ -863,6 +907,8 @@ impl Builder<'_> {
             labels: task.labels,
             due_at: task.due_at,
             estimate_hours: task.estimate_hours,
+            points,
+            number: task.number,
             due_repeat: task.due_repeat,
             due_done: task.due_done,
             due_target_column_id,
@@ -875,6 +921,7 @@ impl Builder<'_> {
             links,
             claim: None,
             claim_fence: 0,
+            cover_id: None,
             fields,
         };
         row.check_caps(None)
@@ -1058,6 +1105,27 @@ impl Builder<'_> {
                 &attachment.created_at,
                 &format!("created_at of an attachment of {label}"),
             )?;
+            if let Some(url) = &attachment.url {
+                if attachment.mime != TaskAttachment::LINK_MIME {
+                    return Err(ImportError::invalid(format!(
+                        "the link {} of {label} is not a link file",
+                        attachment.name
+                    )));
+                }
+                let checked = TaskAttachment::link_url(url)
+                    .map_err(|reason| ImportError::invalid(format!("{label}: {reason}")))?;
+                let matches = checked == *url
+                    && size == url.len() as u64
+                    && fs::read(&spooled)
+                        .map_err(|error| ImportError::Storage(error.to_string()))?
+                        == url.as_bytes();
+                if !matches {
+                    return Err(ImportError::invalid(format!(
+                        "the link {} of {label} does not match its file",
+                        attachment.name
+                    )));
+                }
+            }
             let id = fresh_id();
             files.push(FileImport {
                 id: id.clone(),
@@ -1073,6 +1141,9 @@ impl Builder<'_> {
                 token_name: attachment.token_name,
                 created_at: attachment.created_at,
                 sha256: None,
+                url: attachment.url,
+                edited_at: None,
+                versions: Vec::new(),
             });
         }
         self.counts.attachments += kept.len();
@@ -1909,6 +1980,62 @@ mod tests {
             Some("worker")
         );
         assert_eq!(task.row.attachments[1].token_name, None);
+    }
+
+    fn link_document(url: &str) -> Value {
+        let mut document = base();
+        document["tasks"][0]["attachments"] = json!([{
+            "id": "l1", "name": "Spec", "mime": "text/uri-list", "size": url.len(),
+            "uploaded_by": "chip", "created_at": "2026-10-01T10:00:00Z",
+            "file": "attachments/l1/Spec", "url": url
+        }]);
+        document
+    }
+
+    #[test]
+    fn read_board_should_keep_a_link_with_its_address() {
+        let url = "https://example.com/spec";
+        let document = link_document(url);
+        let files: [(&str, &[u8]); 1] = [("attachments/l1/Spec", url.as_bytes())];
+        let base = tempfile::tempdir().expect("tempdir");
+        let spool = Spool::create(base.path()).expect("spool");
+        let (import, _) = read_in(&document, &files, &[], &spool).expect("a board");
+        assert_eq!(import.tasks[0].row.attachments[0].url.as_deref(), Some(url));
+    }
+
+    #[test]
+    fn read_board_should_refuse_a_link_that_is_not_http_or_whose_file_differs() {
+        let script = "javascript:alert(1)";
+        let document = link_document(script);
+        let error = read_as(
+            &document,
+            &[("attachments/l1/Spec", script.as_bytes())],
+            &[],
+        )
+        .expect_err("a script address");
+        assert!(
+            error.to_string().contains("must start with http"),
+            "{error}"
+        );
+        let url = "https://example.com/spec";
+        let document = link_document(url);
+        let other = "https://example.com/spek";
+        let error = read_as(&document, &[("attachments/l1/Spec", other.as_bytes())], &[])
+            .expect_err("a mismatched file");
+        assert!(
+            error.to_string().contains("does not match its file"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn read_board_should_refuse_a_link_that_claims_another_mime() {
+        let url = "https://example.com/spec";
+        let mut document = link_document(url);
+        document["tasks"][0]["attachments"][0]["mime"] = json!("text/markdown");
+        let error = read_as(&document, &[("attachments/l1/Spec", url.as_bytes())], &[])
+            .expect_err("a link of another type");
+        assert!(error.to_string().contains("is not a link file"), "{error}");
     }
 
     #[test]
@@ -2852,5 +2979,95 @@ mod tests {
             .expect_err("row cap");
         assert!(error.contains("bytes in one task"), "{error}");
         assert_eq!(state(&world.db, &account), before);
+    }
+
+    #[test]
+    fn read_board_should_refuse_a_signed_custom_color_value() {
+        let mut document = base();
+        document["colors"] = json!([{
+            "id": "k1", "value": "custom+1", "label": "x", "description": "",
+            "background_hex": "#e0f2f1", "border_hex": "", "light_hex": "", "enabled": true,
+            "is_default": true, "sort_order": 1
+        }]);
+        let error = read(&document).expect_err("a signed value");
+        assert!(error.to_string().contains("not in the palette"), "{error}");
+    }
+
+    #[test]
+    fn read_board_should_refuse_a_points_estimate_below_a_hundredth() {
+        for points in [json!(0.004), json!(-1.0)] {
+            let mut document = base();
+            document["tasks"][0]["points"] = points.clone();
+            let error = read(&document).expect_err("a points estimate that breaks the rule");
+            assert!(
+                matches!(error, ImportError::Invalid(_)),
+                "{points}: {error}"
+            );
+        }
+
+        let mut document = base();
+        document["tasks"] = json!([task("t1", "One"), task("t2", "Two")]);
+        document["tasks"][0]["points"] = json!(2.346);
+        document["tasks"][1]["points"] = json!(0.0);
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(import.tasks[0].row.points, Some(2.35));
+        assert_eq!(import.tasks[1].row.points, None);
+    }
+
+    #[test]
+    fn read_board_should_refuse_a_numbering_that_breaks_its_rules() {
+        let cases = [
+            (
+                "a prefix with a space",
+                json!({"name": "Product", "prefix": "P S", "next": 1}),
+            ),
+            (
+                "an empty prefix",
+                json!({"name": "Product", "prefix": "", "next": 1}),
+            ),
+            (
+                "a long prefix",
+                json!({"name": "Product", "prefix": "ABCDEFGHIJK", "next": 1}),
+            ),
+            (
+                "a long name",
+                json!({"name": "n".repeat(51), "prefix": "PS", "next": 1}),
+            ),
+            (
+                "an empty name",
+                json!({"name": " ", "prefix": "PS", "next": 1}),
+            ),
+            (
+                "a next past the cap",
+                json!({"name": "Product", "prefix": "PS", "next": u64::MAX}),
+            ),
+            ("no next", json!({"name": "Product", "prefix": "PS"})),
+            ("text", json!("PS")),
+        ];
+        for (label, numbering) in cases {
+            let mut document = base();
+            document["board"]["settings"] = json!({ "numbering": numbering });
+            let error = read(&document).expect_err(label);
+            assert!(matches!(error, ImportError::Invalid(_)), "{label}: {error}");
+        }
+    }
+
+    #[test]
+    fn read_board_should_raise_a_numbering_past_the_numbers_its_tasks_hold() {
+        let mut document = base();
+        document["board"]["settings"] =
+            json!({"numbering": {"name": " Product ", "prefix": "PS", "next": 3}});
+        document["tasks"] = json!([task("t1", "One"), task("t2", "Two"), task("t3", "Three")]);
+        document["tasks"][0]["number"] = json!("PS-7");
+        document["tasks"][1]["number"] = json!("XY-40");
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(
+            import.settings["numbering"],
+            json!({"name": "Product", "prefix": "PS", "next": 8})
+        );
+
+        document["board"]["settings"]["numbering"]["next"] = json!(20);
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(import.settings["numbering"]["next"], 20);
     }
 }

@@ -13,7 +13,7 @@ use super::{
 };
 use crate::models::{
     Actor, BIN_PERMANENT_DELETE_KEY, BinRow, BoardRow, ColorRow, ColumnRow, SECONDS_PER_DAY,
-    SwimlaneRow, TaskRow,
+    SwimlaneRow, TaskAttachment, TaskRow,
 };
 
 /// Key of the Unix second the cleanup of the recycle bin last ran, in [`SETTINGS`].
@@ -69,7 +69,7 @@ fn files_bytes(row: &BinRow) -> u64 {
     row.task
         .attachments
         .iter()
-        .map(|attachment| attachment.size)
+        .map(TaskAttachment::stored_bytes)
         .sum()
 }
 
@@ -395,6 +395,6 @@ fn attachment_ids_of(row: &BinRow) -> Vec<String> {
     row.task
         .attachments
         .iter()
-        .map(|attachment| attachment.id.clone())
+        .flat_map(|attachment| attachment.file_ids().map(str::to_string))
         .collect()
 }

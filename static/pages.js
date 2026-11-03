@@ -87,6 +87,27 @@
     });
   };
 
+  pages['first-hints'] = function () {
+    document.querySelectorAll('.first-hint-dismiss').forEach(function (button) {
+      button.addEventListener('click', function () {
+        var hint = button.closest('.first-hint');
+        fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ dismiss_hint: hint.dataset.hint })
+        }).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          var strip = hint.parentNode;
+          hint.remove();
+          if (!strip.querySelector('.first-hint')) strip.remove();
+        }).catch(function (ex) {
+          console.error('Could not dismiss the hint: ' + ex.message);
+        });
+      });
+    });
+  };
+
   pages['admin'] = function () {
     var panes = document.querySelectorAll('.settings-pane');
     var navItems = document.querySelectorAll('.bshell-nav-item');
@@ -460,12 +481,119 @@
       var id = location.hash.slice(1);
       var known = false;
       panes.forEach(function (p) { if (p.id === id) known = true; });
-      if (!known) id = 'timer';
+      if (!known) id = 'profile';
       panes.forEach(function (p) { p.hidden = p.id !== id; });
       navItems.forEach(function (a) { a.classList.toggle('bshell-nav-active', a.dataset.pane === id); });
     }
     window.addEventListener('hashchange', showPane);
     showPane();
+    var profileForm = document.getElementById('profile-form');
+    var profileError = document.getElementById('profile-error');
+    var profileSaved = document.getElementById('profile-saved');
+    profileForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      profileError.hidden = true;
+      profileSaved.hidden = true;
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ full_name: document.getElementById('profile-full-name').value })
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        profileSaved.hidden = false;
+      }).catch(function (ex) {
+        profileError.textContent = 'Could not save the full name: ' + ex.message;
+        profileError.hidden = false;
+      });
+    });
+    document.getElementById('time-zone-value').textContent =
+      Intl.DateTimeFormat().resolvedOptions().timeZone;
+    var dateTimeError = document.getElementById('date-time-error');
+    document.querySelectorAll('[data-open-dialog]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        dateTimeError.hidden = true;
+        document.getElementById(button.dataset.openDialog).hidden = false;
+      });
+    });
+    document.querySelectorAll('.date-time-form').forEach(function (form) {
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var patch = {};
+        patch[form.dataset.setting] = form.elements[form.dataset.setting].value;
+        fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify(patch)
+        }).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          location.reload();
+        }).catch(function (ex) {
+          form.closest('.dlg-overlay').hidden = true;
+          dateTimeError.textContent = 'Could not save the setting: ' + ex.message;
+          dateTimeError.hidden = false;
+        });
+      });
+    });
+    var avatarDialog = document.getElementById('avatar-dialog');
+    var avatarForm = document.getElementById('avatar-form');
+    var avatarError = document.getElementById('avatar-error');
+    function avatarKind() {
+      return avatarForm.elements['avatar-kind'].value;
+    }
+    function showAvatarFields() {
+      document.getElementById('avatar-text-fields').hidden = avatarKind() !== 'text';
+      document.getElementById('avatar-image-fields').hidden = avatarKind() !== 'image';
+    }
+    avatarForm.querySelectorAll('input[name="avatar-kind"]').forEach(function (radio) {
+      radio.addEventListener('change', showAvatarFields);
+    });
+    showAvatarFields();
+    document.getElementById('avatar-change').addEventListener('click', function () {
+      avatarError.hidden = true;
+      avatarDialog.hidden = false;
+    });
+    function avatarSaveFailed(ex) {
+      avatarError.textContent = 'Could not save the avatar: ' + ex.message;
+      avatarError.hidden = false;
+    }
+    function avatarSaved(r) {
+      if (r.ok) return location.reload();
+      return r.json().catch(function () { return {}; }).then(function (body) {
+        throw new Error(body.message || ('HTTP ' + r.status));
+      });
+    }
+    avatarForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      avatarError.hidden = true;
+      if (avatarKind() === 'text') {
+        fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            avatar: {
+              text: document.getElementById('avatar-text').value,
+              text_color: document.getElementById('avatar-text-color').value,
+              background: document.getElementById('avatar-background').value
+            }
+          })
+        }).then(avatarSaved).catch(avatarSaveFailed);
+        return;
+      }
+      var file = document.getElementById('avatar-file').files[0];
+      if (!file) {
+        avatarSaveFailed(new Error('select an image file'));
+        return;
+      }
+      fetch('/api/avatar', {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        credentials: 'same-origin',
+        body: file
+      }).then(avatarSaved).catch(avatarSaveFailed);
+    });
     var toggles = document.querySelectorAll('.notification-toggle');
     var notificationError = document.getElementById('notification-error');
     toggles.forEach(function (toggle) {
@@ -854,6 +982,126 @@
     }
   };
 
+  pages['board-settings-estimate-unit'] = function () {
+    'use strict';
+    var button = document.getElementById('estimate-unit-switch');
+    var error = document.getElementById('estimate-unit-error');
+    var boardId = document.querySelector('.board-settings-page').dataset.boardId;
+    button.addEventListener('click', function () {
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ estimate_in_points: button.dataset.points === '1' }),
+      }).then(function (res) {
+        if (!res.ok) throw new Error('save failed');
+        window.location.reload();
+      }).catch(function () {
+        error.textContent = 'Could not switch the estimation unit.';
+        error.hidden = false;
+      });
+    });
+  };
+
+  pages['board-settings-numbering'] = function () {
+    'use strict';
+    var boardId = document.querySelector('.board-settings-page').dataset.boardId;
+    var pageError = document.getElementById('numbering-error');
+    function byId(id) { return document.getElementById(id); }
+    function putNumbering(numbering, errorBox) {
+      return fetch('/api/boards/' + encodeURIComponent(boardId) + '/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ numbering: numbering }),
+      }).then(function (res) {
+        if (res.ok) { window.location.reload(); return; }
+        return res.json().catch(function () { return {}; }).then(function (body) {
+          errorBox.textContent = body.message || 'Could not save the numbering.';
+          errorBox.hidden = false;
+        });
+      });
+    }
+    function close(id) { byId(id).hidden = true; }
+
+    var wizard = byId('numbering-wizard');
+    if (byId('numbering-activate')) {
+      var prefix = byId('numbering-wizard-prefix');
+      var start = byId('numbering-wizard-start');
+      var example = byId('numbering-wizard-example');
+      var stepConfig = byId('numbering-step-config');
+      var stepName = byId('numbering-step-name');
+      var next = byId('numbering-wizard-next');
+      var back = byId('numbering-wizard-back');
+      var wizardError = byId('numbering-wizard-error');
+      var onName = false;
+      var showExample = function () {
+        var first = parseInt(start.value, 10) || 1;
+        var label = prefix.value.trim();
+        example.textContent = 'Example: ' + label + '-' + first + ', ' + label + '-' + (first + 1);
+      };
+      var showStep = function (name) {
+        onName = name;
+        stepConfig.hidden = name;
+        stepName.hidden = !name;
+        back.hidden = !name;
+        next.textContent = name ? 'Activate' : 'Next';
+        wizardError.hidden = true;
+      };
+      prefix.addEventListener('input', showExample);
+      start.addEventListener('input', showExample);
+      byId('numbering-activate').addEventListener('click', function () {
+        showExample();
+        showStep(false);
+        wizard.hidden = false;
+        prefix.focus();
+      });
+      byId('numbering-wizard-cancel').addEventListener('click', function () { close('numbering-wizard'); });
+      back.addEventListener('click', function () { showStep(false); });
+      next.addEventListener('click', function () {
+        if (!onName) { showStep(true); byId('numbering-wizard-name').focus(); return; }
+        putNumbering({
+          name: byId('numbering-wizard-name').value,
+          prefix: prefix.value,
+          start: parseInt(start.value, 10) || 1,
+        }, wizardError);
+      });
+    }
+
+    var fieldKey = null;
+    var fieldInput = byId('numbering-field-input');
+    var fieldError = byId('numbering-field-error');
+    function openField(key, title, label, value) {
+      fieldKey = key;
+      byId('numbering-field-title').textContent = title;
+      byId('numbering-field-label').textContent = label;
+      fieldInput.value = value;
+      fieldError.hidden = true;
+      byId('numbering-field-dialog').hidden = false;
+      fieldInput.focus();
+    }
+    if (byId('numbering-rename')) {
+      byId('numbering-rename').addEventListener('click', function () {
+        openField('name', 'Rename numbering', 'Name', byId('numbering-name').textContent);
+      });
+      byId('numbering-edit-prefix').addEventListener('click', function () {
+        openField('prefix', 'Edit prefix', 'Prefix', byId('numbering-prefix').textContent);
+      });
+      byId('numbering-field-cancel').addEventListener('click', function () { close('numbering-field-dialog'); });
+      byId('numbering-field-save').addEventListener('click', function () {
+        var change = {};
+        change[fieldKey] = fieldInput.value;
+        putNumbering(change, fieldError);
+      });
+      byId('numbering-delete').addEventListener('click', function () { byId('numbering-delete-dialog').hidden = false; });
+      byId('numbering-delete-cancel').addEventListener('click', function () { close('numbering-delete-dialog'); });
+      byId('numbering-delete-confirm').addEventListener('click', function () {
+        close('numbering-delete-dialog');
+        putNumbering(null, pageError);
+      });
+    }
+  };
+
   pages['board-settings-due-time'] = function () {
     'use strict';
     var dialog = document.getElementById('due-time-dialog');
@@ -880,7 +1128,10 @@
       }).then(function (config) {
         var parts = config.due_time.split(':');
         var h = Number(parts[0]);
-        label.textContent = ((h % 12) || 12) + ':' + parts[1] + ' ' + (h < 12 ? 'AM' : 'PM');
+        var account = document.getElementById('account-btn');
+        label.textContent = account && account.dataset.timeFormat === '24h'
+          ? parts[0] + ':' + parts[1]
+          : ((h % 12) || 12) + ':' + parts[1] + ' ' + (h < 12 ? 'AM' : 'PM');
         close();
       }).catch(function () {
         error.textContent = 'Invalid time.';
@@ -1217,18 +1468,75 @@
     function clearError() {
       document.getElementById('bc-error').hidden = true;
     }
-    function patchColor(colorId, data) {
+    function sendColor(method, colorId, data) {
       clearError();
-      return fetch('/api/boards/' + encodeURIComponent(boardId) + '/colors/' + encodeURIComponent(colorId), {
-        method: 'PATCH',
+      var url = '/api/boards/' + encodeURIComponent(boardId) + '/colors' +
+        (colorId ? '/' + encodeURIComponent(colorId) : '');
+      return fetch(url, {
+        method: method,
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
         body: JSON.stringify(data),
       }).then(function (res) {
-        if (!res.ok) { showError('Could not save color changes.'); return false; }
-        return true;
+        if (res.ok) return { ok: true };
+        return res.json().catch(function () { return {}; }).then(function (body) {
+          return { ok: false, message: body.message || 'Could not save color changes.' };
+        });
       });
     }
+    function patchColor(colorId, data) {
+      return sendColor('PATCH', colorId, data).then(function (result) {
+        if (!result.ok) showError(result.message);
+        return result.ok;
+      });
+    }
+
+    var contrastOverlay = document.getElementById('bc-contrast-overlay');
+    function saveHex(method, colorId, data, hexInput, errorBox) {
+      return sendColor(method, colorId, data).then(function (result) {
+        if (result.ok) { window.location.reload(); return; }
+        var suggested = /low contrast[^]*(#[0-9a-f]{6})\s*$/i.exec(result.message);
+        if (!suggested) {
+          errorBox.textContent = result.message;
+          errorBox.hidden = false;
+          return;
+        }
+        document.getElementById('bc-contrast-message').textContent = result.message + '?';
+        contrastOverlay.hidden = false;
+        document.getElementById('bc-contrast-ok').onclick = function () {
+          contrastOverlay.hidden = true;
+          hexInput.value = suggested[1];
+          hexInput.dispatchEvent(new Event('input'));
+          data.hex = suggested[1];
+          saveHex(method, colorId, data, hexInput, errorBox);
+        };
+        document.getElementById('bc-contrast-cancel').onclick = function () {
+          contrastOverlay.hidden = true;
+        };
+      });
+    }
+    function linkPicker(picker, hex) {
+      picker.addEventListener('input', function () { hex.value = picker.value; });
+      hex.addEventListener('input', function () {
+        if (/^#[0-9a-f]{6}$/i.test(hex.value)) picker.value = hex.value.toLowerCase();
+      });
+    }
+
+    var customOverlay = document.getElementById('bc-custom-overlay');
+    var customHex = document.getElementById('bc-custom-hex');
+    var customError = document.getElementById('bc-custom-error');
+    linkPicker(document.getElementById('bc-custom-picker'), customHex);
+    document.getElementById('bc-add-custom').addEventListener('click', function () {
+      customError.hidden = true;
+      customOverlay.hidden = false;
+    });
+    document.getElementById('bc-custom-save').addEventListener('click', function () {
+      saveHex('POST', '', {
+        hex: customHex.value.trim(),
+        label: document.getElementById('bc-custom-label').value,
+        description: document.getElementById('bc-custom-description').value,
+      }, customHex, customError);
+    });
 
     // "Show more…" expander on the intro copy.
     var moreLink = document.getElementById('color-intro-more');
@@ -1248,10 +1556,16 @@
     var editDesc = document.getElementById('bc-edit-description');
     var editError = document.getElementById('bc-edit-error');
     var editColorId = null;
-    function openEdit(colorId, label, description) {
+    var editHexRow = document.getElementById('bc-edit-hex-row');
+    var editHex = document.getElementById('bc-edit-hex');
+    linkPicker(document.getElementById('bc-edit-picker'), editHex);
+    function openEdit(colorId, label, description, hex) {
       editColorId = colorId;
       editLabel.value = label;
       editDesc.value = description;
+      editHexRow.hidden = !hex;
+      editHex.value = hex || '';
+      editHex.dispatchEvent(new Event('input'));
       editError.hidden = true;
       editOverlay.hidden = false;
     }
@@ -1259,7 +1573,8 @@
       btn.addEventListener('click', function () {
         openEdit(btn.getAttribute('data-color-id'),
           btn.getAttribute('data-label') || '',
-          btn.getAttribute('data-description') || '');
+          btn.getAttribute('data-description') || '',
+          btn.getAttribute('data-hex'));
       });
     });
     document.getElementById('bc-edit-save').addEventListener('click', function () {
@@ -1269,10 +1584,9 @@
         editError.hidden = false;
         return;
       }
-      patchColor(editColorId, { label: editLabel.value, description: editDesc.value })
-        .then(function (ok) {
-          if (ok) window.location.reload();
-        });
+      var data = { label: editLabel.value, description: editDesc.value };
+      if (!editHexRow.hidden) data.hex = editHex.value.trim();
+      saveHex('PATCH', editColorId, data, editHex, editError);
     });
 
     // Enable / Disable per row.
@@ -1372,7 +1686,13 @@
     'use strict';
     var boardId = document.querySelector('.settings-page').getAttribute('data-board-id');
     var overlay = document.getElementById('ntp-overlay');
-    document.getElementById('ntp-edit').addEventListener('click', function () { overlay.hidden = false; });
+    document.getElementById('ntp-edit').addEventListener('click', function (e) {
+      var dlg = overlay.querySelector('.dlg');
+      var r = e.currentTarget.getBoundingClientRect();
+      overlay.hidden = false;
+      dlg.style.left = Math.max(8, Math.min(r.left, window.innerWidth - dlg.offsetWidth - 8)) + 'px';
+      dlg.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - dlg.offsetHeight - 8)) + 'px';
+    });
     overlay.addEventListener('click', function (e) {
       if (e.target === overlay || e.target.closest('[data-ntp-close]')) overlay.hidden = true;
     });
@@ -1608,6 +1928,119 @@
         errorBox.textContent = error.message;
         errorBox.hidden = false;
       });
+    });
+  };
+
+  pages['board-settings-labels'] = function () {
+    'use strict';
+    var section = document.getElementById('bl-section');
+    var boardId = section.getAttribute('data-board-id');
+    var body = document.getElementById('bl-rows');
+    var errorBox = document.getElementById('bl-error');
+    var savedBox = document.getElementById('bl-saved');
+    var showAll = document.getElementById('bl-show-all');
+    var palette = section.getAttribute('data-palette').split(',');
+    function rows() {
+      return Array.prototype.slice.call(body.querySelectorAll('.bl-row'));
+    }
+    var pending = Promise.resolve();
+    function save() {
+      pending = pending.then(send);
+      return pending;
+    }
+    function send() {
+      errorBox.hidden = true;
+      savedBox.hidden = true;
+      var highlights = [];
+      var added = [];
+      rows().forEach(function (row) {
+        var label = row.dataset.label;
+        if (row.querySelector('.bl-on').checked) {
+          highlights.push({ label: label, color: row.querySelector('.bl-color').value });
+        }
+        if (row.dataset.cards === '0') added.push(label);
+      });
+      return fetch('/api/boards/' + encodeURIComponent(boardId) + '/label-settings', {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ highlights: highlights, show_all: showAll.checked, added: added })
+      }).then(function (res) {
+        if (res.ok) { savedBox.hidden = false; return; }
+        return res.text().then(function (text) {
+          var message = text;
+          try { message = JSON.parse(text).message || text; } catch (e) {}
+          throw new Error(message || ('HTTP ' + res.status));
+        });
+      }).catch(function (error) {
+        errorBox.textContent = error.message + ' Reload the page to start from the saved labels.';
+        errorBox.hidden = false;
+      });
+    }
+    function build(label) {
+      var row = document.createElement('tr');
+      row.className = 'bl-row';
+      row.dataset.label = label;
+      row.dataset.cards = '0';
+      var name = document.createElement('td');
+      name.className = 'bl-name';
+      name.textContent = label;
+      var cards = document.createElement('td');
+      cards.className = 'bl-cards';
+      cards.textContent = '0';
+      var cell = document.createElement('td');
+      var highlight = document.createElement('div');
+      highlight.className = 'bl-highlight';
+      var on = document.createElement('input');
+      on.type = 'checkbox';
+      on.className = 'bl-on';
+      on.setAttribute('aria-label', 'Highlight ' + label);
+      var color = document.createElement('input');
+      color.type = 'color';
+      color.className = 'bl-color';
+      color.value = palette[rows().length % palette.length];
+      color.hidden = true;
+      color.setAttribute('aria-label', label + ' color');
+      highlight.appendChild(on);
+      highlight.appendChild(color);
+      cell.appendChild(highlight);
+      var last = document.createElement('td');
+      var remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'kf-btn kf-btn-link bl-remove';
+      remove.textContent = 'Remove';
+      remove.setAttribute('aria-label', 'Remove ' + label);
+      last.appendChild(remove);
+      row.appendChild(name);
+      row.appendChild(cards);
+      row.appendChild(cell);
+      row.appendChild(last);
+      return row;
+    }
+    body.addEventListener('change', function (event) {
+      var row = event.target.closest('.bl-row');
+      if (!row) return;
+      if (event.target.classList.contains('bl-on')) {
+        row.querySelector('.bl-color').hidden = !event.target.checked;
+      }
+      save();
+    });
+    body.addEventListener('click', function (event) {
+      var button = event.target.closest('.bl-remove');
+      if (!button) return;
+      button.closest('.bl-row').remove();
+      save();
+    });
+    showAll.addEventListener('change', save);
+    document.getElementById('bl-add').addEventListener('submit', function (event) {
+      event.preventDefault();
+      var input = document.getElementById('bl-add-name');
+      var label = input.value.trim();
+      if (!label) return;
+      var known = rows().some(function (row) { return row.dataset.label === label; });
+      if (!known) body.appendChild(build(label));
+      input.value = '';
+      save();
     });
   };
 

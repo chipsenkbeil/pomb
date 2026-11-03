@@ -17,6 +17,9 @@ var document = {
   querySelector: function (sel) { return currentDocument.querySelector(sel); }
 };
 function escapeHtml(s) { return String(s); }
+var accountPrefs = { hour12: true, weekStart: 1 };
+eval(fn('  function daysIntoWeek(d) {'));
+eval(fn('  function clockText(d) {'));
 eval(block('  var ReportChart = (function () {'));
 eval(block('  var ThroughputPage = (function () {'));
 eval(block('  var BurndownPage = (function () {'));

@@ -17,6 +17,7 @@
 
 mod account;
 mod activity;
+mod avatar;
 mod bin;
 mod dispatch;
 mod entries;
@@ -36,7 +37,8 @@ mod support;
 mod usage;
 mod webhooks;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
 use std::net::IpAddr;
@@ -98,15 +100,19 @@ use crate::auth::{
 };
 use crate::backup::Backups;
 use crate::disk::{DiskGuard, MIB};
+use crate::labels::LabelSettings;
 use crate::limit::{Limits, TrustProxy};
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
-    AuthScope, BackupSettings, BackupStatus, BinRow, BoardAccess, BoardFeed, BoardRow,
-    BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange,
-    FieldDefRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS, PasskeyRow,
-    Quota, Quotas, RecoveryCodeRow, Responsible, SessionRow, Settings, Subtask, SwimlaneRow,
+    AttachmentVersion, AuthScope, BackupSettings, BackupStatus, BinRow, BoardAccess, BoardFeed,
+    BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange, DeviceAuthRow, DeviceAuthStatus,
+    EntryKind, EventChange, FieldDefRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind,
+    MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS, MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER,
+    MAX_NUMBERING_PREFIX_CHARS, MIN_TEXT_CONTRAST, NUMBERING_KEY, Numbering, PasskeyRow, Quota,
+    Quotas, RecoveryCodeRow, Responsible, SessionRow, Settings, Subtask, SwimlaneRow,
     TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TextCap,
-    TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, standard_color,
+    TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes, custom_color_value,
+    is_custom_color, lighter_hex, normalize_hex, standard_color, text_contrast,
 };
 use crate::permissions::Permission;
 use crate::rules;
@@ -188,6 +194,8 @@ pub enum ColorDeleteOutcome {
     RefusedDefault,
     /// Refused: this many tasks still use the color.
     RefusedInUse(usize),
+    /// Refused: a custom color can be disabled but not deleted.
+    RefusedCustom,
 }
 
 /// Typed outcome for [`Db::delete_template`]: built-in templates are
@@ -663,6 +671,8 @@ const BIN: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("recycle_bin"
 const TIME_ENTRIES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("time_entries");
 /// Single-row table (`"app"` -> JSON [`Settings`]).
 const SETTINGS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("settings");
+/// The uploaded avatar image of each account, by account id.
+const AVATARS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("avatars");
 /// Single-row table (`"timer"` -> JSON [`ActiveTimer`]); absent when idle.
 const ACTIVE_TIMER: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("active_timer");
 const API_TOKENS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("api_tokens");
@@ -1162,8 +1172,46 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// new stamp makes a version-48 binary refuse a file whose column watches it would drop on its
 /// next column save.
 ///
+/// Version 50 adds, over version 49 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskRow`: `points`, the task's points estimate, kept beside `estimate_hours` so a board that
+///    switches its estimation unit loses neither.
+/// 2. `TaskRow`: `number`, the task's label under the board's numbering, such as `PS-1`.
+///
+/// The numbering itself lives in the board's config bag, which takes any key. The upgrade rewrites
+/// no row, so a task from before the upgrade reads with no points and no number. The new stamp makes
+/// a version-49 binary refuse a file whose points and numbers it would drop on its next task save.
+///
+/// Version 51 adds, over version 50, the `Permission` `labels.manage` and the board config bag key
+/// `label_settings`, a board's highlighted labels, its show-all flag and the labels it keeps with
+/// no card. The upgrade gives the permission to every token and device request that holds the
+/// whole lead or admin preset of its scope, and a custom set keeps what it holds. The new stamp
+/// makes a version-50 binary refuse a file whose tokens name a permission it cannot read.
+///
+/// Version 52 adds, over version 51 (additive, read from older rows through a serde default):
+///
+/// 1. `Settings`: `full_name` (the name members show in place of the handle), `dismissed_hints`
+///    (the ids of the dismissed first-visit hints), `avatar` (the text or uploaded image shown),
+///    `time_format` and `week_start`.
+/// 2. The `avatars` table, one uploaded image per account, counted in the account's stored bytes.
+///
+/// A settings row from before the upgrade reads with no full name, no hint dismissed, a text
+/// avatar, the 12-hour clock and weeks starting Sunday. A version-51 binary refuses the file,
+/// since its next settings save would drop the new fields.
+///
+/// Version 53 adds, over version 52 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskAttachment`: `url`, the address of a link attachment.
+/// 2. `TaskAttachment`: `edited_at` and `versions`, when a text document was saved and its earlier
+///    contents, each an `AttachmentVersion` naming a file beside the database.
+/// 3. `TaskRow`: `cover_id`, the id of the image attachment shown as the task's cover.
+///
+/// The upgrade rewrites no row, so an attachment from before the upgrade is a file and a task has
+/// no cover. The new stamp makes a version-52 binary refuse a file whose links, document versions
+/// and covers it would drop on its next task save.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 49;
+pub const SCHEMA_VERSION: u64 = 53;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1219,6 +1267,10 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "8cba50eda37aff485e68c7212080d4b38b49bea36208334927f3fd9af718c036",
     "4e1a40189f58839e0e92f8a51bc0115a07240857c74b8bb5d9dffef5af426f49",
     "e2ad6d69293caa30bf33daed53023dc102e27126a581e713d256da0250ebdc22",
+    "730d168836090d108d212985fb215b2a4b2db3e52aced650b3c6ff8914565d19",
+    "9de708db88e49ffbb1da2c7b25f39f73c69f5c1401dd7604e73699f6b03c87d3",
+    "2cb1661e822c7d059b59e6018ad072dee1e5b03236574714b1aa1bbdf7289133",
+    "41ef38f21ae22ac033cebb5bdefa2240fd783b10c642a8d1187bcb53962d7937",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1356,7 +1408,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
         grant_scope_permissions(txn)?;
     }
     if from.is_none_or(|version| version < 41) {
-        grant_bin_permission(txn)?;
+        grant_added_permissions(txn, &[Permission::TasksBin, Permission::LabelsManage])?;
+    } else if from.is_some_and(|version| version < 51) {
+        grant_added_permissions(txn, &[Permission::LabelsManage])?;
     }
     Ok(())
 }
@@ -1822,18 +1876,18 @@ fn grant_scope_permissions(txn: &WriteTransaction) -> DbResult<()> {
     grant_permissions_in(txn, DEVICE_AUTHS, "device_auths")
 }
 
-/// Gives `tasks.bin` to every token and device request that holds the whole lead or admin preset
-/// of its scope.
-fn grant_bin_permission(txn: &WriteTransaction) -> DbResult<()> {
+/// Gives `added` to every token and device request that holds the whole lead or admin preset of
+/// its scope as it stood before they existed.
+fn grant_added_permissions(txn: &WriteTransaction, added: &[Permission]) -> DbResult<()> {
     for table in [API_TOKENS, SUSPENDED_TOKENS, DEVICE_AUTHS] {
-        rewrite_rows(txn, table, grant_bin_to_preset)?;
+        rewrite_rows(txn, table, |_, row| grant_to_preset(row, added))?;
     }
     Ok(())
 }
 
-/// Adds `tasks.bin` to `row` when it holds exactly the preset of its scope without it, and reports
+/// Adds `added` to `row` when it holds exactly the preset of its scope without them, and reports
 /// whether it did. A custom set and a preset below lead stay as they are.
-fn grant_bin_to_preset(_: &str, row: &mut JsonObject) -> bool {
+fn grant_to_preset(row: &mut JsonObject, added: &[Permission]) -> bool {
     let Some(scope) = row
         .get("scope")
         .and_then(serde_json::Value::as_str)
@@ -1842,7 +1896,7 @@ fn grant_bin_to_preset(_: &str, row: &mut JsonObject) -> bool {
         return false;
     };
     let mut before = scope.permissions();
-    if !before.remove(&Permission::TasksBin) {
+    if !added.iter().all(|permission| before.remove(permission)) {
         return false;
     }
     let held = row
@@ -2641,7 +2695,7 @@ impl BoardUse {
     fn add_task(&mut self, task: &TaskRow) -> DbResult<()> {
         self.bytes += serde_json::to_vec(task)?.len() as u64;
         for attachment in &task.attachments {
-            self.bytes += attachment.size;
+            self.bytes += attachment.stored_bytes();
             self.largest_file = self.largest_file.max(attachment.size);
         }
         Ok(())
@@ -2685,6 +2739,73 @@ fn txn_refuse_board_over_bytes(txn: &impl Reads, board_id: &str, added: u64) -> 
         return Err(Box::new(QuotaExceeded::of(Quota::StoredMibPerBoard, limit)));
     }
     Ok(())
+}
+
+/// What a count of a board's tasks by number reads of a task.
+#[derive(Deserialize)]
+struct TaskNumber {
+    /// The task's number, absent on a task created without numbering.
+    #[serde(default)]
+    number: Option<String>,
+}
+
+/// Returns the highest number under `prefix` that a task of board `board_id` holds, in the board or
+/// in its recycle bin, so a restored task never meets a number handed out again.
+fn highest_number_in(txn: &impl Reads, board_id: &str, prefix: &str) -> DbResult<u64> {
+    let highest = Cell::new(0);
+    let note = |label: Option<&str>| {
+        if let Some(number) = label.and_then(|label| Numbering::number_of(label, prefix)) {
+            highest.set(highest.get().max(number));
+        }
+    };
+    board_task_count_in(txn, board_id, |task: &TaskNumber| {
+        note(task.number.as_deref());
+        false
+    })?;
+    for task_id in index_in(txn, BIN_BY_BOARD, board_id)? {
+        if let Some(binned) = read_in::<BinRow>(txn, BIN, &task_id)? {
+            note(binned.task.number.as_deref());
+        }
+    }
+    Ok(highest.get())
+}
+
+/// Stores `numbering` in the config bag of `board`, or removes it with none.
+fn txn_store_numbering(
+    txn: &WriteTransaction,
+    board: &mut BoardRow,
+    numbering: Option<&Numbering>,
+) -> DbResult<()> {
+    let mut config: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&board.config_json).unwrap_or_default();
+    match numbering {
+        Some(numbering) => {
+            config.insert(NUMBERING_KEY.to_string(), serde_json::to_value(numbering)?);
+        }
+        None => {
+            config.remove(NUMBERING_KEY);
+        }
+    }
+    board.config_json = serde_json::to_string(&config)?;
+    txn_store_board(txn, board, OverQuota::Allow)
+}
+
+/// Takes the next number of board `board_id`'s numbering inside an open write transaction and
+/// returns its label, or none when the board has no numbering.
+fn txn_take_task_number(txn: &WriteTransaction, board_id: &str) -> DbResult<Option<String>> {
+    let Some(mut board) = txn_read_one::<BoardRow>(txn, BOARDS, board_id)? else {
+        return Ok(None);
+    };
+    let Some(mut numbering) = board.numbering() else {
+        return Ok(None);
+    };
+    if numbering.next > MAX_NUMBERING_NUMBER {
+        return Err(Box::new(NumberingExhausted));
+    }
+    let label = Numbering::label(&numbering.prefix, numbering.next);
+    numbering.next += 1;
+    txn_store_numbering(txn, &mut board, Some(&numbering))?;
+    Ok(Some(label))
 }
 
 /// Counts the tasks of board `board_id` that `counts` picks, each read as `T`, inside an open
@@ -3414,7 +3535,11 @@ fn txn_attachment_ids(txn: &WriteTransaction, task_ids: &[String]) -> DbResult<V
     let mut attachment_ids = Vec::new();
     for task_id in task_ids {
         if let Some(task) = txn_read_one::<TaskRow>(txn, TASKS, task_id)? {
-            attachment_ids.extend(task.attachments.into_iter().map(|attachment| attachment.id));
+            attachment_ids.extend(
+                task.attachments
+                    .iter()
+                    .flat_map(|attachment| attachment.file_ids().map(str::to_string)),
+            );
         }
     }
     Ok(attachment_ids)
@@ -3447,14 +3572,18 @@ fn named_in(
 ) -> DbResult<HashSet<String>> {
     let mut named = HashSet::new();
     for task in rows_in::<TaskRow, _>(tasks)? {
-        named.extend(task.attachments.into_iter().map(|attachment| attachment.id));
+        named.extend(
+            task.attachments
+                .iter()
+                .flat_map(|attachment| attachment.file_ids().map(str::to_string)),
+        );
     }
     for row in rows_in::<BinRow, _>(bin)? {
         named.extend(
             row.task
                 .attachments
-                .into_iter()
-                .map(|attachment| attachment.id),
+                .iter()
+                .flat_map(|attachment| attachment.file_ids().map(str::to_string)),
         );
     }
     Ok(named)
@@ -3998,7 +4127,9 @@ impl Bound {
 struct StoredFile {
     id: String,
     size: u64,
-    sha256: String,
+    sha256: Option<String>,
+    url: Option<String>,
+    edited_at: Option<String>,
 }
 
 /// Refusal of an upload to a task that already holds an attachment with the same name or the same
@@ -4038,6 +4169,40 @@ impl fmt::Display for DuplicateAttachment {
 }
 
 impl Error for DuplicateAttachment {}
+
+/// Refusal of a palette copy that would strand or recolor a task of the target board.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaletteStrandsColor {
+    /// The internal id of the custom color a task of the target board uses, such as `custom1`.
+    pub value: String,
+}
+
+impl fmt::Display for PaletteStrandsColor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "a task of this board uses its custom color {}, and the source board has no custom color {} with the same hex",
+            self.value, self.value
+        )
+    }
+}
+
+impl Error for PaletteStrandsColor {}
+
+/// Refusal of a task create or cross-board move into a board whose numbering has no number left.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct NumberingExhausted;
+
+impl fmt::Display for NumberingExhausted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the board's numbering has no number left; remove the numbering and activate one under another prefix"
+        )
+    }
+}
+
+impl Error for NumberingExhausted {}
 
 /// Refusal of a write that would take an account past one of its quotas or a fixed bound.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -4348,8 +4513,20 @@ fn txn_insert_color(
     over: OverQuota,
 ) -> DbResult<String> {
     txn_refuse_stranded_board(txn, board_id)?;
-    let (background_hex, border_hex, light_hex, _) = standard_color(color.value)
-        .ok_or_else(|| format!("unknown color value: {}", color.value))?;
+    let (background_hex, border_hex, light_hex) = match color.hex {
+        Some(hex) if is_custom_color(color.value) => {
+            custom_color_hexes(hex).ok_or_else(|| format!("not a hex color: {hex}"))?
+        }
+        _ => {
+            let (background, border, light, _) = standard_color(color.value)
+                .ok_or_else(|| format!("unknown color value: {}", color.value))?;
+            (
+                background.to_string(),
+                border.to_string(),
+                light.to_string(),
+            )
+        }
+    };
     let id = Uuid::new_v4().to_string();
     let row = ColorRow {
         id: id.clone(),
@@ -4357,9 +4534,9 @@ fn txn_insert_color(
         value: color.value.to_string(),
         label: color.label.to_string(),
         description: color.description.to_string(),
-        background_hex: background_hex.to_string(),
-        border_hex: border_hex.to_string(),
-        light_hex: light_hex.to_string(),
+        background_hex,
+        border_hex,
+        light_hex,
         enabled: color.enabled,
         is_default: color.is_default,
         sort_order: color.sort_order,
@@ -4404,6 +4581,7 @@ fn txn_insert_color_specs(
             board_id,
             NewColor {
                 value,
+                hex: None,
                 label,
                 description: "",
                 enabled,
@@ -4870,6 +5048,8 @@ type BuiltinTemplateSpec = (&'static str, &'static str, fn() -> serde_json::Valu
 /// under clippy's argument-count lint).
 struct NewColor<'a> {
     value: &'a str,
+    /// The background of a custom color, which has no fixed palette entry.
+    hex: Option<&'a str>,
     label: &'a str,
     description: &'a str,
     enabled: bool,
@@ -4984,6 +5164,7 @@ impl Db {
             txn.open_multimap_table(WEBHOOK_OUTBOX_BY_HOOK)?;
             txn.open_multimap_table(BOARDS_BY_OWNER)?;
             txn.open_table(ACCOUNT_SETTINGS)?;
+            txn.open_table(AVATARS)?;
             txn.open_table(RECOVERY_CODES)?;
             txn.open_table(INVITES)?;
             txn.open_table(ACTIVITY)?;
@@ -5933,6 +6114,106 @@ impl Db {
         Ok(FeedAdd::Added(feed))
     }
 
+    /// Checks a numbering name and prefix and returns both trimmed.
+    pub fn validate_numbering(name: &str, prefix: &str) -> Result<(String, String), String> {
+        let (name, prefix) = (name.trim(), prefix.trim());
+        if name.is_empty() || name.chars().count() > MAX_NUMBERING_NAME_CHARS {
+            return Err(format!(
+                "the numbering name must be 1 to {MAX_NUMBERING_NAME_CHARS} characters"
+            ));
+        }
+        if prefix.is_empty()
+            || prefix.chars().count() > MAX_NUMBERING_PREFIX_CHARS
+            || !prefix.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            return Err(format!(
+                "the numbering prefix must be 1 to {MAX_NUMBERING_PREFIX_CHARS} letters or digits"
+            ));
+        }
+        Ok((name.to_string(), prefix.to_string()))
+    }
+
+    /// Gives board `board_id` a task numbering that starts at `start`, or at the number after the
+    /// highest one the board's tasks already hold under `prefix`, whichever is later, so a number
+    /// is never reused. Returns none when the board is unknown, and an error when it is numbered.
+    pub fn activate_numbering(
+        &self,
+        board_id: &str,
+        name: &str,
+        prefix: &str,
+        start: u64,
+    ) -> DbResult<Option<Numbering>> {
+        let (name, prefix) = Self::validate_numbering(name, prefix)?;
+        let txn = self.db.begin_write()?;
+        let Some(mut board) = txn_read_one::<BoardRow>(&txn, BOARDS, board_id)? else {
+            return Ok(None);
+        };
+        if board.numbering().is_some() {
+            return Err("the board is numbered already".into());
+        }
+        let highest = highest_number_in(&txn, board_id, &prefix)?;
+        let numbering = Numbering {
+            name,
+            prefix,
+            next: Numbering::resume_at(start, highest)?,
+        };
+        txn_store_numbering(&txn, &mut board, Some(&numbering))?;
+        txn.commit()?;
+        Ok(Some(numbering))
+    }
+
+    /// Renames the numbering of board `board_id` or changes its prefix, which only new numbers
+    /// follow and which never reuse a number the new prefix holds. Returns none when the board has
+    /// no numbering.
+    pub fn update_numbering(
+        &self,
+        board_id: &str,
+        name: Option<&str>,
+        prefix: Option<&str>,
+    ) -> DbResult<Option<Numbering>> {
+        let txn = self.db.begin_write()?;
+        let Some(mut board) = txn_read_one::<BoardRow>(&txn, BOARDS, board_id)? else {
+            return Ok(None);
+        };
+        let Some(mut numbering) = board.numbering() else {
+            return Ok(None);
+        };
+        let (name, prefix) = Self::validate_numbering(
+            name.unwrap_or(&numbering.name),
+            prefix.unwrap_or(&numbering.prefix),
+        )?;
+        if prefix != numbering.prefix {
+            let highest = highest_number_in(&txn, board_id, &prefix)?;
+            numbering.next = Numbering::resume_at(numbering.next, highest)?;
+        }
+        numbering.name = name;
+        numbering.prefix = prefix;
+        txn_store_numbering(&txn, &mut board, Some(&numbering))?;
+        txn.commit()?;
+        Ok(Some(numbering))
+    }
+
+    /// Returns the highest number under `prefix` that a task of board `board_id` holds, in the
+    /// board or in its recycle bin, and 0 when it holds none.
+    pub fn highest_task_number(&self, board_id: &str, prefix: &str) -> DbResult<u64> {
+        highest_number_in(&self.read()?, board_id, prefix)
+    }
+
+    /// Removes the numbering of board `board_id` and leaves the numbers its tasks hold. Returns
+    /// false when the board has none.
+    pub fn delete_numbering(&self, board_id: &str) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        let Some(mut board) = txn_read_one::<BoardRow>(&txn, BOARDS, board_id)? else {
+            return Ok(false);
+        };
+        if board.numbering().is_none() {
+            return Ok(false);
+        }
+        txn_store_numbering(&txn, &mut board, None)?;
+        txn.commit()?;
+        Ok(true)
+    }
+
     /// Removes the calendar feed `feed_id` from a board, so its URL stops serving at once, in one
     /// transaction. Returns false when the board has no such feed.
     pub fn remove_board_feed(&self, id: &str, feed_id: &str) -> DbResult<bool> {
@@ -6150,8 +6431,9 @@ impl Db {
     /// (KanbanFlow parity: Colors tab "Copy from board"). Old rows are
     /// removed and re-inserted under new ids, preserving each source row's
     /// value, label, description, enabled flag, default flag, and order.
-    /// Tasks on the target board keep their color by standard value
-    /// (old color id -> new color id for the same value).
+    /// Tasks on the target board keep their color by value (old color id -> new color id for the
+    /// same value). The copy is refused with [`PaletteStrandsColor`] while a task uses a custom
+    /// color the source lacks by value and hex, so no task is stranded or recolored.
     /// Returns the number of colors copied.
     pub fn copy_colors(&self, target_board_id: &str, source_board_id: &str) -> DbResult<usize> {
         let txn = self.db.begin_write()?;
@@ -6162,8 +6444,21 @@ impl Db {
         let mut new_id_by_value: HashMap<String, String> = HashMap::new();
         let mut copies: Vec<ColorRow> = Vec::with_capacity(source.len());
         for color in &source {
-            let (background_hex, border_hex, light_hex, _) = standard_color(&color.value)
-                .ok_or_else(|| format!("unknown color value: {}", color.value))?;
+            let (background_hex, border_hex, light_hex) = if is_custom_color(&color.value) {
+                (
+                    color.background_hex.clone(),
+                    color.border_hex.clone(),
+                    color.light_hex.clone(),
+                )
+            } else {
+                let (background, border, light, _) = standard_color(&color.value)
+                    .ok_or_else(|| format!("unknown color value: {}", color.value))?;
+                (
+                    background.to_string(),
+                    border.to_string(),
+                    light.to_string(),
+                )
+            };
             let id = Uuid::new_v4().to_string();
             new_id_by_value.insert(color.value.clone(), id.clone());
             copies.push(ColorRow {
@@ -6172,9 +6467,9 @@ impl Db {
                 value: color.value.clone(),
                 label: color.label.clone(),
                 description: color.description.clone(),
-                background_hex: background_hex.to_string(),
-                border_hex: border_hex.to_string(),
-                light_hex: light_hex.to_string(),
+                background_hex,
+                border_hex,
+                light_hex,
                 enabled: color.enabled,
                 is_default: color.is_default,
                 sort_order: color.sort_order,
@@ -6195,6 +6490,22 @@ impl Db {
                 &column_id,
                 TASKS,
             )?);
+        }
+        for task in &tasks {
+            let used = task
+                .color_id
+                .as_deref()
+                .and_then(|color_id| old_target.iter().find(|color| color.id == color_id))
+                .filter(|color| is_custom_color(&color.value));
+            if let Some(used) = used
+                && !copies.iter().any(|copy| {
+                    copy.value == used.value && copy.background_hex == used.background_hex
+                })
+            {
+                return Err(Box::new(PaletteStrandsColor {
+                    value: used.value.clone(),
+                }));
+            }
         }
         {
             for color in &old_target {
@@ -6632,7 +6943,7 @@ impl Db {
             .filter(|label| !label.is_empty())
             .unwrap_or(default_label);
         Self::validate_color_label(label)
-            .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+            .map_err(|message| -> Box<dyn Error> { message.into() })?;
         TextCap::COLOR_DESCRIPTION.check(description.unwrap_or_default())?;
         let txn = self.db.begin_write()?;
         let colors = txn_board_colors(&txn, board_id)?;
@@ -6644,6 +6955,7 @@ impl Db {
             board_id,
             NewColor {
                 value,
+                hex: None,
                 label,
                 description: description.unwrap_or_default(),
                 enabled: true,
@@ -6654,6 +6966,84 @@ impl Db {
         )?;
         txn.commit()?;
         Ok(id)
+    }
+
+    /// Checks the hex of a custom color and returns it as lowercase `#rrggbb`.
+    ///
+    /// A hex with a low contrast to black and gray text is refused with the message the board shows,
+    /// which ends with a lighter hex to use instead.
+    pub fn validate_custom_hex(hex: &str) -> Result<String, String> {
+        let hex = normalize_hex(hex).ok_or_else(|| format!("not a hex color: {hex}"))?;
+        let contrast = text_contrast(&hex).unwrap_or(f64::MAX);
+        if contrast >= MIN_TEXT_CONTRAST {
+            return Ok(hex);
+        }
+        let lighter = lighter_hex(&hex).unwrap_or_default();
+        Err(format!(
+            "The color {} has a low contrast to black and gray text. Use the lighter {lighter}",
+            hex.to_uppercase()
+        ))
+    }
+
+    /// Adds a custom color with background `hex` to a board under the lowest free internal id from
+    /// `custom1` to `custom10`, and returns its id.
+    ///
+    /// A custom color is never deleted, so its internal id is never free again and the tenth
+    /// color is the last.
+    pub fn create_custom_color(
+        &self,
+        board_id: &str,
+        hex: &str,
+        label: &str,
+        description: Option<&str>,
+    ) -> DbResult<String> {
+        let hex = Self::validate_custom_hex(hex)?;
+        Self::validate_color_label(label)
+            .map_err(|message| -> Box<dyn Error> { message.into() })?;
+        TextCap::COLOR_DESCRIPTION.check(description.unwrap_or_default())?;
+        let txn = self.db.begin_write()?;
+        let colors = txn_board_colors(&txn, board_id)?;
+        let value = (1..=MAX_CUSTOM_COLORS)
+            .map(custom_color_value)
+            .find(|value| colors.iter().all(|color| &color.value != value))
+            .ok_or_else(|| format!("a board holds at most {MAX_CUSTOM_COLORS} custom colors"))?;
+        let id = txn_insert_color(
+            &txn,
+            board_id,
+            NewColor {
+                value: &value,
+                hex: Some(&hex),
+                label: label.trim(),
+                description: description.unwrap_or_default(),
+                enabled: true,
+                is_default: false,
+                sort_order: next_position(colors.iter().map(|color| color.sort_order)),
+            },
+            OverQuota::Refuse,
+        )?;
+        txn.commit()?;
+        Ok(id)
+    }
+
+    /// Changes the background of custom color `id` to `hex`. Returns false when the color is
+    /// unknown or is not a custom one.
+    pub fn set_custom_color_hex(&self, id: &str, hex: &str) -> DbResult<bool> {
+        let hex = Self::validate_custom_hex(hex)?;
+        let txn = self.db.begin_write()?;
+        let Some(mut row) = txn_read_one::<ColorRow>(&txn, TASK_COLORS, id)? else {
+            return Ok(false);
+        };
+        if !is_custom_color(&row.value) {
+            return Ok(false);
+        }
+        let (background, border, light) =
+            custom_color_hexes(&hex).ok_or_else(|| format!("not a hex color: {hex}"))?;
+        row.background_hex = background;
+        row.border_hex = border;
+        row.light_hex = light;
+        txn_store_owned(&txn, TASK_COLORS, id, &row, OverQuota::Refuse)?;
+        txn.commit()?;
+        Ok(true)
     }
 
     /// Rename/describe/enable a color and/or make it the board default.
@@ -6670,7 +7060,7 @@ impl Db {
     ) -> DbResult<bool> {
         if let Some(label) = label {
             Self::validate_color_label(label)
-                .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+                .map_err(|message| -> Box<dyn Error> { message.into() })?;
         }
         if let Some(description) = description {
             TextCap::COLOR_DESCRIPTION.check(description)?;
@@ -6756,6 +7146,9 @@ impl Db {
             Some(color) => color,
             None => return Ok(ColorDeleteOutcome::NotFound),
         };
+        if is_custom_color(&color.value) {
+            return Ok(ColorDeleteOutcome::RefusedCustom);
+        }
         if color.is_default {
             return Ok(ColorDeleteOutcome::RefusedDefault);
         }
@@ -7109,7 +7502,11 @@ impl Db {
                     .get("value")
                     .and_then(|value| value.as_str())
                     .unwrap_or("yellow");
-                if standard_color(value).is_none() {
+                let hex = color
+                    .get("background_hex")
+                    .and_then(|value| value.as_str())
+                    .filter(|hex| is_custom_color(value) && normalize_hex(hex).is_some());
+                if hex.is_none() && standard_color(value).is_none() {
                     continue;
                 }
                 txn_insert_color(
@@ -7117,6 +7514,7 @@ impl Db {
                     &board_id,
                     NewColor {
                         value,
+                        hex,
                         label: color
                             .get("label")
                             .and_then(|value| value.as_str())
@@ -7330,9 +7728,12 @@ impl Db {
                 due_done: false,
                 due_target_column_id: due_target,
                 estimate_hours: task.get("estimate_hours").and_then(|v| v.as_f64()),
+                points: None,
+                number: None,
                 column_entered_at: Some(now.clone()),
                 comments: Vec::new(),
                 attachments: Vec::new(),
+                cover_id: None,
                 history: Vec::new(),
                 updated_at: Some(now),
                 metadata: None,
@@ -7469,9 +7870,12 @@ impl Db {
             due_done: false,
             due_target_column_id: None,
             estimate_hours: None,
+            points: None,
+            number: None,
             column_entered_at: Some(now.clone()),
             comments: Vec::new(),
             attachments: Vec::new(),
+            cover_id: None,
             history: Vec::new(),
             updated_at: Some(now),
             metadata: None,
@@ -7507,6 +7911,9 @@ impl Db {
             let held = txn_board_task_count(&txn, &column.board_id)?;
             txn_refuse_board_over_quota(&txn, &column.board_id, Quota::TasksPerBoard, held + 1)?;
             txn_ensure_board_colors(&txn, &column.board_id)?;
+            if row.number.is_none() {
+                row.number = txn_take_task_number(&txn, &column.board_id)?;
+            }
 
             // A task created in a done column is complete from the start
             if column.is_done && row.completed_at.is_none() {
@@ -8502,9 +8909,33 @@ impl Db {
         let file = StoredFile {
             id,
             size: bytes.len() as u64,
-            sha256,
+            sha256: Some(sha256),
+            url: None,
+            edited_at: None,
         };
         self.attach_stored(task_id, file, name, mime, uploaded_by)
+    }
+
+    /// Attaches the link `url` called `name` to a task. Returns [`None`] when the task does not
+    /// exist.
+    pub fn add_link(
+        &self,
+        task_id: &str,
+        name: &str,
+        url: &str,
+        uploaded_by: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
+        let id = Uuid::new_v4().to_string();
+        let _held = self.files.hold(&id);
+        self.files.write(&id, url.as_bytes())?;
+        let file = StoredFile {
+            id,
+            size: url.len() as u64,
+            sha256: Some(format!("{:x}", Sha256::digest(url.as_bytes()))),
+            url: Some(url.to_string()),
+            edited_at: None,
+        };
+        self.attach_stored(task_id, file, name, TaskAttachment::LINK_MIME, uploaded_by)
     }
 
     /// Attaches a received file to a task and places it, which a task that does not exist or a
@@ -8523,9 +8954,153 @@ impl Db {
         let file = StoredFile {
             id: upload.id().to_string(),
             size: upload.size(),
-            sha256: upload.sha256(),
+            sha256: Some(upload.sha256()),
+            url: None,
+            edited_at: None,
         };
         self.attach_stored(task_id, file, name, mime, uploaded_by)
+    }
+
+    /// Attaches a text document called `name` holding `text`, with `.txt` appended to the name
+    /// unless it ends with it. Returns [`None`] when the task does not exist.
+    pub fn add_document(
+        &self,
+        task_id: &str,
+        name: &str,
+        text: &str,
+        uploaded_by: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
+        let name = if name.ends_with(".txt") {
+            name.to_string()
+        } else {
+            format!("{name}.txt")
+        };
+        TextCap::ATTACHMENT_NAME.check(&name)?;
+        let id = Uuid::new_v4().to_string();
+        let _held = self.files.hold(&id);
+        self.files.write(&id, text.as_bytes())?;
+        let file = StoredFile {
+            id,
+            size: text.len() as u64,
+            sha256: None,
+            url: None,
+            edited_at: Some(Utc::now().to_rfc3339()),
+        };
+        self.attach_stored(
+            task_id,
+            file,
+            &name,
+            TaskAttachment::DOCUMENT_MIME,
+            uploaded_by,
+        )
+    }
+
+    /// Saves `text` as the content of a task's text document, keeping the earlier content as a
+    /// version and renaming the document to `name` when one is given. Returns [`None`] and writes
+    /// nothing when the task holds no such document.
+    pub fn save_document(
+        &self,
+        task_id: &str,
+        attachment_id: &str,
+        name: Option<&str>,
+        text: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
+        let size = text.len() as u64;
+        let version_id = Uuid::new_v4().to_string();
+        let _held = self.files.hold(&version_id);
+        let txn = self.db.begin_write()?;
+        let owner = task_owner_in(&txn, task_id)?;
+        let board = task_board_in(&txn, task_id)?;
+        let Some(mut task) = read_in::<TaskRow>(&txn, TASKS, task_id)? else {
+            return Ok(None);
+        };
+        let held = serde_json::to_vec(&task)?.len() as u64;
+        let Some(current_name) = task
+            .attachments
+            .iter()
+            .find(|a| a.id == attachment_id && a.is_document())
+            .map(|a| a.name.clone())
+        else {
+            return Ok(None);
+        };
+        let renamed = name
+            .map(|name| TaskAttachment::keep_extension(&current_name, name))
+            .filter(|renamed| *renamed != current_name);
+        if let Some(renamed) = &renamed {
+            let others: Vec<TaskAttachment> = task
+                .attachments
+                .iter()
+                .filter(|a| a.id != attachment_id)
+                .cloned()
+                .collect();
+            if let Some(duplicate) = DuplicateAttachment::among(&others, renamed, None) {
+                return Err(Box::new(duplicate));
+            }
+        }
+        let Some(document) = task.attachments.iter_mut().find(|a| a.id == attachment_id) else {
+            return Ok(None);
+        };
+        if let Some(board) = &board {
+            txn_refuse_board_over_bytes(&txn, board, size)?;
+        }
+        if let Some(owner) = &owner {
+            txn_refuse_over_bytes(&txn, owner, size, 0)?;
+        }
+        let old = self.files.read(attachment_id)?.unwrap_or_default();
+        let now = Utc::now().to_rfc3339();
+        document.versions.push(AttachmentVersion {
+            id: version_id.clone(),
+            size: old.len() as u64,
+            saved_at: document
+                .edited_at
+                .clone()
+                .unwrap_or_else(|| document.created_at.clone()),
+        });
+        let excess = document
+            .versions
+            .len()
+            .saturating_sub(TaskAttachment::MAX_VERSIONS);
+        let dropped: Vec<AttachmentVersion> = document.versions.drain(..excess).collect();
+        let freed: u64 = dropped.iter().map(|version| version.size).sum();
+        document.size = size;
+        document.sha256 = None;
+        document.edited_at = Some(now.clone());
+        let mut details = vec![format!("Saved \"{}\"", document.name)];
+        if let Some(renamed) = renamed {
+            TextCap::ATTACHMENT_NAME.check(&renamed)?;
+            details.push(format!("Renamed \"{}\" to \"{renamed}\"", document.name));
+            document.name = renamed;
+        }
+        let saved = document.clone();
+        push_event(&mut task, "attachment_edited", details.remove(0), actor);
+        for detail in details {
+            push_event(&mut task, "attachment_renamed", detail, actor);
+        }
+        task.updated_at = Some(now);
+        let bytes = serde_json::to_vec(&task)?.len() as u64;
+        refuse_row_past(Bound::TaskRowBytes, MAX_TASK_ROW_BYTES, bytes, held)?;
+        {
+            let mut table = txn.open_table(TASKS)?;
+            txn_store_task(&txn, &mut table, &task, OverQuota::Allow, actor)?;
+        }
+        if let Some(owner) = &owner {
+            txn_count_usage(&txn, owner, size, freed)?;
+        }
+        self.files.write(&version_id, &old)?;
+        if let Err(error) = self.files.write(attachment_id, text.as_bytes()) {
+            let _ = self.files.write(attachment_id, &old);
+            self.files.remove(&[version_id]);
+            return Err(error);
+        }
+        if let Err(error) = txn.commit() {
+            let _ = self.files.write(attachment_id, &old);
+            self.files.remove(&[version_id]);
+            return Err(error);
+        }
+        let gone: Vec<String> = dropped.into_iter().map(|version| version.id).collect();
+        self.files.remove(&gone);
+        Ok(Some(saved))
     }
 
     /// Refuses, with [`QuotaExceeded`], an upload of `bytes` to task `task_id` that would leave
@@ -8570,7 +9145,13 @@ impl Db {
         mime: &str,
         uploaded_by: Actor<'_>,
     ) -> DbResult<Option<TaskAttachment>> {
-        let StoredFile { id, size, sha256 } = file;
+        let StoredFile {
+            id,
+            size,
+            sha256,
+            url,
+            edited_at,
+        } = file;
         let meta = TaskAttachment {
             id,
             name: name.to_string(),
@@ -8579,7 +9160,10 @@ impl Db {
             uploaded_by: uploaded_by.name.to_string(),
             token_name: uploaded_by.token_name.map(str::to_string),
             created_at: Utc::now().to_rfc3339(),
-            sha256: Some(sha256),
+            sha256,
+            url,
+            edited_at,
+            versions: Vec::new(),
         };
         let added = meta.clone();
         let stored = self.store_attachment(task_id, meta, name, size, uploaded_by);
@@ -8762,7 +9346,11 @@ impl Db {
             else {
                 return Ok(None);
             };
-            let renamed = TaskAttachment::keep_extension(&attachment.name, name);
+            let renamed = if attachment.url.is_some() {
+                name.to_string()
+            } else {
+                TaskAttachment::keep_extension(&attachment.name, name)
+            };
             TextCap::ATTACHMENT_NAME.check(&renamed)?;
             let detail = format!("Renamed \"{}\" to \"{renamed}\"", attachment.name);
             attachment.name = renamed;
@@ -8786,7 +9374,7 @@ impl Db {
         attachment_id: &str,
         actor: Actor<'_>,
     ) -> DbResult<bool> {
-        let mut removed = false;
+        let mut removed = Vec::new();
         let txn = self.db.begin_write()?;
         {
             let mut tbl = txn.open_table(TASKS)?;
@@ -8799,12 +9387,20 @@ impl Db {
                     .attachments
                     .iter()
                     .find(|a| a.id == attachment_id)
-                    .map(|a| (a.name.clone(), a.size));
-                if let Some((name, freed)) = found {
+                    .map(|a| {
+                        let files: Vec<String> = a.file_ids().map(str::to_string).collect();
+                        (a.name.clone(), a.stored_bytes(), files)
+                    });
+                if let Some((name, freed, files)) = found {
                     task.attachments.retain(|a| a.id != attachment_id);
-                    removed = true;
+                    removed = files;
                     let detail = format!("Deleted \"{name}\"");
                     push_event(&mut task, "attachment_deleted", detail, actor);
+                    if task.cover_id.as_deref() == Some(attachment_id) {
+                        task.cover_id = None;
+                        let detail = format!("Removed \"{name}\" as the cover image");
+                        push_event(&mut task, "cover_removed", detail, actor);
+                    }
                     task.updated_at = Some(Utc::now().to_rfc3339());
                     txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow, actor)?;
                     if let Some(owner) = txn_column_owner(&txn, &task.column_id)? {
@@ -8814,10 +9410,43 @@ impl Db {
             }
         }
         txn.commit()?;
-        if removed {
-            self.files.remove(&[attachment_id.to_string()]);
-        }
-        Ok(removed)
+        self.files.remove(&removed);
+        Ok(!removed.is_empty())
+    }
+
+    /// Makes an image attachment the task's cover, or stops it being the cover, and logs the
+    /// change. Returns [`None`] when the task does not exist and `false` when it holds no such
+    /// image attachment.
+    pub fn set_cover(
+        &self,
+        task_id: &str,
+        attachment_id: &str,
+        cover: CoverChange,
+        actor: Actor<'_>,
+    ) -> DbResult<Option<bool>> {
+        self.apply_task_change(task_id, actor, |task| {
+            let Some(name) = task
+                .attachments
+                .iter()
+                .find(|a| a.id == attachment_id && a.is_image())
+                .map(|a| a.name.clone())
+            else {
+                return (false, false);
+            };
+            if (task.cover_id.as_deref() == Some(attachment_id)) == (cover == CoverChange::Set) {
+                return (true, false);
+            }
+            if cover == CoverChange::Set {
+                task.cover_id = Some(attachment_id.to_string());
+                let detail = format!("Set \"{name}\" as the cover image");
+                push_event(task, "cover_set", detail, actor);
+            } else {
+                task.cover_id = None;
+                let detail = format!("Removed \"{name}\" as the cover image");
+                push_event(task, "cover_removed", detail, actor);
+            }
+            (true, true)
+        })
     }
 
     /// Append an activity-trail event to a task (KanbanFlow parity:
@@ -9091,19 +9720,42 @@ impl Db {
         Ok(outcome.unwrap_or(ClaimOutcome::NotFound))
     }
 
-    /// Distinct labels used anywhere on a board: task labels plus time
-    /// entry labels, sorted. Powers the "Add labels..." suggestions
-    /// (KanbanFlow parity).
+    /// Distinct labels of a board: task labels, time entry labels, and the labels its settings
+    /// highlight or keep, sorted. Powers the "Add labels..." suggestions (KanbanFlow parity) and
+    /// the filter.
     pub fn board_labels(&self, board_id: &str) -> DbResult<Vec<String>> {
-        let mut labels = BTreeSet::new();
+        let mut labels: BTreeSet<String> = self.board_label_counts(board_id)?.into_keys().collect();
         self.visit_board_tasks(board_id, |task: TaskLabels| {
             for entry in self.list_entries(&task.id)? {
                 labels.extend(entry.labels);
             }
-            labels.extend(task.labels);
             Ok(())
         })?;
         Ok(labels.into_iter().collect())
+    }
+
+    /// Returns each label of board `board_id` with the number of tasks carrying it: the labels on
+    /// its tasks, plus the ones its settings highlight or keep, which may count 0.
+    pub fn board_label_counts(&self, board_id: &str) -> DbResult<BTreeMap<String, usize>> {
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        self.visit_board_tasks(board_id, |task: TaskLabels| {
+            for label in task.labels {
+                *counts.entry(label).or_default() += 1;
+            }
+            Ok(())
+        })?;
+        if let Some(board) = self.board(board_id)? {
+            let settings = LabelSettings::from_config(&board.config_json);
+            let kept = settings
+                .highlights
+                .into_iter()
+                .map(|highlight| highlight.label)
+                .chain(settings.added);
+            for label in kept {
+                counts.entry(label).or_default();
+            }
+        }
+        Ok(counts)
     }
 
     /// Delete a time entry. Returns false when the entry does not exist.
@@ -9234,12 +9886,29 @@ impl Db {
             target.wip_limit,
             old_column_id != column_id,
         ) {
-            let count = txn_mmap_get(txn, TASKS_BY_COLUMN, column_id)?
-                .iter()
-                .filter(|task_id| task_id.as_str() != id)
-                .count();
-            if count as i64 >= limit {
-                return Ok(MoveOutcome::WipLimit { count, limit });
+            if target.wip_limit_in_hours() {
+                let minutes =
+                    |task: &TaskRow| (task.estimate_hours.unwrap_or(0.0) * 60.0).round() as i64;
+                let cell: Vec<TaskRow> = txn_indexed_rows(txn, TASKS_BY_COLUMN, column_id, TASKS)?;
+                let held: i64 = cell
+                    .iter()
+                    .filter(|other| other.id != id)
+                    .map(minutes)
+                    .sum();
+                if minutes(&task) > 0 && held + minutes(&task) > limit * 60 {
+                    return Ok(MoveOutcome::WipLimit {
+                        count: (held as usize).div_ceil(60),
+                        limit,
+                    });
+                }
+            } else {
+                let count = txn_mmap_get(txn, TASKS_BY_COLUMN, column_id)?
+                    .iter()
+                    .filter(|task_id| task_id.as_str() != id)
+                    .count();
+                if count as i64 >= limit {
+                    return Ok(MoveOutcome::WipLimit { count, limit });
+                }
             }
         }
 
@@ -9285,6 +9954,13 @@ impl Db {
             Vec::new()
         };
 
+        let number = match task.number {
+            Some(_) if crosses_boards => {
+                txn_take_task_number(txn, &target.board_id)?.or_else(|| task.number.clone())
+            }
+            _ => task.number.clone(),
+        };
+
         // Colors are per board, so a cross-board move takes the target board's color of the same
         // value, else its default.
         let color_id = match task.color_id.as_deref() {
@@ -9312,6 +9988,7 @@ impl Db {
             position: at as f64,
             completed_at,
             color_id,
+            number,
 
             // The "Added to column" date follows the task across columns, and same-column moves
             // keep the existing stamp
@@ -9601,8 +10278,12 @@ impl Db {
         let txn = self.db.begin_write()?;
         txn_refuse_stranded(&txn, account)?;
         let stored = txn_read_one::<Settings>(&txn, ACCOUNT_SETTINGS, account.as_str())?;
+        let mut settings = settings.clone();
+        if let Some(stored) = &stored {
+            settings.avatar = stored.avatar.clone();
+        }
         settings.check_caps(stored.as_ref())?;
-        write_one(&txn, ACCOUNT_SETTINGS, account.as_str(), settings)?;
+        write_one(&txn, ACCOUNT_SETTINGS, account.as_str(), &settings)?;
         txn.commit()?;
         Ok(())
     }
@@ -11167,7 +11848,7 @@ mod schema_version_tests {
             object["permissions"]
                 .as_array_mut()
                 .expect("permissions")
-                .retain(|name| name != "tasks.bin");
+                .retain(|name| name != "tasks.bin" && name != "labels.manage");
         });
     }
 
@@ -11271,6 +11952,50 @@ mod schema_version_tests {
             .expect("read")
             .expect("row");
         assert!(request.permissions.contains(&Permission::TasksBin));
+    }
+
+    /// A version-50 file's tokens at the lead or admin preset gain `labels.manage` and keep
+    /// `tasks.bin`, and a custom set and the lower presets keep what they hold.
+    #[test]
+    fn version_50_file_should_grant_label_management_to_lead_and_admin_presets_and_no_custom_set() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let (presets, custom) = {
+            let db = Db::connect(&path).expect("connect");
+            let mut presets = Vec::new();
+            for scope in AuthScope::ALL {
+                let (record, _) = new_api_token_record(&account, scope.as_str(), scope, None);
+                db.create_api_token(&record).expect("token");
+                presets.push((scope, record.id));
+            }
+            let (mut record, _) = new_api_token_record(&account, "custom", AuthScope::Work, None);
+            record.permissions.insert(Permission::TasksBin);
+            db.create_api_token(&record).expect("token");
+            (presets, record.id)
+        };
+        let strip = |object: &mut serde_json::Map<String, serde_json::Value>| {
+            object["permissions"]
+                .as_array_mut()
+                .expect("permissions")
+                .retain(|name| name != "labels.manage");
+        };
+        for key in presets.iter().map(|(_, id)| id).chain([&custom]) {
+            edit_raw(&path, API_TOKENS, key, strip);
+        }
+        stamp(&path, 50);
+
+        let db = Db::connect(&path).expect("open version 50");
+        for (scope, id) in &presets {
+            let token: ApiTokenRecord = read_one(&db.db, API_TOKENS, id)
+                .expect("read")
+                .expect("row");
+            assert!(token.permissions == scope.permissions(), "{scope:?}");
+        }
+        let token: ApiTokenRecord = read_one(&db.db, API_TOKENS, &custom)
+            .expect("read")
+            .expect("row");
+        assert!(!token.permissions.contains(&Permission::LabelsManage));
+        assert!(token.permissions.contains(&Permission::TasksBin));
     }
 
     /// A version-26 file's tokens and device requests gain the permissions of their scope's
@@ -12095,9 +12820,10 @@ mod schema_fingerprint_tests {
 
     use super::*;
     use crate::models::{
-        BoardEventRow, BreakActivity, DiskLimits, FieldColumn, InviteRow, NotificationRow,
-        OutboxRow, PruneSettings, PruneStatus, Quotas, RateLimits, RegistrationMode, Responsible,
-        SubtaskTemplate, TimerMode, WebhookEvent,
+        Avatar, AvatarKind, BoardEventRow, BreakActivity, DiskLimits, FieldColumn, InviteRow,
+        NotificationRow, OutboxRow, PruneSettings, PruneStatus, Quotas, RateLimits,
+        RegistrationMode, Responsible, SubtaskTemplate, TimeFormat, TimerMode, WebhookEvent,
+        WeekStart,
     };
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
@@ -12394,6 +13120,7 @@ mod schema_fingerprint_tests {
     fn stored_schema_listing() -> String {
         let mut lines = vec![
             shape::<ActiveTimer>("ActiveTimer"),
+            shape::<AttachmentVersion>("AttachmentVersion"),
             shape::<ApiTokenRecord>("ApiTokenRecord"),
             shape::<BackupSettings>("BackupSettings"),
             shape::<BackupStatus>("BackupStatus"),
@@ -12425,6 +13152,10 @@ mod schema_fingerprint_tests {
             shape::<Responsible>("Responsible"),
             shape::<SessionRow>("SessionRow"),
             shape::<Settings>("Settings"),
+            shape::<Avatar>("Avatar"),
+            shape::<TimeFormat>("TimeFormat"),
+            shape::<WeekStart>("WeekStart"),
+            shape::<AvatarKind>("AvatarKind"),
             shape::<LaneLimit>("LaneLimit"),
             shape::<Subtask>("Subtask"),
             shape::<SubtaskTemplate>("SubtaskTemplate"),
@@ -12463,6 +13194,7 @@ mod schema_fingerprint_tests {
             table(DEVICE_AUTHS),
             table(PASSKEYS),
             table(ACCOUNT_SETTINGS),
+            table(AVATARS),
             table(RECOVERY_CODES),
             table(INVITES),
             table(ACTIVITY),

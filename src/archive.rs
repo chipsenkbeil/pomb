@@ -285,6 +285,12 @@ struct TaskInfo {
     due_target_column_id: Option<String>,
     /// The time estimate in hours, or null.
     estimate_hours: Option<f64>,
+    /// The points estimate, or null.
+    #[serde(default)]
+    points: Option<f64>,
+    /// The task's number such as "PS-1", or null.
+    #[serde(default)]
+    number: Option<String>,
     /// How many pomodori the task completed.
     pomodori_completed: u32,
     /// How many pomodori were stopped early.
@@ -382,6 +388,9 @@ struct AttachmentInfo {
     token_name: Option<String>,
     /// When the file was uploaded, as RFC 3339.
     created_at: String,
+    /// The address of a link attachment, or null for a file.
+    #[serde(default)]
+    url: Option<String>,
     /// The path of the file inside the archive, or null when the file's bytes are gone.
     file: Option<String>,
 }
@@ -679,6 +688,7 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
             uploaded_by: attachment.uploaded_by,
             token_name: attachment.token_name,
             created_at: attachment.created_at,
+            url: attachment.url,
             file,
         });
     }
@@ -756,6 +766,8 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
         due_done: row.due_done,
         due_target_column_id: lookup.column(row.due_target_column_id),
         estimate_hours: row.estimate_hours,
+        points: row.points,
+        number: row.number,
         pomodori_completed: row.pomodori_completed,
         interruptions: row.interruptions,
         subtasks,

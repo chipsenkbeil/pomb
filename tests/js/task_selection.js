@@ -26,7 +26,11 @@ function showConfirmDialog(title, message, ok, onConfirm) { confirms.push([title
 var memberIdsOf = {};
 var searchBox = { value: 'x', focus: function () {} };
 var membersList = { innerHTML: '' };
-var membersDialog = { hidden: true };
+var membersDialog = {
+  hidden: true,
+  classList: { toggle: function () {} },
+  querySelector: function () { return { style: {}, offsetWidth: 260, offsetHeight: 200 }; }
+};
 var refreshed = [];
 var rendered = [];
 var TimerUI = { refreshTaskCard: function (id) { refreshed.push(id); } };
@@ -52,7 +56,7 @@ var document = {
   },
   addEventListener: function () {}
 };
-var window = { location: { reload: function () { requests.push(['reload']); } } };
+var window = { innerWidth: 1000, innerHeight: 800, location: { reload: function () { requests.push(['reload']); } } };
 eval(slice('  var selectedIds = [];', '  function initSelection'));
 
 function card(id, col, lane, index) {
@@ -63,6 +67,7 @@ function card(id, col, lane, index) {
     dataset: { taskId: id, taskName: 'Task ' + id },
     classList: { toggle: function (name, on) { classes[name] = on; } },
     scrollIntoView: function () {},
+    getBoundingClientRect: function () { return { left: 10, right: 100, top: 10, bottom: 40 }; },
     focus: function () { focused.push(id); },
     closest: function (sel) { return sel === '.task-card' ? el : null; }
   };
@@ -122,7 +127,7 @@ check('shift+click with no earlier click selects just that card', selectedIds, [
 check('dragging an unselected card is a plain drag', dragGroupIds(a1.el), null);
 check('dragging the only selected card is a plain drag', dragGroupIds(d1.el), null);
 setSelection(['b1', 'a2', 'd1'], 'a2');
-check('dragging a selected card takes the rest in board order', dragGroupIds(d1.el), ['d1', 'a2', 'b1']);
+check('dragging a selected card moves every selected card in board order', dragGroupIds(d1.el), ['a2', 'b1', 'd1']);
 requests.length = 0;
 moveSelectionTo(['d1', 'a2'], { dataset: { columnId: 'c9', swimlaneId: 'L' } }, 2);
 check('a group drop posts one bulk move', requests[0], ['POST', '/api/boards/b1/tasks/bulk',
@@ -184,7 +189,7 @@ check('Delete with no selection asks nothing', confirms.length, 0);
 
 check('no other function shares the reload helper name', src.split('function reloadSelectionSoon(').length, 2);
 check('the selection is wired to the board', /initTaskSortable\(\);\n\s+initSelection\(\);/.test(src), true);
-check('a drop of a selected card posts the group', /var group = dragGroupIds\(card\);/.test(src), true);
+check('a drop of a selected card posts the group', /var group = dragGroup;/.test(src), true);
 
 var pending = [];
 function flush() { return new Promise(function (resolve) { setTimeout(resolve, 0); }); }

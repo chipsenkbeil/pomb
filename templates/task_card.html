@@ -5,7 +5,7 @@
    inline section bodies below). Each icon toggles its card section
    (persisted per-task in localStorage); the comments icon opens the task
    modal. #}
-<article class="task-card taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }} taskColorVars-{{ task.color_value }}{% if task.children_total > 0 %} task-card-umbrella{% endif %}"
+<article class="task-card taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }} taskColorVars-{{ task.color_value }}{% if task.children_total > 0 %} task-card-umbrella{% endif %}{% if task.stripe.is_some() %} task-card-hl{% endif %}"{% if let Some(color) = task.stripe %} style="--hl-stripe: {{ color }}"{% endif %}
          data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
          data-task-name="{{ task.name }}" data-grouping-date="{{ task.grouping_date.as_deref().unwrap_or("") }}" data-group-day="{{ task.group_day() }}"
          data-total-minutes="{{ task.total_minutes }}" data-due-at="{{ task.due_at.as_deref().unwrap_or("") }}"
@@ -13,13 +13,16 @@
          data-subtasks-total="{{ task.subtasks.len() }}" data-subtasks-done="{{ task.subtasks_done }}"
          data-estimate-minutes="{{ task.estimate_minutes }}"{% if task.due_state.overdue %} data-overdue="1"{% endif %}{% if task.due_state.done %} data-due-done="1"{% endif %}
          tabindex="0" title="{{ task.color_label }}"{% if task.archive_hidden() %} hidden{% endif %}>
+  {% if !task.cover_id.is_empty() %}
+  <img class="card-cover" src="/api/tasks/{{ task.id }}/attachments/{{ task.cover_id }}/file" alt="" loading="lazy" draggable="false">
+  {% endif %}
   {# KF-243: avatar lives in the icon row when the card has icon content,
      otherwise in the title row (golden GM-069: avatar top-right, 27px white
      disc; on icon cards it sits at the icon row's height, on title-only
      cards it stretches the title row). #}
   {% let has_icon_content = !task.description.is_empty() || task.due_card.is_some() || !task.subtasks.is_empty() || task.comment_count > 0 || task.attachment_count > 0 || task.link_count > 0 || task.children_total > 0 || task.claimant.is_some() || task.time_kf.is_some() %}
   {% let title_has_avatar = !has_icon_content && !task.member_chips.is_empty() %}
-  <div class="card-title{% if title_has_avatar %} card-title-has-avatar{% endif %}"><span class="card-title-text">{{ task.name }}</span>{% if title_has_avatar %}{% for chip in task.member_chips %}<span class="card-avatar" title="{{ chip.username }}">{{ chip.initials }}</span>{% endfor %}{% endif %}</div>
+  <div class="card-title{% if title_has_avatar %} card-title-has-avatar{% endif %}">{% if let Some(number) = task.number %}<span class="card-number">{{ number }}:</span>{% endif %}<span class="card-title-text">{{ task.name }}</span>{% for flag in task.flags %}{% if let Some(color) = flag.color %}<svg class="card-flag" data-flag-label="{{ flag.label }}" width="13" height="13" viewBox="0 0 12 12" role="img" aria-label="{{ flag.label }}"><title>{{ flag.label }}</title><path d="M2 1v10M2 1h7l-2 2.5L9 6H2" fill="{{ color }}" stroke="{{ color }}" stroke-width="1.4" stroke-linejoin="round"/></svg>{% endif %}{% endfor %}{% if task.unit.is_points() %}{% if let Some(points) = task.points_label %}<span class="card-points" title="Points estimate">{{ points }}</span>{% endif %}{% endif %}{% if title_has_avatar %}{% for chip in task.member_chips %}<span class="card-avatar" title="{{ chip.username }}" style="{{ chip.avatar.style }}">{% if let Some(url) = chip.avatar.image %}<img src="{{ url }}" alt="">{% else %}{{ chip.avatar.text }}{% endif %}</span>{% endfor %}{% endif %}</div>
   {% if let Some(umbrella) = task.umbrella %}
   <div class="card-umbrella-chip" title="Part of {% for part in umbrella.path %}{% if !loop.first %} &rsaquo; {% endif %}{{ part.name }}{% endfor %}" data-umbrella-id="{{ umbrella.id }}">{{ umbrella.name }}</div>
   {% endif %}
@@ -60,11 +63,10 @@
     {% if let Some(t) = task.time_kf %}
     <span class="card-ico-time" title="Time spent / Time estimate"><svg width="16" height="16" viewBox="0 0 16 16" overflow="visible" aria-hidden="true"><circle cx="5" cy="7.9" r="6.6" fill="#fff" stroke="currentColor" stroke-width="1.1"/><path d="M5 4.7v3.9l2.2 2.4" fill="none" stroke="currentColor"/></svg> {{ t }}</span>
     {% endif %}
-    {% for chip in task.member_chips %}<span class="card-avatar" title="{{ chip.username }}">{{ chip.initials }}</span>{% endfor %}
+    {% for chip in task.member_chips %}<span class="card-avatar" title="{{ chip.username }}" style="{{ chip.avatar.style }}">{% if let Some(url) = chip.avatar.image %}<img src="{{ url }}" alt="">{% else %}{{ chip.avatar.text }}{% endif %}</span>{% endfor %}
   </div>
   {% endif %}
   <span class="card-live" hidden></span>
-  {% if task.display.dates.due %}
   {% if let Some(due) = task.due_card %}
   {% if task.due_state.in_window %}
   <div class="card-sec card-duesec" data-sec-body="duedates">
@@ -72,11 +74,11 @@
   </div>
   {% endif %}
   {% endif %}
-  {% endif %}
-  {% if task.display.content.subtasks && !task.subtasks.is_empty() %}
-  <div class="card-sec card-subsec" data-sec-body="subtasks">{% let fold = task.subtasks_fold() %}
+  {% let face_subtasks = task.face_subtasks() %}
+  {% if !face_subtasks.is_empty() %}
+  <div class="card-sec card-subsec" data-sec-body="subtasks" data-sub-all="{{ task.lists_all_subtasks() }}">{% let fold = task.subtasks_fold() %}
     <ul class="subTasks">
-      {% for s in task.subtasks %}
+      {% for s in face_subtasks %}
       <li class="{% if s.done %}card-sub-done{% endif %}{% if fold && s.done %} card-sub-extra{% endif %}">
         <label class="card-sub">
           <input type="checkbox" class="card-sub-check" data-subtask-id="{{ s.id }}"{% if s.done %} checked{% endif %}>
@@ -95,7 +97,11 @@
   {# A required custom field is empty. #}
   <div class="card-fields-incomplete" title="A required field is empty">fields incomplete</div>
   {% endif %}
-  {% if task.display.content.labels && !task.labels.is_empty() %}
+  {% if !task.chips.is_empty() %}
+  <div class="card-labels card-labels-all">
+    {% for chip in task.chips %}{% if let Some(color) = chip.color %}<span class="card-label card-label-hl" style="background: {{ color }}" title="Label">{{ chip.label }}</span>{% else %}<span class="card-label" title="Label">{{ chip.label }}</span>{% endif %}{% endfor %}
+  </div>
+  {% else if task.display.content.labels && !task.labels.is_empty() %}
   <div class="card-labels">
     {% for l in task.labels %}<span class="card-label" title="Label">{{ l }}</span>{% endfor %}
   </div>

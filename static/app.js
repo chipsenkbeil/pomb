@@ -13,6 +13,29 @@
     window.htmx.config.includeIndicatorStyles = false;
   }
 
+  var dragGroup = null;
+  var accountButton = document.getElementById('account-btn');
+  var accountPrefs = {
+    hour12: !accountButton || accountButton.dataset.timeFormat !== '24h',
+    weekStart: accountButton && accountButton.dataset.weekStart === 'monday' ? 1 : 0
+  };
+
+  function daysIntoWeek(d) {
+    return (d.getDay() - accountPrefs.weekStart + 7) % 7;
+  }
+
+  function weekdaysFromWeekStart(names) {
+    return names.slice(accountPrefs.weekStart).concat(names.slice(0, accountPrefs.weekStart));
+  }
+
+  function clockText(d) {
+    var h = d.getHours();
+    var m = d.getMinutes();
+    var minutes = (m < 10 ? '0' : '') + m;
+    if (!accountPrefs.hour12) return (h < 10 ? '0' : '') + h + ':' + minutes;
+    return (h % 12 || 12) + ':' + minutes + ' ' + (h < 12 ? 'AM' : 'PM');
+  }
+
   var dragging = false;   // true while a Sortable drag is in flight (suppresses card clicks)
   var modalDirty = false; // set when the modal changed something; reloads the board on close
   // KF-334: the Move task dialog's task and target, held between
@@ -102,9 +125,15 @@
         animation: 150,
         draggable: '.task-card',
         ghostClass: 'sortable-placeholder',
-        onStart: function () { dragging = true; },
+        setData: function (dataTransfer, card) {
+          dataTransfer.setData('Text', card.textContent);
+          dataTransfer.setDragImage(dragHelper(card), 12, 12);
+        },
+        onStart: function (evt) { dragging = true; dragGroup = dragGroupIds(evt.item); },
+        onMove: function (evt) { markDoneTarget(evt.to); },
         onEnd: function (evt) {
           window.setTimeout(function () { dragging = false; }, 80);
+          markDoneTarget(null);
           var card = evt.item;
           var toList = evt.to;
           var fromList = evt.from;
@@ -128,9 +157,11 @@
           }
           var cards = Array.prototype.slice.call(toList.querySelectorAll('.task-card'));
           var position = cards.indexOf(card);
-          var group = dragGroupIds(card);
+          var group = dragGroup;
+          dragGroup = null;
           if (group) {
             var others = cards.filter(function (el) { return el === card || !isSelected(el); });
+            clearSelection();
             moveSelectionTo(group, toList, others.indexOf(card));
             return;
           }
@@ -220,6 +251,15 @@
     return m === 0 ? h + 'h' : h + 'h ' + m + 'm';
   }
 
+  function wipLimitState(th, count, minutes) {
+    var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
+    var hours = th.dataset.wipUnit === 'hours';
+    return {
+      label: !wip ? String(count) : (hours ? formatColumnHours(minutes) + ' / ' + wip + 'h' : count + ' / ' + wip),
+      warn: wip != null && (hours ? minutes > wip * 60 : count > wip),
+    };
+  }
+
   // KF-208/KF-371: the right-edge badge shows the count, or the estimated
   // hours for Column sum "Estimated hours".
   function setSumBadge(th, count, minutes) {
@@ -233,6 +273,7 @@
   function updateColumnCount(colId, delta, minutes) {
     var th = document.querySelector('.columnHeader[data-column-id="' + cssEscape(colId) + '"]');
     if (!th) return;
+    if (window.BoardChrome && BoardChrome.refreshMarks) BoardChrome.refreshMarks();
     var count = (parseInt(th.dataset.taskCount, 10) || 0) + delta;
     th.dataset.taskCount = String(count);
     var estimate = (parseInt(th.dataset.estimateMinutes, 10) || 0) + (minutes || 0);
@@ -243,15 +284,15 @@
       BoardChrome.refreshFilteredCounts();
       return;
     }
-    var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
+    var limit = wipLimitState(th, count, estimate);
     var el = th.querySelector('.columnHeader-count');
-    if (el) el.textContent = wip ? count + ' / ' + wip : String(count);
+    if (el) el.textContent = limit.label;
     refreshLaneCounts();
     setSumBadge(th, count, estimate);
     var badge = th.querySelector('.columnHeader-countBadge');
     // KF-035: the warning is a *violation* — it fires only when the count
     // exceeds the limit, not when it merely reaches it.
-    var warn = wip != null && count > wip;
+    var warn = limit.warn;
     if (badge) {
       // KF-241: the collapsed strip's violated count must toggle the darkred
       // --over class along with the warning classes below.
@@ -352,8 +393,29 @@
     if (!isSelected(card)) return null;
     var cards = selectedCards();
     if (cards.length < 2) return null;
-    var rest = cards.filter(function (el) { return el !== card; });
-    return [card].concat(rest).map(function (el) { return el.dataset.taskId; });
+    return cards.map(function (el) { return el.dataset.taskId; });
+  }
+
+  function dragHelper(card) {
+    var count = isSelected(card) ? selectedCards().length : 1;
+    var helper = document.createElement('div');
+    helper.className = 'drag-helper' + (count > 1 ? ' drag-helper--group' : '');
+    helper.textContent = count > 1 ? 'Move ' + count + ' tasks' : (card.dataset.taskName || '');
+    document.body.appendChild(helper);
+    window.setTimeout(function () { helper.remove(); }, 0);
+    return helper;
+  }
+
+  function markDoneTarget(list) {
+    document.querySelectorAll('.done-group-label--target').forEach(function (label) {
+      label.classList.remove('done-group-label--target');
+    });
+    if (!list || list.dataset.doneColumn !== 'true') return;
+    Array.prototype.some.call(list.querySelectorAll('.done-group-label'), function (label) {
+      if (label.textContent.trim() !== 'Today') return false;
+      label.classList.add('done-group-label--target');
+      return true;
+    });
   }
 
   function reloadSelectionSoon(failed) {
@@ -434,6 +496,27 @@
     }) : [];
   }
 
+  function anchorPopover(overlay, anchor) {
+    var dlg = overlay.querySelector('.dlg');
+    overlay.classList.toggle('dlg-overlay--popover', !!anchor);
+    dlg.style.left = '';
+    dlg.style.top = '';
+    overlay.hidden = false;
+    if (!anchor) return;
+    var r = anchor.getBoundingClientRect();
+    var w = dlg.offsetWidth;
+    var h = dlg.offsetHeight;
+    var top = r.bottom + 4 + h <= window.innerHeight - 8 ? r.bottom + 4 : r.top - h - 4;
+    dlg.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
+    dlg.style.top = Math.max(8, Math.min(top, window.innerHeight - h - 8)) + 'px';
+  }
+
+  function taskAnchor(taskId, modalSelector) {
+    if (!taskId) return null;
+    if (modalSelector && modalTaskId() === taskId) return document.querySelector(modalSelector);
+    return document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
+  }
+
   function openBulkMembersDialog(ids) {
     initMembersDialog();
     membersBulkIds = ids;
@@ -444,7 +527,7 @@
     var search = document.getElementById('members-search');
     search.value = '';
     document.getElementById('members-list').innerHTML = '<div class="member-row">Loading…</div>';
-    document.getElementById('members-dialog').hidden = false;
+    anchorPopover(document.getElementById('members-dialog'), taskAnchor(ids[0], ''));
     search.focus();
     fetchJson('/api/members').catch(function () { return []; }).then(function (roster) {
       if (membersBulkIds !== ids) return;
@@ -661,18 +744,13 @@
       return a.length === b.length && a.every(function (id) { return b.indexOf(id) !== -1; });
     }
 
-    function initials(name) {
-      var words = name.trim().split(/\s+/);
-      return (words.length > 1 ? words[0][0] + words[1][0] : name.slice(0, 2)).toUpperCase();
-    }
-
     // KF-481: the Members button opens a popover inside the dialog; the
     // picked members are assigned once the task exists.
     function renderMembers() {
       var q = membersSearch.value.trim().toLowerCase();
       membersList.innerHTML = '';
       (roster || []).forEach(function (m) {
-        if (q && m.username.toLowerCase().indexOf(q) === -1) return;
+        if (q && m.display_name.toLowerCase().indexOf(q) === -1) return;
         var row = document.createElement('label');
         row.className = 'addMembersPop-row';
         var box = document.createElement('input');
@@ -685,10 +763,10 @@
         });
         var avatar = document.createElement('span');
         avatar.className = 'addMembersPop-avatar';
-        avatar.textContent = initials(m.username);
+        paintAvatar(avatar, m);
         var name = document.createElement('span');
         name.className = 'addMembersPop-name';
-        name.textContent = m.username;
+        name.textContent = m.display_name;
         row.appendChild(box);
         row.appendChild(avatar);
         row.appendChild(name);
@@ -894,6 +972,69 @@
       selectBtn.setAttribute('aria-expanded', 'false');
     }
 
+    function renameColor(span, text) {
+      var label = text.value.trim();
+      if (!label || label === (span.dataset.label || span.dataset.value)) { openMenu(); return; }
+      api('/api/boards/' + encodeURIComponent(boardId()) + '/colors/' + encodeURIComponent(span.dataset.id),
+          'PATCH', { label: label })
+        .then(function (res) {
+          if (!res.ok) { toast('Could not rename the color.'); return; }
+          span.dataset.label = label;
+          var segments = document.querySelectorAll('.color-legend-segment');
+          var at = colorSpans().indexOf(span);
+          if (segments.length === colorSpans().length && at >= 0) segments[at].textContent = label;
+          if (form.elements.color_id.value === span.dataset.id) setColor(span);
+          openMenu();
+        });
+    }
+
+    function startColorRename(span, opt, text) {
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'colorSelectMenu-rename';
+      input.maxLength = 50;
+      input.value = span.dataset.label || span.dataset.value;
+      opt.replaceChild(input, text);
+      opt.querySelector('.colorSelectMenu-kebab').hidden = true;
+      input.focus();
+      input.select();
+      input.addEventListener('click', function (e) { e.stopPropagation(); });
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); renameColor(span, input); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); openMenu(); }
+      });
+    }
+
+    function colorKebab(span, opt, text) {
+      var kebab = document.createElement('button');
+      kebab.type = 'button';
+      kebab.className = 'colorSelectMenu-kebab';
+      kebab.setAttribute('aria-label', 'Color options');
+      kebab.setAttribute('aria-haspopup', 'menu');
+      kebab.textContent = '⋮';
+      var actions = document.createElement('div');
+      actions.className = 'colorSelectMenu-actions';
+      actions.setAttribute('role', 'menu');
+      actions.hidden = true;
+      [['Select', function () { setColor(span); closeMenu(); nameInput.focus(); }],
+       ['Rename', function () { startColorRename(span, opt, text); }]].forEach(function (item) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('role', 'menuitem');
+        b.textContent = item[0];
+        b.addEventListener('click', function (e) { e.stopPropagation(); item[1](); });
+        actions.appendChild(b);
+      });
+      kebab.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var wasHidden = actions.hidden;
+        menu.querySelectorAll('.colorSelectMenu-actions').forEach(function (a) { a.hidden = true; });
+        actions.hidden = !wasHidden;
+      });
+      opt.appendChild(kebab);
+      opt.appendChild(actions);
+    }
+
     function openMenu() {
       menu.innerHTML = '';
       colorSpans().forEach(function (span) {
@@ -912,6 +1053,7 @@
         text.textContent = span.dataset.label || span.dataset.value;
         opt.appendChild(dot);
         opt.appendChild(text);
+        colorKebab(span, opt, text);
         opt.addEventListener('click', function () {
           setColor(span);
           closeMenu();
@@ -1050,6 +1192,13 @@
     document.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-add-task-for]');
       if (btn) open(btn.getAttribute('data-add-task-for'), btn.getAttribute('data-add-lane'));
+    });
+
+    document.addEventListener('dblclick', function (e) {
+      var cell = e.target.closest('td.board-cell');
+      if (!cell || cell.classList.contains('board-cell--collapsed')) return;
+      if (e.target.closest('.task-card, button, a, input, select, textarea, .columnOverdue')) return;
+      open(cell.dataset.columnId, cell.dataset.swimlaneId);
     });
 
     overlay.addEventListener('click', function (e) {
@@ -1384,7 +1533,7 @@
 
     function hideCardSubmenu() {
       var sub = document.getElementById('card-ctx-submenu');
-      if (sub) { sub.hidden = true; sub.innerHTML = ''; sub.classList.remove('card-sub--color'); }
+      if (sub) { sub.hidden = true; sub.innerHTML = ''; sub.classList.remove('card-sub--color'); sub.dataset.for = ''; }
     }
 
     // KF-334: the submenu opens beside the card menu, which stays open
@@ -1393,6 +1542,7 @@
       var sub = document.getElementById('card-ctx-submenu');
       sub.innerHTML = '';
       sub.classList.remove('card-sub--color');
+      sub.dataset.for = '';
       buildItems(sub);
       var r = btn.getBoundingClientRect();
       positionMenu(sub, r.right, r.top);
@@ -1406,6 +1556,7 @@
     // KF-334: Move submenu icons (16px line icons like the card menu's).
     var CARD_SUB_ICONS = {
       'move-right': '<path d="M2.5 8h11M9.5 4l4 4-4 4"/>',
+      'move-top': '<path d="M8 14V5M4.5 8.5L8 5l3.5 3.5M3 2h10"/>',
       'move-bottom': '<path d="M8 2v9M4.5 7.5L8 11l3.5-3.5M3 14h10"/>',
       'move-advanced': '<path d="M9 2.5h4.5V7M13.5 2.5L7.5 8.5"/><path d="M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/>',
     };
@@ -1424,6 +1575,17 @@
       }
       return b;
     }
+
+    document.getElementById('card-ctx-menu').addEventListener('mouseover', function (e) {
+      var item = e.target.closest('[data-card-act]');
+      if (!item) return;
+      var sub = document.getElementById('card-ctx-submenu');
+      if (item.getAttribute('data-card-act') === 'move') {
+        if (sub.hidden || sub.dataset.for !== 'move') item.click();
+      } else if (sub.dataset.for === 'move') {
+        hideCardSubmenu();
+      }
+    });
 
     document.getElementById('card-ctx-menu').addEventListener('click', function (e) {
       var btn = e.target.closest('[data-card-act]');
@@ -1448,13 +1610,16 @@
           var currentColumnId = cardColumnId(card);
           var headers = Array.prototype.slice.call(document.querySelectorAll('#column-headers-row .columnHeader'));
           var currentIndex = headers.findIndex(function (h) { return h.dataset.columnId === currentColumnId; });
-          // "Move right" only when a column exists to the right.
-          if (currentIndex >= 0 && currentIndex < headers.length - 1) {
-            var nextColumnId = headers[currentIndex + 1].dataset.columnId;
-            sub.appendChild(cardSubmenuButton('Move right', 'move-right', { 'data-column-id': nextColumnId }));
+          sub.dataset.for = 'move';
+          if (!card.closest('[data-done-column="true"]')) {
+            // "Move right" only when a column exists to the right.
+            if (currentIndex >= 0 && currentIndex < headers.length - 1) {
+              var nextColumnId = headers[currentIndex + 1].dataset.columnId;
+              sub.appendChild(cardSubmenuButton('Move right', 'move-right', { 'data-column-id': nextColumnId }));
+            }
+            sub.appendChild(cardSubmenuButton('Move to top', 'move-top'));
+            sub.appendChild(cardSubmenuButton('Move to bottom', 'move-bottom'));
           }
-          // "Move to bottom" of the card's own column, in every column.
-          sub.appendChild(cardSubmenuButton('Move to bottom', 'move-bottom'));
           // "Move advanced" (always available).
           sub.appendChild(cardSubmenuButton('Move advanced', 'move-advanced'));
         });
@@ -1591,7 +1756,7 @@
       hideCardSubmenu();
       hideFloatingMenus();
       if (sub === 'move-right') {
-        // KF-334: move to the end of the column to the right.
+        // KF-334: move to the column to the right, placed per the board's setting.
         var colId = btn.getAttribute('data-column-id');
         var curList = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
         var curLane = curList ? (curList.dataset.swimlaneId || null) : null;
@@ -1599,16 +1764,15 @@
         var targetList = (curLane && document.querySelector(listSel + '[data-swimlane-id="' + cssEscape(curLane) + '"]')) ||
             document.querySelector(listSel);
         var laneId = targetList ? (targetList.dataset.swimlaneId || null) : curLane;
-        var position = targetList ? targetList.querySelectorAll('.task-card').length : 0;
         api('/api/tasks/' + encodeURIComponent(task.id) + '/move?force=true', 'POST',
-            { column_id: colId, swimlane_id: laneId, position: position })
+            { column_id: colId, swimlane_id: laneId })
           .then(drained)
           .then(function (res) {
             if (res.ok) window.location.reload();
             else toastRefusal(res, 'Could not move task.');
           });
-      } else if (sub === 'move-bottom') {
-        // KF-334: move to the bottom of the current column.
+      } else if (sub === 'move-bottom' || sub === 'move-top') {
+        // KF-334: move to the top or bottom of the current column.
         var curList = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
         var curLane = curList ? (curList.dataset.swimlaneId || null) : null;
         var colId = cardColumnId(cardMenuCard);
@@ -1616,7 +1780,7 @@
         var targetList = (curLane && document.querySelector(listSel + '[data-swimlane-id="' + cssEscape(curLane) + '"]')) ||
             document.querySelector(listSel);
         var laneId = targetList ? (targetList.dataset.swimlaneId || null) : curLane;
-        var position = targetList ? targetList.querySelectorAll('.task-card').length : 0;
+        var position = targetList && sub === 'move-bottom' ? targetList.querySelectorAll('.task-card').length : 0;
         api('/api/tasks/' + encodeURIComponent(task.id) + '/move?force=true', 'POST',
             { column_id: colId, swimlane_id: laneId, position: position })
           .then(drained)
@@ -2195,6 +2359,7 @@
     document.getElementById('ec-name').value = th.dataset.columnName || '';
     document.getElementById('ec-description').value = th.dataset.columnDescription || '';
     document.getElementById('ec-wip').value = th.dataset.wipLimit || '';
+    document.getElementById('ec-wip-type').value = th.dataset.wipUnit === 'hours' ? 'hours' : 'count';
     document.getElementById('ec-collapsed').checked = th.dataset.collapsed === '1';
     // KF-042: the remaining fields live in the column's opaque config_json
     // bag — load the saved values so editing a name doesn't wipe them.
@@ -2208,6 +2373,7 @@
     document.getElementById('ec-group-by-date').checked =
       typeof cfg.group_by_date === 'boolean' ? cfg.group_by_date : th.dataset.isDone === '1';
     var props = columnPropConfig(th);
+    if (props.due_dates === 'hide') props.due_dates = 'active_7d';
     document.getElementById('ec-prop-description').value = props.description;
     document.getElementById('ec-prop-labels').value = props.labels;
     document.getElementById('ec-prop-subtasks').value = props.subtasks;
@@ -2226,6 +2392,7 @@
     var wip = wipRaw === '' ? null : parseInt(wipRaw, 10);
     if (wipRaw !== '' && (!wip || wip < 1)) { toast('WIP limit must be a positive number.'); return; }
     var config = {
+      wip_limit_type: document.getElementById('ec-wip-type').value,
       sorting: document.getElementById('ec-sorting').value,
       // KF-371: Column sum is stored as "none", "count" or "hours".
       column_sum: document.getElementById('ec-column-sum').value,
@@ -3445,8 +3612,8 @@
               escapeHtml(TimeInColumnPage.fmtDuration(r.ms, 'minutes')) + '</td></tr>' +
               '<tr class="tm-tic-detail" data-tm-tic-for="' + escapeHtml(r.id) + '" hidden><td colspan="2"><ul class="tm-tic-intervals">';
             r.intervals.forEach(function (iv) {
-              html += '<li><span class="tm-tic-start">' + escapeHtml(new Date(iv.start).toLocaleString()) +
-                '</span> &ndash; <span class="tm-tic-end">' + (iv.open ? 'now' : escapeHtml(new Date(iv.end).toLocaleString())) +
+              html += '<li><span class="tm-tic-start">' + escapeHtml(new Date(iv.start).toLocaleString(undefined, { hour12: accountPrefs.hour12 })) +
+                '</span> &ndash; <span class="tm-tic-end">' + (iv.open ? 'now' : escapeHtml(new Date(iv.end).toLocaleString(undefined, { hour12: accountPrefs.hour12 }))) +
                 '</span> (' + escapeHtml(TimeInColumnPage.fmtDuration(iv.end - iv.start, 'minutes')) + ')</li>';
             });
             html += '</ul></td></tr>';
@@ -4372,9 +4539,15 @@
     btn.innerHTML = watched ? '&#10003; Unwatch' : 'Watch';
   }
 
+  var BARE_KEEPING_ACTS = ['pick-color', 'move', 'delete', 'watch', 'task-url', 'copy', 'shortcuts', 'print'];
+
   function modalAction(act, source) {
     var id = modalTaskId();
     closeAllTmMenus();
+    if (BARE_KEEPING_ACTS.indexOf(act) === -1) {
+      var bare = document.querySelector('#modal-root .task-modal.tm-bare');
+      if (bare) bare.classList.remove('tm-bare');
+    }
     if (act === 'pick-color') {
       // KF-257: the Color row shows dot + color name; clicking the dot toggles the full picker.
       var picker = document.getElementById('modal-color-picker');
@@ -4429,7 +4602,7 @@
       openMembersDialog(id);
     } else if (act === 'add-label') {
       // KF-144: was openLabelsDialog() (undefined) — the dialog object is LabelsDialog.
-      LabelsDialog.open();
+      LabelsDialog.open(source);
     } else if (act === 'add-subtask') {
       if (showModalTab('subtasks')) return;
       var subInput = document.getElementById('modal-subtask-input');
@@ -4459,6 +4632,12 @@
       if (showModalTab('files')) return;
       var fileInput = document.getElementById('modal-attachment-file');
       if (fileInput) fileInput.click();
+    } else if (act === 'new-document') {
+      if (showModalTab('files')) return;
+      newDocument();
+    } else if (act === 'attach-link') {
+      if (showModalTab('files')) return;
+      openAttachmentLink();
     } else if (act === 'link-child') {
       if (document.getElementById('tm-tab-children') && showModalTab('children')) return;
       openLinkPicker(LinkKind.CHILD, pickChild);
@@ -4644,7 +4823,7 @@
 
   function doMoveTask() {
     if (moveBulkIds && moveTargetColumnId) {
-      postBulk({ task_ids: moveBulkIds, action: 'move', column_id: moveTargetColumnId, swimlane_id: null, position: 1e9 })
+      postBulk({ task_ids: moveBulkIds, action: 'move', column_id: moveTargetColumnId, swimlane_id: null })
         .then(function (res) {
           document.getElementById('move-task-dialog').hidden = true;
           if (!res.ok) { toast('Could not move the selected tasks.'); return; }
@@ -4655,14 +4834,8 @@
     var id = moveTaskId;
     if (!id) return;
     if (!moveTargetColumnId) { toast('Could not move task.'); return; }
-    // KF-274: no Position control — append at the end of the target cell;
-    // the server clamps the index when the cell is not on this page.
-    var sel = '.task-list[data-column-id="' + cssEscape(moveTargetColumnId) + '"]';
-    if (moveSwimlaneId) sel += '[data-swimlane-id="' + cssEscape(moveSwimlaneId) + '"]';
-    var list = document.querySelector(sel);
-    var position = list ? list.querySelectorAll('.task-card').length : 1e9;
     api('/api/tasks/' + encodeURIComponent(id) + '/move?force=true', 'POST',
-        { column_id: moveTargetColumnId, swimlane_id: moveSwimlaneId, position: position })
+        { column_id: moveTargetColumnId, swimlane_id: moveSwimlaneId })
       .then(drained)
       .then(function (res) {
         document.getElementById('move-task-dialog').hidden = true;
@@ -4678,6 +4851,15 @@
     var dlg = overlay.querySelector('.dlg');
     var input = document.getElementById('est-input');
     input.value = '';
+    var modal = document.querySelector('.task-modal');
+    var points = !!modal && modal.dataset.estimateUnit === 'points';
+    var heading = points ? 'Add points estimate' : 'Add time estimate';
+    overlay.dataset.unit = points ? 'points' : 'hours';
+    overlay.querySelector('.dlg-title span').textContent = heading;
+    dlg.setAttribute('aria-label', heading);
+    input.placeholder = points ? '0 points' : '0h';
+    input.title = points ? 'Estimate in points, e.g. 5' : 'Estimate, e.g. 2h, 30m, 1h 30m';
+    input.setAttribute('aria-label', points ? 'Points estimate (e.g. 5)' : 'Estimate (e.g. 2h, 30m, 1h 30m)');
     overlay.hidden = false;
     var add = document.querySelector('.task-modal-iconbar [data-tm-menu="tm-add-menu"]');
     var circle = add ? add.querySelector('.tm-icon') : null;
@@ -4695,6 +4877,17 @@
     var id = modalTaskId();
     if (!id) return;
     var raw = document.getElementById('est-input').value;
+    if (document.getElementById('estimate-dialog').dataset.unit === 'points') {
+      var points = Math.round(parseFloat(raw) * 100) / 100;
+      if (!(points > 0)) { toast('Enter the points as a number of at least 0.01, like 5.'); return; }
+      api('/api/tasks/' + encodeURIComponent(id), 'PATCH', { points: points })
+        .then(function (res) {
+          document.getElementById('estimate-dialog').hidden = true;
+          if (res.ok) { modalDirty = true; refreshModal(); }
+          else toast('Could not save estimate.');
+        });
+      return;
+    }
     var minutes = parseEstimateMinutes(raw);
     if (!minutes || minutes <= 0) { toast('Enter an estimate like 2h, 30m, or 1h 30m.'); return; }
     var hours = Math.round((minutes / 60) * 100) / 100;
@@ -5117,11 +5310,6 @@
       });
     }
 
-    function subtaskInitials(name) {
-      var words = name.trim().split(/\s+/);
-      return (words.length > 1 ? words[0][0] + words[1][0] : name.slice(0, 2)).toUpperCase();
-    }
-
     function rowMemberIds(row) {
       return (row.dataset.memberIds || '').split(',').filter(Boolean);
     }
@@ -5139,8 +5327,8 @@
         if (ids.indexOf(member.id) === -1) return;
         var chip = document.createElement('span');
         chip.className = 'tm-member-disc tm-subtask-member';
-        chip.title = member.username;
-        chip.textContent = subtaskInitials(member.username);
+        chip.title = member.display_name;
+        paintAvatar(chip, member);
         holder.appendChild(chip);
       });
     }
@@ -5162,7 +5350,7 @@
         var shown = 0;
         list.textContent = '';
         (memberRoster || []).forEach(function (member) {
-          if (query && member.username.toLowerCase().indexOf(query) === -1) return;
+          if (query && member.display_name.toLowerCase().indexOf(query) === -1) return;
           shown++;
           var on = selected.indexOf(member.id) !== -1;
           var item = document.createElement('button');
@@ -5172,7 +5360,7 @@
           item.setAttribute('aria-selected', on ? 'true' : 'false');
           var name = document.createElement('span');
           name.className = 'member-name';
-          name.textContent = member.username;
+          name.textContent = member.display_name;
           item.appendChild(name);
           if (on) {
             var check = document.createElement('span');
@@ -5647,6 +5835,7 @@
   }
 
   function openMembersDialog(taskId) {
+    var anchor = taskAnchor(taskId, '#modal-members-row .tm-member-add');
     initMembersDialog();
     membersBulkIds = null;
     membersDialogTaskId = taskId || null;
@@ -5657,7 +5846,7 @@
     var list = document.getElementById('members-list');
     search.value = '';
     list.innerHTML = '<div class="member-row">Loading…</div>';
-    document.getElementById('members-dialog').hidden = false;
+    anchorPopover(document.getElementById('members-dialog'), anchor);
     search.focus();
     var rosterP = fetchJson('/api/members').catch(function () { return []; });
     var taskP = membersDialogTaskId
@@ -5683,7 +5872,7 @@
     var q = (filter || '').trim().toLowerCase();
     var shown = 0;
     membersRoster.forEach(function (m) {
-      if (q && m.username.toLowerCase().indexOf(q) === -1) return;
+      if (q && m.display_name.toLowerCase().indexOf(q) === -1) return;
       shown++;
       var row = document.createElement('button');
       row.type = 'button';
@@ -5692,22 +5881,22 @@
       var isAssigned = membersAssigned.indexOf(m.id) !== -1;
       row.setAttribute('aria-selected', isAssigned ? 'true' : 'false');
       row.dataset.memberId = m.id;
-      var dot = document.createElement('span');
-      dot.className = 'member-dot';
-      dot.setAttribute('aria-hidden', 'true');
-      dot.innerHTML = '&#9679;';
+      var box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'member-box';
+      box.checked = isAssigned;
+      box.tabIndex = -1;
+      box.setAttribute('aria-hidden', 'true');
+      var avatar = document.createElement('span');
+      avatar.className = 'member-avatar';
+      avatar.setAttribute('aria-hidden', 'true');
+      paintAvatar(avatar, m);
       var name = document.createElement('span');
       name.className = 'member-name';
-      name.textContent = m.username;
-      row.appendChild(dot);
+      name.textContent = m.display_name;
+      row.appendChild(box);
+      row.appendChild(avatar);
       row.appendChild(name);
-      if (isAssigned) {
-        var check = document.createElement('span');
-        check.className = 'member-check';
-        check.setAttribute('aria-hidden', 'true');
-        check.innerHTML = '&#10003;';
-        row.appendChild(check);
-      }
       var line = document.createElement('div');
       line.className = 'member-line';
       line.appendChild(row);
@@ -5718,7 +5907,7 @@
           var tag = document.createElement('span');
           tag.className = 'member-responsible-tag';
           tag.textContent = 'Responsible';
-          row.insertBefore(tag, row.querySelector('.member-check'));
+          row.appendChild(tag);
         }
         var menuBtn = document.createElement('button');
         menuBtn.type = 'button';
@@ -5726,7 +5915,7 @@
         menuBtn.dataset.memberId = m.id;
         menuBtn.setAttribute('aria-haspopup', 'menu');
         menuBtn.setAttribute('aria-expanded', 'false');
-        menuBtn.setAttribute('aria-label', 'Menu for ' + m.username);
+        menuBtn.setAttribute('aria-label', 'Menu for ' + m.display_name);
         menuBtn.innerHTML = '&#8943;';
         line.appendChild(menuBtn);
       }
@@ -6525,7 +6714,6 @@
       var timedId = timing && s.taskId ? String(s.taskId) : null;
       var header = document.querySelector('.board-member-avatar');
       if (header) header.classList.toggle('avatar-timing', timing);
-      var initials = header ? header.textContent.trim() : '';
       document.querySelectorAll('.task-card').forEach(function (card) {
         var selected = !!activeId && String(card.dataset.taskId) === activeId;
         card.classList.toggle('card-timer-selected', selected);
@@ -6534,7 +6722,10 @@
         if (timed && !card.querySelector('.card-avatar')) {
           added = document.createElement('span');
           added.className = 'card-avatar card-avatar-timer';
-          added.textContent = initials;
+          if (header) {
+            added.innerHTML = header.innerHTML;
+            added.style.cssText = header.style.cssText;
+          }
           var row = card.querySelector('.card-iconrow');
           var title = card.querySelector('.card-title');
           if (row) row.appendChild(added);
@@ -7562,6 +7753,7 @@
           card.replaceWith(fresh);
           paintSelection();
           applyCardSecState(fresh);
+          if (window.BoardChrome && BoardChrome.refreshMarks) BoardChrome.refreshMarks();
           self.updateCardIndicators();
           self.updateCardLive();
           if (window.BoardChrome && BoardChrome.isFiltering && BoardChrome.isFiltering()) BoardChrome.applyFilter();
@@ -7716,9 +7908,9 @@
       String(d.getDate()).padStart(2, '0');
   }
 
-  // "5:43 PM", KanbanFlow's 12-hour clock.
+  // "5:43 PM", or "17:43" on the account's 24-hour clock.
   function clockTime(d) {
-    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    return clockText(d);
   }
 
   function toTimeStr(d, withSeconds) {
@@ -7782,13 +7974,13 @@
   // buttons "Today", "yesterday", "This month" under the grid.
   function renderCalPopup(popup, input, year, month) {
     var first = new Date(year, month, 1);
-    var startOffset = first.getDay(); // 0 = Sunday
+    var startOffset = daysIntoWeek(first);
     var daysInMonth = new Date(year, month + 1, 0).getDate();
     var monthName = first.toLocaleString('en-US', { month: 'long', year: 'numeric' });
     var html = '<div class="mt-cal-head"><button type="button" data-cal-prev>&lt;</button>' +
       '<span>' + monthName + '</span><button type="button" data-cal-next>&gt;</button></div>' +
       '<div class="mt-cal-grid">';
-    ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].forEach(function (d) { html += '<span class="mt-cal-dow">' + d + '</span>'; });
+    weekdaysFromWeekStart(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']).forEach(function (d) { html += '<span class="mt-cal-dow">' + d + '</span>'; });
     for (var i = 0; i < startOffset; i++) html += '<span></span>';
     for (var d = 1; d <= daysInMonth; d++) {
       var iso = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
@@ -8444,7 +8636,7 @@
     taskId: null,
     labels: [],
     suggestions: [],
-    open: function () {
+    open: function (source) {
       var id = modalTaskId();
       if (!id) return;
       this.taskId = id;
@@ -8459,7 +8651,9 @@
         self.suggestions = results[1] || [];
         self.render();
         document.getElementById('labels-input').value = '';
-        document.getElementById('labels-dialog').hidden = false;
+        self.showAll(false);
+        anchorPopover(document.getElementById('labels-dialog'),
+          source || document.querySelector('#modal-labels-row .tm-member-add'));
         document.getElementById('labels-input').focus();
       }).catch(function () { toast('Could not load labels.'); });
     },
@@ -8497,11 +8691,32 @@
           b.addEventListener('click', function () { self.add(s); });
           sug.appendChild(b);
         });
+      var all = document.getElementById('labels-all');
+      all.innerHTML = '';
+      this.suggestions.concat(this.labels.filter(function (l) { return self.suggestions.indexOf(l) === -1; }))
+        .sort()
+        .forEach(function (l) {
+          var row = document.createElement('label');
+          row.className = 'labels-all-row';
+          var box = document.createElement('input');
+          box.type = 'checkbox';
+          box.checked = self.labels.indexOf(l) !== -1;
+          box.addEventListener('change', function () {
+            if (box.checked) self.add(l); else self.remove(l);
+          });
+          row.appendChild(box);
+          row.appendChild(document.createTextNode(l));
+          all.appendChild(row);
+        });
       // KF-269: KanbanFlow's suggestions-area empty text is verbatim
       // "No recently used labels exist" (GM-080, GM-158).
       if (!sug.children.length) {
         sug.innerHTML = '<span class="empty-note">No recently used labels exist</span>';
       }
+    },
+    showAll: function (on) {
+      document.getElementById('labels-all').hidden = !on;
+      document.getElementById('labels-list-btn').setAttribute('aria-expanded', on ? 'true' : 'false');
     },
     add: function (label) {
       label = (label || '').trim();
@@ -8802,14 +9017,14 @@
 
     function renderCal(el, ym) {
       var first = new Date(ym.y, ym.m, 1);
-      var lead = first.getDay();
+      var lead = daysIntoWeek(first);
       var daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
       var daysInPrev = new Date(ym.y, ym.m, 0).getDate();
       var monthName = first.toLocaleString('en-US', { month: 'long', year: 'numeric' });
       var html = '<div class="mt-cal-head"><button type="button" data-nav="-1" aria-label="Previous month">&lt;</button>' +
         '<span>' + monthName + '</span><button type="button" data-nav="1" aria-label="Next month">&gt;</button></div>' +
         '<div class="mt-cal-grid">';
-      DOW.forEach(function (d) { html += '<span class="mt-cal-dow">' + d + '</span>'; });
+      weekdaysFromWeekStart(DOW).forEach(function (d) { html += '<span class="mt-cal-dow">' + d + '</span>'; });
       var cells = [];
       var i;
       for (i = lead - 1; i >= 0; i--) cells.push({ d: daysInPrev - i, other: true, off: -1 });
@@ -9194,6 +9409,280 @@
       .catch(function () { toast('Could not rename the attachment.'); });
   }
 
+  var docState = { taskId: null, attachmentId: null, mode: 'edit', text: '', name: '', editedAt: null };
+
+  function docWhen(iso) {
+    var when = new Date(iso);
+    if (isNaN(when.getTime())) return '';
+    var time = when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    var now = new Date();
+    if (when.toDateString() === now.toDateString()) return 'Today ' + time;
+    return when.toLocaleDateString() + ' ' + time;
+  }
+
+  function docBase(name) {
+    return name.endsWith('.txt') ? name.slice(0, name.length - 4) : name;
+  }
+
+  function docRender(text, into) {
+    into.textContent = '';
+    if (!text.trim()) { into.textContent = 'Nothing to preview'; return Promise.resolve(); }
+    return api('/api/markdown/preview', 'POST', { description: text })
+      .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
+      .then(function (html) { into.innerHTML = html; })
+      .catch(function () { into.textContent = 'The preview could not be loaded'; });
+  }
+
+  function docShow(mode) {
+    docState.mode = mode;
+    var editing = mode === 'edit';
+    document.getElementById('doc-editor').hidden = !editing;
+    document.getElementById('doc-preview').hidden = editing;
+    document.getElementById('doc-save').hidden = !editing;
+    document.getElementById('doc-edit').hidden = mode !== 'read';
+    document.getElementById('doc-name').readOnly = !editing;
+    var meta = document.getElementById('doc-meta');
+    if (mode === 'version') meta.textContent = 'An earlier version, read only.';
+    else if (docState.editedAt) meta.textContent = 'Updated: ' + docWhen(docState.editedAt);
+    else meta.textContent = '';
+    if (editing) docTab('write');
+  }
+
+  function docTab(tab) {
+    var preview = tab === 'preview';
+    document.querySelectorAll('#document-dialog [data-doc-tab]').forEach(function (t) {
+      t.classList.toggle('doc-tab--on', t.getAttribute('data-doc-tab') === tab);
+    });
+    var text = document.getElementById('doc-text');
+    var shown = document.getElementById('doc-preview');
+    text.hidden = preview;
+    document.getElementById('doc-tools').hidden = preview;
+    shown.hidden = !preview;
+    if (preview) docRender(text.value, shown);
+    else text.focus();
+  }
+
+  function docOpenDialog() {
+    var overlay = document.getElementById('document-dialog');
+    overlay.hidden = false;
+    document.getElementById('doc-versions').hidden = true;
+    var text = document.getElementById('doc-text');
+    text.hidden = false;
+    document.getElementById('doc-name').value = docBase(docState.name);
+    text.value = docState.text;
+    var download = document.getElementById('doc-download');
+    var existing = !!docState.attachmentId;
+    download.hidden = !existing;
+    document.getElementById('doc-history').hidden = !existing;
+    if (existing) {
+      download.href = '/api/tasks/' + encodeURIComponent(docState.taskId) + '/attachments/' +
+        encodeURIComponent(docState.attachmentId) + '/file';
+    }
+  }
+
+  function newDocument() {
+    var id = modalTaskId();
+    if (!id) return;
+    docState = { taskId: id, attachmentId: null, mode: 'edit', text: '', name: '', editedAt: null };
+    docOpenDialog();
+    docShow('edit');
+    document.getElementById('doc-name').focus();
+  }
+
+  function openDocument(attachmentId) {
+    var id = modalTaskId();
+    if (!id || !attachmentId) return;
+    var row = document.querySelector('.tm-attachment[data-attachment-id="' + cssEscape(attachmentId) + '"]');
+    var base = '/api/tasks/' + encodeURIComponent(id) + '/attachments/' + encodeURIComponent(attachmentId);
+    Promise.all([
+      fetch(base + '/file').then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); }),
+      fetchJson('/api/tasks/' + encodeURIComponent(id) + '/attachments'),
+    ]).then(function (parts) {
+      var meta = (parts[1] || []).filter(function (a) { return a.id === attachmentId; })[0] || {};
+      docState = {
+        taskId: id,
+        attachmentId: attachmentId,
+        mode: 'read',
+        text: parts[0],
+        name: meta.name || (row ? row.getAttribute('data-attachment-name') : ''),
+        editedAt: meta.edited_at || meta.created_at || null,
+      };
+      docOpenDialog();
+      docShow('read');
+      docRender(docState.text, document.getElementById('doc-preview'));
+    }).catch(function () { toast('Could not open the document.'); });
+  }
+
+  function saveDocument() {
+    var id = docState.taskId;
+    var text = document.getElementById('doc-text').value;
+    var name = document.getElementById('doc-name').value.trim() || 'Unnamed document';
+    var base = '/api/tasks/' + encodeURIComponent(id) + '/attachments';
+    var request = docState.attachmentId
+      ? api(base + '/' + encodeURIComponent(docState.attachmentId) + '/document', 'PUT', { name: name, text: text })
+      : api(base + '/document', 'POST', { name: name, text: text });
+    request.then(function (res) {
+      if (!res.ok) return toastRefusal(res, 'Could not save the document.');
+      return res.json().then(function (saved) {
+        docState = {
+          taskId: id,
+          attachmentId: saved.id,
+          mode: 'read',
+          text: text,
+          name: saved.name,
+          editedAt: saved.edited_at || saved.created_at,
+        };
+        docOpenDialog();
+        docShow('read');
+        docRender(text, document.getElementById('doc-preview'));
+        modalDirty = true;
+        modalTab = 'files';
+        if (modalTaskId() === id) refreshModal();
+      });
+    }).catch(function () { toast('Could not save the document.'); });
+  }
+
+  function showDocumentVersions() {
+    var box = document.getElementById('doc-versions');
+    if (!box.hidden) { box.hidden = true; return; }
+    var base = '/api/tasks/' + encodeURIComponent(docState.taskId) + '/attachments/' +
+      encodeURIComponent(docState.attachmentId);
+    fetchJson(base + '/versions').then(function (versions) {
+      box.textContent = '';
+      var current = document.createElement('button');
+      current.type = 'button';
+      current.textContent = 'Current, ' + docWhen(docState.editedAt);
+      current.addEventListener('click', function () {
+        document.getElementById('doc-text').value = docState.text;
+        docShow('read');
+        docRender(docState.text, document.getElementById('doc-preview'));
+      });
+      box.appendChild(current);
+      (versions || []).forEach(function (version) {
+        var item = document.createElement('button');
+        item.type = 'button';
+        item.textContent = docWhen(version.saved_at) + ', ' + version.size + ' bytes';
+        item.addEventListener('click', function () {
+          fetch(base + '/versions/' + encodeURIComponent(version.id))
+            .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
+            .then(function (text) {
+              docShow('version');
+              docRender(text, document.getElementById('doc-preview'));
+            })
+            .catch(function () { toast('Could not load the version.'); });
+        });
+        box.appendChild(item);
+      });
+      box.hidden = false;
+    }).catch(function () { toast('Could not load the versions.'); });
+  }
+
+  function printDocument() {
+    var shown = document.getElementById('doc-preview');
+    var run = docState.mode === 'edit'
+      ? docRender(document.getElementById('doc-text').value, shown)
+      : Promise.resolve();
+    run.then(function () {
+      var win = window.open('', '_blank');
+      if (!win) { toast('Allow pop-ups to print.'); return; }
+      win.document.title = document.getElementById('doc-name').value;
+      var body = win.document.createElement('div');
+      body.innerHTML = shown.innerHTML;
+      win.document.body.appendChild(body);
+      win.focus();
+      win.print();
+    });
+  }
+
+  function documentTool(tool) {
+    var area = document.getElementById('doc-text');
+    var start = area.selectionStart;
+    var end = area.selectionEnd;
+    var chosen = area.value.slice(start, end);
+    var wraps = {
+      bold: ['**', '**', 'bold text'],
+      italic: ['_', '_', 'italic text'],
+      link: ['[', '](https://)', 'link text'],
+      image: ['![', '](https://)', 'image description'],
+      heading: ['## ', '', 'Heading'],
+    };
+    if (tool === 'help') {
+      toast('Markdown help', '# Heading, **bold**, _italic_, [text](url), ![alt](url), - list, `code`');
+      return;
+    }
+    var wrap = wraps[tool];
+    if (!wrap) return;
+    var inner = chosen || wrap[2];
+    area.value = area.value.slice(0, start) + wrap[0] + inner + wrap[1] + area.value.slice(end);
+    area.focus();
+    area.setSelectionRange(start + wrap[0].length, start + wrap[0].length + inner.length);
+  }
+
+  function wireDocumentDialog() {
+    var dialog = document.getElementById('document-dialog');
+    if (!dialog) return;
+    document.getElementById('doc-save').addEventListener('click', saveDocument);
+    document.getElementById('doc-edit').addEventListener('click', function () {
+      document.getElementById('doc-text').value = docState.text;
+      docShow('edit');
+    });
+    document.getElementById('doc-print').addEventListener('click', printDocument);
+    document.getElementById('doc-history').addEventListener('click', showDocumentVersions);
+    dialog.addEventListener('click', function (e) {
+      var tab = e.target.closest('[data-doc-tab]');
+      if (tab) docTab(tab.getAttribute('data-doc-tab'));
+      var tool = e.target.closest('[data-doc-tool]');
+      if (tool) documentTool(tool.getAttribute('data-doc-tool'));
+    });
+  }
+
+  function setAttachmentCover(attachmentId, cover) {
+    var id = modalTaskId();
+    if (!id || !attachmentId) return;
+    api('/api/tasks/' + encodeURIComponent(id) + '/attachments/' + encodeURIComponent(attachmentId) + '/cover',
+      cover ? 'PUT' : 'DELETE')
+      .then(function (res) {
+        if (res.ok) { modalDirty = true; modalTab = 'files'; refreshModal(); return null; }
+        return toastRefusal(res, 'Could not change the cover image.');
+      })
+      .catch(function () { toast('Could not change the cover image.'); });
+  }
+
+  function openAttachmentLink() {
+    var overlay = document.getElementById('attachment-link-dialog');
+    if (!overlay) return;
+    var dlg = overlay.querySelector('.dlg');
+    var name = document.getElementById('al-name');
+    var url = document.getElementById('al-url');
+    name.value = '';
+    url.value = '';
+    overlay.hidden = false;
+    dlg.style.left = Math.max(0, (window.innerWidth - dlg.offsetWidth) / 2) + 'px';
+    dlg.style.top = Math.max(0, (window.innerHeight - dlg.offsetHeight) / 3) + 'px';
+    name.focus();
+  }
+
+  function doAttachLink() {
+    var id = modalTaskId();
+    if (!id) return;
+    var name = document.getElementById('al-name').value.trim();
+    var url = document.getElementById('al-url').value.trim();
+    if (!name) { toast('Enter a name for the link.'); return; }
+    if (!url) { toast('Enter the link address.'); return; }
+    api('/api/tasks/' + encodeURIComponent(id) + '/attachments/link', 'POST', { name: name, url: url })
+      .then(function (res) {
+        if (res.ok) {
+          document.getElementById('attachment-link-dialog').hidden = true;
+          modalDirty = true;
+          modalTab = 'files';
+          refreshModal();
+          return null;
+        }
+        return toastRefusal(res, 'Could not attach the link.');
+      })
+      .catch(function () { toast('Could not attach the link.'); });
+  }
+
   function deleteTimeEntry(entryId) {
     if (!entryId) return;
     // KF-188: styled in-page confirmation (same class as KF-184).
@@ -9351,6 +9840,13 @@
       if (cdel) { deleteModalComment(cdel.getAttribute('data-comment-delete')); }
       var adel = e.target.closest('[data-attachment-delete]');
       if (adel) { closeAllTmMenus(); deleteModalAttachment(adel.getAttribute('data-attachment-delete')); }
+      var dopen = e.target.closest('[data-document-open]');
+      if (dopen) { e.preventDefault(); openDocument(dopen.getAttribute('data-document-open')); }
+      var acover = e.target.closest('[data-attachment-cover]');
+      if (acover) {
+        closeAllTmMenus();
+        setAttachmentCover(acover.getAttribute('data-attachment-cover'), acover.getAttribute('data-cover') === 'on');
+      }
       var aren = e.target.closest('[data-attachment-rename]');
       if (aren) { closeAllTmMenus(); openAttachmentRename(aren.getAttribute('data-attachment-rename')); }
     });
@@ -9365,6 +9861,18 @@
       });
     }
 
+    wireDocumentDialog();
+    var linkDialog = document.getElementById('attachment-link-dialog');
+    if (linkDialog) {
+      document.getElementById('al-add').addEventListener('click', doAttachLink);
+      linkDialog.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); doAttachLink(); }
+      });
+      linkDialog.addEventListener('click', function (e) {
+        if (e.target === e.currentTarget) e.currentTarget.hidden = true;
+      });
+    }
+
     // Labels dialog.
     var labelsInput = document.getElementById('labels-input');
     if (labelsInput) labelsInput.addEventListener('keydown', function (e) {
@@ -9375,6 +9883,7 @@
     var labelsDialog = document.getElementById('labels-dialog');
     if (labelsDialog) labelsDialog.addEventListener('click', function (e) {
       if (e.target.closest('[data-close-dialog]')) LabelsDialog.close();
+      if (e.target.closest('#labels-list-btn')) LabelsDialog.showAll(document.getElementById('labels-all').hidden);
     });
 
     // Due-date dialog (KF-270: "Add due date" with inline calendar).
@@ -9506,14 +10015,13 @@
 
   // ---------- timer log page (KF-090) ----------
 
-  // KanbanFlow period presets -> [fromISO, toISO]. Weeks start Monday.
+  // KanbanFlow period presets -> [fromISO, toISO]. Weeks start on the account's first day.
   function periodToRange(preset, customFrom, customTo, relN, relUnit) {
     var now = new Date();
     var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     function monday(d) {
       var x = new Date(d);
-      var off = (x.getDay() + 6) % 7; // days since Monday
-      x.setDate(x.getDate() - off);
+      x.setDate(x.getDate() - daysIntoWeek(x));
       return x;
     }
     var from, to;
@@ -9576,6 +10084,20 @@
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.json();
       });
+  }
+
+  function paintAvatar(el, member) {
+    var avatar = member.avatar;
+    el.style.cssText = avatar.style;
+    el.textContent = '';
+    if (avatar.image) {
+      var img = document.createElement('img');
+      img.src = avatar.image;
+      img.alt = '';
+      el.appendChild(img);
+    } else {
+      el.textContent = avatar.text;
+    }
   }
 
   function csvText(value) {
@@ -9662,14 +10184,14 @@
 
       function renderCal(el, ym) {
         var first = new Date(ym.y, ym.m, 1);
-        var lead = first.getDay(); // 0 = Sunday
+        var lead = daysIntoWeek(first);
         var daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
         var daysInPrev = new Date(ym.y, ym.m, 0).getDate();
         var monthName = first.toLocaleString('en-US', { month: 'long', year: 'numeric' });
         var html = '<div class="mt-cal-head"><button type="button" data-nav="-1" aria-label="Previous month">&lt;</button>' +
           '<span>' + monthName + '</span><button type="button" data-nav="1" aria-label="Next month">&gt;</button></div>' +
           '<div class="mt-cal-grid">';
-        DOW.forEach(function (d) { html += '<span class="mt-cal-dow">' + d + '</span>'; });
+        weekdaysFromWeekStart(DOW).forEach(function (d) { html += '<span class="mt-cal-dow">' + d + '</span>'; });
         var cells = [], i, d, t;
         for (i = lead - 1; i >= 0; i--) cells.push({ d: daysInPrev - i, other: true, off: -1 });
         for (d = 1; d <= daysInMonth; d++) cells.push({ d: d, other: false, off: 0 });
@@ -10599,9 +11121,9 @@
 
     // Column set for the tabular formats (Excel/CSV).
     function exportColumns(tableFields) {
-      return ['Task', 'Description', 'Column', 'Swimlane', 'Color', 'Labels',
+      return ['Number', 'Task', 'Description', 'Column', 'Swimlane', 'Color', 'Labels',
         'Members', 'Timeline start', 'Timeline end', 'Due date', 'Due done', 'Estimate (h)',
-        'Size (pomodori)',
+        'Points', 'Size (pomodori)',
         'Time spent (min)', 'Pomodoros', 'Interruptions', 'Created at',
         'Completed at', 'Added to column at', 'Subtasks', 'Comments']
         .concat(tableFields.map(function (def) { return def.label; }));
@@ -10641,6 +11163,7 @@
       });
       var doneSub = (t.subtasks || []).filter(function (s) { return s.done; }).length;
       var record = {
+        number: t.number || '',
         name: t.name || '',
         description: t.description || '',
         column: col ? col.name : '',
@@ -10653,6 +11176,7 @@
         due_at: t.due_at || '',
         due_done: t.due_done ? 'yes' : '',
         estimate_hours: t.estimate_hours == null ? '' : String(t.estimate_hours),
+        points: t.points == null ? '' : String(t.points),
         size: t.size == null ? '' : String(t.size),
         total_minutes: String(t.total_minutes || 0),
         pomodori_completed: String(t.pomodori_completed || 0),
@@ -10674,8 +11198,8 @@
     }
 
     function recordToRow(r, tableFields) {
-      return [r.name, r.description, r.column, r.swimlane, r.color, r.labels,
-        r.members, r.timeline_start, r.timeline_end, r.due_at, r.due_done, r.estimate_hours, r.size,
+      return [r.number, r.name, r.description, r.column, r.swimlane, r.color, r.labels,
+        r.members, r.timeline_start, r.timeline_end, r.due_at, r.due_done, r.estimate_hours, r.points, r.size,
         r.total_minutes, r.pomodori_completed, r.interruptions, r.created_at,
         r.completed_at, r.column_entered_at, r.subtasks, r.comments]
         .concat(tableFields.map(function (def) {
@@ -11069,10 +11593,7 @@
     }
 
     function longDate(d) {
-      var h = d.getHours();
-      var m = d.getMinutes();
-      return d.getDate() + ' ' + LONG_MONTHS[d.getMonth()] + ' ' +
-        (h % 12 || 12) + ':' + (m < 10 ? '0' : '') + m + ' ' + (h < 12 ? 'AM' : 'PM');
+      return d.getDate() + ' ' + LONG_MONTHS[d.getMonth()] + ' ' + clockText(d);
     }
 
     function dayStart(d) {
@@ -11214,10 +11735,10 @@
       if (el) el.textContent = msg;
     }
 
-    // Monday (local) of the week containing d.
+    // First day of the account's week (local) containing d.
     function weekStart(d) {
       var x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-      x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+      x.setDate(x.getDate() - daysIntoWeek(x));
       return x;
     }
 
@@ -11492,7 +12013,7 @@
   })();
 
   // KF-340: Cycle & lead time report page. Average cycle/lead time per week
-  // (Monday-start, last 12 weeks) with a 3-week moving-average trend line,
+  // (last 12 weeks) with a 3-week moving-average trend line,
   // rendered from the shared export-data dataset.
   // Definitions (KanbanFlow): lead time = creation -> completion; cycle time
   // = first column move -> completion (falls back to creation when the task
@@ -11511,10 +12032,10 @@
       if (el) el.textContent = msg;
     }
 
-    // Monday (local) of the week containing d.
+    // First day of the account's week (local) containing d.
     function weekStart(d) {
       var x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-      x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+      x.setDate(x.getDate() - daysIntoWeek(x));
       return x;
     }
 
@@ -11552,7 +12073,7 @@
       return out;
     }
 
-    // 12 Monday-start week buckets (oldest first); each holds sum/count
+    // 12 week buckets from the account's first day of the week (oldest first); each holds sum/count
     // per metric so the weekly average can be computed.
     function bucketize(times) {
       var now = weekStart(new Date());
@@ -12038,7 +12559,7 @@
     function fmtDateTime(ms) {
       var d = new Date(ms);
       return d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }) +
-        ', ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        ', ' + clockText(d);
     }
 
     // Classify each task that has a parseable due date.
@@ -12153,7 +12674,7 @@
     function fmtTime(ms) {
       var d = new Date(ms);
       var now = new Date();
-      var time = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+      var time = clockText(d);
       var dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
       var dStart = new Date(d); dStart.setHours(0, 0, 0, 0);
       var diffDays = Math.round((dayStart - dStart) / 86400000);
@@ -12575,7 +13096,7 @@
     var UNASSIGNED = '__unassigned__';
     var SETTINGS_KEY = 'pomb.calendar.settings';
 
-    var firstDayOfWeek = 0;
+    var firstDayOfWeek = accountPrefs.weekStart;
     var showRepeats = true;
     var currentBoard = null;
     var selectedBoards = [];
@@ -12908,7 +13429,6 @@
     function loadSettings() {
       try {
         var s = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || '{}');
-        if (s.firstDay === 0 || s.firstDay === 1) firstDayOfWeek = s.firstDay;
         if (typeof s.showRepeats === 'boolean') showRepeats = s.showRepeats;
       } catch (e) {}
     }
@@ -12916,7 +13436,7 @@
     function saveSettings() {
       try {
         window.localStorage.setItem(SETTINGS_KEY,
-          JSON.stringify({ firstDay: firstDayOfWeek, showRepeats: showRepeats }));
+          JSON.stringify({ showRepeats: showRepeats }));
       } catch (e) {}
     }
 
@@ -13077,7 +13597,13 @@
       repeats.checked = showRepeats;
       day.addEventListener('change', function () {
         firstDayOfWeek = day.value === '1' ? 1 : 0;
-        saveSettings();
+        accountPrefs.weekStart = firstDayOfWeek;
+        fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ week_start: firstDayOfWeek === 1 ? 'monday' : 'sunday' })
+        });
         if (dataset) render();
       });
       repeats.addEventListener('change', function () {
@@ -14676,6 +15202,7 @@
           self.maybeSaveFilter();
         }
       });
+      this.initColumnLabels();
       this.restoreFilter();
       this.initFilterBookmarks();
       // KF-215: dock the panel below the top bars. Measure the dark topbar
@@ -14913,8 +15440,59 @@
       var labelsInput = document.getElementById('filter-labels-input');
       if (labelsInput) labelsInput.value = this.filterLabels().join(', ');
     },
+    columnLabels: {},
+    initColumnLabels: function () {
+      var self = this;
+      document.querySelectorAll('.columnHeader-marks').forEach(function (marks) {
+        var th = marks.closest('.columnHeader');
+        var colId = th.dataset.columnId;
+        var clear = marks.querySelector('.columnHeader-markClear');
+        function show(label) {
+          if (label) self.columnLabels[colId] = label; else delete self.columnLabels[colId];
+          marks.querySelectorAll('.columnHeader-mark').forEach(function (btn) {
+            btn.classList.toggle('is-active', btn.dataset.markLabel === label);
+            btn.setAttribute('aria-pressed', btn.dataset.markLabel === label ? 'true' : 'false');
+          });
+          clear.hidden = !label;
+          clear.querySelector('.columnHeader-markClearLabel').textContent = label || '';
+          clear.setAttribute('aria-label', label ? 'Clear the ' + label + ' filter of this column' : '');
+          self.applyFilter();
+        }
+        marks.addEventListener('click', function (e) {
+          var btn = e.target.closest('.columnHeader-mark');
+          if (btn) {
+            show(self.columnLabels[colId] === btn.dataset.markLabel ? null : btn.dataset.markLabel);
+          } else if (e.target.closest('.columnHeader-markClear')) {
+            show(null);
+          }
+        });
+      });
+    },
+    refreshMarks: function () {
+      document.querySelectorAll('.columnHeader-marks').forEach(function (marks) {
+        var colId = marks.closest('.columnHeader').dataset.columnId;
+        var cards = document.querySelectorAll('.task-list[data-column-id="' + cssEscape(colId) + '"] .task-card');
+        var clear = marks.querySelector('.columnHeader-markClear');
+        var any = !clear.hidden;
+        marks.querySelectorAll('.columnHeader-mark').forEach(function (btn) {
+          var n = 0;
+          cards.forEach(function (card) {
+            var held = [];
+            try { held = JSON.parse(card.dataset.labels || '[]'); } catch (e) { held = []; }
+            if (held.indexOf(btn.dataset.markLabel) !== -1) n++;
+          });
+          btn.querySelector('.columnHeader-markCount').textContent = String(n);
+          btn.hidden = n === 0;
+          if (n > 0) any = true;
+        });
+        marks.hidden = !any;
+      });
+    },
+    columnLabelFiltering: function () {
+      return Object.keys(this.columnLabels).length > 0;
+    },
     isFiltering: function () {
-      return this.filterValue('f-user') !== 'all' ||
+      return this.columnLabelFiltering() || this.filterValue('f-user') !== 'all' ||
         this.filterValue('f-color') !== 'all' ||
         this.filterValue('f-date') !== 'all' ||
         this.filterLabels().length > 0 ||
@@ -15023,6 +15601,13 @@
           try { cardFields = JSON.parse(card.dataset.filterFields || '{}'); } catch (e) { cardFields = {}; }
           if (!fieldKeys.every(function (k) { return cardFields[k] === fields[k]; })) show = false;
         }
+        var list = card.closest('.task-list');
+        var only = list ? self.columnLabels[list.dataset.columnId] : null;
+        if (show && only) {
+          var held = [];
+          try { held = JSON.parse(card.dataset.labels || '[]'); } catch (e) { held = []; }
+          if (held.indexOf(only) === -1) show = false;
+        }
         card.style.display = show ? '' : 'none';
       });
       this.refreshFilteredCounts();
@@ -15054,13 +15639,13 @@
           minutes = parseInt(th.dataset.estimateMinutes, 10) || 0;
           overdue = parseInt(th.dataset.overdueCount, 10) || 0;
         }
-        var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
+        var limit = wipLimitState(th, count, minutes);
         var el = th.querySelector('.columnHeader-count');
-        if (el) el.textContent = wip && !filtering ? count + ' / ' + wip : String(count);
+        if (el) el.textContent = filtering ? String(count) : limit.label;
         // KF-297/KF-371: the badge follows the visible set too.
         setSumBadge(th, count, minutes);
         // Mirror updateColumnCount's WIP-violation warning for the visible set.
-        var warn = wip != null && count > wip;
+        var warn = limit.warn;
         th.classList.toggle('columnHeader--warning', warn);
         th.classList.toggle('columnHeader--limitWarning', warn);
         syncWarningLine(th, warn, overdue);
@@ -15394,8 +15979,8 @@
         bin.tasks.forEach(function (item) {
           var tr = document.createElement('tr');
           [item.name, item.location, item.deleted_by,
-            new Date(item.deleted_at).toLocaleString(),
-            new Date(item.unrestorable_after).toLocaleString()].forEach(function (text) {
+            new Date(item.deleted_at).toLocaleString(undefined, { hour12: accountPrefs.hour12 }),
+            new Date(item.unrestorable_after).toLocaleString(undefined, { hour12: accountPrefs.hour12 })].forEach(function (text) {
             var td = document.createElement('td');
             td.textContent = text;
             tr.appendChild(td);
@@ -16075,7 +16660,7 @@
     // the "N hidden (N done)" label matches a reload.
     function refoldSubtasks(card) {
       var subsec = card.querySelector('.card-subsec');
-      if (!subsec) return;
+      if (!subsec || subsec.dataset.subAll !== 'true') return;
       var items = subsec.querySelectorAll('.subTasks > li');
       var done = subsec.querySelectorAll('.card-sub-check:checked').length;
       var fold = items.length > 3 && done > 0;

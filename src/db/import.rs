@@ -261,6 +261,9 @@ mod tests {
             token_name: None,
             created_at: Utc::now().to_rfc3339(),
             sha256: None,
+            url: None,
+            edited_at: None,
+            versions: Vec::new(),
         });
         let entry = TimeEntryRow {
             id: "entry".to_string(),
@@ -329,6 +332,9 @@ mod tests {
             token_name: None,
             created_at: Utc::now().to_rfc3339(),
             sha256: None,
+            url: None,
+            edited_at: None,
+            versions: Vec::new(),
         });
         TaskImport {
             row,

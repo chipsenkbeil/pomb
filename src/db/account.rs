@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::path::PathBuf;
@@ -29,11 +29,11 @@ use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission,
 };
 use crate::models::{
-    AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, BinRow, BoardAccess, BoardRow,
-    BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, EventKind, FieldDefRow, LinkKind,
-    PasskeyRow, PruneNotice, RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskBrief,
-    TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
-    WebhookRow,
+    AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, Avatar, BinRow, BoardAccess,
+    BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange, DeviceAuthRow, EventKind,
+    FieldDefRow, LinkKind, Numbering, PasskeyRow, PruneNotice, RecoveryCodeRow, Settings,
+    SwimlaneRow, TaskAttachment, TaskBrief, TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink,
+    TaskRow, TimeEntryRow, UserRow, WebhookRow,
 };
 use crate::permissions::Permission;
 
@@ -703,7 +703,28 @@ impl AccountDb {
         self.db.settings(&self.account)
     }
 
-    /// Stores the account's settings.
+    /// Returns the bytes of the account's uploaded avatar image, absent without one.
+    pub fn avatar_image(&self) -> DbResult<Option<Vec<u8>>> {
+        self.db.avatar_image(&self.account)
+    }
+
+    /// Stores `image` as the account's avatar, counted against its stored-bytes quota.
+    pub fn set_avatar_image(&self, image: &[u8]) -> DbResult<()> {
+        self.db.set_avatar_image(&self.account, image)
+    }
+
+    /// Stores the account's settings with `avatar` as its text avatar and deletes its uploaded
+    /// image.
+    pub fn update_settings_with_text_avatar(
+        &self,
+        settings: &Settings,
+        avatar: Avatar,
+    ) -> DbResult<()> {
+        self.db
+            .update_settings_with_text_avatar(&self.account, settings, avatar)
+    }
+
+    /// Stores the account's settings, leaving its avatar as stored.
     pub fn update_settings(&self, settings: &Settings) -> DbResult<()> {
         self.db.update_settings(&self.account, settings)
     }
@@ -847,6 +868,44 @@ impl AccountDb {
         self.db.set_board_config(&board.row().id, updates)
     }
 
+    /// Gives a board a task numbering, as [`Db::activate_numbering`] does.
+    pub fn activate_numbering(
+        &self,
+        board: &OwnedBoard,
+        name: &str,
+        prefix: &str,
+        start: u64,
+    ) -> DbResult<Option<Numbering>> {
+        self.db
+            .activate_numbering(&board.row().id, name, prefix, start)
+    }
+
+    /// Renames a board's numbering or changes its prefix.
+    pub fn update_numbering(
+        &self,
+        board: &OwnedBoard,
+        name: Option<&str>,
+        prefix: Option<&str>,
+    ) -> DbResult<Option<Numbering>> {
+        self.db.update_numbering(&board.row().id, name, prefix)
+    }
+
+    /// Checks a numbering name and prefix and returns both trimmed, as [`Db::validate_numbering`]
+    /// does.
+    pub fn validate_numbering(&self, name: &str, prefix: &str) -> Result<(String, String), String> {
+        Db::validate_numbering(name, prefix)
+    }
+
+    /// Returns the highest number under `prefix` that a task of a board holds.
+    pub fn highest_task_number(&self, board: &OwnedBoard, prefix: &str) -> DbResult<u64> {
+        self.db.highest_task_number(&board.row().id, prefix)
+    }
+
+    /// Removes a board's numbering.
+    pub fn delete_numbering(&self, board: &OwnedBoard) -> DbResult<bool> {
+        self.db.delete_numbering(&board.row().id)
+    }
+
     /// Adds a calendar feed named `label` with the bearer token `token` to a board.
     pub fn add_board_feed(
         &self,
@@ -945,6 +1004,12 @@ impl AccountDb {
     /// board.
     pub fn board_labels(&self, board_id: &str) -> DbResult<Vec<String>> {
         self.on_own_board(board_id, || self.db.board_labels(board_id))
+    }
+
+    /// Returns each label of board `board_id` with the number of tasks carrying it, sorted; empty
+    /// for another account's board.
+    pub fn board_label_counts(&self, board_id: &str) -> DbResult<BTreeMap<String, usize>> {
+        self.on_own_board(board_id, || self.db.board_label_counts(board_id))
     }
 
     /// Returns the events of `board` after cursor `after` whose kind is in `kinds`, at most
@@ -1108,6 +1173,28 @@ impl AccountDb {
     /// Checks a color label for create and update.
     pub fn validate_color_label(label: &str) -> Result<(), String> {
         Db::validate_color_label(label)
+    }
+
+    /// Checks the hex of a custom color and returns it as lowercase `#rrggbb`.
+    pub fn validate_custom_hex(hex: &str) -> Result<String, String> {
+        Db::validate_custom_hex(hex)
+    }
+
+    /// Adds a custom color with background `hex` to a board.
+    pub fn create_custom_color(
+        &self,
+        board: &OwnedBoard,
+        hex: &str,
+        label: &str,
+        description: Option<&str>,
+    ) -> DbResult<String> {
+        self.db
+            .create_custom_color(&board.row().id, hex, label, description)
+    }
+
+    /// Changes the background of a custom color; false for a standard color.
+    pub fn set_custom_color_hex(&self, color: &OwnedColor, hex: &str) -> DbResult<bool> {
+        self.db.set_custom_color_hex(&color.row().id, hex)
     }
 
     /// Adds a color slot for a standard value to a board.
@@ -1711,6 +1798,74 @@ impl AccountDb {
     ) -> DbResult<Option<TaskAttachment>> {
         self.db
             .add_attachment(&task.row().id, name, mime, bytes, uploaded_by)
+    }
+
+    /// Attaches a link to a task.
+    pub fn add_link(
+        &self,
+        task: &OwnedTask,
+        name: &str,
+        url: &str,
+        uploaded_by: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
+        self.db.add_link(&task.row().id, name, url, uploaded_by)
+    }
+
+    /// Makes one of a task's image attachments its cover, or stops it being the cover.
+    pub fn set_cover(
+        &self,
+        task: &OwnedTask,
+        attachment_id: &str,
+        cover: CoverChange,
+        actor: Actor<'_>,
+    ) -> DbResult<Option<bool>> {
+        self.db
+            .set_cover(&task.row().id, attachment_id, cover, actor)
+    }
+
+    /// Attaches a text document to a task.
+    pub fn add_document(
+        &self,
+        task: &OwnedTask,
+        name: &str,
+        text: &str,
+        uploaded_by: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
+        self.db
+            .add_document(&task.row().id, name, text, uploaded_by)
+    }
+
+    /// Saves the content of one of a task's text documents, which keeps the earlier content as
+    /// a version.
+    pub fn save_document(
+        &self,
+        task: &OwnedTask,
+        attachment_id: &str,
+        name: Option<&str>,
+        text: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
+        self.db
+            .save_document(&task.row().id, attachment_id, name, text, actor)
+    }
+
+    /// Reads one earlier content of one of a task's text documents. Returns [`None`] when the
+    /// task holds no such document or version.
+    pub fn read_document_version(
+        &self,
+        task: &OwnedTask,
+        attachment_id: &str,
+        version_id: &str,
+    ) -> DbResult<Option<Vec<u8>>> {
+        let held = task
+            .row()
+            .attachments
+            .iter()
+            .any(|a| a.id == attachment_id && a.versions.iter().any(|v| v.id == version_id));
+        if !held {
+            return Ok(None);
+        }
+        self.db.read_attachment_data(version_id)
     }
 
     /// Attaches a received file to a task.

@@ -87,6 +87,7 @@ catalog! {
     FieldsDelete, "fields.delete", "fields", Admin, "Delete a custom field.";
     TemplatesSave, "templates.save", "templates", Lead, "Save a board as a template.";
     TemplatesDelete, "templates.delete", "templates", Admin, "Delete a saved template.";
+    LabelsManage, "labels.manage", "labels", Lead, "Highlight labels on a board, color them and add labels no task carries yet.";
     TasksRead, "tasks.read", "tasks", Read, "Read tasks, subtasks and links.";
     TasksWrite, "tasks.write", "tasks", Work, "Create, update, move, watch, claim, heartbeat, release and restore tasks.";
     TasksBin, "tasks.bin", "tasks", Lead, "Move a task to the recycle bin.";
@@ -172,7 +173,7 @@ mod tests {
 
     use super::*;
 
-    const NAMES: [&str; 44] = [
+    const NAMES: [&str; 45] = [
         "boards.read",
         "boards.create",
         "boards.configure",
@@ -194,6 +195,7 @@ mod tests {
         "fields.delete",
         "templates.save",
         "templates.delete",
+        "labels.manage",
         "tasks.read",
         "tasks.write",
         "tasks.bin",
@@ -306,6 +308,7 @@ mod tests {
             "fields.create",
             "fields.edit",
             "templates.save",
+            "labels.manage",
         ]);
         assert_eq!(added, expected);
     }

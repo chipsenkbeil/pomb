@@ -66,6 +66,55 @@ pub const DEFAULT_MEMBER_NONE: &str = "none";
 /// Wire name of "the task's creator is the default member".
 pub const DEFAULT_MEMBER_CREATOR: &str = "creator";
 
+/// Key in a board's config bag of its task numbering.
+pub const NUMBERING_KEY: &str = "numbering";
+
+/// Longest numbering name, in characters.
+pub const MAX_NUMBERING_NAME_CHARS: usize = 50;
+
+/// Longest numbering prefix, in characters.
+pub const MAX_NUMBERING_PREFIX_CHARS: usize = 10;
+
+/// Largest number a task label takes: the largest integer a JSON client reads exactly.
+pub const MAX_NUMBERING_NUMBER: u64 = (1 << 53) - 1;
+
+/// A board's task numbering: new tasks take the next number under the prefix, such as `PS-1`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Numbering {
+    /// What the numbering is called in the board settings.
+    pub name: String,
+    /// The letters and digits that start every number.
+    pub prefix: String,
+    /// The number the next new task takes. It only grows, so a number is never reused.
+    pub next: u64,
+}
+
+impl Numbering {
+    /// Returns the label a task takes under `prefix` for `number`, such as `PS-1`.
+    #[must_use]
+    pub fn label(prefix: &str, number: u64) -> String {
+        format!("{prefix}-{number}")
+    }
+
+    /// Returns the number a numbering starts or resumes at: `start`, or the number after `highest`
+    /// when that is later, and an error past [`MAX_NUMBERING_NUMBER`].
+    pub fn resume_at(start: u64, highest: u64) -> Result<u64, String> {
+        let next = start.max(highest.saturating_add(1));
+        if next > MAX_NUMBERING_NUMBER {
+            return Err(format!(
+                "a numbering cannot start or resume past {MAX_NUMBERING_NUMBER}"
+            ));
+        }
+        Ok(next)
+    }
+
+    /// Returns the number inside `label` when it was made under `prefix`.
+    #[must_use]
+    pub fn number_of(label: &str, prefix: &str) -> Option<u64> {
+        label.strip_prefix(prefix)?.strip_prefix('-')?.parse().ok()
+    }
+}
+
 /// Seconds in a day, for expiry arithmetic.
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -131,6 +180,8 @@ impl TextCap {
     pub const ATTACHMENT_MIME: Self = Self::chars("mime", 200);
     /// An attachment's file name.
     pub const ATTACHMENT_NAME: Self = Self::bytes("name", 255);
+    /// An avatar's text, in the account settings.
+    pub const AVATAR_TEXT: Self = Self::chars("avatar.text", 3);
     /// Most break activities, in the account settings.
     pub const BREAK_ACTIVITIES: Self = Self::items("break_activities", 50);
     /// A break activity's description, as long as the activity dialog allows.
@@ -185,6 +236,8 @@ impl TextCap {
     pub const FOLDED_GROUP: Self = Self::chars("modal_folded_groups", 200);
     /// Most folded groups of the task dialog sidebar, in the account settings.
     pub const FOLDED_GROUPS: Self = Self::items("modal_folded_groups", 64);
+    /// An account's full name, in the account settings.
+    pub const FULL_NAME: Self = Self::chars("full_name", 80);
     /// One preset reason a timer may stop early, in the account settings, as long as the Timer
     /// settings reason editor allows. A reason typed when stopping is a [`TextCap::STOP_REASON`].
     pub const INTERRUPT_REASON: Self = Self::chars("interrupt_reasons", 80);
@@ -370,6 +423,14 @@ impl BoardRow {
             .unwrap_or(false)
     }
 
+    /// Returns the board's task numbering, or none when it has none.
+    #[must_use]
+    pub fn numbering(&self) -> Option<Numbering> {
+        let mut config: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&self.config_json).ok()?;
+        serde_json::from_value(config.remove(NUMBERING_KEY)?).ok()
+    }
+
     /// Returns the board's main swimlane among `lanes`, the lane the board shows without a label.
     ///
     /// A board with no stored id falls back to its first lane by position,
@@ -502,6 +563,13 @@ impl ColumnRow {
         self.watchers.iter().any(|watcher| watcher == account)
     }
 
+    /// Returns whether the WIP limit counts the column's estimated hours rather than its tasks.
+    #[must_use]
+    pub fn wip_limit_in_hours(&self) -> bool {
+        let bag: serde_json::Value = serde_json::from_str(&self.config_json).unwrap_or_default();
+        bag["wip_limit_type"] == "hours"
+    }
+
     /// Renames the column to `name` and remembers the old name in `former_names`, forgetting the
     /// oldest past [`ColumnRow::MAX_FORMER_NAMES`].
     pub fn rename(&mut self, name: &str) {
@@ -623,6 +691,13 @@ pub struct TaskRow {
     /// legacy coloring.
     #[serde(default)]
     pub estimate_hours: Option<f64>,
+    /// Points estimate, kept beside the hour estimate so switching a board's estimation unit
+    /// loses neither. Null when no points are set.
+    #[serde(default)]
+    pub points: Option<f64>,
+    /// The task's number such as "PS-1", or null when it was created without numbering.
+    #[serde(default)]
+    pub number: Option<String>,
     /// Repeat cadence for the due date, e.g. "every week". Null means no
     /// repeat. Kept as free text mirroring the dialog's Repeat field.
     #[serde(default)]
@@ -649,6 +724,9 @@ pub struct TaskRow {
     /// bytes live in a file beside the database. Empty for older rows.
     #[serde(default)]
     pub attachments: Vec<TaskAttachment>,
+    /// The id of the image attachment shown as the task's cover, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_id: Option<String>,
     /// Activity trail (KanbanFlow parity: History report). Newest appended
     /// last; capped by the DB layer. Empty for older rows.
     #[serde(default)]
@@ -827,6 +905,12 @@ pub struct TaskCard {
     /// Hour-based time estimate, or null when no estimate is set.
     #[serde(default)]
     pub estimate_hours: Option<f64>,
+    /// Points estimate, or null when none is set.
+    #[serde(default)]
+    pub points: Option<f64>,
+    /// The task's number such as "PS-1", or null.
+    #[serde(default)]
+    pub number: Option<String>,
     /// Repeat cadence for the due date, e.g. "every week", or null.
     #[serde(default)]
     pub due_repeat: Option<String>,
@@ -845,6 +929,9 @@ pub struct TaskCard {
     /// How many attachments the task holds.
     #[serde(default, deserialize_with = "count_items")]
     pub attachments: usize,
+    /// The id of the image attachment shown as the task's cover, or null.
+    #[serde(default)]
+    pub cover_id: Option<String>,
     /// Links this task holds: its `blocked_by` and `related` links.
     #[serde(default)]
     pub links: Vec<TaskLink>,
@@ -893,12 +980,15 @@ impl From<&TaskRow> for TaskCard {
             labels: row.labels.clone(),
             due_at: row.due_at.clone(),
             estimate_hours: row.estimate_hours,
+            points: row.points,
+            number: row.number.clone(),
             due_repeat: row.due_repeat.clone(),
             due_done: row.due_done,
             due_target_column_id: row.due_target_column_id.clone(),
             column_entered_at: row.column_entered_at.clone(),
             comments: row.comments.len(),
             attachments: row.attachments.len(),
+            cover_id: row.cover_id.clone(),
             links: row.links.clone(),
             claim: row.claim.clone(),
             fields: row.fields.clone(),
@@ -1704,9 +1794,92 @@ pub struct TaskAttachment {
     /// older attachment or an imported one lacks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+    /// The address of a link attachment, whose file holds the same address, or null for a file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// RFC3339 time the current content of a text document was saved, or null for a file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<String>,
+    /// The earlier contents of a text document, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<AttachmentVersion>,
+}
+
+/// Whether a task's image attachment becomes its cover or stops being it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CoverChange {
+    /// Make the attachment the cover.
+    Set,
+    /// Stop the attachment being the cover.
+    Clear,
+}
+
+/// An earlier content of a text document, kept in a file beside the database like the document.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct AttachmentVersion {
+    /// The id of the version, which names its file.
+    pub id: String,
+    /// The size of the version in bytes.
+    pub size: u64,
+    /// RFC3339 time this content was saved.
+    pub saved_at: String,
 }
 
 impl TaskAttachment {
+    /// The MIME type of a text document attachment.
+    pub const DOCUMENT_MIME: &'static str = "text/markdown";
+    /// The MIME type of a link attachment.
+    pub const LINK_MIME: &'static str = "text/uri-list";
+    /// The most characters a link address holds.
+    pub const LINK_URL_MAX_CHARS: usize = 2000;
+    /// The most earlier contents a text document keeps, after which the oldest is dropped.
+    pub const MAX_VERSIONS: usize = 50;
+
+    /// Returns whether this is a text document.
+    #[must_use]
+    pub fn is_document(&self) -> bool {
+        self.mime == Self::DOCUMENT_MIME
+    }
+
+    /// Returns whether this is an image, which can be the task's cover.
+    #[must_use]
+    pub fn is_image(&self) -> bool {
+        self.mime.starts_with("image/")
+    }
+
+    /// Returns the ids of the files this attachment keeps: its own and one per earlier version.
+    pub fn file_ids(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.id.as_str()).chain(self.versions.iter().map(|v| v.id.as_str()))
+    }
+
+    /// Returns the bytes of the files this attachment keeps.
+    #[must_use]
+    pub fn stored_bytes(&self) -> u64 {
+        self.size + self.versions.iter().map(|v| v.size).sum::<u64>()
+    }
+
+    /// Returns `url` trimmed, or the reason it cannot be a link: it must be an `http://` or
+    /// `https://` address of at most [`Self::LINK_URL_MAX_CHARS`] characters with a host and no
+    /// spaces or control characters.
+    pub fn link_url(url: &str) -> Result<String, &'static str> {
+        let url = url.trim();
+        let lower = url.to_ascii_lowercase();
+        let rest = lower
+            .strip_prefix("https://")
+            .or_else(|| lower.strip_prefix("http://"))
+            .ok_or("the address must start with http:// or https://")?;
+        if rest.is_empty() || rest.starts_with(['/', '?', '#']) {
+            return Err("the address needs a host");
+        }
+        if url.chars().count() > Self::LINK_URL_MAX_CHARS {
+            return Err("the address is too long");
+        }
+        if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err("the address must not contain spaces or control characters");
+        }
+        Ok(url.to_string())
+    }
+
     /// Returns the extension of the file name `name` with its dot (`.txt`), or an empty string if
     /// it has none.
     #[must_use]
@@ -2160,6 +2333,129 @@ pub fn standard_color(value: &str) -> Option<(&str, &str, &str, &str)> {
                 None
             }
         })
+}
+
+/// Most custom colors a board holds, one per internal id from `custom1` to `custom10`.
+pub const MAX_CUSTOM_COLORS: usize = 10;
+
+/// Lowest contrast ratio a custom color keeps against black and against gray text.
+pub const MIN_TEXT_CONTRAST: f64 = 3.0;
+
+/// The gray the board draws secondary text in.
+const GRAY_TEXT: (u8, u8, u8) = (0x66, 0x66, 0x66);
+
+/// Returns the internal id of custom color number `number`, from 1.
+#[must_use]
+pub fn custom_color_value(number: usize) -> String {
+    format!("custom{number}")
+}
+
+/// Returns whether `value` is an internal id from `custom1` to `custom10`.
+#[must_use]
+pub fn is_custom_color(value: &str) -> bool {
+    value
+        .strip_prefix("custom")
+        .filter(|number| {
+            !number.starts_with('0') && number.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        .and_then(|number| number.parse::<usize>().ok())
+        .is_some_and(|number| (1..=MAX_CUSTOM_COLORS).contains(&number))
+}
+
+/// Reads `hex` as `#rrggbb`, with or without the `#`, and returns its channels.
+fn hex_channels(hex: &str) -> Option<(u8, u8, u8)> {
+    let digits = hex.strip_prefix('#').unwrap_or(hex);
+    if digits.len() != 6 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channel = |at: usize| u8::from_str_radix(&digits[at..at + 2], 16).ok();
+    Some((channel(0)?, channel(2)?, channel(4)?))
+}
+
+/// Returns `channels` as lowercase `#rrggbb`.
+fn channels_hex((red, green, blue): (u8, u8, u8)) -> String {
+    format!("#{red:02x}{green:02x}{blue:02x}")
+}
+
+/// Returns `hex` as lowercase `#rrggbb`, or [`None`] when it is not a six digit hex color.
+#[must_use]
+pub fn normalize_hex(hex: &str) -> Option<String> {
+    hex_channels(hex.trim()).map(channels_hex)
+}
+
+/// Returns the relative luminance of `channels`.
+fn luminance((red, green, blue): (u8, u8, u8)) -> f64 {
+    let linear = |channel: u8| {
+        let value = f64::from(channel) / 255.0;
+        if value <= 0.039_28 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+}
+
+/// Returns the contrast ratio of `first` against `second`.
+fn contrast(first: (u8, u8, u8), second: (u8, u8, u8)) -> f64 {
+    let (first, second) = (luminance(first), luminance(second));
+    (first.max(second) + 0.05) / (first.min(second) + 0.05)
+}
+
+/// Returns the lower contrast ratio of the background `hex` against black text and gray text, or
+/// [`None`] when it is not a hex color.
+#[must_use]
+pub fn text_contrast(hex: &str) -> Option<f64> {
+    let channels = hex_channels(hex)?;
+    Some(contrast(channels, (0, 0, 0)).min(contrast(channels, GRAY_TEXT)))
+}
+
+/// Steps in which [`lighter_hex`] mixes a color toward white.
+const LIGHTER_STEPS: u16 = 20;
+
+/// Percent a custom color's border is darkened from its background.
+const BORDER_DARKEN_PERCENT: u16 = 25;
+
+/// Percent of white a custom color's light shade mixes into its background.
+const LIGHT_TINT_PERCENT: u16 = 40;
+
+/// Returns a lighter `#rrggbb` that keeps [`MIN_TEXT_CONTRAST`], or `hex` itself when it already
+/// does.
+#[must_use]
+pub fn lighter_hex(hex: &str) -> Option<String> {
+    let (red, green, blue) = hex_channels(hex)?;
+    for step in 0..=LIGHTER_STEPS {
+        let mix = |channel: u8| {
+            let channel = u16::from(channel);
+            (channel + (255 - channel) * step / LIGHTER_STEPS) as u8
+        };
+        let lighter = channels_hex((mix(red), mix(green), mix(blue)));
+        if text_contrast(&lighter)? >= MIN_TEXT_CONTRAST {
+            return Some(lighter);
+        }
+    }
+    Some(channels_hex((255, 255, 255)))
+}
+
+/// Returns the (background, border, light) hexes of a custom color whose background is `hex`: the
+/// border is a darker shade and the light a paler one.
+#[must_use]
+pub fn custom_color_hexes(hex: &str) -> Option<(String, String, String)> {
+    let (red, green, blue) = hex_channels(hex)?;
+    let shade = |weight: u16| {
+        let mix = |channel: u8, toward: u16| {
+            ((u16::from(channel) * (100 - weight) + toward * weight) / 100) as u8
+        };
+        (mix(red, 0), mix(green, 0), mix(blue, 0))
+    };
+    let tint = |channel: u8| {
+        ((u16::from(channel) * (100 - LIGHT_TINT_PERCENT) + 255 * LIGHT_TINT_PERCENT) / 100) as u8
+    };
+    Some((
+        channels_hex((red, green, blue)),
+        channels_hex(shade(BORDER_DARKEN_PERCENT)),
+        channels_hex((tint(red), tint(green), tint(blue))),
+    ))
 }
 
 /// Legacy size -> color value mapping (kept for backward compatibility).
@@ -3180,7 +3476,121 @@ pub struct Settings {
     /// Subtask templates saved from a task's checklist, added from its Subtasks menu.
     #[serde(default)]
     pub subtask_templates: Vec<SubtaskTemplate>,
+    /// The name members show as, in place of the handle. Empty means the handle.
+    #[serde(default)]
+    pub full_name: String,
+    /// Ids of the first-visit hints the account dismissed with "Got it!".
+    #[serde(default)]
+    pub dismissed_hints: Vec<String>,
+    /// What the account's avatar shows.
+    #[serde(default)]
+    pub avatar: Avatar,
+    /// Whether times of day show on a 12-hour or a 24-hour clock.
+    #[serde(default)]
+    pub time_format: TimeFormat,
+    /// The first day of the week in calendars and weekly reports.
+    #[serde(default)]
+    pub week_start: WeekStart,
 }
+
+tokio::task_local! {
+    /// The time format of the account a request acts for, set while the request runs.
+    static ACCOUNT_CLOCK: TimeFormat;
+}
+
+/// How times of day are written.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum TimeFormat {
+    /// A 12-hour clock: "5:00 PM".
+    #[default]
+    #[serde(rename = "12h")]
+    Hours12,
+    /// A 24-hour clock: "17:00".
+    #[serde(rename = "24h")]
+    Hours24,
+}
+
+impl TimeFormat {
+    /// Returns the format of the account the running request acts for, or the default outside one.
+    #[must_use]
+    pub fn current() -> Self {
+        ACCOUNT_CLOCK.try_with(|format| *format).unwrap_or_default()
+    }
+
+    /// Runs `work` with `self` as the format [`TimeFormat::current`] returns.
+    pub async fn scope<F: std::future::Future>(self, work: F) -> F::Output {
+        ACCOUNT_CLOCK.scope(self, work).await
+    }
+
+    /// Returns the chrono pattern of a time of day.
+    #[must_use]
+    pub fn clock(self) -> &'static str {
+        match self {
+            Self::Hours12 => "%-I:%M %p",
+            Self::Hours24 => "%H:%M",
+        }
+    }
+
+    /// Returns the name the API and the pages use.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hours12 => "12h",
+            Self::Hours24 => "24h",
+        }
+    }
+}
+
+/// The first day of the week.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WeekStart {
+    /// Weeks run from Monday to Sunday.
+    Monday,
+    /// Weeks run from Sunday to Saturday.
+    #[default]
+    Sunday,
+}
+
+impl WeekStart {
+    /// Returns the name the API and the pages use.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Monday => "monday",
+            Self::Sunday => "sunday",
+        }
+    }
+}
+
+/// What an avatar shows.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AvatarKind {
+    /// The avatar's text on its background, which is the initials of the name without text.
+    #[default]
+    Text,
+    /// The uploaded image.
+    Image,
+}
+
+/// An account's avatar: text on a colour, or an uploaded image.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Avatar {
+    /// Whether the avatar shows its text or the uploaded image.
+    pub kind: AvatarKind,
+    /// Up to 3 characters. Empty means the initials of the name.
+    pub text: String,
+    /// The text colour as `#rrggbb`. Empty means the default colour.
+    pub text_color: String,
+    /// The background colour as `#rrggbb`. Empty means the default colour.
+    pub background: String,
+    /// Counts the uploads, so a changed image is fetched again.
+    pub image_version: u64,
+}
+
+/// Ids of the first-visit hints, in the order the app shows them.
+pub const HINT_IDS: [&str; 2] = ["members", "timer"];
 
 fn default_ticking_mode() -> String {
     "never".to_string()
@@ -3199,11 +3609,27 @@ fn default_true() -> bool {
 }
 
 impl Settings {
+    /// Returns the name members show as: the full name, or `handle` without one.
+    #[must_use]
+    pub fn display_name(&self, handle: &str) -> String {
+        if self.full_name.is_empty() {
+            handle.to_string()
+        } else {
+            self.full_name.clone()
+        }
+    }
+
     /// Returns [`TooLong`] for the first interrupt reason or break activity text past its
     /// [`TextCap`] that `before`, the settings as stored, does not hold, or when either list
     /// grows past its most entries. Text the settings already held stays, so an older row past
     /// a cap that was added later can still be saved.
     pub fn check_caps(&self, before: Option<&Self>) -> Result<(), TooLong> {
+        if before.is_none_or(|held| held.full_name != self.full_name) {
+            TextCap::FULL_NAME.check(&self.full_name)?;
+        }
+        if before.is_none_or(|held| held.avatar.text != self.avatar.text) {
+            TextCap::AVATAR_TEXT.check(&self.avatar.text)?;
+        }
         let held_reasons = before.map_or(&[][..], |held| held.interrupt_reasons.as_slice());
         if self.interrupt_reasons.len() > held_reasons.len() {
             TextCap::INTERRUPT_REASONS.check_count(&self.interrupt_reasons)?;
@@ -3298,6 +3724,11 @@ impl Default for Settings {
             modal_folded_groups: Vec::new(),
             muted_notifications: Vec::new(),
             subtask_templates: Vec::new(),
+            full_name: String::new(),
+            dismissed_hints: Vec::new(),
+            avatar: Avatar::default(),
+            time_format: TimeFormat::default(),
+            week_start: WeekStart::default(),
             interrupt_reasons: vec![
                 "Boss interrupted",
                 "Colleague interrupted",
@@ -3783,6 +4214,29 @@ mod palette_tests {
 
         let custom = stale_row("teal").with_palette_hexes();
         assert_eq!(custom.border_hex, "#000002");
+    }
+}
+
+#[cfg(test)]
+mod custom_color_tests {
+    use super::*;
+
+    #[test]
+    fn is_custom_color_should_take_plain_digits_only() {
+        for value in ["custom1", "custom9", "custom10"] {
+            assert!(is_custom_color(value), "{value}");
+        }
+        for value in [
+            "custom+1",
+            "custom+10",
+            "custom0",
+            "custom01",
+            "custom11",
+            "custom",
+            "custom-1",
+        ] {
+            assert!(!is_custom_color(value), "{value}");
+        }
     }
 }
 

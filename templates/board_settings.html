@@ -6,12 +6,13 @@
       <a href="/b/{{ board_id }}/settings" class="bshell-nav-item{% if tab == "general" %} bshell-nav-active{% endif %}">General</a>
       <a href="/b/{{ board_id }}/settings/layout" class="bshell-nav-item{% if tab == "layout" %} bshell-nav-active{% endif %}">Layout</a>
       <a href="/b/{{ board_id }}/settings/colors" class="bshell-nav-item{% if tab == "colors" %} bshell-nav-active{% endif %}">Colors</a>
+      <a href="/b/{{ board_id }}/settings/labels" class="bshell-nav-item{% if tab == "labels" %} bshell-nav-active{% endif %}">Labels</a>
       <a href="/b/{{ board_id }}/settings/task-settings" class="bshell-nav-item{% if tab == "task" %} bshell-nav-active{% endif %}">Task settings</a>
-      <a href="/b/{{ board_id }}/settings/advanced" class="bshell-nav-item{% if tab == "advanced" %} bshell-nav-active{% endif %}">Advanced</a>
       <a href="/b/{{ board_id }}/settings/fields" class="bshell-nav-item{% if tab == "fields" %} bshell-nav-active{% endif %}">Custom fields</a>
       <a href="/b/{{ board_id }}/settings/rules" class="bshell-nav-item{% if tab == "rules" %} bshell-nav-active{% endif %}">Column rules</a>
       <a href="/b/{{ board_id }}/settings/api-webhooks" class="bshell-nav-item{% if tab == "api" || tab == "webhook" %} bshell-nav-active{% endif %}">API &amp; Webhooks</a>
       <a href="/b/{{ board_id }}/settings/add-from-email" class="bshell-nav-item{% if tab == "email" %} bshell-nav-active{% endif %}">Add task from email</a>
+      <a href="/b/{{ board_id }}/settings/advanced" class="bshell-nav-item{% if tab == "advanced" %} bshell-nav-active{% endif %}">Advanced</a>
     </nav>
 {% endblock %}
 {% block shell_body %}
@@ -32,7 +33,7 @@
           <a href="/b/{{ board_id }}/settings" class="kf-btn kf-btn-link">Cancel</a>
         </form>
         <div class="kf-setting-head"><span class="kf-setting-label">Board owner</span></div>
-        <p class="kf-setting-text">{{ chrome.username }}</p>
+        <p class="kf-setting-text">{{ chrome.display_name }}</p>
         <hr class="kf-hr kf-general-rule">
         <h2 class="kf-actions-title">Actions</h2>
         <div class="kf-general-actions">
@@ -105,6 +106,7 @@
           <h2>Enabled colors</h2>
           <button type="button" class="kf-btn" id="bc-set-default">Set default color</button>
           <button type="button" class="kf-btn" id="bc-copy-from">Copy from board</button>
+          <button type="button" class="kf-btn" id="bc-add-custom">Add custom color</button>
         </div>
         <div id="bc-error" class="form-error" hidden></div>
         <table class="kf-table color-table" id="color-enabled-table">
@@ -118,8 +120,8 @@
               <td class="color-cell-swatch"><span class="color-swatch-named" style="background-color: {{ c.bg }}; border-color: {{ c.border }};" title="{{ c.value }}">{{ c.standard_name }}</span></td>
               <td class="color-cell-label">{{ c.label }}{% if c.is_default %} (<em>Default</em>){% endif %}</td>
               <td class="color-cell-actions">
-                {# KF-084: Edit button opens rename dialog; hex is fixed. #}
-                <button type="button" class="kf-btn bc-edit" data-color-id="{{ c.id }}" data-label="{{ c.label }}" data-description="{{ c.description }}">Edit</button><button type="button" class="kf-btn bc-disable" data-color-id="{{ c.id }}">Disable</button>
+                {# KF-084: Edit button opens rename dialog; a standard color's hex is fixed. #}
+                <button type="button" class="kf-btn bc-edit" data-color-id="{{ c.id }}" data-label="{{ c.label }}" data-description="{{ c.description }}"{% if c.is_custom() %} data-hex="{{ c.bg }}"{% endif %}>Edit</button><button type="button" class="kf-btn bc-disable" data-color-id="{{ c.id }}">Disable</button>
               </td>
             </tr>
             {% endif %}
@@ -148,17 +150,42 @@
       </section>
       {% else if tab == "task" %}
       <section class="settings-section">
-        <h2>Task settings</h2>
+        <h2>Task defaults</h2>
         <dl class="bshell-defs">
           <dt>Default task color</dt>
           <dd>{% if default_color_label.is_empty() %}None{% else %}{{ default_color_label }}{% endif %}
             (<a href="/b/{{ board_id }}/settings/colors">change on the Colors tab</a>)</dd>
           <dt>Position of new tasks</dt>
           <dd><span id="ntp-value">{% if new_tasks_at_top %}Top of column{% else %}Bottom of column{% endif %}</span> <button type="button" class="kf-btn kf-btn-link" id="ntp-edit">Edit</button></dd>
-          <dt>Done column</dt>
-          <dd>{% if done_column_name.is_empty() %}None configured{% else %}{{ done_column_name }}{% endif %}</dd>
           <dt>Default member</dt>
           <dd><span id="default-member-label">{{ default_member_label }}</span> <button type="button" class="kf-btn kf-btn-link" id="default-member-edit">Edit</button></dd>
+        </dl>
+      </section>
+      <section class="settings-section">
+        <h2>Additional settings</h2>
+        <dl class="bshell-defs">
+          <dt>Done column</dt>
+          <dd>{% if done_column_name.is_empty() %}None configured{% else %}{{ done_column_name }}{% endif %}</dd>
+          <dt>Estimation unit</dt>
+          <dd><span id="estimate-unit-value">{% if estimate_unit.is_points() %}Points{% else %}Hours{% endif %}</span> <button type="button" class="kf-btn" id="estimate-unit-switch" data-points="{% if estimate_unit.is_points() %}0{% else %}1{% endif %}">Switch to {% if estimate_unit.is_points() %}hours{% else %}points{% endif %}</button>
+            <span id="estimate-unit-error" class="form-error" hidden></span></dd>
+          <dt>Task numbering</dt>
+          <dd>
+            {% if let Some(n) = numbering %}
+            <table class="kf-table" id="numbering-table">
+              <thead><tr><th>Name</th><th>Prefix</th><th>Actions</th></tr></thead>
+              <tbody><tr>
+                <td id="numbering-name">{{ n.name }}</td>
+                <td id="numbering-prefix">{{ n.prefix }}</td>
+                <td><button type="button" class="kf-btn" id="numbering-rename">Rename</button><button type="button" class="kf-btn" id="numbering-edit-prefix">Edit prefix</button><button type="button" class="kf-btn kf-btn-danger" id="numbering-delete">Delete</button></td>
+              </tr></tbody>
+            </table>
+            <p class="settings-hint">The next new task is {{ n.example }}.</p>
+            {% else %}
+            <button type="button" class="kf-btn" id="numbering-activate">Activate</button>
+            {% endif %}
+            <span id="numbering-error" class="form-error" hidden></span>
+          </dd>
           <!-- KF-404: KanbanFlow's "Due date time", the time a date-only
                due date gets. -->
           <dt>Due date time</dt>
@@ -183,7 +210,7 @@
             <label class="check-label"><input type="radio" name="default-member" value="none"{% if default_member == "none" %} checked{% endif %}> None</label>
             <label class="check-label"><input type="radio" name="default-member" value="creator"{% if default_member == "creator" %} checked{% endif %}> Task creator</label>
             {% for m in members %}
-            <label class="check-label"><input type="radio" name="default-member" value="{{ m.id }}"{% if default_member == m.id %} checked{% endif %}> {{ m.username }}</label>
+            <label class="check-label"><input type="radio" name="default-member" value="{{ m.id }}"{% if default_member == m.id %} checked{% endif %}> {{ m.display_name }}</label>
             {% endfor %}
             <label class="check-label" id="default-member-responsible-row"><input type="checkbox" id="default-member-responsible"{% if default_member_responsible %} checked{% endif %}> Set as responsible</label>
             <div id="default-member-error" class="form-error" hidden></div>
@@ -194,6 +221,53 @@
           </div>
         </div>
         <div hidden data-page="board-settings-default-member"></div>
+        <div hidden data-page="board-settings-estimate-unit"></div>
+        <div id="numbering-wizard" class="dlg-overlay" hidden>
+          <div class="dlg dlg-light" role="dialog" aria-label="Activate task numbering">
+            <div class="dlg-title">Activate task numbering</div>
+            <div id="numbering-step-config">
+              <p class="settings-hint">Number configuration</p>
+              <label class="dlg-field"><span>Prefix</span>
+                <input type="text" id="numbering-wizard-prefix" maxlength="10" value="PS" autocomplete="off"></label>
+              <label class="dlg-field"><span>Start value</span>
+                <input type="number" id="numbering-wizard-start" min="1" step="1" value="1"></label>
+              <p class="settings-hint" id="numbering-wizard-example"></p>
+            </div>
+            <div id="numbering-step-name" hidden>
+              <label class="dlg-field"><span>Name</span>
+                <input type="text" id="numbering-wizard-name" maxlength="50" value="Tasks" autocomplete="off"></label>
+            </div>
+            <div id="numbering-wizard-error" class="form-error" hidden></div>
+            <div class="dlg-actions">
+              <button type="button" class="btn" id="numbering-wizard-cancel">Cancel</button>
+              <button type="button" class="btn" id="numbering-wizard-back" hidden>Back</button>
+              <button type="button" class="btn btn-success" id="numbering-wizard-next">Next</button>
+            </div>
+          </div>
+        </div>
+        <div id="numbering-field-dialog" class="dlg-overlay" hidden>
+          <div class="dlg dlg-light" role="dialog" aria-label="Edit numbering">
+            <div class="dlg-title" id="numbering-field-title"></div>
+            <label class="dlg-field"><span id="numbering-field-label"></span>
+              <input type="text" id="numbering-field-input" autocomplete="off"></label>
+            <div id="numbering-field-error" class="form-error" hidden></div>
+            <div class="dlg-actions">
+              <button type="button" class="btn" id="numbering-field-cancel">Cancel</button>
+              <button type="button" class="btn btn-success" id="numbering-field-save">Save</button>
+            </div>
+          </div>
+        </div>
+        <div id="numbering-delete-dialog" class="dlg-overlay" hidden>
+          <div class="dlg dlg-light" role="dialog" aria-label="Delete numbering">
+            <div class="dlg-title">Delete numbering</div>
+            <p class="settings-hint">New tasks stop getting a number. The numbers tasks already hold stay.</p>
+            <div class="dlg-actions">
+              <button type="button" class="btn" id="numbering-delete-cancel">Cancel</button>
+              <button type="button" class="btn btn-danger" id="numbering-delete-confirm">Delete</button>
+            </div>
+          </div>
+        </div>
+        <div hidden data-page="board-settings-numbering"></div>
         <p class="settings-hint">Tasks completed in the Done column are stamped with a completion date;
           moving them out clears it. Column behavior is configured on the Layout tab.</p>
       </section>
@@ -401,6 +475,36 @@
           <button type="submit" class="kf-btn kf-btn-success">Save rules</button>
         </form>
       </section>
+      {% else if tab == "labels" %}
+      <section class="settings-section" id="bl-section" data-board-id="{{ board_id }}" data-palette="{{ labels_tab.palette }}">
+        <h2>Labels</h2>
+        <div id="bl-error" class="form-error" hidden></div>
+        <p id="bl-saved" class="settings-saved" hidden>Labels saved.</p>
+        <label class="check-label bl-showall"><input type="checkbox" id="bl-show-all"{% if labels_tab.show_all %} checked{% endif %}> Show all labels on cards</label>
+        <p class="settings-hint">Highlighted labels mark their cards with a stripe and a flag, and each column counts them.</p>
+        <table class="bl-table">
+          <thead><tr><th>Label</th><th>Cards</th><th>Highlight</th><th></th></tr></thead>
+          <tbody id="bl-rows">
+            {% for row in labels_tab.rows %}
+            <tr class="bl-row" data-label="{{ row.name }}" data-cards="{{ row.cards }}">
+              <td class="bl-name">{{ row.name }}</td>
+              <td class="bl-cards">{{ row.cards }}</td>
+              <td>
+                <div class="bl-highlight">
+                  <input type="checkbox" class="bl-on" aria-label="Highlight {{ row.name }}"{% if row.highlighted %} checked{% endif %}>
+                  <input type="color" class="bl-color" aria-label="{{ row.name }} color" value="{{ row.color }}"{% if !row.highlighted %} hidden{% endif %}>
+                </div>
+              </td>
+              <td>{% if row.removable %}<button type="button" class="kf-btn kf-btn-link bl-remove" aria-label="Remove {{ row.name }}">Remove</button>{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <form id="bl-add" class="settings-form bl-add" novalidate>
+          <input type="text" id="bl-add-name" maxlength="50" placeholder="Add label" aria-label="New label">
+          <button type="submit" class="kf-btn kf-btn-success">Add label</button>
+        </form>
+      </section>
       {% else if tab == "email" %}
       <section class="settings-section">
         <h2>Add task from email</h2>
@@ -450,6 +554,9 @@
 {% endif %}
 {% if tab == "rules" %}
 <div hidden data-page="board-settings-rules"></div>
+{% endif %}
+{% if tab == "labels" %}
+<div hidden data-page="board-settings-labels"></div>
 {% endif %}
 {% if tab == "fields" %}
 <div id="bf-delete-overlay" class="dlg-overlay" hidden>
@@ -511,18 +618,45 @@
 <div hidden data-page="board-settings-fields"></div>
 {% endif %}
 {% if tab == "colors" %}
-{# KF-084: Edit dialog for rename (≤50 chars) + description; hex is fixed. #}
+{# KF-084: Edit dialog for rename (≤50 chars) + description; a standard color's hex is fixed. #}
 <div id="bc-edit-overlay" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Edit color">
     <div class="dlg-title">Edit color
       <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
     </div>
     <div id="bc-edit-error" class="form-error" hidden></div>
+    <label class="dlg-field" id="bc-edit-hex-row" hidden><span>Hex</span><input type="color" id="bc-edit-picker"><input type="text" id="bc-edit-hex" maxlength="7" placeholder="#2a9d8f"></label>
     <label class="dlg-field"><span>Label</span><input type="text" id="bc-edit-label" maxlength="50"></label>
     <label class="dlg-field"><span>Description</span><input type="text" id="bc-edit-description" placeholder="Legend tooltip"></label>
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dialog>Cancel</button>
       <button type="button" class="btn btn-primary" id="bc-edit-save">Save</button>
+    </div>
+  </div>
+</div>
+<div id="bc-custom-overlay" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Add custom color">
+    <div class="dlg-title">Add custom color
+      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
+    </div>
+    <p class="settings-hint">A board holds up to ten custom colors. A custom color can be disabled but not deleted.</p>
+    <div id="bc-custom-error" class="form-error" hidden></div>
+    <label class="dlg-field"><span>Color</span><input type="color" id="bc-custom-picker" value="#e0f2f1"><input type="text" id="bc-custom-hex" maxlength="7" value="#e0f2f1" placeholder="#2a9d8f"></label>
+    <label class="dlg-field"><span>Name</span><input type="text" id="bc-custom-label" maxlength="50"></label>
+    <label class="dlg-field"><span>Description</span><input type="text" id="bc-custom-description" placeholder="Legend tooltip"></label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-primary" id="bc-custom-save">Add</button>
+    </div>
+  </div>
+</div>
+<div id="bc-contrast-overlay" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Low contrast">
+    <div class="dlg-title">Low contrast</div>
+    <p id="bc-contrast-message"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="bc-contrast-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="bc-contrast-ok">OK</button>
     </div>
   </div>
 </div>
@@ -581,12 +715,12 @@
 {% endif %}
 {% if tab == "task" %}
 {# KF-403: KanbanFlow's "Change position of new tasks" dialog. #}
-<div id="ntp-overlay" class="dlg-overlay" hidden>
+<div id="ntp-overlay" class="dlg-overlay dlg-overlay--popover" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Change position of new tasks">
     <div class="dlg-title">Change position of new tasks
       <button type="button" class="timer-popup-close" data-ntp-close aria-label="Close">&times;</button>
     </div>
-    <p>Affects tasks added to a column with its add button.</p>
+    <p>Affects tasks added to a column and tasks moved to another column.</p>
     <fieldset class="ntp-field dlg-fieldset settings-form">
       <legend>Position</legend>
       <label class="check-label"><input type="radio" name="ntp" value="top"{% if new_tasks_at_top %} checked{% endif %}> Top of column</label>

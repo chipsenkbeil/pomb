@@ -8,6 +8,14 @@ function block(start) {
 }
 var document = { getElementById: function () { return null; } };
 function escapeHtml(s) { return String(s); }
+var accountPrefs = { hour12: true, weekStart: 1 };
+function fn(start) {
+  var from = src.indexOf(start);
+  if (from < 0) throw new Error(start + ' not found');
+  return src.slice(from, src.indexOf('\n  }\n', from) + '\n  }\n'.length);
+}
+eval(fn('  function daysIntoWeek(d) {'));
+eval(fn('  function clockText(d) {'));
 eval(block('  var ReportChart = (function () {'));
 eval(src.slice(src.indexOf('  function isoDate(d) {'), src.indexOf('\n  }\n', src.indexOf('  function isoDate(d) {')) + 4));
 eval(block('  var ReportBreakdown = (function () {'));

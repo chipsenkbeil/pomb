@@ -2,6 +2,9 @@ var src = require('fs').readFileSync(process.argv[2], 'utf8');
 var start = src.indexOf('  var BoardChrome = {');
 var end = src.indexOf('\n  };', start) + '\n  };'.length;
 if (start < 0 || end < start) throw new Error('BoardChrome not found');
+var wipStart = src.indexOf('  function wipLimitState(');
+var wipEnd = src.indexOf('\n  }', wipStart) + '\n  }'.length;
+if (wipStart < 0 || wipEnd < wipStart) throw new Error('wipLimitState not found');
 
 function select(value, key) {
   return { tagName: 'SELECT', value: value, options: [], dataset: { fieldKey: key } };
@@ -10,7 +13,8 @@ function select(value, key) {
 function card(id, labels, fields) {
   return {
     dataset: { taskId: id, labels: JSON.stringify(labels), filterFields: JSON.stringify(fields), memberIds: '', dueAt: '' },
-    style: {}
+    style: {},
+    closest: function () { return null; }
   };
 }
 
@@ -65,7 +69,8 @@ function load() {
   var window = { sessionStorage: null, localStorage: null };
   var boardId = function () { return 'b1'; };
   var preamble = 'var cssEscape = function (s) { return s; }; var cardEstimateMinutes = function () { return 0; };' +
-    'var setSumBadge = function () {}; var syncWarningLine = function () {}; var toast = function () {};';
+    'var setSumBadge = function () {}; var syncWarningLine = function () {}; var toast = function () {};' +
+    src.slice(wipStart, wipEnd);
   var chrome = eval('(function () {' + preamble + src.slice(start, end) + '\n return BoardChrome; })()');
   return { chrome: chrome, cards: cards, boxes: boxes, stage: stage, mode: mode, count: count, button: button, reset: reset, panelReset: panelReset, panel: panel };
 }

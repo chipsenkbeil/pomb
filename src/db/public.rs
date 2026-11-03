@@ -11,7 +11,7 @@ use super::{
 };
 use crate::models::{
     AccountId, AccountStatus, ApiTokenRecord, BoardRow, ColumnRow, DeviceAuthRow, FeedTask,
-    InviteRow, PasskeyRow, RecoveryCodeRow, RegistrationMode, UserRow,
+    InviteRow, PasskeyRow, RecoveryCodeRow, RegistrationMode, TimeFormat, UserRow,
 };
 
 /// Sign-in, setup, device pairing and the calendar feed, plus the lookups the auth layer makes.
@@ -193,6 +193,14 @@ impl PublicDb {
     /// Returns whether `raw` is a token a suspension took from its account.
     pub fn is_suspended_token(&self, raw: &str) -> DbResult<bool> {
         self.db.is_suspended_token(raw)
+    }
+
+    /// Returns the time format `account` chose, or the default when its settings cannot be read.
+    pub fn time_format(&self, account: &AccountId) -> TimeFormat {
+        self.db
+            .settings(account)
+            .map(|settings| settings.time_format)
+            .unwrap_or_default()
     }
 
     /// Records that `account` made a request at `now`, at most once an hour and in memory only.

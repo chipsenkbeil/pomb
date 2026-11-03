@@ -982,6 +982,41 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         Permission::AttachmentsWrite,
     ),
     (
+        Method::POST,
+        "/api/tasks/:id/attachments/link",
+        Permission::AttachmentsWrite,
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/attachments/document",
+        Permission::AttachmentsWrite,
+    ),
+    (
+        Method::PUT,
+        "/api/tasks/:id/attachments/:attachment_id/document",
+        Permission::AttachmentsWrite,
+    ),
+    (
+        Method::PUT,
+        "/api/tasks/:id/attachments/:attachment_id/cover",
+        Permission::AttachmentsWrite,
+    ),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/attachments/:attachment_id/cover",
+        Permission::AttachmentsWrite,
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/attachments/:attachment_id/versions",
+        Permission::AttachmentsRead,
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/attachments/:attachment_id/versions/:version_id",
+        Permission::AttachmentsRead,
+    ),
+    (
         Method::GET,
         "/api/tasks/:id/attachments/:attachment_id/file",
         Permission::AttachmentsRead,
@@ -1052,6 +1087,21 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         Method::PUT,
         "/api/boards/:id/config",
         Permission::BoardsConfigure,
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/label-settings",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::PUT,
+        "/api/boards/:id/label-settings",
+        Permission::LabelsManage,
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/labels",
+        Permission::BoardsRead,
     ),
     (Method::GET, "/api/boards/:id/rules", Permission::BoardsRead),
     (
@@ -1144,6 +1194,8 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (Method::GET, "/api/timer/statistics", Permission::TimeRead),
     (Method::GET, "/api/settings", Permission::SettingsRead),
     (Method::PUT, "/api/settings", Permission::SettingsWrite),
+    (Method::GET, "/api/avatar", Permission::SettingsRead),
+    (Method::PUT, "/api/avatar", Permission::SettingsWrite),
     (Method::POST, "/api/columns", Permission::ColumnsCreate),
     (Method::PATCH, "/api/columns/:id", Permission::ColumnsEdit),
     (
@@ -1579,6 +1631,7 @@ pub async fn auth_middleware(
                     return rate_limited_response(refusal);
                 }
                 db.touch_account(&account_id, now);
+                let clock = db.time_format(&account_id);
                 let role = match kind {
                     CredentialKind::Bootstrap => AccountRole::Admin,
                     _ => role,
@@ -1597,7 +1650,7 @@ pub async fn auth_middleware(
                     boards,
                     expires_at,
                 });
-                next.run(req).await
+                clock.scope(next.run(req)).await
             }
             Err(refusal) => refusal.into_response(),
         };
@@ -1613,8 +1666,9 @@ pub async fn auth_middleware(
                 return rate_limited_response(refusal);
             }
             db.touch_account(user.account_id(), now);
+            let clock = db.time_format(user.account_id());
             req.extensions_mut().insert(user);
-            next.run(req).await
+            clock.scope(next.run(req)).await
         }
         Err(refusal) => refusal.into_response(),
     }
@@ -1823,6 +1877,11 @@ mod tests {
         (Method::POST, "/api/tasks", AuthScope::Work),
         (Method::PATCH, "/api/tasks/:id", AuthScope::Work),
         (Method::DELETE, "/api/tasks/:id", AuthScope::Provision),
+        (
+            Method::PUT,
+            "/api/boards/:id/label-settings",
+            AuthScope::Provision,
+        ),
         (Method::POST, "/api/bin/:id/restore", AuthScope::Work),
         (Method::POST, "/api/tasks/:id/move", AuthScope::Work),
         (Method::POST, "/api/boards/:id/tasks/bulk", AuthScope::Work),
@@ -1896,6 +1955,31 @@ mod tests {
             AuthScope::Work,
         ),
         (Method::POST, "/api/tasks/:id/attachments", AuthScope::Work),
+        (
+            Method::POST,
+            "/api/tasks/:id/attachments/link",
+            AuthScope::Work,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/attachments/document",
+            AuthScope::Work,
+        ),
+        (
+            Method::PUT,
+            "/api/tasks/:id/attachments/:attachment_id/document",
+            AuthScope::Work,
+        ),
+        (
+            Method::PUT,
+            "/api/tasks/:id/attachments/:attachment_id/cover",
+            AuthScope::Work,
+        ),
+        (
+            Method::DELETE,
+            "/api/tasks/:id/attachments/:attachment_id/cover",
+            AuthScope::Work,
+        ),
         (
             Method::PATCH,
             "/api/tasks/:id/attachments/:attachment_id",

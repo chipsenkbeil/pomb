@@ -10,15 +10,15 @@ use super::events::txn_record_events;
 use super::notifications::txn_record_task_notifications;
 use super::outbox::txn_queue_events;
 use super::{
-    ACCOUNT_USAGE, BOARDS, Bound, COLUMNS, Db, DbResult, FIELD_DEFS, MAX_FIELD_DEF_ROW_BYTES,
-    MAX_TASK_ROW_BYTES, QuotaExceeded, Rows, SWIMLANES, Store, TASK_COLORS, TASKS, TEMPLATES,
-    TIME_ENTRIES, WEBHOOKS, board_use_in, read_in, rows_in, txn_member_quotas,
-    txn_refuse_over_quota,
+    ACCOUNT_USAGE, AVATARS, BOARDS, Bound, COLUMNS, Db, DbResult, FIELD_DEFS,
+    MAX_FIELD_DEF_ROW_BYTES, MAX_TASK_ROW_BYTES, QuotaExceeded, Rows, SWIMLANES, Store,
+    TASK_COLORS, TASKS, TEMPLATES, TIME_ENTRIES, WEBHOOKS, board_use_in, read_in, rows_in,
+    txn_member_quotas, txn_refuse_over_quota,
 };
 use crate::disk::MIB;
 use crate::models::{
     Actor, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, FieldDefRow, Quota, Quotas,
-    SwimlaneRow, TaskRow, TimeEntryRow, WebhookRow,
+    SwimlaneRow, TaskAttachment, TaskRow, TimeEntryRow, WebhookRow,
 };
 
 /// Whether a write that takes its account past one of its quotas is refused. Writes the server
@@ -398,7 +398,7 @@ fn task_bytes(raw: &[u8]) -> DbResult<u64> {
     let files: u64 = task
         .attachments
         .iter()
-        .map(|attachment| attachment.size)
+        .map(TaskAttachment::stored_bytes)
         .sum();
     Ok(raw.len() as u64 + files)
 }
@@ -529,6 +529,10 @@ pub(super) fn txn_recount_usage(txn: &WriteTransaction) -> DbResult<()> {
     count_owned::<ColorRow>(txn, TASK_COLORS, &mut usage)?;
     count_owned::<FieldDefRow>(txn, FIELD_DEFS, &mut usage)?;
     count_owned::<WebhookRow>(txn, WEBHOOKS, &mut usage)?;
+    for item in txn.open_table(AVATARS)?.iter()? {
+        let (owner, image) = item?;
+        *usage.entry(owner.value().to_string()).or_default() += image.value().len() as u64;
+    }
     let mut table = txn.open_table(ACCOUNT_USAGE)?;
     table.retain(|_, _| false)?;
     for (owner, bytes) in usage {
@@ -725,6 +729,45 @@ mod tests {
         fx.db
             .delete_board(&other)
             .expect_err("the last board stays");
+    }
+
+    #[test]
+    fn usage_should_follow_document_saves_dropped_versions_and_the_bin_purge() {
+        let fx = fixture();
+        let task = fx
+            .db
+            .create_task(&fx.column, None, "Task", 1, None)
+            .expect("task");
+        let document = fx
+            .db
+            .add_document(&task, "notes", "first", Actor::SYSTEM)
+            .expect("add")
+            .expect("task");
+        assert_counts_match(&fx.db);
+        for n in 0..=TaskAttachment::MAX_VERSIONS {
+            fx.db
+                .save_document(
+                    &task,
+                    &document.id,
+                    None,
+                    &format!("text {n}"),
+                    Actor::SYSTEM,
+                )
+                .expect("save")
+                .expect("document");
+            assert_counts_match(&fx.db);
+        }
+        let files = || {
+            std::fs::read_dir(fx.db.attachments_dir())
+                .expect("dir")
+                .count()
+        };
+        assert_eq!(files(), TaskAttachment::MAX_VERSIONS + 1);
+        assert!(fx.db.delete_task(&task, Actor::SYSTEM).expect("delete"));
+        let after = Utc::now().timestamp() + (BIN_RETENTION_DAYS + 1) * SECONDS_PER_DAY;
+        assert_eq!(fx.db.purge_bin(after).expect("purge"), Some(1));
+        assert_counts_match(&fx.db);
+        assert_eq!(files(), 0);
     }
 
     #[test]

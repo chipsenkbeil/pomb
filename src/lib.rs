@@ -7,6 +7,8 @@ pub mod auth;
 pub mod backup;
 pub mod db;
 pub mod disk;
+/// The per-board label settings: highlighted labels, their colours and the labels kept with no card.
+pub mod labels;
 pub mod limit;
 /// Domain types shared by the DB layer, routes, and templates.
 pub mod models;

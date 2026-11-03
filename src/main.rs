@@ -38,6 +38,7 @@ mod client;
 mod csrf;
 mod db;
 mod disk;
+mod labels;
 mod limit;
 mod markdown;
 mod models;

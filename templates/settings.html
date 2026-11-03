@@ -3,7 +3,9 @@
 {% block shell_title %}Settings{% endblock %}
 {% block shell_nav %}
     <nav class="bshell-nav" aria-label="Settings">
-      <a href="#timer" class="bshell-nav-item bshell-nav-active" data-pane="timer">Timer</a>
+      <a href="#profile" class="bshell-nav-item bshell-nav-active" data-pane="profile">Profile</a>
+      <a href="#date-time" class="bshell-nav-item" data-pane="date-time">Date &amp; time</a>
+      <a href="#timer" class="bshell-nav-item" data-pane="timer">Timer</a>
       <a href="#notifications" class="bshell-nav-item" data-pane="notifications">Notifications</a>
       <a href="#api-tokens" class="bshell-nav-item" data-pane="api-tokens">API tokens</a>
       <a href="#passkeys" class="bshell-nav-item" data-pane="passkeys">Passkeys</a>
@@ -26,7 +28,42 @@
 {% endblock %}
 {% block shell_body %}
   {% if saved %}<p class="settings-saved">Settings saved.</p>{% endif %}
-  <div id="timer" class="settings-pane">
+  <div id="profile" class="settings-pane">
+    <section class="settings-section">
+      <h2>Profile</h2>
+      <p class="settings-hint">Your handle is {{ chrome.username }}. The full name shows in its place wherever members are shown.</p>
+      <p id="profile-error" class="settings-hint" hidden></p>
+      <form id="profile-form" class="settings-form">
+        <label>Full name
+          <input type="text" id="profile-full-name" maxlength="80" value="{{ settings.full_name }}" placeholder="{{ chrome.username }}" autocomplete="name">
+        </label>
+        <button type="submit" class="kf-btn kf-btn-success">Update</button>
+        <span id="profile-saved" class="settings-hint" hidden>Saved.</span>
+      </form>
+      <div class="profile-avatar">
+        <span class="user-avatar avatar-preview" id="avatar-preview" style="{{ chrome.avatar.style }}">{% if let Some(url) = chrome.avatar.image %}<img src="{{ url }}" alt="">{% else %}{{ chrome.avatar.text }}{% endif %}</span>
+        <button type="button" class="kf-btn" id="avatar-change">Change avatar</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="date-time" class="settings-pane" hidden>
+    <section class="settings-section">
+      <h2>Date &amp; time</h2>
+      <p id="date-time-error" class="settings-hint" role="alert" hidden></p>
+      <dl class="settings-facts">
+        <dt>Time format</dt>
+        <dd id="time-format-value">{% if settings.time_format == TimeFormat::Hours24 %}24-hour{% else %}12-hour{% endif %} <button type="button" class="kf-btn" data-open-dialog="time-format-dialog">Edit</button></dd>
+        <dt>First day of week</dt>
+        <dd id="week-start-value">{% if settings.week_start == WeekStart::Monday %}Monday{% else %}Sunday{% endif %} <button type="button" class="kf-btn" data-open-dialog="week-start-dialog">Edit</button></dd>
+        <dt>Time zone</dt>
+        <dd id="time-zone-value"></dd>
+      </dl>
+      <p class="settings-hint">The time zone follows this browser.</p>
+    </section>
+  </div>
+
+  <div id="timer" class="settings-pane" hidden>
   <form method="post" action="/settings" class="settings-form">
     <section class="settings-section">
       <h2>Timer</h2>
@@ -353,6 +390,57 @@
   {% endif %}
 {% endblock %}
 {% block shell_scripts %}
+<div id="time-format-dialog" class="dlg-overlay" hidden>
+  <form class="dlg dlg-light date-time-form" data-setting="time_format" role="dialog" aria-label="Time format">
+    <div class="dlg-title">Time format</div>
+    <label class="check-label"><input type="radio" name="time_format" value="24h"{% if settings.time_format == TimeFormat::Hours24 %} checked{% endif %}> 24-hour</label>
+    <label class="check-label"><input type="radio" name="time_format" value="12h"{% if settings.time_format != TimeFormat::Hours24 %} checked{% endif %}> 12-hour</label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="submit" class="btn btn-primary">Update</button>
+    </div>
+  </form>
+</div>
+<div id="week-start-dialog" class="dlg-overlay" hidden>
+  <form class="dlg dlg-light date-time-form" data-setting="week_start" role="dialog" aria-label="First day of week">
+    <div class="dlg-title">First day of week</div>
+    <label class="check-label"><input type="radio" name="week_start" value="monday"{% if settings.week_start == WeekStart::Monday %} checked{% endif %}> Monday</label>
+    <label class="check-label"><input type="radio" name="week_start" value="sunday"{% if settings.week_start != WeekStart::Monday %} checked{% endif %}> Sunday</label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="submit" class="btn btn-primary">Update</button>
+    </div>
+  </form>
+</div>
+<div id="avatar-dialog" class="dlg-overlay" hidden>
+  <form class="dlg dlg-light" id="avatar-form" role="dialog" aria-label="Change avatar">
+    <div class="dlg-title">Change avatar</div>
+    <label class="check-label"><input type="radio" name="avatar-kind" value="text"{% if settings.avatar.kind != AvatarKind::Image %} checked{% endif %}> Text</label>
+    <label class="check-label"><input type="radio" name="avatar-kind" value="image"{% if settings.avatar.kind == AvatarKind::Image %} checked{% endif %}> Upload image</label>
+    <div id="avatar-text-fields">
+      <label>Text
+        <input type="text" id="avatar-text" maxlength="3" value="{{ settings.avatar.text }}" placeholder="{{ chrome.avatar.text }}">
+      </label>
+      <label>Text color
+        <input type="color" id="avatar-text-color" value="{% if settings.avatar.text_color.is_empty() %}#98540f{% else %}{{ settings.avatar.text_color }}{% endif %}">
+      </label>
+      <label>Background
+        <input type="color" id="avatar-background" value="{% if settings.avatar.background.is_empty() %}#ffffff{% else %}{{ settings.avatar.background }}{% endif %}">
+      </label>
+    </div>
+    <div id="avatar-image-fields" hidden>
+      <label>Select image file
+        <input type="file" id="avatar-file" accept="image/png,image/jpeg,image/gif,image/webp">
+      </label>
+      <p class="settings-hint">A PNG, JPEG, GIF or WebP of at most 128 KiB.</p>
+    </div>
+    <p id="avatar-error" class="settings-hint" role="alert" hidden></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+</div>
 <!-- KF-146: styled in-page confirmation replacing native confirm(), which
      automation environments cannot drive (the Revoke click then silently
      did nothing). Mirrors the #confirm-dialog pattern from board.html;

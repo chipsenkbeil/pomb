@@ -11,6 +11,13 @@ var document = {
   createElement: function () { return { style: {}, offsetWidth: 100, hidden: false }; }
 };
 function escapeHtml(s) { return String(s); }
+var accountPrefs = { hour12: true, weekStart: 1 };
+function inlineFn(start) {
+  var from = src.indexOf(start);
+  return src.slice(from, src.indexOf('\n  }\n', from) + '\n  }\n'.length);
+}
+eval(inlineFn('  function daysIntoWeek(d) {'));
+eval(inlineFn('  function clockText(d) {'));
 eval(src.slice(src.indexOf('  var ReportChart = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ReportChart = (function () {')) + '\n  })();'.length));
 eval(src.slice(start, end));
 

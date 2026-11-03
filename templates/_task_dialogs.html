@@ -155,6 +155,50 @@
   </div>
 </div>
 
+<div id="document-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light doc-dlg" role="dialog" aria-label="Text document">
+    <div class="doc-head">
+      <input type="text" id="doc-name" class="doc-name" maxlength="250" placeholder="Unnamed document" aria-label="Document name" autocomplete="off">
+      <span id="doc-suffix" class="doc-suffix">.txt</span>
+      <button type="button" class="btn btn-success" id="doc-save">Save</button>
+      <button type="button" class="btn" id="doc-edit">Edit</button>
+      <a class="btn" id="doc-download" href="#" download>Download</a>
+      <button type="button" class="btn" id="doc-print">Print</button>
+      <button type="button" class="btn" id="doc-history">Version history</button>
+      <button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button>
+    </div>
+    <div class="doc-meta" id="doc-meta"></div>
+    <div class="doc-versions" id="doc-versions" hidden></div>
+    <div class="doc-editor" id="doc-editor">
+      <div class="doc-tabs">
+        <button type="button" class="doc-tab doc-tab--on" data-doc-tab="write">WRITE</button>
+        <button type="button" class="doc-tab" data-doc-tab="preview">PREVIEW</button>
+        <span class="doc-tools" id="doc-tools">
+          <button type="button" data-doc-tool="heading" title="Heading" aria-label="Heading">H</button>
+          <button type="button" data-doc-tool="bold" title="Bold" aria-label="Bold"><b>B</b></button>
+          <button type="button" data-doc-tool="italic" title="Italic" aria-label="Italic"><i>I</i></button>
+          <button type="button" data-doc-tool="link" title="Link" aria-label="Link">&#128279;</button>
+          <button type="button" data-doc-tool="image" title="Image" aria-label="Image">&#128444;</button>
+          <button type="button" data-doc-tool="help" title="Help" aria-label="Help">?</button>
+        </span>
+      </div>
+      <textarea id="doc-text" class="doc-text" aria-label="Document text" spellcheck="true"></textarea>
+    </div>
+    <div class="doc-preview tm-md" id="doc-preview" hidden></div>
+  </div>
+</div>
+
+<div id="attachment-link-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
+  <div class="dlg dlg-light attach-rename-dlg" role="dialog" aria-label="Attach a link">
+    <div class="dlg-title"><span>Attach a link</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <div class="ar-row"><input type="text" id="al-name" class="ar-input" maxlength="250" placeholder="Name" aria-label="Link name" autocomplete="off"></div>
+    <div class="ar-row"><input type="url" id="al-url" class="ar-input" maxlength="2000" placeholder="https://" aria-label="Link address" autocomplete="off"></div>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-success" id="al-add">Attach</button>
+    </div>
+  </div>
+</div>
+
 <div id="attachment-rename-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
   <div class="dlg dlg-light attach-rename-dlg" role="dialog" aria-label="Rename attachment">
     <div class="dlg-title"><span>Rename attachment</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
@@ -174,13 +218,20 @@
   <div class="dlg dlg-light labels-dlg" role="dialog" aria-label="Labels">
     <div class="dlg-title"><span>Labels</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
     <div id="labels-current" class="labels-list" aria-label="Current labels"></div>
-    <label class="dlg-field">
-      <span>Add labels...</span>
-      <input type="text" id="labels-input" placeholder="Add labels..." autocomplete="off" maxlength="50">
-    </label>
+    <div class="labels-input-row">
+      <label class="dlg-field">
+        <span>Add labels...</span>
+        <input type="text" id="labels-input" placeholder="Add labels..." autocomplete="off" maxlength="50">
+      </label>
+      <button type="button" class="btn" id="labels-list-btn" aria-expanded="false" aria-controls="labels-all" title="All board labels">List</button>
+    </div>
+    <div id="labels-all" class="labels-all" hidden></div>
     <div class="dlg-field">
       <span>Suggestions</span>
       <div id="labels-suggestions" class="labels-suggestions"></div>
+    </div>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-primary" data-close-dialog>Done</button>
     </div>
   </div>
 </div>
