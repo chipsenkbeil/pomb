@@ -1,5 +1,6 @@
 //! In-memory request limits: a token bucket per Bearer credential, one per account shared by its
-//! sessions and tokens, and a sliding window per client IP.
+//! sessions and tokens, one per issuing token for the child tokens it mints, and a sliding window
+//! per client IP.
 //!
 //! [`Limits`] reads the time from a clock that production sets to `Instant::now` and tests
 //! replace with a hand-driven one. Its numbers come from the instance's [`RateLimits`], swapped
@@ -264,6 +265,7 @@ pub struct Limits {
     credentials: Buckets,
     accounts: Buckets,
     inbound: Buckets,
+    mints: Buckets,
     device_start: Window,
     login: Window,
     register: Window,
@@ -278,6 +280,10 @@ impl Limits {
     pub const INBOUND_BURST: u32 = 20;
     /// Requests added back to an inbound address's bucket each second.
     pub const INBOUND_PER_SECOND: u32 = 1;
+    /// Child tokens one issuing token may mint at once.
+    pub const MINT_BURST: u32 = 20;
+    /// Seconds an issuing token waits for each child token it mints after its burst.
+    pub const MINT_SECONDS_PER_TOKEN: f64 = 2.0;
     /// How long a per-IP request counts against the limit.
     pub const WINDOW: Duration = Duration::from_secs(60);
 
@@ -293,6 +299,7 @@ impl Limits {
             credentials: Buckets::new(now),
             accounts: Buckets::new(now),
             inbound: Buckets::new(now),
+            mints: Buckets::new(now),
             device_start: Window::new(Self::WINDOW, now),
             login: Window::new(Self::WINDOW, now),
             register: Window::new(Self::WINDOW, now),
@@ -340,6 +347,16 @@ impl Limits {
         let rate = Rate::new(Self::INBOUND_BURST, Self::INBOUND_PER_SECOND);
         let key = CredentialKey::Inbound(id.to_string());
         self.inbound.check(&key, (self.clock)(), rate)
+    }
+
+    /// Spends one mint from the bucket of the issuing token `issuer`.
+    pub fn check_mint(&self, issuer: &str) -> Result<(), Refusal> {
+        let rate = Rate {
+            burst: f64::from(Self::MINT_BURST),
+            per_second: 1.0 / Self::MINT_SECONDS_PER_TOKEN,
+        };
+        let key = CredentialKey::Token(issuer.to_string());
+        self.mints.check(&key, (self.clock)(), rate)
     }
 
     /// Records a request from `ip` against the limit for `scope`.

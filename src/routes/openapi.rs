@@ -205,6 +205,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
         cookie_only,
         vec![
             "approve_account",
+            "create_agent_role",
             "create_api_token",
             "create_invite",
             "delete_account",
@@ -239,6 +240,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "test_webhook_request",
             "unsuspend_account",
             "update_admin_settings",
+            "update_agent_role",
             "update_api_token",
             "update_backup_settings",
         ]
@@ -272,7 +274,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        37
+        39
     );
 }
 

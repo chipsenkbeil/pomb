@@ -128,6 +128,9 @@ pub fn format_minutes(minutes: i64) -> String {
 /// Seconds in a day, for expiry arithmetic.
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
+/// Seconds in an hour.
+pub const SECONDS_PER_HOUR: i64 = 3_600;
+
 /// Returns `count` followed by `noun`, which takes a plural `s` unless `count` is one.
 #[must_use]
 pub fn count_noun(count: u64, noun: &str) -> String {
@@ -1587,6 +1590,50 @@ impl fmt::Debug for InboundAddressRow {
             .field("created_at", &self.created_at)
             .finish()
     }
+}
+
+/// An identity an agent acts as: a name and the permissions a token issued as it starts from.
+/// The id never changes, so a rename leaves every grant and every token that names the role intact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRoleRow {
+    /// The role's id, generated once.
+    pub id: String,
+    /// The account the role belongs to.
+    pub account_id: String,
+    /// Lowercase letters, digits and hyphens, unique on the account.
+    pub name: String,
+    /// The permissions a token issued as the role starts from.
+    pub permissions: BTreeSet<Permission>,
+    /// Unix seconds.
+    pub created_at: i64,
+    /// Unix seconds of the last rename or template change.
+    pub updated_at: i64,
+}
+
+impl AgentRoleRow {
+    /// Most characters a role's name holds.
+    pub const MAX_NAME_CHARS: usize = 32;
+
+    /// Returns whether `name` is 1 to [`Self::MAX_NAME_CHARS`] lowercase letters, digits and
+    /// hyphens.
+    #[must_use]
+    pub fn valid_name(name: &str) -> bool {
+        (1..=Self::MAX_NAME_CHARS).contains(&name.len())
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    }
+}
+
+/// The grant of one agent role on one board of the role's account.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRoleGrantRow {
+    /// The account that owns the role and the board.
+    pub account_id: String,
+    /// The granted role.
+    pub role_id: String,
+    /// The board the role is granted on.
+    pub board_id: String,
 }
 
 /// One event waiting to be delivered to one webhook.
@@ -4274,13 +4321,11 @@ impl BackupSettings {
     pub const MIN_INTERVAL_HOURS: u32 = 1;
     /// Fewest backup files kept.
     pub const MIN_KEEP: u32 = 1;
-    /// Seconds in one hour.
-    const SECONDS_PER_HOUR: i64 = 3600;
 
     /// Returns the interval between scheduled backups in seconds.
     #[must_use]
     pub fn interval_secs(&self) -> i64 {
-        i64::from(self.interval_hours) * Self::SECONDS_PER_HOUR
+        i64::from(self.interval_hours) * SECONDS_PER_HOUR
     }
 
     /// Returns the first bound these settings break, worded for the owner.
@@ -4537,6 +4582,14 @@ pub struct ApiTokenRecord {
     /// The name of the lead token that issued this one, as it was named when it did.
     #[serde(default)]
     pub parent_name: Option<String>,
+    /// The most hours a child of this token may live, set by the owner in the browser.
+    #[serde(default = "default_child_token_hours")]
+    pub child_lifetime_hours: i64,
+}
+
+/// Returns the lifetime a stored token that predates the field allows its children.
+fn default_child_token_hours() -> i64 {
+    ApiTokenRecord::DEFAULT_CHILD_HOURS
 }
 
 /// The boards a token may reach.
@@ -4743,6 +4796,14 @@ impl AuthScope {
 }
 
 impl ApiTokenRecord {
+    /// Hours a child token lives when the request names none, and the most the children of a new
+    /// token may live until the owner raises it.
+    pub const DEFAULT_CHILD_HOURS: i64 = 1;
+    /// Most hours the owner may let the children of one token live.
+    pub const MAX_CHILD_HOURS: i64 = 8;
+    /// Fewest hours a child token may live.
+    pub const MIN_CHILD_HOURS: i64 = 1;
+
     /// True when the token is past its expiry (None = never expires).
     pub fn is_expired(&self, now: i64) -> bool {
         self.expires_at.map(|exp| now >= exp).unwrap_or(false)

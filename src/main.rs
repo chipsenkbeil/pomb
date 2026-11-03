@@ -628,7 +628,7 @@ async fn run_upkeep(db: Db) {
 }
 
 /// Writes when accounts and boards were last used, ends expired sessions, deletes the expired
-/// requests to join and runs the cleanup of unused boards when it is due, once.
+/// issued tokens and requests to join and runs the cleanup of unused boards when it is due, once.
 fn upkeep(db: &Db) {
     if let Err(error) = db.flush_activity() {
         eprintln!("pomb: could not record when accounts were last seen: {error}");
@@ -638,6 +638,14 @@ fn upkeep(db: &Db) {
         Ok(0) => {}
         Ok(ended) => println!("pomb: ended {}", count_noun(ended, "expired session")),
         Err(error) => eprintln!("pomb: could not end expired sessions: {error}"),
+    }
+    match db.prune_expired_issued_tokens(now) {
+        Ok(0) => {}
+        Ok(removed) => println!(
+            "pomb: deleted {}",
+            count_noun(removed, "expired issued token")
+        ),
+        Err(error) => eprintln!("pomb: could not delete expired issued tokens: {error}"),
     }
     let expired = db.expire_pending_requests(now, |handle| {
         println!("pomb: deleted the expired request to join from {handle}");

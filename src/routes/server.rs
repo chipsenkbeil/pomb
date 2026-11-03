@@ -465,6 +465,51 @@ async fn bearer_should_get_429_with_retry_after_on_the_101st_request_in_a_second
 }
 
 #[tokio::test]
+async fn mint_rate_should_answer_429() {
+    let (_dir, db) = open_db();
+    let (lead, lead_raw) = new_api_token_record(&admin(&db), "lead", AuthScope::Provision, None);
+    db.create_api_token(&lead).expect("token");
+    let clock = ManualClock::new();
+    let app = router(AppState::new(db, None, passkey_mode()).with_limits(clock.limits()));
+    let [(name, value)] = bearer(&lead_raw);
+    let mint = |n: u32| {
+        let body = json!({"name": format!("kid-{n}"), "preset": "read"}).to_string();
+        let headers = [(name, value.as_str()), ("content-type", "application/json")];
+        let app = app.clone();
+        async move {
+            send_as(
+                &app,
+                "POST",
+                "/api/v1/auth/tokens/children",
+                &headers,
+                None,
+                &body,
+            )
+            .await
+        }
+    };
+
+    for n in 0..Limits::MINT_BURST {
+        let sent = mint(n).await;
+        assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+    }
+    let refused = mint(Limits::MINT_BURST).await;
+    assert_eq!(
+        refused.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{}",
+        refused.body
+    );
+    assert_eq!(refused.retry_after.as_deref(), Some("2"));
+    let body: Value = serde_json::from_str(&refused.body).expect("json body");
+    assert_eq!(body["code"], "rate_limited");
+
+    clock.advance(Duration::from_secs(2));
+    let sent = mint(Limits::MINT_BURST).await;
+    assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+}
+
+#[tokio::test]
 async fn bootstrap_token_should_be_limited_on_its_own_bucket() {
     let (_dir, db) = open_db();
     let (record, raw) = new_api_token_record(&admin(&db), "reader", AuthScope::Read, None);

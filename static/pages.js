@@ -1905,6 +1905,7 @@
           var data = results[0];
           editId = id;
           document.getElementById('tk-edit-name').value = data.name;
+          document.getElementById('tk-edit-child-hours').value = data.child_lifetime_hours;
           editError.hidden = true;
           presetsBox.querySelectorAll('input').forEach(function (radio) { radio.checked = false; });
           permsBox.querySelectorAll('input').forEach(function (input) {
@@ -1933,7 +1934,12 @@
       });
       if (!request.name) { editError.textContent = 'Give the token a name.'; editError.hidden = false; return; }
       if (!request.permissions.length) { editError.textContent = 'Tick at least one permission.'; editError.hidden = false; return; }
-      tokenRequest('PATCH', editId, { name: request.name, permissions: request.permissions })
+      var patch = {
+        name: request.name,
+        permissions: request.permissions,
+        child_lifetime_hours: Number(document.getElementById('tk-edit-child-hours').value)
+      };
+      tokenRequest('PATCH', editId, patch)
         .then(function () { window.location.reload(); })
         .catch(function (error) { editError.textContent = error.message; editError.hidden = false; });
     });

@@ -131,6 +131,8 @@ pub enum ErrorCode {
     EpicHasChildren,
     /// An epic holds no work, so nobody can claim it (409).
     EpicNotClaimable,
+    /// The account has no agent role with that id (404).
+    UnknownRole,
     /// The server failed (5xx).
     InternalError,
 }

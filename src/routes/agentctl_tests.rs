@@ -7,10 +7,12 @@ use tower::ServiceExt;
 use super::router;
 use super::server::passkey_mode;
 use crate::auth::new_api_token_record;
-use crate::db::{BootstrapToken, ChildTokenRefusal, FencedWrite, NewComment};
+use crate::db::{
+    BootstrapToken, ChildTokenRefusal, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT, NewComment,
+};
 use crate::models::{
     AccountId, ActiveTimer, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind,
-    FieldOwner, HistoryKind, SECONDS_PER_DAY, TimeEntryRow, TimerMode,
+    FieldOwner, HistoryKind, SECONDS_PER_DAY, SECONDS_PER_HOUR, TimeEntryRow, TimerMode,
 };
 use crate::permissions::{Permission, STANDARD_ROLES};
 use crate::{AppState, markdown};
@@ -12233,6 +12235,14 @@ async fn issue(fx: &Fixture, parent: &str, body: Value) -> (StatusCode, Value) {
     (status, reply)
 }
 
+/// Lets the children of token `id` live up to `hours`, as the owner does in the browser.
+fn allow_child_hours(fx: &Fixture, id: &str, hours: i64) {
+    fx.db
+        .edit_api_token(&fx.user_id, id, None, None, Some(hours))
+        .expect("edit")
+        .expect("token");
+}
+
 fn raw_of(reply: &Value) -> String {
     reply["raw_token"].as_str().expect("raw token").to_string()
 }
@@ -12355,19 +12365,15 @@ async fn revoking_a_parent_should_make_every_child_answer_token_invalid() {
 }
 
 #[tokio::test]
-async fn a_child_should_not_create_tokens_or_hold_the_right_to() {
+async fn a_child_should_not_create_browser_tokens_or_issue_without_the_right() {
     let (_dir, fx) = fixture();
     let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
     let (_, admin) = token_record(&fx, "admin", AuthScope::Admin);
+    let (_, worker) = token_record(&fx, "worker", AuthScope::Work);
 
-    for (who, body) in [
-        (&lead, json!({"name": "x", "permissions": ["tokens.issue"]})),
-        (&lead, json!({"name": "x", "preset": "lead"})),
-        (&admin, json!({"name": "x", "preset": "admin"})),
-    ] {
-        let (status, reply) = issue(&fx, who, body.clone()).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {reply}");
-    }
+    let body = json!({"name": "x", "permissions": ["tokens.issue"]});
+    let (status, reply) = issue(&fx, &worker, body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
 
     let (status, child) = issue(&fx, &lead, json!({"name": "kid", "preset": "work"})).await;
     assert_eq!(status, StatusCode::OK, "{child}");
@@ -12387,13 +12393,14 @@ async fn a_child_should_not_create_tokens_or_hold_the_right_to() {
 #[tokio::test]
 async fn a_child_should_expire_within_hours_and_never_after_its_parent() {
     let (_dir, fx) = fixture();
-    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
     let now = chrono::Utc::now().timestamp();
 
     let (status, child) = issue(&fx, &lead, json!({"name": "default", "preset": "read"})).await;
     assert_eq!(status, StatusCode::OK, "{child}");
     let expires = child["expires_at"].as_i64().expect("expires_at");
     assert!((expires - now - 3600).abs() < 60, "{child}");
+    allow_child_hours(&fx, &lead_id, 8);
     let eight = json!({"name": "eight", "preset": "read", "expires_in_hours": 8});
     let (status, child) = issue(&fx, &lead, eight).await;
     assert_eq!(status, StatusCode::OK, "{child}");
@@ -12407,10 +12414,216 @@ async fn a_child_should_expire_within_hours_and_never_after_its_parent() {
     let (record, short) =
         new_api_token_record(&fx.user_id, "short", AuthScope::Provision, Some(soon));
     fx.db.create_api_token(&record).expect("token");
+    allow_child_hours(&fx, &record.id, 8);
     let capped = json!({"name": "capped", "preset": "read", "expires_in_hours": 8});
     let (status, child) = issue(&fx, &short, capped).await;
     assert_eq!(status, StatusCode::OK, "{child}");
     assert_eq!(child["expires_at"], soon);
+}
+
+/// Returns the id of the token in an issue reply.
+fn id_of(reply: &Value) -> String {
+    reply["id"].as_str().expect("id").to_string()
+}
+
+#[tokio::test]
+async fn root_should_issue_a_lead_that_can_issue() {
+    let (_dir, fx) = fixture();
+    let (root_id, root) = token_record(&fx, "root", AuthScope::Admin);
+
+    let (status, lead) = issue(&fx, &root, json!({"name": "lead-one", "preset": "lead"})).await;
+    assert_eq!(status, StatusCode::OK, "{lead}");
+    assert_eq!(lead["parent_id"], root_id.as_str());
+    assert!(
+        lead["permissions"]
+            .as_array()
+            .expect("permissions")
+            .contains(&json!("tokens.issue")),
+        "{lead}"
+    );
+
+    let body = json!({"name": "sub-one", "preset": "work"});
+    let (status, sub) = issue(&fx, &raw_of(&lead), body).await;
+    assert_eq!(status, StatusCode::OK, "{sub}");
+    assert_eq!(sub["parent_id"], id_of(&lead).as_str());
+}
+
+#[tokio::test]
+async fn grandchild_should_not_hold_tokens_issue() {
+    let (_dir, fx) = fixture();
+    let (_, root) = token_record(&fx, "root", AuthScope::Admin);
+    let (status, lead) = issue(&fx, &root, json!({"name": "lead-one", "preset": "lead"})).await;
+    assert_eq!(status, StatusCode::OK, "{lead}");
+    let lead_raw = raw_of(&lead);
+    let held = token_count(&fx);
+
+    for body in [
+        json!({"name": "x", "permissions": ["tokens.issue"]}),
+        json!({"name": "x", "preset": "lead"}),
+    ] {
+        let (status, reply) = issue(&fx, &lead_raw, body.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {reply}");
+    }
+    assert_eq!(token_count(&fx), held);
+
+    let (status, sub) = issue(&fx, &lead_raw, json!({"name": "sub", "preset": "work"})).await;
+    assert_eq!(status, StatusCode::OK, "{sub}");
+    let (status, reply) = issue(&fx, &raw_of(&sub), json!({"name": "x", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert_eq!(reply, permission_denied("tokens.issue"));
+}
+
+#[tokio::test]
+async fn child_should_not_outlive_its_issuer() {
+    let (_dir, fx) = fixture();
+    let (_, root) = token_record(&fx, "root", AuthScope::Admin);
+    let (status, lead) = issue(&fx, &root, json!({"name": "lead-one", "preset": "lead"})).await;
+    assert_eq!(status, StatusCode::OK, "{lead}");
+    allow_child_hours(&fx, &id_of(&lead), 8);
+
+    let body = json!({"name": "sub", "preset": "read", "expires_in_hours": 8});
+    let (status, sub) = issue(&fx, &raw_of(&lead), body).await;
+    assert_eq!(status, StatusCode::OK, "{sub}");
+    assert_eq!(sub["expires_at"], lead["expires_at"]);
+
+    let (status, reply) = issue(
+        &fx,
+        &root,
+        json!({"name": "lead-two", "preset": "lead", "expires_in_hours": 2}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+}
+
+#[tokio::test]
+async fn the_owner_should_set_the_child_lifetime_of_an_issuer_in_the_browser() {
+    let (_dir, fx) = fixture();
+    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let uri = format!("/api/v1/auth/tokens/{lead_id}");
+    let three = json!({"name": "three", "preset": "read", "expires_in_hours": 3});
+
+    let (status, reply) = issue(&fx, &lead, three.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+    for hours in [0, 9] {
+        let body = json!({"child_lifetime_hours": hours});
+        let (status, reply) = call(&fx, "PATCH", &uri, Some(body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{hours}: {reply}");
+    }
+    let (status, text) = bearer_json(
+        &fx,
+        &lead,
+        "PATCH",
+        &uri,
+        json!({"child_lifetime_hours": 8}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+
+    let (status, reply) = call(&fx, "PATCH", &uri, Some(json!({"child_lifetime_hours": 3}))).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["child_lifetime_hours"], 3);
+    assert_eq!(reply["name"], "lead");
+    let (status, reply) = issue(&fx, &lead, three).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let four = json!({"name": "four", "preset": "read", "expires_in_hours": 4});
+    let (status, reply) = issue(&fx, &lead, four).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+}
+
+#[tokio::test]
+async fn issued_tokens_should_not_count_toward_the_cap() {
+    let (_dir, fx) = fixture();
+    let (_, root) = token_record(&fx, "root", AuthScope::Admin);
+    let hand_made = |fx: &Fixture| {
+        fx.db
+            .list_account_api_tokens(&fx.user_id)
+            .expect("tokens")
+            .iter()
+            .filter(|token| token.parent_id.is_none())
+            .count()
+    };
+    for n in hand_made(&fx)..MAX_API_TOKENS_PER_ACCOUNT {
+        token_record(&fx, &format!("filler-{n}"), AuthScope::Read);
+    }
+    assert_eq!(hand_made(&fx), MAX_API_TOKENS_PER_ACCOUNT);
+
+    let (status, lead) = issue(&fx, &root, json!({"name": "lead-one", "preset": "lead"})).await;
+    assert_eq!(status, StatusCode::OK, "{lead}");
+    let (status, sub) = issue(
+        &fx,
+        &raw_of(&lead),
+        json!({"name": "sub", "preset": "read"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sub}");
+    assert_eq!(token_count(&fx), MAX_API_TOKENS_PER_ACCOUNT + 2);
+
+    let body = json!({"name": "one-too-many", "preset": "read"});
+    let (status, reply) = call(&fx, "POST", "/api/v1/auth/tokens", Some(body)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{reply}");
+}
+
+#[tokio::test]
+async fn revoking_a_token_should_revoke_its_whole_subtree() {
+    let (_dir, fx) = fixture();
+    let before = token_count(&fx);
+    let (root_id, root) = token_record(&fx, "root", AuthScope::Admin);
+    let (status, lead) = issue(&fx, &root, json!({"name": "lead-one", "preset": "lead"})).await;
+    assert_eq!(status, StatusCode::OK, "{lead}");
+    let (status, sub) = issue(
+        &fx,
+        &raw_of(&lead),
+        json!({"name": "sub", "preset": "read"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sub}");
+    assert_eq!(token_count(&fx), before + 3);
+
+    let uri = format!("/api/v1/auth/tokens/{}", id_of(&lead));
+    let (status, text) = request(&fx, As::Admin, "DELETE", &uri, None, true).await;
+    assert!(status.is_success(), "{text}");
+    assert_eq!(token_count(&fx), before + 1);
+    let (status, text) = bare(&fx, &raw_of(&sub), "GET", "/api/v1/auth/whoami").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{text}");
+
+    let (status, lead) = issue(&fx, &root, json!({"name": "lead-two", "preset": "lead"})).await;
+    assert_eq!(status, StatusCode::OK, "{lead}");
+    let (status, sub) = issue(
+        &fx,
+        &raw_of(&lead),
+        json!({"name": "sub-two", "preset": "read"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sub}");
+    let uri = format!("/api/v1/auth/tokens/{root_id}");
+    let (status, text) = request(&fx, As::Admin, "DELETE", &uri, None, true).await;
+    assert!(status.is_success(), "{text}");
+    assert_eq!(token_count(&fx), before);
+    let (status, text) = bare(&fx, &raw_of(&sub), "GET", "/api/v1/auth/whoami").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{text}");
+}
+
+#[tokio::test]
+async fn the_upkeep_should_delete_expired_issued_tokens_and_keep_hand_made_ones() {
+    let (_dir, fx) = fixture();
+    let (lead_id, _) = token_record(&fx, "lead", AuthScope::Provision);
+    let (expired, _) = new_api_token_record(&fx.user_id, "expired-hand", AuthScope::Read, Some(1));
+    fx.db.create_api_token(&expired).expect("token");
+    let now = chrono::Utc::now().timestamp();
+    let (mut child, _) = new_api_token_record(&fx.user_id, "old-child", AuthScope::Read, None);
+    child.parent_id = Some(lead_id);
+    child.parent_name = Some("lead".to_string());
+    let past = now - 2 * SECONDS_PER_HOUR;
+    let stored = fx
+        .db
+        .create_child_api_token(child, 1, past)
+        .expect("create");
+    assert!(stored.is_ok());
+    let before = token_count(&fx);
+
+    assert_eq!(fx.db.prune_expired_issued_tokens(now).expect("prune"), 1);
+    assert_eq!(token_count(&fx), before - 1);
+    assert_eq!(fx.db.prune_expired_issued_tokens(now).expect("prune"), 0);
 }
 
 #[tokio::test]
@@ -12455,8 +12668,11 @@ async fn a_child_should_not_be_stored_once_its_parent_is_gone() {
     record.parent_id = Some("revoked-parent".to_string());
     let before = token_count(&fx);
     let now = chrono::Utc::now().timestamp();
-    let refusal = fx.db.create_child_api_token(&record, now).expect("create");
-    assert_eq!(refusal, Err(ChildTokenRefusal::ParentGone));
+    let refusal = fx
+        .db
+        .create_child_api_token(record, 1, now)
+        .expect("create");
+    assert_eq!(refusal.map(|_| ()), Err(ChildTokenRefusal::ParentGone));
     assert_eq!(token_count(&fx), before);
 }
 
@@ -12754,7 +12970,8 @@ async fn a_child_named_like_an_existing_token_should_be_refused() {
 #[tokio::test]
 async fn a_token_should_read_its_own_permissions_boards_and_expiry_over_bearer() {
     let (_dir, fx) = fixture();
-    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    allow_child_hours(&fx, &lead_id, 2);
     let body = json!({"name": "kid", "permissions": ["tasks.read", "subtasks.edit"], "boards": [fx.board_id], "expires_in_hours": 2});
     let (status, child) = issue(&fx, &lead, body).await;
     assert_eq!(status, StatusCode::OK, "{child}");
@@ -12776,13 +12993,13 @@ async fn an_expired_child_should_free_its_name_and_leave_the_child_list() {
     let (_dir, fx) = fixture();
     let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
     let now = chrono::Utc::now().timestamp();
-    let (mut record, _) =
-        new_api_token_record(&fx.user_id, "worker", AuthScope::Read, Some(now - 60));
+    let (mut record, _) = new_api_token_record(&fx.user_id, "worker", AuthScope::Read, None);
     record.parent_id = Some(lead_id);
     record.parent_name = Some("lead".to_string());
+    let past = now - 2 * SECONDS_PER_HOUR;
     assert!(
         fx.db
-            .create_child_api_token(&record, now - 120)
+            .create_child_api_token(record, 1, past)
             .expect("create")
             .is_ok()
     );

@@ -32,8 +32,8 @@ use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission, required_role,
 };
 use crate::models::{
-    AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, AuthScope, Avatar, BinRow,
-    BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange,
+    AccountId, AccountStatus, ActiveTimer, Actor, AgentRoleRow, ApiTokenRecord, AuthScope, Avatar,
+    BinRow, BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange,
     DeviceAuthRow, EventKind, FieldDefRow, InboundAddressRow, LinkKind, Numbering, ParentToken,
     PasskeyRow, PruneNotice, RecoveryCodeRow, ReportBookmark, Settings, SwimlaneRow,
     TaskAttachment, TaskBrief, TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow,
@@ -2302,6 +2302,60 @@ impl AccountDb {
         self.db.delete_field(&field.row().id)
     }
 
+    /// Returns agent role `id` of the account.
+    pub fn agent_role(&self, id: &str) -> DbResult<Option<AgentRoleRow>> {
+        self.db.agent_role(self.account.as_str(), id)
+    }
+
+    /// Returns the account's agent roles, by name.
+    pub fn list_agent_roles(&self) -> DbResult<Vec<AgentRoleRow>> {
+        self.db.list_agent_roles(self.account.as_str())
+    }
+
+    /// Returns the ids of the boards `role` is granted on that lie within the token's set.
+    pub fn agent_role_boards(&self, role: &AgentRoleRow) -> DbResult<Vec<String>> {
+        let mut boards = self.db.agent_role_boards(&role.id)?;
+        boards.retain(|board_id| self.boards.allows(board_id));
+        Ok(boards)
+    }
+
+    /// Stores a new agent role, and refuses it while another holds the name or the account holds
+    /// the most it may.
+    pub fn create_agent_role(
+        &self,
+        name: &str,
+        permissions: BTreeSet<Permission>,
+    ) -> DbResult<AgentRoleRow> {
+        self.db
+            .create_agent_role(self.account.as_str(), name, permissions)
+    }
+
+    /// Renames agent role `id` and replaces its template where `name` and `permissions` are set.
+    /// Returns [`None`] when the account holds no such role.
+    pub fn update_agent_role(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        permissions: Option<BTreeSet<Permission>>,
+    ) -> DbResult<Option<AgentRoleRow>> {
+        self.db
+            .update_agent_role(self.account.as_str(), id, name, permissions)
+    }
+
+    /// Grants agent role `role_id` on a board the account owns. Returns `false` when the account
+    /// holds no such role.
+    pub fn grant_agent_role(&self, role_id: &str, board: &OwnedBoard) -> DbResult<bool> {
+        self.db
+            .grant_agent_role(self.account.as_str(), role_id, &board.row().id)
+    }
+
+    /// Revokes agent role `role_id` on board `board_id`. Returns `false` when the account holds no
+    /// such role or the role held no such grant.
+    pub fn revoke_agent_role(&self, role_id: &str, board_id: &str) -> DbResult<bool> {
+        self.db
+            .revoke_agent_role(self.account.as_str(), role_id, board_id)
+    }
+
     /// Returns webhook `id` when the account owns its board.
     pub fn webhook(&self, id: &str) -> DbResult<Option<OwnedWebhook>> {
         self.on_owned_board(WEBHOOKS, id, |hook: &WebhookRow| &hook.board_id)
@@ -2584,24 +2638,23 @@ impl AccountDb {
         Ok((record, raw))
     }
 
-    /// Mints and stores a child API token issued by token `parent`, returning its record and the
-    /// raw token, or the refusal when the parent was revoked meanwhile or the name is taken.
+    /// Mints and stores a child API token issued by token `parent` that lives `hours`, returning
+    /// its record and the raw token, or the refusal the database gives.
     pub fn create_child_api_token(
         &self,
         parent: &ParentToken,
         name: &str,
         grant: TokenGrant,
-        expires_at: i64,
+        hours: i64,
     ) -> DbResult<Result<(ApiTokenRecord, String), ChildTokenRefusal>> {
-        let (mut record, raw) =
-            new_api_token_record(&self.account, name, grant.scope, Some(expires_at));
+        let (mut record, raw) = new_api_token_record(&self.account, name, grant.scope, None);
         record.permissions = grant.permissions;
         record.boards = grant.boards;
         record.parent_id = Some(parent.id.clone());
         record.parent_name = Some(parent.name.clone());
         let now = Utc::now().timestamp();
-        let stored = self.db.create_child_api_token(&record, now)?;
-        Ok(stored.map(|()| (record, raw)))
+        let stored = self.db.create_child_api_token(record, hours, now)?;
+        Ok(stored.map(|record| (record, raw)))
     }
 
     /// Returns the live token `raw` when the account holds it. The bootstrap token has no record,
@@ -2633,14 +2686,17 @@ impl AccountDb {
     }
 
     /// Renames one of the account's tokens and, when `grant` is set, changes its scope and
-    /// permissions, without a new secret. Returns [`None`] when it holds no such token.
+    /// permissions, and, when `child_lifetime_hours` is set, the most hours its children may live,
+    /// without a new secret. Returns [`None`] when it holds no such token.
     pub fn edit_api_token(
         &self,
         id: &str,
         name: Option<&str>,
         grant: Option<(AuthScope, BTreeSet<Permission>)>,
+        child_lifetime_hours: Option<i64>,
     ) -> DbResult<Option<ApiTokenRecord>> {
-        self.db.edit_api_token(&self.account, id, name, grant)
+        self.db
+            .edit_api_token(&self.account, id, name, grant, child_lifetime_hours)
     }
 
     /// Returns the account's passkeys, oldest first.

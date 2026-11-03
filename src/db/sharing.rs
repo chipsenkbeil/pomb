@@ -1,6 +1,7 @@
 use chrono::Utc;
 use redb::WriteTransaction;
 
+use super::agents::txn_remove_grants_of_board;
 use super::membership::handle_owner_in;
 use super::usage::{OverQuota, txn_board_bytes, txn_count_usage, txn_refuse_over_bytes};
 use super::{
@@ -285,6 +286,7 @@ impl Db {
         txn_count_usage(&txn, &previous, 0, bytes)?;
         txn_count_usage(&txn, &user.id, bytes, 0)?;
         txn_unjoin(&txn, board_id, &user.id)?;
+        txn_remove_grants_of_board(&txn, board_id)?;
         let row = BoardMemberRow {
             board_id: board_id.to_string(),
             account_id: previous.clone(),

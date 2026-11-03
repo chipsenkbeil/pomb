@@ -58,26 +58,26 @@ use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn, TokenGrant};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
-    AdminActionOutcome, BoardDenied, BookmarkAdd, BookmarkPatch, Bound, ChangeOutcome, ChildLinks,
-    ChildRef, ChildTokenRefusal, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind,
-    ColumnWatch, CommentWrite, Commit, CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll,
-    DuplicateAttachment, EntryEdit, EpicCloseOutcome, EventRead, FeedAdd, FencedWrite,
-    FieldCreateOutcome, FirstPasskeyOutcome, InboundColumnMissing, InstanceDb, LargestUse,
-    LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD,
-    MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME,
-    NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted,
-    OwnedBoard, OwnedColumn, OwnedTask, OwnerChange, PaletteStrandsColor, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuotaExceeded, RecoverOutcome, RegisterOutcome,
-    RestoreOutcome, Revoked, RoleDenied, SessionEndOutcome, SessionListing, SessionRefused,
-    SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
-    SwimlaneUpdateOutcome, TaskContext, UmbrellaChange, UmbrellaPart, UmbrellaRef,
-    WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels, local_day, merge_metadata,
-    push_change_event, push_column_event, push_event, round_estimate,
+    AdminActionOutcome, AgentRoleNameTaken, BoardDenied, BookmarkAdd, BookmarkPatch, Bound,
+    ChangeOutcome, ChildLinks, ChildRef, ChildTokenRefusal, ClaimOutcome, ClaimRequest,
+    ColumnDeleteOutcome, ColumnKind, ColumnWatch, CommentWrite, Commit, CopyTasks,
+    DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment, EntryEdit,
+    EpicCloseOutcome, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome,
+    InboundColumnMissing, InstanceDb, LargestUse, LinkAddOutcome, LinkDeleteOutcome, LinkEdit,
+    LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards,
+    MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement,
+    NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedColumn, OwnedTask, OwnerChange,
+    PaletteStrandsColor, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome,
+    QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked, RoleDenied,
+    SessionEndOutcome, SessionListing, SessionRefused, SessionToken, SwimlaneDeleteOutcome,
+    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext, UmbrellaChange,
+    UmbrellaPart, UmbrellaRef, WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels,
+    local_day, merge_metadata, push_change_event, push_column_event, push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
 use crate::layouts::{Category, YOUR_BOARDS, category_of, chip_labels};
-use crate::limit::ClientIp;
+use crate::limit::{ClientIp, Refusal, rate_limited_response};
 use crate::models::*;
 use crate::passkey::{
     CEREMONY_TTL_SECONDS, CeremoniesFull, Enrollment, MAX_SETUP_CODE_GUESSES, PasskeyError,
@@ -469,6 +469,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/auth/tokens/:id/children",
             delete(revoke_children_of_token),
+        )
+        .route(
+            "/api/v1/agent-roles",
+            post(create_agent_role).get(list_agent_roles),
+        )
+        .route(
+            "/api/v1/agent-roles/:id",
+            get(get_agent_role).patch(update_agent_role),
         )
         .route("/api/v1/auth/whoami", get(whoami))
         .route("/api/v1/auth/permissions", get(list_permissions));
@@ -1169,6 +1177,15 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             AccountSession,
             Exempt,
         ),
+        (Method::GET, "/api/v1/agent-roles", Account, No),
+        (Method::GET, "/api/v1/agent-roles/:id", Account, No),
+        (Method::POST, "/api/v1/agent-roles", AccountSession, Grows),
+        (
+            Method::PATCH,
+            "/api/v1/agent-roles/:id",
+            AccountSession,
+            Grows,
+        ),
         (Method::GET, "/api/v1/auth/tokens", AccountSession, No),
         (Method::GET, "/api/v1/auth/tokens/:id", AccountSession, No),
         (
@@ -1422,6 +1439,8 @@ pub struct AppError {
     message: String,
     denied: Option<Permission>,
     denied_board: Option<String>,
+    /// The limiter refusal to answer with 429 and `Retry-After` in place of the generic body.
+    rate_limit: Option<Refusal>,
 }
 
 impl AppError {
@@ -1433,6 +1452,7 @@ impl AppError {
             message: api_error::permission_message(permission),
             denied: Some(permission),
             denied_board: None,
+            rate_limit: None,
         }
     }
 
@@ -1451,6 +1471,7 @@ impl AppError {
             message: message.into(),
             denied: None,
             denied_board: None,
+            rate_limit: None,
         }
     }
 
@@ -1475,6 +1496,9 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        if let Some(refusal) = self.rate_limit {
+            return rate_limited_response(refusal);
+        }
         match (self.denied, self.denied_board) {
             (Some(permission), Some(board_id)) => api_error::board_denied(BoardDenied {
                 board_id,
@@ -1495,6 +1519,15 @@ impl From<QuotaExceeded> for AppError {
 impl From<TooLong> for AppError {
     fn from(refusal: TooLong) -> Self {
         Self::bad_request(refusal.to_string())
+    }
+}
+
+impl From<Refusal> for AppError {
+    fn from(refusal: Refusal) -> Self {
+        Self {
+            rate_limit: Some(refusal),
+            ..Self::with_status(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded")
+        }
     }
 }
 
@@ -1520,6 +1553,7 @@ impl From<Box<dyn std::error::Error>> for AppError {
         }
         if error.downcast_ref::<WebhookColumnMissing>().is_some()
             || error.downcast_ref::<InboundColumnMissing>().is_some()
+            || error.downcast_ref::<AgentRoleNameTaken>().is_some()
         {
             return Self::bad_request(error.to_string());
         }
@@ -21566,22 +21600,34 @@ struct ApiTokenListItem {
     children: usize,
 }
 
-/// Returns the settings rows of `records`, each token followed by the children it issued.
+/// Returns the settings rows of `records`, each token followed by the children it issued, which
+/// are followed by theirs.
 #[must_use]
 fn token_list_items(records: &[ApiTokenRecord]) -> Vec<ApiTokenListItem> {
-    records
+    let mut rows = Vec::new();
+    for root in records.iter().filter(|record| record.parent_id.is_none()) {
+        push_token_rows(records, root, &mut rows);
+    }
+    rows
+}
+
+/// Pushes the settings row of `token`, then the rows of the tokens it issued, each followed by its
+/// own.
+fn push_token_rows(
+    records: &[ApiTokenRecord],
+    token: &ApiTokenRecord,
+    rows: &mut Vec<ApiTokenListItem>,
+) {
+    let children: Vec<_> = records
         .iter()
-        .filter(|record| record.parent_id.is_none())
-        .flat_map(|parent| {
-            let children: Vec<_> = records
-                .iter()
-                .filter(|record| record.parent_id.as_deref() == Some(parent.id.as_str()))
-                .collect();
-            let mut parent_row = ApiTokenListItem::from(parent);
-            parent_row.children = children.len();
-            std::iter::once(parent_row).chain(children.into_iter().map(ApiTokenListItem::from))
-        })
-        .collect()
+        .filter(|record| record.parent_id.as_deref() == Some(token.id.as_str()))
+        .collect();
+    let mut row = ApiTokenListItem::from(token);
+    row.children = children.len();
+    rows.push(row);
+    for child in children {
+        push_token_rows(records, child, rows);
+    }
 }
 
 impl From<&ApiTokenRecord> for ApiTokenListItem {
@@ -22366,6 +22412,9 @@ struct ApiTokenView {
     expires_at: Option<i64>,
     /// The id of the token that issued this one, absent for a token made in the browser.
     parent_id: Option<String>,
+    /// The most hours a child of this token may live, from 1 to 8. Only the owner sets it, in the
+    /// browser.
+    child_lifetime_hours: i64,
 }
 
 impl From<&ApiTokenRecord> for ApiTokenView {
@@ -22380,6 +22429,7 @@ impl From<&ApiTokenRecord> for ApiTokenView {
             last_used_at: record.last_used_at,
             expires_at: record.expires_at,
             parent_id: record.parent_id.clone(),
+            child_lifetime_hours: record.child_lifetime_hours,
         }
     }
 }
@@ -23435,15 +23485,6 @@ async fn create_api_token(
     }))
 }
 
-/// Seconds in an hour.
-const SECONDS_PER_HOUR: i64 = 3_600;
-/// Hours a child token lives when the request names none.
-const DEFAULT_CHILD_TOKEN_HOURS: i64 = 1;
-/// Fewest hours a child token may live.
-const MIN_CHILD_TOKEN_HOURS: i64 = 1;
-/// Most hours a child token may live.
-const MAX_CHILD_TOKEN_HOURS: i64 = 8;
-
 /// Body of the child token request: a name, one grant, the boards and the lifetime.
 #[derive(Deserialize, ToSchema)]
 struct CreateChildTokenInput {
@@ -23458,17 +23499,23 @@ struct CreateChildTokenInput {
     /// or a non-empty array of ids of boards the caller reaches.
     #[serde(default)]
     boards: BoardsInput,
-    /// Hours until expiry, from 1 to 8. Defaults to 1. The child never outlives the caller.
+    /// Hours until expiry, from 1 to 8 and no more than the owner allows the caller's children.
+    /// Defaults to 1. The child never outlives the caller.
     expires_in_hours: Option<i64>,
 }
 
 /// Creates a child token that holds no more than the calling token. The caller needs
-/// `tokens.issue`, and the child gets only permissions and boards the caller holds, never
-/// `tokens.issue`, and an expiry of 1 hour by default and at most 8 hours that does not pass the
-/// caller's own. A child's name must differ from every
-/// other token's name on the account, whatever the letter case. Revoking the caller revokes its
-/// children. Send one of `preset` and `permissions`, plus `boards`, which defaults to `all`. The
-/// child's history entries and comments name the caller beside the child.
+/// `tokens.issue`, and the child gets only permissions and boards the caller holds. A token
+/// made in the browser or by device approval may give its child `tokens.issue`, so a lead can
+/// issue. A token that was itself issued may not, so the tree stops at two levels. The child
+/// expires in 1 hour by default, in at most the hours the owner set for the caller's children,
+/// which are 1 by default and 8 at most, and never after the caller. A child's name must differ
+/// from every other token's name on the account, whatever the letter case. Revoking a token
+/// revokes every token it issued, at any depth. Tokens issued by a token do not count toward the
+/// account's 50 tokens, and no limit holds how many live ones a token has, but a token that mints
+/// faster than 20 at once and then one every 2 seconds gets 429 `rate_limited` with `Retry-After`.
+/// Send one of `preset` and `permissions`, plus `boards`, which defaults to `all`. The child's
+/// history entries and comments name the caller beside the child.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/tokens/children",
@@ -23477,13 +23524,15 @@ struct CreateChildTokenInput {
     request_body = CreateChildTokenInput,
     responses(
         (status = 200, description = "Created child token (raw_token shown once)", body = CreateTokenResponse),
-        (status = 400, description = "Invalid name, both or neither of `preset` and `permissions`, an unknown preset, permission or board, empty `boards`, or `expires_in_hours` outside 1 to 8"),
-        (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`, or `forbidden`: the child asks for a permission or board the caller lacks, or for `tokens.issue`, or the caller is not an API token"),
-        (status = 409, description = "`quota_exceeded`: the account holds 50 tokens already. Without a code: another token of the account has the name, whatever its letter case"),
+        (status = 400, description = "Invalid name, both or neither of `preset` and `permissions`, an unknown preset, permission or board, empty `boards`, `expires_in_hours` outside 1 to 8, or more hours than the owner allows the caller's children"),
+        (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`, or `forbidden`: the child asks for a permission or board the caller lacks, or for `tokens.issue` while the caller was itself issued, or the caller is not an API token"),
+        (status = 409, description = "Another token of the account has the name, whatever its letter case"),
+        (status = 429, description = "`rate_limited`: the caller mints children faster than 20 at once and then one every 2 seconds, so wait the `Retry-After` seconds"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn create_child_token(
+    State(state): State<AppState>,
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
@@ -23493,9 +23542,6 @@ async fn create_child_token(
     let input: CreateChildTokenInput = parse_body(&headers, body).await?;
     let name = submitted_token_name(&input.name)?;
     let (scope, permissions) = named_grant(input.preset.as_deref(), input.permissions.as_deref())?;
-    if permissions.contains(&Permission::TokensIssue) {
-        return Err(AppError::forbidden("a child token cannot issue tokens"));
-    }
     if let Some(extra) = permissions.difference(user.permissions()).next() {
         return Err(AppError::forbidden(format!(
             "the calling token does not hold {}",
@@ -23508,14 +23554,16 @@ async fn create_child_token(
             "the child asks for a board the calling token does not reach",
         ));
     }
-    let hours = input.expires_in_hours.unwrap_or(DEFAULT_CHILD_TOKEN_HOURS);
-    if !(MIN_CHILD_TOKEN_HOURS..=MAX_CHILD_TOKEN_HOURS).contains(&hours) {
+    let hours = input
+        .expires_in_hours
+        .unwrap_or(ApiTokenRecord::DEFAULT_CHILD_HOURS);
+    if !(ApiTokenRecord::MIN_CHILD_HOURS..=ApiTokenRecord::MAX_CHILD_HOURS).contains(&hours) {
         return Err(AppError::bad_request(format!(
-            "expires_in_hours must be from 1 to {MAX_CHILD_TOKEN_HOURS}"
+            "expires_in_hours must be from {} to {}",
+            ApiTokenRecord::MIN_CHILD_HOURS,
+            ApiTokenRecord::MAX_CHILD_HOURS,
         )));
     }
-    let expires_at = (chrono::Utc::now().timestamp() + hours * SECONDS_PER_HOUR)
-        .min(user.expires_at.unwrap_or(i64::MAX));
     let grant = TokenGrant {
         scope,
         permissions,
@@ -23525,8 +23573,9 @@ async fn create_child_token(
         id: parent_id.to_string(),
         name: user.token_name.clone().unwrap_or_default(),
     };
+    state.limits.check_mint(&parent.id)?;
     let (record, raw) = account
-        .create_child_api_token(&parent, &name, grant, expires_at)
+        .create_child_api_token(&parent, &name, grant, hours)
         .map_err(AppError::from)?
         .map_err(|refusal| match refusal {
             ChildTokenRefusal::ParentGone => {
@@ -23536,6 +23585,12 @@ async fn create_child_token(
             ChildTokenRefusal::NameTaken => {
                 AppError::conflict("another token of the account has that name")
             }
+            ChildTokenRefusal::IssuerIsIssued => {
+                AppError::forbidden("a token that was itself issued cannot issue tokens")
+            }
+            ChildTokenRefusal::LifetimeTooLong { allowed_hours } => AppError::bad_request(format!(
+                "the owner allows this token's children {allowed_hours} hours at most"
+            )),
         })?;
     Ok(Json(CreateTokenResponse {
         token: ApiTokenView::from(&record),
@@ -23757,6 +23812,8 @@ struct EditTokenInput {
     preset: Option<String>,
     /// A custom, non-empty set of permission wire names from `GET /api/v1/auth/permissions`.
     permissions: Option<Vec<String>>,
+    /// The most hours a child of this token may live, from 1 to 8. Absent keeps it.
+    child_lifetime_hours: Option<i64>,
 }
 
 /// Describes `record` without its secret.
@@ -23798,8 +23855,9 @@ async fn get_api_token(
     token_reply(&account, record)
 }
 
-/// Renames an API token and changes its permissions, keeping its secret, boards and expiry. The
-/// reply never holds the secret, which was shown once at creation.
+/// Renames an API token, changes its permissions and sets the most hours its children may live,
+/// keeping its secret, boards and expiry. Only the browser sets that lifetime: an issuing token
+/// never raises its own. The reply never holds the secret, which was shown once at creation.
 #[utoipa::path(
     patch,
     path = "/api/v1/auth/tokens/{id}",
@@ -23809,7 +23867,7 @@ async fn get_api_token(
     request_body = EditTokenInput,
     responses(
         (status = 200, description = "The token, without its secret", body = InspectTokenResponse),
-        (status = 400, description = "Invalid name, more than one of `scopes`, `preset` and `permissions`, or an unknown preset or permission"),
+        (status = 400, description = "Invalid name, more than one of `scopes`, `preset` and `permissions`, an unknown preset or permission, or `child_lifetime_hours` outside 1 to 8"),
         (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot change tokens, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 404, description = "No such token on this account"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -23838,8 +23896,23 @@ async fn update_api_token(
             input.permissions.as_deref(),
         )?)
     };
+    let child_lifetime_hours = input
+        .child_lifetime_hours
+        .map(|hours| {
+            if (ApiTokenRecord::MIN_CHILD_HOURS..=ApiTokenRecord::MAX_CHILD_HOURS).contains(&hours)
+            {
+                Ok(hours)
+            } else {
+                Err(AppError::bad_request(format!(
+                    "child_lifetime_hours must be from {} to {}",
+                    ApiTokenRecord::MIN_CHILD_HOURS,
+                    ApiTokenRecord::MAX_CHILD_HOURS,
+                )))
+            }
+        })
+        .transpose()?;
     let record = found(
-        account.edit_api_token(&id, name.as_deref(), grant),
+        account.edit_api_token(&id, name.as_deref(), grant, child_lifetime_hours),
         "no such token",
     )?;
     token_reply(&account, &record)
@@ -23870,6 +23943,208 @@ async fn revoke_api_token(
         return Err(AppError::not_found("no such token"));
     }
     Ok(Json(RevokeResult { revoked: id }))
+}
+
+// ---- Agent roles ----
+
+/// An agent role: a name and the permissions a token issued as it starts from.
+#[derive(serde::Serialize, ToSchema)]
+struct AgentRoleView {
+    /// The role's id, which never changes.
+    id: String,
+    /// The role's name: lowercase letters, digits and hyphens, 1 to 32 characters.
+    name: String,
+    /// The permission wire names of the template, from `GET /api/v1/auth/permissions`.
+    permissions: Vec<String>,
+    /// The ids of the boards the role is granted on. A token lists only the boards it holds.
+    boards: Vec<String>,
+    /// Unix seconds.
+    created_at: i64,
+    /// Unix seconds of the last rename or template change.
+    updated_at: i64,
+}
+
+impl AgentRoleView {
+    /// Describes `role` with the boards of it that `account` reaches.
+    fn new(account: &AccountDb, role: AgentRoleRow) -> Result<Self, AppError> {
+        Ok(Self {
+            boards: account.agent_role_boards(&role)?,
+            permissions: role
+                .permissions
+                .iter()
+                .map(|permission| permission.name().to_string())
+                .collect(),
+            id: role.id,
+            name: role.name,
+            created_at: role.created_at,
+            updated_at: role.updated_at,
+        })
+    }
+}
+
+/// The body of `POST /api/v1/agent-roles`.
+#[derive(serde::Deserialize, ToSchema)]
+struct CreateAgentRoleInput {
+    /// The role's name: 1 to 32 lowercase letters, digits and hyphens, unused on the account.
+    name: String,
+    /// A non-empty set of permission wire names from `GET /api/v1/auth/permissions`.
+    permissions: Vec<String>,
+}
+
+/// The body of `PATCH /api/v1/agent-roles/{id}`.
+#[derive(serde::Deserialize, ToSchema)]
+struct EditAgentRoleInput {
+    /// The new name, under the rules of the create. Absent keeps the name.
+    name: Option<String>,
+    /// The new template, a non-empty set of permission wire names. Absent keeps the template.
+    permissions: Option<Vec<String>>,
+}
+
+/// Reads a role name, refusing one outside lowercase letters, digits and hyphens or longer than
+/// 32 characters.
+fn submitted_role_name(name: &str) -> Result<&str, AppError> {
+    if AgentRoleRow::valid_name(name) {
+        Ok(name)
+    } else {
+        Err(AppError::bad_request(format!(
+            "name must be 1 to {} lowercase letters, digits and hyphens",
+            AgentRoleRow::MAX_NAME_CHARS
+        )))
+    }
+}
+
+/// Reads a role template from permission wire names, refusing an unknown or an empty set.
+fn submitted_template(names: &[String]) -> Result<BTreeSet<Permission>, AppError> {
+    let permissions = names
+        .iter()
+        .map(|name| {
+            Permission::named(name)
+                .ok_or_else(|| AppError::bad_request(format!("unknown permission: {name}")))
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if permissions.is_empty() {
+        return Err(AppError::bad_request("permissions must not be empty"));
+    }
+    Ok(permissions)
+}
+
+/// Lists the agent roles of the account, by name.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent-roles",
+    operation_id = "list_agent_roles",
+    tag = "Agent roles",
+    responses(
+        (status = 200, description = "The account's agent roles", body = Vec<AgentRoleView>),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_agent_roles(account: AccountDb) -> Result<Json<Vec<AgentRoleView>>, AppError> {
+    let roles = account.list_agent_roles().map_err(AppError::from)?;
+    roles
+        .into_iter()
+        .map(|role| AgentRoleView::new(&account, role))
+        .collect::<Result<_, _>>()
+        .map(Json)
+}
+
+/// Shows one agent role of the account.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent-roles/{id}",
+    operation_id = "get_agent_role",
+    tag = "Agent roles",
+    params(("id" = String, Path, description = "Agent role id")),
+    responses(
+        (status = 200, description = "The agent role", body = AgentRoleView),
+        (status = 404, description = "`unknown_role`: the account has no such role"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn get_agent_role(
+    account: AccountDb,
+    Path(id): Path<String>,
+) -> Result<Json<AgentRoleView>, AppError> {
+    let role = role_or_404(account.agent_role(&id))?;
+    Ok(Json(AgentRoleView::new(&account, role)?))
+}
+
+/// Returns the role a getter found, or a 404 `unknown_role` when there is none.
+fn role_or_404(
+    role: Result<Option<AgentRoleRow>, Box<dyn std::error::Error>>,
+) -> Result<AgentRoleRow, AppError> {
+    role.map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("no such agent role").with_code(ErrorCode::UnknownRole))
+}
+
+/// Creates an agent role. Only the owner's browser session creates one, so an API token cannot.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agent-roles",
+    operation_id = "create_agent_role",
+    tag = "Agent roles",
+    request_body = CreateAgentRoleInput,
+    responses(
+        (status = 200, description = "The new role", body = AgentRoleView),
+        (status = 400, description = "A name outside lowercase letters, digits and hyphens, longer than 32 characters or used by another role, or an unknown or empty `permissions`"),
+        (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot create roles, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
+        (status = 409, description = "`quota_exceeded`: the account holds 50 roles already"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn create_agent_role(
+    account: AccountDb,
+    _: FreshSession,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<AgentRoleView>, AppError> {
+    let input: CreateAgentRoleInput = parse_body(&headers, body).await?;
+    let name = submitted_role_name(&input.name)?;
+    let permissions = submitted_template(&input.permissions)?;
+    let role = account
+        .create_agent_role(name, permissions)
+        .map_err(AppError::from)?;
+    Ok(Json(AgentRoleView::new(&account, role)?))
+}
+
+/// Renames an agent role or replaces its permission template, keeping its id and grants. A change
+/// reaches only the tokens issued afterwards. Only the owner's browser session edits a role.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/agent-roles/{id}",
+    operation_id = "update_agent_role",
+    tag = "Agent roles",
+    params(("id" = String, Path, description = "Agent role id")),
+    request_body = EditAgentRoleInput,
+    responses(
+        (status = 200, description = "The role as stored", body = AgentRoleView),
+        (status = 400, description = "A name outside lowercase letters, digits and hyphens, longer than 32 characters or used by another role, an unknown or empty `permissions`, or a body with neither field"),
+        (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot edit roles, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
+        (status = 404, description = "`unknown_role`: the account has no such role"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn update_agent_role(
+    account: AccountDb,
+    _: FreshSession,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<AgentRoleView>, AppError> {
+    let input: EditAgentRoleInput = parse_body(&headers, body).await?;
+    if input.name.is_none() && input.permissions.is_none() {
+        return Err(AppError::bad_request(
+            "send a name or permissions to change",
+        ));
+    }
+    let name = input.name.as_deref().map(submitted_role_name).transpose()?;
+    let permissions = input
+        .permissions
+        .as_deref()
+        .map(submitted_template)
+        .transpose()?;
+    let role = role_or_404(account.update_agent_role(&id, name, permissions))?;
+    Ok(Json(AgentRoleView::new(&account, role)?))
 }
 
 // ---- Agent discovery ----
@@ -25458,9 +25733,15 @@ unknown or revoked token gets 401 `token_invalid`, and a token past its expiry 4
 session (403 `session_required` for a Bearer token), so a token never mints tokens except one
 narrower child: a token with `tokens.issue`, which the `lead` and `admin` presets hold, calls
 `POST /api/v1/auth/tokens/children` for a child that holds a subset of the caller's permissions and
-boards, never `tokens.issue`, and expires in 1 hour unless asked for up to 8 hours, and no later than
-the caller. The child cannot create tokens or add passkeys, and revoking the caller revokes its
-children. A child's name must differ from every other token's name on the account,
+boards, and expires in 1 hour unless asked for up to the hours the owner allows the caller's
+children, 8 at most, and no later than the caller. A token that was not itself issued may give its child
+`tokens.issue`, so a lead issues subagents, but an issued token never issues a token that issues:
+the tree stops at two levels. The owner sets the hours in the browser with `PATCH
+/api/v1/auth/tokens/{id}` and `child_lifetime_hours`, 1 by default. A child cannot create tokens or
+add passkeys, and revoking a token revokes everything below it. Issued tokens at either level do
+not count toward the 50 tokens of an account and have no count limit, but a token that mints more
+than 20 children at once, then one every 2 seconds, gets 429 `rate_limited` with `Retry-After`. An
+expired issued token is deleted. A child's name must differ from every other token's name on the account,
 whatever the letter case (409). A child's `parent_id` names the token that issued it, and its
 history entries and comments carry a `parent_token` with the caller's `id` and `name`. The same
 caller lists its children with
@@ -25722,6 +26003,10 @@ them, which the Backups section of the settings page calls after a confirmation.
         revoke_child_tokens,
         revoke_child_token,
         revoke_children_of_token,
+        list_agent_roles,
+        get_agent_role,
+        create_agent_role,
+        update_agent_role,
         whoami,
         list_permissions,
         list_api_tokens,
@@ -25800,6 +26085,9 @@ them, which the Backups section of the settings page calls after a confirmation.
             ApiTokenView,
             CreateTokenResponse,
             InspectTokenResponse,
+            AgentRoleView,
+            CreateAgentRoleInput,
+            EditAgentRoleInput,
             RevokeResult,
             SessionsEnded,
             SessionView,
@@ -25982,6 +26270,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         (name = "Settings", description = "App settings"),
         (name = "Notifications", description = "Notifications of the signed-in account"),
         (name = "Tokens", description = TOKENS_DOC),
+        (name = "Agent roles", description = "Named identities with a permission template, which only the owner edits in the browser"),
         (name = "Sign-in", description = SIGN_IN_DOC),
         (name = "Accounts", description = ACCOUNTS_DOC),
         (name = "Backups", description = BACKUPS_DOC),
@@ -25995,6 +26284,9 @@ mod access_tests;
 
 #[cfg(test)]
 mod account_tests;
+
+#[cfg(test)]
+mod agent_roles_tests;
 
 #[cfg(test)]
 mod agentctl_tests;

@@ -8,6 +8,7 @@ files:
   - src/routes/**/*.rs
 ignores:
   - src/routes/access_tests.rs
+  - src/routes/agent_roles_tests.rs
   - src/routes/account_tests.rs
   - src/routes/agentctl_tests.rs
   - src/routes/attachment_tests.rs

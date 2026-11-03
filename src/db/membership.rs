@@ -3,6 +3,7 @@ use redb::{ReadableTable, ReadableTableMetadata, WriteTransaction};
 use serde::de::DeserializeOwned;
 
 use super::activity::txn_mark_boards_used;
+use super::agents::txn_remove_agent_roles_of;
 use super::notifications::txn_remove_notifications;
 use super::usage::OverQuota;
 use super::{
@@ -215,6 +216,7 @@ pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbRe
         txn_remove_template(txn, &template_id)?;
     }
     txn_remove_tokens_of(txn, id)?;
+    txn_remove_agent_roles_of(txn, id)?;
     for key in txn_mmap_get(txn, DEVICES_BY_ACCOUNT, id)? {
         let removed = txn
             .open_table(DEVICE_AUTHS)?

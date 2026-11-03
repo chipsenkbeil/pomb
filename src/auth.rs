@@ -598,6 +598,7 @@ pub fn new_api_token_record(
         account_id: account_id.as_str().to_string(),
         parent_id: None,
         parent_name: None,
+        child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
     };
     (record, raw)
 }
@@ -1363,6 +1364,22 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/boards/:id/colors/copy-from",
         Permission::ColorsCopy,
     ),
+    (Method::GET, "/api/v1/agent-roles", Permission::SettingsRead),
+    (
+        Method::GET,
+        "/api/v1/agent-roles/:id",
+        Permission::SettingsRead,
+    ),
+    (
+        Method::POST,
+        "/api/v1/agent-roles",
+        Permission::SettingsWrite,
+    ),
+    (
+        Method::PATCH,
+        "/api/v1/agent-roles/:id",
+        Permission::SettingsWrite,
+    ),
     (Method::GET, "/api/v1/auth/tokens", Permission::SettingsRead),
     (
         Method::POST,
@@ -2049,6 +2066,7 @@ mod tests {
             account_id: String::new(),
             parent_id: None,
             parent_name: None,
+            child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
         };
         assert!(!raw.starts_with(API_TOKEN_PREFIX));
         assert!(verify_api_token(&record, raw));
@@ -2556,6 +2574,7 @@ mod tests {
             account_id: String::new(),
             parent_id: None,
             parent_name: None,
+            child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
         };
         assert!(!record.is_expired(now));
         record.expires_at = Some(now + 60);

@@ -17,6 +17,7 @@
 
 mod account;
 mod activity;
+mod agents;
 mod avatar;
 mod bin;
 mod dispatch;
@@ -71,6 +72,8 @@ pub use self::account::{
     UmbrellaPart, UmbrellaRef,
 };
 use self::activity::Activity;
+pub use self::agents::AgentRoleNameTaken;
+use self::agents::txn_remove_grants_of_board;
 use self::bin::txn_remove_board_bin;
 pub use self::bin::{PurgeOutcome, RestoreOutcome};
 pub use self::dispatch::Delivery;
@@ -121,9 +124,9 @@ use crate::models::{
     InboundAddressRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS,
     MAX_CUSTOM_COLORS, MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
     MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NUMBERING_KEY, Numbering, PasskeyRow, Quota, Quotas,
-    RecoveryCodeRow, ReportBookmark, Responsible, SessionRow, Settings, Subtask, SwimlaneRow,
-    TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind, TaskLink, TaskRow,
-    TextCap, TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes,
+    RecoveryCodeRow, ReportBookmark, Responsible, SECONDS_PER_HOUR, SessionRow, Settings, Subtask,
+    SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind, TaskLink,
+    TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes,
     custom_color_value, format_minutes, is_custom_color, lighter_hex, normalize_hex,
     standard_color, text_contrast,
 };
@@ -1358,8 +1361,50 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// The upgrade rewrites no task row. A version-58 binary refuses the file, since it knows neither
 /// the inbound addresses nor the new permission.
 ///
+/// Version 60 adds, over version 59 (additive, read from older rows through a serde default):
+///
+/// 1. `ApiTokenRecord`: `parent_id`, the lead token that issued the token.
+///
+/// The upgrade rewrites no row, so a token from before the upgrade reads as issued by no token.
+/// The new stamp makes a version-59 binary refuse a file whose child tokens it would save without
+/// their parent, which would leave them alive after the parent is revoked.
+///
+/// Version 61 adds, over version 60 (additive, read from older rows through a serde default):
+///
+/// 1. `ApiTokenRecord`: `parent_name`, the name of the lead token that issued the token.
+/// 2. `TaskEvent` and `TaskComment`: `parent_token`, the `ParentToken` (id and name) of the lead
+///    token behind the child token that made the change.
+///
+/// The upgrade rewrites no row, so an older child token reads without a parent name and an older
+/// event or comment without a parent token. The new stamp makes a version-60 binary refuse a file
+/// whose delegation records it would drop on its next task save.
+///
+/// Version 62 splits the `Permission` `tasks.write` into `tasks.create`, `tasks.edit`,
+/// `tasks.move` and `tasks.claim`, and `subtasks.write` into `subtasks.edit` and `subtasks.check`.
+/// The upgrade replaces each in every token, suspended token and device request with its parts,
+/// which keeps every ability. The new stamp makes a version-61 binary refuse a file whose
+/// permissions it could not read.
+///
+/// Version 63 adds, over version 62 (additive, read from older rows through a serde default):
+///
+/// 1. `ApiTokenRecord`: `child_lifetime_hours`, the most hours a child of the token may live,
+///    which the owner sets in the browser and which reads as 1 from an older row.
+///
+/// The upgrade rewrites no row. The new stamp makes a version-62 binary refuse a file whose
+/// issuing tokens it would save without their limit, which would let their children ask for up to
+/// 8 hours again whatever limit the owner set.
+///
+/// Version 64 adds, over version 63:
+///
+/// 1. The tables `agent_roles` holding `AgentRoleRow` and `agent_role_grants` holding
+///    `AgentRoleGrantRow`, and the multimaps `agent_roles_by_account`,
+///    `agent_role_grants_by_board` and `agent_role_grants_by_role`.
+///
+/// The upgrade rewrites no row and opens the new tables empty. The new stamp makes a version-63
+/// binary refuse a file whose board deletes it would run without removing the board's grants.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 62;
+pub const SCHEMA_VERSION: u64 = 64;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1428,6 +1473,8 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "b7b02fe0140b962c9f01b8e8ee5638102ca0d36d573db17dd75638df5df87e71",
     "4bed9374b31b1c8fcac7f409b776c34eaf93b6757f6795c077ee05570d615f60",
     "36a870e0a7b7c046a30ee5a9b470d7b8bb0817173e2368a62d80711757e92abb",
+    "e0b911ec0186f26f2948e7fa29bcadb8dc26cc3f5e190321ca1321f2c5947669",
+    "043aa18d87c1fbed7a5e8a135ced106f018c97063e0c551c5aaf1b6b2036a922",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -2364,6 +2411,20 @@ const PASSKEYS_BY_CREDENTIAL: TableDefinition<'_, &str, &str> =
 /// account id -> id of each API token it holds, in [`API_TOKENS`] or [`SUSPENDED_TOKENS`].
 const TOKENS_BY_ACCOUNT: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("tokens_by_account");
+/// Agent roles by id.
+const AGENT_ROLES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("agent_roles");
+/// account id -> id of each agent role it holds.
+const AGENT_ROLES_BY_ACCOUNT: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("agent_roles_by_account");
+/// `role id/board id` -> the grant of that role on that board.
+const AGENT_ROLE_GRANTS: TableDefinition<'_, &str, &[u8]> =
+    TableDefinition::new("agent_role_grants");
+/// board id -> id of each agent role granted on it.
+const GRANTS_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("agent_role_grants_by_board");
+/// agent role id -> id of each board it is granted on.
+const GRANTS_BY_ROLE: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("agent_role_grants_by_role");
 /// account id -> key in [`SESSIONS`] of each session it has.
 const SESSIONS_BY_USER: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("sessions_by_user");
@@ -3947,6 +4008,7 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<St
         }
     }
     txn_remove_events(txn, id)?;
+    txn_remove_grants_of_board(txn, id)?;
     txn_remove_members_of_board(txn, id, &task_ids)?;
     txn_clear_timer_if(txn, &board.owner_id, |task_id| {
         task_ids.iter().any(|id| id == task_id)
@@ -4237,10 +4299,32 @@ fn txn_create_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<
     if !txn_account_active(txn, &account)? {
         return Err(ACCOUNT_NOT_ACTIVE.into());
     }
-    if let Some(refusal) = txn_token_cap_reached(txn, &token.account_id)? {
+    if token.parent_id.is_none()
+        && let Some(refusal) = txn_token_cap_reached(txn, &token.account_id)?
+    {
         return Err(Box::new(refusal));
     }
     txn_store_token(txn, token)
+}
+
+/// Deletes the expired issued tokens of `account`, live or suspended, with the tokens they
+/// issued, inside an open write transaction, and returns how many live ones it deleted.
+fn txn_remove_expired_issued_tokens(
+    txn: &WriteTransaction,
+    account: &str,
+    now: i64,
+) -> DbResult<u64> {
+    let mut removed = 0;
+    for id in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, account)? {
+        for table in [API_TOKENS, SUSPENDED_TOKENS] {
+            let expired = txn_read_one::<ApiTokenRecord>(txn, table, &id)?
+                .is_some_and(|token| token.parent_id.is_some() && token.is_expired(now));
+            if expired {
+                removed += txn_remove_token(txn, account, &id)?;
+            }
+        }
+    }
+    Ok(removed)
 }
 
 /// Stores `token` and indexes it under its account and its key, inside an open write
@@ -4554,6 +4638,8 @@ pub enum Bound {
     WebhooksPerBoard,
     /// The inbound addresses one board may hold, [`MAX_INBOUND_PER_BOARD`].
     InboundPerBoard,
+    /// The agent roles one account may hold, [`MAX_AGENT_ROLES_PER_ACCOUNT`].
+    AgentRoles,
 }
 
 impl Bound {
@@ -4581,6 +4667,7 @@ impl Bound {
             Self::Passkeys => "passkeys per account",
             Self::WebhooksPerBoard => "webhooks per board",
             Self::InboundPerBoard => "inbound addresses per board",
+            Self::AgentRoles => "agent roles per account",
         }
     }
 }
@@ -4673,6 +4760,13 @@ pub enum ChildTokenRefusal {
     ParentGone,
     /// Another token of the account has the name, whatever its letter case.
     NameTaken,
+    /// The issuing token was itself issued, so its child may not hold `tokens.issue`.
+    IssuerIsIssued,
+    /// The child would live longer than the issuing token allows its children.
+    LifetimeTooLong {
+        /// Most hours a child of the issuing token may live.
+        allowed_hours: i64,
+    },
 }
 
 /// Refusal of a write that would take an account past one of its quotas or a fixed bound.
@@ -4794,6 +4888,9 @@ pub const MAX_WEBHOOKS_PER_BOARD: usize = 20;
 /// Most inbound addresses one board may hold.
 pub const MAX_INBOUND_PER_BOARD: usize = 20;
 
+/// Most agent roles one account may hold.
+pub const MAX_AGENT_ROLES_PER_ACCOUNT: usize = 50;
+
 /// Most bytes one task's stored row may take, so reading or rewriting a task stays cheap.
 pub const MAX_TASK_ROW_BYTES: usize = 1_048_576;
 
@@ -4803,10 +4900,17 @@ pub const MAX_FIELD_DEF_ROW_BYTES: usize = 262_144;
 /// Most bytes one saved template's stored row may take, 8 MiB.
 pub const MAX_TEMPLATE_ROW_BYTES: usize = 8_388_608;
 
-/// Returns the refusal of a token for `account` while it holds [`MAX_API_TOKENS_PER_ACCOUNT`],
-/// read inside that write's transaction.
+/// Returns the refusal of a token for `account` while it holds [`MAX_API_TOKENS_PER_ACCOUNT`]
+/// tokens made by hand, read inside that write's transaction. A token another token issued does
+/// not count.
 fn txn_token_cap_reached(txn: &WriteTransaction, account: &str) -> DbResult<Option<QuotaExceeded>> {
-    let held = txn_mmap_get(txn, TOKENS_BY_ACCOUNT, account)?.len();
+    let mut held = 0;
+    for id in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, account)? {
+        for table in [API_TOKENS, SUSPENDED_TOKENS] {
+            let token = txn_read_one::<ApiTokenRecord>(txn, table, &id)?;
+            held += usize::from(token.is_some_and(|token| token.parent_id.is_none()));
+        }
+    }
     Ok(
         (held >= MAX_API_TOKENS_PER_ACCOUNT).then_some(QuotaExceeded {
             bound: Bound::ApiTokens,
@@ -5660,6 +5764,11 @@ impl Db {
             txn.open_table(INBOUND_ADDRESSES)?;
             txn.open_table(INBOUND_BY_HASH)?;
             txn.open_multimap_table(INBOUND_BY_BOARD)?;
+            txn.open_table(AGENT_ROLES)?;
+            txn.open_multimap_table(AGENT_ROLES_BY_ACCOUNT)?;
+            txn.open_table(AGENT_ROLE_GRANTS)?;
+            txn.open_multimap_table(GRANTS_BY_BOARD)?;
+            txn.open_multimap_table(GRANTS_BY_ROLE)?;
             txn.open_table(WEBHOOK_OUTBOX)?;
             txn.open_multimap_table(WEBHOOK_OUTBOX_BY_HOOK)?;
             txn.open_multimap_table(BOARDS_BY_OWNER)?;
@@ -6295,33 +6404,37 @@ impl Db {
         Ok(())
     }
 
-    /// Stores `record` as a child of the token it names in `parent_id`, and returns the refusal,
-    /// storing nothing, when that token no longer exists on the same account or
-    /// another token of the account has the same name. It first deletes the account's expired child
-    /// tokens, so they hold no name. A revoke cannot leave an orphan.
+    /// Stores `record` as a child of the token it names in `parent_id`, living `hours` from `now`
+    /// and never past that token, and returns the stored record. Returns the refusal, storing
+    /// nothing, when that token no longer exists on the same account, is itself issued and the
+    /// child would hold `tokens.issue`, allows its children fewer than `hours`, or another token of
+    /// the account has the same name. It first deletes the account's expired issued tokens, so they
+    /// hold no name. A revoke cannot leave an orphan.
     pub fn create_child_api_token(
         &self,
-        record: &ApiTokenRecord,
+        mut record: ApiTokenRecord,
+        hours: i64,
         now: i64,
-    ) -> DbResult<Result<(), ChildTokenRefusal>> {
+    ) -> DbResult<Result<ApiTokenRecord, ChildTokenRefusal>> {
         let Some(parent_id) = record.parent_id.as_deref() else {
             return Err("a child token must name its parent".into());
         };
         let txn = self.db.begin_write()?;
         let parent = txn_read_one::<ApiTokenRecord>(&txn, API_TOKENS, parent_id)?;
-        if !parent.is_some_and(|parent| parent.account_id == record.account_id) {
+        let Some(parent) = parent.filter(|parent| parent.account_id == record.account_id) else {
             return Ok(Err(ChildTokenRefusal::ParentGone));
+        };
+        if parent.parent_id.is_some() && record.permissions.contains(&Permission::TokensIssue) {
+            return Ok(Err(ChildTokenRefusal::IssuerIsIssued));
         }
-        let ids = txn_mmap_get(&txn, TOKENS_BY_ACCOUNT, &record.account_id)?;
-        for id in &ids {
-            for table in [API_TOKENS, SUSPENDED_TOKENS] {
-                let expired = txn_read_one::<ApiTokenRecord>(&txn, table, id)?
-                    .is_some_and(|token| token.parent_id.is_some() && token.is_expired(now));
-                if expired {
-                    txn_remove_token(&txn, &record.account_id, id)?;
-                }
-            }
+        if hours > parent.child_lifetime_hours {
+            return Ok(Err(ChildTokenRefusal::LifetimeTooLong {
+                allowed_hours: parent.child_lifetime_hours,
+            }));
         }
+        record.expires_at =
+            Some((now + hours * SECONDS_PER_HOUR).min(parent.expires_at.unwrap_or(i64::MAX)));
+        txn_remove_expired_issued_tokens(&txn, &record.account_id, now)?;
         let name = record.name.to_lowercase();
         for id in txn_mmap_get(&txn, TOKENS_BY_ACCOUNT, &record.account_id)? {
             for table in [API_TOKENS, SUSPENDED_TOKENS] {
@@ -6333,9 +6446,31 @@ impl Db {
                 }
             }
         }
-        txn_create_token(&txn, record)?;
+        txn_create_token(&txn, &record)?;
         txn.commit()?;
-        Ok(Ok(()))
+        Ok(Ok(record))
+    }
+
+    /// Deletes every issued token that expired by `now`, on every account, and returns how many
+    /// live ones it deleted.
+    pub fn prune_expired_issued_tokens(&self, now: i64) -> DbResult<u64> {
+        let txn = self.db.begin_write()?;
+        let mut accounts = BTreeSet::new();
+        for table in [API_TOKENS, SUSPENDED_TOKENS] {
+            for item in txn.open_table(table)?.iter()? {
+                let (_, raw) = item?;
+                let token: ApiTokenRecord = serde_json::from_slice(raw.value())?;
+                if token.parent_id.is_some() && token.is_expired(now) {
+                    accounts.insert(token.account_id);
+                }
+            }
+        }
+        let mut removed = 0;
+        for account in accounts {
+            removed += txn_remove_expired_issued_tokens(&txn, &account, now)?;
+        }
+        txn.commit()?;
+        Ok(removed)
     }
 
     /// Returns the live API tokens of `account`, oldest first, reading only that account's.
@@ -6453,14 +6588,16 @@ impl Db {
     }
 
     /// Renames `account`'s token `id` and, when `grant` is set, replaces its scope and permissions,
-    /// keeping its secret, boards and expiry. Returns the stored token, or [`None`] when that account
-    /// holds no such token.
+    /// and, when `child_lifetime_hours` is set, the most hours its children may live, keeping its
+    /// secret, boards and expiry. Returns the stored token, or [`None`] when that account holds no
+    /// such token.
     pub fn edit_api_token(
         &self,
         account: &AccountId,
         id: &str,
         name: Option<&str>,
         grant: Option<(AuthScope, BTreeSet<Permission>)>,
+        child_lifetime_hours: Option<i64>,
     ) -> DbResult<Option<ApiTokenRecord>> {
         let txn = self.db.begin_write()?;
         let held = txn_mmap_get(&txn, TOKENS_BY_ACCOUNT, account.as_str())?
@@ -6480,6 +6617,9 @@ impl Db {
         if let Some((scope, permissions)) = grant {
             record.scope = scope;
             record.permissions = permissions;
+        }
+        if let Some(hours) = child_lifetime_hours {
+            record.child_lifetime_hours = hours;
         }
         write_one(&txn, API_TOKENS, id, &record)?;
         txn.commit()?;
@@ -13048,6 +13188,32 @@ mod schema_version_tests {
         assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
     }
 
+    /// A version-62 file opens with its tokens' permissions unchanged, an issuing token's child
+    /// lifetime read as one hour, and empty agent role tables.
+    #[test]
+    fn version_62_file_should_open_with_one_hour_children_and_no_agent_roles() {
+        let (_dir, path) = temp_path();
+        let (record, _) =
+            new_api_token_record(&AccountId::ownerless(), "lead", AuthScope::Work, None);
+        {
+            let db = Db::connect(&path).expect("connect");
+            db.create_api_token(&record).expect("token");
+        }
+        edit_raw(&path, API_TOKENS, &record.id, |object| {
+            object.remove("child_lifetime_hours");
+        });
+        stamp(&path, 62);
+        let db = Db::connect(&path).expect("open version 62");
+        let held = db.list_api_tokens().expect("list");
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].child_lifetime_hours, 1);
+        assert_eq!(held[0].permissions, record.permissions);
+        drop(db);
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+        assert!(rows_of(&path, AGENT_ROLES).is_empty());
+        assert!(rows_of(&path, AGENT_ROLE_GRANTS).is_empty());
+    }
+
     /// Applies `edit` to the row `key` of `table` as stored.
     fn edit_raw(
         path: &str,
@@ -14493,10 +14659,10 @@ mod schema_fingerprint_tests {
 
     use super::*;
     use crate::models::{
-        Avatar, AvatarKind, BoardEventRow, BoardMemberRow, BoardRole, BreakActivity, DiskLimits,
-        FieldColumn, InviteRow, NotificationRow, OutboxRow, ParentToken, PruneSettings,
-        PruneStatus, Quotas, RateLimits, RegistrationMode, Responsible, SubtaskTemplate,
-        TimeFormat, TimerMode, WebhookEvent, WeekStart,
+        AgentRoleGrantRow, AgentRoleRow, Avatar, AvatarKind, BoardEventRow, BoardMemberRow,
+        BoardRole, BreakActivity, DiskLimits, FieldColumn, InviteRow, NotificationRow, OutboxRow,
+        ParentToken, PruneSettings, PruneStatus, Quotas, RateLimits, RegistrationMode, Responsible,
+        SubtaskTemplate, TimeFormat, TimerMode, WebhookEvent, WeekStart,
     };
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
@@ -14793,6 +14959,8 @@ mod schema_fingerprint_tests {
     fn stored_schema_listing() -> String {
         let mut lines = vec![
             shape::<ActiveTimer>("ActiveTimer"),
+            shape::<AgentRoleGrantRow>("AgentRoleGrantRow"),
+            shape::<AgentRoleRow>("AgentRoleRow"),
             shape::<AttachmentVersion>("AttachmentVersion"),
             shape::<ApiTokenRecord>("ApiTokenRecord"),
             shape::<BackupSettings>("BackupSettings"),
@@ -14872,6 +15040,8 @@ mod schema_fingerprint_tests {
             table(WEBHOOKS),
             table(INBOUND_ADDRESSES),
             table(INBOUND_BY_HASH),
+            table(AGENT_ROLES),
+            table(AGENT_ROLE_GRANTS),
             table(WEBHOOK_OUTBOX),
             table(DEVICE_AUTHS),
             table(PASSKEYS),
@@ -14908,6 +15078,9 @@ mod schema_fingerprint_tests {
             multimap(FIELDS_BY_BOARD),
             multimap(WEBHOOKS_BY_BOARD),
             multimap(INBOUND_BY_BOARD),
+            multimap(AGENT_ROLES_BY_ACCOUNT),
+            multimap(GRANTS_BY_BOARD),
+            multimap(GRANTS_BY_ROLE),
             multimap(WEBHOOK_OUTBOX_BY_HOOK),
             multimap(LINKS_BY_TARGET),
             table(BOARD_MEMBERS),
