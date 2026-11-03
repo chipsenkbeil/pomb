@@ -19,6 +19,9 @@ function inlineFn(start) {
 eval(inlineFn('  function daysIntoWeek(d) {'));
 eval(inlineFn('  function clockText(d) {'));
 eval(src.slice(src.indexOf('  var ReportChart = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ReportChart = (function () {')) + '\n  })();'.length));
+eval(src.slice(src.indexOf('  var ColumnHistory = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ColumnHistory = (function () {')) + '\n  })();'.length));
+eval(src.slice(src.indexOf('  var ReportRange = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ReportRange = (function () {')) + '\n  })();'.length));
+eval(src.slice(src.indexOf('  var ReportValue = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ReportValue = (function () {')) + '\n  })();'.length));
 eval(src.slice(start, end));
 
 function at(offset, h) {
@@ -173,5 +176,11 @@ checkPlain('leaving the plot hides the tooltip', box.hidden, true);
 p = at2x(10, 100);
 handlers.pointermove({ clientX: p[0], clientY: p[1] });
 checkPlain('pointer outside the plot shows nothing', box.hidden, true);
+var kept = CumulativeFlowPage.seriesByDay({
+  columns: board,
+  tasks: [{ id: 'a', column_id: 'todo', created_at: at(-3, 10), history: [created('To-do', 'todo', at(-3, 10))] }]
+}, []);
+checkPlain('a filter that keeps no task keeps every column band', kept.order.join('|'), 'To-do|Done');
+checkPlain('a filter that keeps no task counts nothing', kept.counts[0][kept.ends.length - 1], 0);
 console.log('failures=' + failures);
 if (failures) throw new Error(failures + ' cumulative flow check(s) failed');

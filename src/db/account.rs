@@ -15,7 +15,7 @@ use tokio::sync::watch;
 use super::{
     AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardSnapshot,
     COLUMNS, Change, ChangeOutcome, ClaimOutcome, ClaimRequest, ColorDeleteOutcome,
-    ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, CopyTasks, Db, DbResult,
+    ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Commit, CopyTasks, Db, DbResult,
     DeviceGrant, EventRead, FIELD_DEFS, FeedAdd, FencedWrite, FieldCreateOutcome, Incoming,
     LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, MoveGuards, MoveOutcome, NewComment,
     NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage, PasskeyAddOutcome,
@@ -1465,10 +1465,11 @@ impl AccountDb {
     }
 
     /// Runs `f` on each of `tasks` in one write transaction, writing nothing when it refuses one
-    /// or one is missing.
+    /// or one is missing. With `Commit::Discard` it writes nothing even when every task changes.
     pub fn apply_tasks_change<E, F>(
         &self,
         tasks: &[OwnedTask],
+        commit: Commit,
         actor: Actor<'_>,
         f: F,
     ) -> DbResult<ChangeOutcome<E>>
@@ -1476,22 +1477,23 @@ impl AccountDb {
         F: FnMut(&mut TaskRow, &TaskContext) -> Result<(), E>,
     {
         let ids: Vec<String> = tasks.iter().map(|task| task.row().id.clone()).collect();
-        self.db.apply_tasks_change(&ids, actor, f)
+        self.db.apply_tasks_change(&ids, commit, actor, f)
     }
 
     /// Moves `tasks` into `column` in the order given, all in one write transaction: when any
-    /// task is missing, none moves.
+    /// task is missing, none moves. With `Commit::Discard` it moves none.
     pub fn move_tasks_logged(
         &self,
         tasks: &[OwnedTask],
         column: &OwnedColumn,
         swimlane_id: Option<&str>,
         position: f64,
+        commit: Commit,
         actor: Actor<'_>,
     ) -> DbResult<MoveOutcome> {
         let ids: Vec<String> = tasks.iter().map(|task| task.row().id.clone()).collect();
         self.db
-            .move_tasks_logged(&ids, &column.row().id, swimlane_id, position, actor)
+            .move_tasks_logged(&ids, &column.row().id, swimlane_id, position, commit, actor)
     }
 
     /// Moves a task, its time entries and its attachments into the recycle bin and drops its

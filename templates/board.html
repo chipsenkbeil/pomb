@@ -933,6 +933,128 @@
   </div>
 </div>
 
+<div id="mass-update-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light mass-update" role="dialog" aria-label="Mass update">
+    <div class="dlg-title"><span id="mu-title">Mass update</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <div id="mu-error" class="form-error" hidden></div>
+    <section data-mu-step="filter" aria-label="Filter tasks">
+      <label class="dlg-field">
+        <span>Column</span>
+        <select id="mu-columns" multiple size="5"></select>
+      </label>
+      <label class="dlg-field">
+        <span>Period for Done</span>
+        <select id="mu-period">
+          <option value="all" selected>Any time</option>
+          <option value="last-7">Last 7 days</option>
+          <option value="last-14">Last 14 days</option>
+          <option value="last-30">Last 30 days</option>
+          <option value="this-week">This week</option>
+          <option value="last-week">Last week</option>
+          <option value="this-month">This month</option>
+          <option value="last-month">Last month</option>
+        </select>
+      </label>
+      <label class="dlg-field">
+        <span>Color</span>
+        <select id="mu-color"></select>
+      </label>
+      <label class="dlg-field">
+        <span>Label</span>
+        <select id="mu-label"></select>
+      </label>
+      <label class="dlg-field">
+        <span>Member</span>
+        <select id="mu-member"></select>
+      </label>
+      <label class="dlg-field">
+        <span>Due date</span>
+        <select id="mu-due">
+          <option value="all" selected>Any</option>
+          <option value="has">Has a due date</option>
+          <option value="none">No due date</option>
+          <option value="overdue">Overdue</option>
+          <option value="before">On or before</option>
+          <option value="after">On or after</option>
+        </select>
+      </label>
+      <label class="dlg-field" id="mu-due-day-field" hidden>
+        <span>Date</span>
+        <input type="date" id="mu-due-day">
+      </label>
+    </section>
+    <section data-mu-step="select" aria-label="Select tasks" hidden>
+      <p class="dlg-text" id="mu-count"></p>
+      <div class="mu-pick-actions">
+        <button type="button" class="btn btn-sm" id="mu-select-all">Select all</button>
+        <button type="button" class="btn btn-sm" id="mu-clear-all">Clear all</button>
+      </div>
+      <div id="mu-list" class="mu-list"></div>
+    </section>
+    <section data-mu-step="action" aria-label="Choose the update" hidden>
+      <label class="dlg-field">
+        <span>Action</span>
+        <select id="mu-action">
+          <option value="move">Move tasks</option>
+          <option value="color">Update color</option>
+          <option value="labels">Update labels</option>
+          <option value="members">Update members</option>
+        </select>
+      </label>
+      <div data-mu-form="move">
+        <label class="dlg-field">
+          <span>Board</span>
+          <select id="mu-move-board"></select>
+        </label>
+        <label class="dlg-field">
+          <span>Column</span>
+          <select id="mu-move-column"></select>
+        </label>
+      </div>
+      <div data-mu-form="color" hidden>
+        <label class="dlg-field">
+          <span>Color</span>
+          <select id="mu-set-color"></select>
+        </label>
+      </div>
+      <div data-mu-form="labels" hidden>
+        <label class="dlg-field">
+          <span>Remove labels</span>
+          <select id="mu-labels-remove" multiple size="5"></select>
+        </label>
+        <label class="dlg-field">
+          <span>Add labels</span>
+          <input type="text" id="mu-labels-add" placeholder="Separate labels with commas" autocomplete="off">
+        </label>
+      </div>
+      <div data-mu-form="members" hidden>
+        <label class="dlg-field">
+          <span>Remove members</span>
+          <select id="mu-members-remove" multiple size="4"></select>
+        </label>
+        <label class="dlg-field">
+          <span>Add members</span>
+          <select id="mu-members-add" multiple size="4"></select>
+        </label>
+      </div>
+    </section>
+    <section data-mu-step="preview" aria-label="Updates preview" hidden>
+      <p class="dlg-text" id="mu-preview-count"></p>
+      <div class="mu-list">
+        <table class="mu-preview">
+          <thead><tr><th>Task</th><th>Before</th><th>After</th></tr></thead>
+          <tbody id="mu-preview-body"></tbody>
+        </table>
+      </div>
+    </section>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="mu-prev" hidden>Previous</button>
+      <button type="button" class="btn btn-primary" id="mu-next">Next</button>
+      <button type="button" class="btn btn-success" id="mu-apply" hidden>Apply updates</button>
+    </div>
+  </div>
+</div>
+
 {% include "_task_dialogs.html" %}
 {% include "_finder.html" %}
 
@@ -1020,6 +1142,7 @@
   <button type="button" data-bm="filter" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" focusable="false"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg></span>Filter</button>
   <button type="button" data-bm="reports" role="menuitem" aria-haspopup="menu" aria-expanded="false"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" focusable="false"><rect x="2" y="9.5" width="3" height="4.5" rx="0.5"/><rect x="6.5" y="6.5" width="3" height="7.5" rx="0.5"/><rect x="11" y="3" width="3" height="11" rx="0.5"/></svg></span>Reports</button>
   <div class="menu-sep" role="separator" aria-hidden="true"></div>
+  <button type="button" data-bm="mass-update" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="2" y="2" width="9" height="9" rx="1.5"/><path d="M5 14h8a1 1 0 0 0 1-1V5"/><path d="M4.8 6.5l1.5 1.5 2.7-3"/></svg></span>Mass update</button>
   <button type="button" data-bm="layout" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" focusable="false"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10z"/></svg></span>Board layout</button>
   <button type="button" data-bm="settings" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" focusable="false"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg></span>Settings</button>
   <button type="button" data-bm="members" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" focusable="false"><circle cx="8" cy="5.2" r="2.9"/><path d="M2.2 13.8c.6-3.2 2.9-5 5.8-5s5.2 1.8 5.8 5"/></svg></span>Members</button>

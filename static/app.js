@@ -11838,12 +11838,391 @@
     return { init: init, chartSvg: chartSvg };
   })();
 
+  var ReportRange = (function () {
+    var DAY_MS = 86400000;
+    var MAX_YEARS = 3;
+    var MAX_DAYS = 365 * MAX_YEARS;
+
+    function roundTenth(n) { return Math.round(n * 10) / 10; }
+
+    function dayEnds(start, end) {
+      var ends = [];
+      var d = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 23, 59, 59, 999);
+      var last = new Date(end.getFullYear(), end.getMonth(), end.getDate(), 23, 59, 59, 999);
+      while (d.getTime() <= last.getTime()) {
+        ends.push(d);
+        d = new Date(d);
+        d.setDate(d.getDate() + 1);
+      }
+      return ends;
+    }
+
+    return {
+      DAY_MS: DAY_MS, MAX_YEARS: MAX_YEARS, MAX_DAYS: MAX_DAYS,
+      roundTenth: roundTenth, dayEnds: dayEnds
+    };
+  })();
+
+  var ReportValue = (function () {
+    return {
+      count: {
+        text: 'Task count',
+        axis: 'Task count',
+        unit: 'tasks',
+        valueOf: function () { return 1; }
+      },
+      estimate: {
+        text: 'Time estimate',
+        axis: 'Time estimate (hours)',
+        unit: 'hours',
+        valueOf: function (t) {
+          var hours = Number(t.estimate_hours);
+          return hours > 0 ? hours : 0;
+        }
+      },
+      points: {
+        text: 'Points',
+        axis: 'Points',
+        unit: 'points',
+        valueOf: function (t) {
+          var points = Number(t.points);
+          return points > 0 ? points : 0;
+        }
+      }
+    };
+  })();
+
+  var ReportFilter = (function () {
+    var UNASSIGNED = 'unassigned';
+    var MODE_ALL = 'and';
+    var MODE_ANY = 'or';
+
+    function copyValues(values) {
+      var out = {};
+      Object.keys(values).forEach(function (key) {
+        out[key] = Array.isArray(values[key]) ? values[key].slice() : values[key];
+      });
+      return out;
+    }
+
+    function create(controls, onReload) {
+      var applied = {};
+      var byId = {};
+      controls.forEach(function (c) {
+        byId[c.id] = c;
+        applied[c.id] = c.multi ? (c.value || []).slice() : c.value;
+      });
+      var draft = copyValues(applied);
+      return {
+        controls: controls,
+        draft: function () { return copyValues(draft); },
+        applied: function () { return copyValues(applied); },
+        set: function (id, value) { draft[id] = Array.isArray(value) ? value.slice() : value; },
+        selectAll: function (id) {
+          draft[id] = byId[id].options.map(function (o) { return o.value; });
+        },
+        clearAll: function (id) { draft[id] = []; },
+        reload: function () {
+          applied = copyValues(draft);
+          onReload(copyValues(applied));
+        }
+      };
+    }
+
+    function userControl(data) {
+      return {
+        id: 'user', label: 'User', value: '',
+        options: [{ value: '', text: 'Show all' }, { value: UNASSIGNED, text: 'Unassigned' }].concat(
+          (data.users || []).map(function (u) { return { value: u.id, text: u.username }; }))
+      };
+    }
+
+    function colorControl(data) {
+      return {
+        id: 'color', label: 'Color', value: '',
+        options: [{ value: '', text: 'Show all' }].concat(
+          (data.colors || []).map(function (c) { return { value: c.id, text: c.label || c.value }; }))
+      };
+    }
+
+    function labelControls(data) {
+      var seen = Object.create(null);
+      (data.tasks || []).forEach(function (t) {
+        (t.labels || []).forEach(function (l) { seen[l] = true; });
+      });
+      return [{
+        id: 'labels', label: 'Label', multi: true, value: [],
+        options: Object.keys(seen).sort().map(function (l) { return { value: l, text: l }; })
+      }, {
+        id: 'labelMode', label: 'Labels match', value: MODE_ALL,
+        options: [{ value: MODE_ALL, text: 'All chosen labels' }, { value: MODE_ANY, text: 'Any chosen label' }]
+      }];
+    }
+
+    function taskControls(data) {
+      return [userControl(data), colorControl(data)].concat(labelControls(data));
+    }
+
+    function matches(task, values) {
+      var members = task.member_ids || [];
+      if (values.user === UNASSIGNED) {
+        if (members.length) return false;
+      } else if (values.user && members.indexOf(values.user) === -1) {
+        return false;
+      }
+      if (values.color && task.color_id !== values.color) return false;
+      var chosen = values.labels || [];
+      if (!chosen.length) return true;
+      var have = task.labels || [];
+      function held(label) { return have.indexOf(label) !== -1; }
+      return values.labelMode === MODE_ANY ? chosen.some(held) : chosen.every(held);
+    }
+
+    function filterTasks(tasks, values) {
+      return tasks.filter(function (t) { return matches(t, values); });
+    }
+
+    function whenAttrs(c, values) {
+      if (!c.when) return '';
+      return ' data-when="' + escapeHtml(c.when.id) + '" data-when-value="' + escapeHtml(c.when.value) + '"' +
+        (values[c.when.id] === c.when.value ? '' : ' hidden');
+    }
+
+    function syncVisibility(host, values) {
+      Array.prototype.forEach.call(host.querySelectorAll('[data-when]'), function (el) {
+        el.hidden = values[el.getAttribute('data-when')] !== el.getAttribute('data-when-value');
+      });
+    }
+
+    function controlHtml(c, values) {
+      var id = 'rf-' + c.id;
+      var html;
+      if (c.multi) {
+        html = '<fieldset class="rf-multi" data-multi="' + escapeHtml(c.id) + '"><legend>' +
+          escapeHtml(c.label) + '</legend>';
+        if (!c.options.length) return html + '<p class="rf-empty">None</p></fieldset>';
+        html += '<div class="rf-multi-actions">' +
+          '<button type="button" class="rf-link" data-select-all="' + escapeHtml(c.id) + '">Select all</button>' +
+          '<button type="button" class="rf-link" data-clear-all="' + escapeHtml(c.id) + '">Clear all</button>' +
+          '</div><div class="rf-multi-list">';
+        c.options.forEach(function (o) {
+          html += '<label class="check-label"><input type="checkbox" data-control="' + escapeHtml(c.id) +
+            '" value="' + escapeHtml(o.value) + '"' +
+            (values[c.id].indexOf(o.value) !== -1 ? ' checked' : '') + '> ' + escapeHtml(o.text) + '</label>';
+        });
+        return html + '</div></fieldset>';
+      }
+      if (c.type === 'date' || c.type === 'number') {
+        return '<label' + whenAttrs(c, values) + '>' + escapeHtml(c.label) + '<input type="' + c.type +
+          '" id="' + id + '" data-control="' + escapeHtml(c.id) + '"' +
+          (c.type === 'number' ? ' min="1" max="' + c.max + '"' : '') +
+          ' value="' + escapeHtml(values[c.id] || '') + '"></label>';
+      }
+      html = '<label' + whenAttrs(c, values) + '>' + escapeHtml(c.label) + '<select id="' + id +
+        '" data-control="' + escapeHtml(c.id) + '">';
+      c.options.forEach(function (o) {
+        html += '<option value="' + escapeHtml(o.value) + '"' +
+          (values[c.id] === o.value ? ' selected' : '') + '>' + escapeHtml(o.text) + '</option>';
+      });
+      return html + '</select></label>';
+    }
+
+    function checkboxes(host, id) {
+      return Array.prototype.filter.call(host.querySelectorAll('input[type="checkbox"]'), function (box) {
+        return box.getAttribute('data-control') === id;
+      });
+    }
+
+    function syncChecks(host, id, values) {
+      checkboxes(host, id).forEach(function (box) { box.checked = values.indexOf(box.value) !== -1; });
+    }
+
+    function mount(host, state) {
+      var values = state.draft();
+      var html = '<h2>Filter</h2>';
+      state.controls.forEach(function (c) { html += controlHtml(c, values); });
+      host.innerHTML = html + '<button type="button" class="kf-btn kf-btn-primary" data-reload>Reload</button>';
+      host.addEventListener('change', function (e) {
+        var id = e.target.getAttribute('data-control');
+        if (!id) return;
+        if (e.target.type === 'checkbox') {
+          state.set(id, checkboxes(host, id).filter(function (box) { return box.checked; })
+            .map(function (box) { return box.value; }));
+        } else {
+          state.set(id, e.target.value);
+        }
+        syncVisibility(host, state.draft());
+      });
+      host.addEventListener('click', function (e) {
+        var t = e.target;
+        if (t.hasAttribute('data-reload')) {
+          state.reload();
+        } else if (t.hasAttribute('data-select-all')) {
+          var all = t.getAttribute('data-select-all');
+          state.selectAll(all);
+          syncChecks(host, all, state.draft()[all]);
+        } else if (t.hasAttribute('data-clear-all')) {
+          var none = t.getAttribute('data-clear-all');
+          state.clearAll(none);
+          syncChecks(host, none, []);
+        }
+      });
+    }
+
+    function open(host, controls, render, fail) {
+      var state = create(controls, function (values) {
+        try {
+          render(values);
+        } catch (err) {
+          fail(err);
+        }
+      });
+      if (host) mount(host, state);
+      state.reload();
+    }
+
+    return {
+      create: create, mount: mount, open: open, matches: matches, filterTasks: filterTasks,
+      taskControls: taskControls, MODE_ALL: MODE_ALL, MODE_ANY: MODE_ANY
+    };
+  })();
+
+  var ColumnHistory = (function () {
+    function parseMoveDetail(detail) {
+      // "Moved from {from} to {to}" — split on the last " to " so column
+      // names containing " to " parse deterministically.
+      var body = detail.slice('Moved from '.length);
+      var i = body.lastIndexOf(' to ');
+      if (i === -1) return null;
+      return { from: body.slice(0, i), to: body.slice(i + 4) };
+    }
+
+    // The column name a history event recorded the task arriving in, or
+    // null for other events.
+    function recordedDestination(e) {
+      if (e.kind === 'created' && e.detail.indexOf('Task created in ') === 0) {
+        return e.detail.slice('Task created in '.length);
+      }
+      if (e.kind === 'moved' && e.detail.indexOf('Moved from ') === 0) {
+        var m = parseMoveDetail(e.detail);
+        return m ? m.to : null;
+      }
+      return null;
+    }
+
+    // KF-350: bands are columns keyed by id. An event that carries a
+    // column id joins that column's band even after the column is deleted,
+    // and a deleted column's band takes the newest name recorded for its
+    // id. Name-only history maps by current name, then former name, then a
+    // deleted column's recorded names, else gets a band of its own.
+    function columnLookup(data) {
+      var label = {};
+      var current = {};
+      var byName = {};
+      (data.columns || []).forEach(function (c) {
+        label[c.id] = c.name;
+        current[c.id] = true;
+        byName[c.name] = c.id;
+      });
+      (data.columns || []).forEach(function (c) {
+        (c.former_names || []).forEach(function (old) {
+          if (byName[old] === undefined) byName[old] = c.id;
+        });
+      });
+      var newest = {};
+      (data.tasks || []).forEach(function (t) {
+        (t.history || []).forEach(function (e) {
+          var id = e.column_id;
+          var name = recordedDestination(e);
+          var at = Date.parse(e.created_at);
+          if (!id || current[id] || name == null || isNaN(at)) return;
+          if (!newest[id] || at >= newest[id].at) newest[id] = { at: at, name: name };
+          if (byName[name] === undefined) byName[name] = id;
+        });
+      });
+      Object.keys(newest).forEach(function (id) { label[id] = newest[id].name; });
+      return { label: label, current: current, byName: byName };
+    }
+
+    // The band key of the column an event put the task in, or null.
+    function eventKey(e, cols) {
+      var name = recordedDestination(e);
+      if (name == null) return null;
+      if (e.column_id && cols.label[e.column_id] !== undefined) return e.column_id;
+      if (cols.byName[name] !== undefined) return cols.byName[name];
+      var key = 'name:' + name;
+      cols.label[key] = name;
+      return key;
+    }
+
+    // Per-task column timeline: [{at: ms, col: band key}] sorted ascending.
+    // "created" events carry the initial column; "moved" events carry the
+    // destination. Tasks with no usable events fall back to their current
+    // column for the whole window.
+    function timelineFor(task, cols) {
+      var tl = [];
+      (task.history || []).forEach(function (e) {
+        var d = new Date(e.created_at);
+        if (isNaN(d.getTime())) return;
+        var key = eventKey(e, cols);
+        if (key) tl.push({ at: d.getTime(), col: key });
+      });
+      tl.sort(function (a, b) { return a.at - b.at; });
+      var home = cols.current[task.column_id] ? task.column_id : null;
+      if (tl.length === 0) {
+        var c = new Date(task.created_at);
+        if (!isNaN(c.getTime()) && home) tl.push({ at: c.getTime(), col: home });
+      }
+      // KF-350: the timeline ends in the task's current column, whatever
+      // name its last event recorded.
+      if (home && tl.length > 0) tl[tl.length - 1].col = home;
+      return tl;
+    }
+
+    return { lookup: columnLookup, eventKey: eventKey, timelineFor: timelineFor };
+  })();
+
   var BurndownPage = (function () {
     var initialized = false;
     var DAYS = 30;
-    var DAY_MS = 86400000;
+    var BASIS_DAYS = [7, 14, 21, 30, 60, 90, 120];
+    var DAY_MS = ReportRange.DAY_MS;
     var MAX_PROJECTION_DAYS = 365;
     var GEO = { W: 720, H: 300, padL: 46, padR: 32, padT: 16, padB: 34 };
+
+    var roundTenth = ReportRange.roundTenth;
+
+    var VALUE_TYPES = {
+      count: {
+        text: ReportValue.count.text,
+        axis: ReportValue.count.axis,
+        remaining: 'Tasks remaining',
+        projected: Math.ceil,
+        valueOf: ReportValue.count.valueOf,
+        title: function (n) { return n + ' tasks remaining'; },
+        status: function (n) { return n === 1 ? '1 task remaining.' : n + ' tasks remaining.'; }
+      },
+      estimate: {
+        text: ReportValue.estimate.text,
+        axis: ReportValue.estimate.axis,
+        remaining: 'Hours remaining',
+        projected: roundTenth,
+        valueOf: ReportValue.estimate.valueOf,
+        title: function (n) { return roundTenth(n) + ' hours remaining'; },
+        status: function (n) { return roundTenth(n) + ' hours remaining.'; }
+      },
+      points: {
+        text: ReportValue.points.text,
+        axis: ReportValue.points.axis,
+        remaining: 'Points remaining',
+        projected: roundTenth,
+        valueOf: ReportValue.points.valueOf,
+        title: function (n) { return roundTenth(n) + ' points remaining'; },
+        status: function (n) { return roundTenth(n) + ' points remaining.'; }
+      }
+    };
+
+    function typeOf(series) { return VALUE_TYPES[series.type] || VALUE_TYPES.count; }
 
     function qs(id) { return document.getElementById(id); }
 
@@ -11852,43 +12231,52 @@
       if (el) el.textContent = msg;
     }
 
-    // Day-ends (local) for the last DAYS days, oldest first.
-    function dayEnds() {
-      var ends = [];
-      var today = new Date();
-      today.setHours(23, 59, 59, 999);
-      for (var i = DAYS - 1; i >= 0; i--) {
-        var d = new Date(today);
-        d.setDate(d.getDate() - i);
-        ends.push(d);
+    function firstArrival(timeline, column) {
+      for (var i = 0; i < timeline.length; i++) {
+        if (timeline[i].col === column) return timeline[i].at;
       }
-      return ends;
+      return null;
     }
 
-    // Remaining tasks at each day-end: created on/before the day-end and
-    // not completed (completed_at null or after the day-end). Unparseable
-    // dates are ignored.
-    function remainingByDay(tasks) {
-      var ends = dayEnds();
-      var parsed = tasks.map(function (t) {
-        var c = new Date(t.created_at);
-        var done = t.completed_at ? new Date(t.completed_at) : null;
-        return {
-          c: isNaN(c.getTime()) ? null : c.getTime(),
-          d: done && !isNaN(done.getTime()) ? done.getTime() : null
-        };
-      }).filter(function (t) { return t.c !== null; });
-      var counts = ends.map(function (e) {
-        var ms = e.getTime();
-        var n = 0;
-        parsed.forEach(function (t) {
-          if (t.c <= ms && (t.d === null || t.d > ms)) n++;
+    function remainingByDay(tasks, opts) {
+      var ends = ReportRange.dayEnds(opts.start, new Date());
+      var type = VALUE_TYPES[opts.valueType] || VALUE_TYPES.count;
+      var from = null;
+      if (opts.from) {
+        from = Object.create(null);
+        opts.from.forEach(function (id) { from[id] = true; });
+      }
+      var counts = ends.map(function () { return 0; });
+      var burned = [];
+      tasks.forEach(function (t) {
+        var created = Date.parse(t.created_at);
+        if (isNaN(created)) return;
+        var value = type.valueOf(t);
+        var done = t.completed_at ? Date.parse(t.completed_at) : NaN;
+        var timeline = ColumnHistory.timelineFor(t, opts.cols);
+        var arrived = opts.targetDone ? (isNaN(done) ? null : done) : firstArrival(timeline, opts.target);
+        var inScope = !from || timeline.some(function (entry) { return from[entry.col]; });
+        if (arrived !== null && inScope) burned.push({ at: arrived, value: value });
+        var p = -1;
+        ends.forEach(function (e, di) {
+          var ms = e.getTime();
+          if (created > ms) return;
+          while (p + 1 < timeline.length && timeline[p + 1].at <= ms) p++;
+          var col = p >= 0 ? timeline[p].col : null;
+          if (opts.targetDone ? (!isNaN(done) && done <= ms) : col === opts.target) return;
+          if (from && !from[col]) return;
+          counts[di] += value;
         });
-        return n;
       });
-      var windowStart = ends[0].getTime() - DAY_MS;
-      var completed = parsed.filter(function (t) { return t.d !== null && t.d > windowStart; }).length;
-      return projectSeries({ ends: ends, counts: counts }, completed / DAYS);
+      var basis = opts.basis || DAYS;
+      var windowStart = new Date(ends[ends.length - 1]);
+      windowStart.setDate(windowStart.getDate() - basis);
+      windowStart = windowStart.getTime();
+      var total = 0;
+      burned.forEach(function (b) { if (b.at > windowStart) total += b.value; });
+      var series = projectSeries({ ends: ends, counts: counts }, total / basis);
+      series.type = opts.valueType;
+      return series;
     }
 
     function projectSeries(series, rate) {
@@ -11906,12 +12294,13 @@
           projection.push(Math.max(0, left - rate * k));
         }
       }
-      return { ends: ends, counts: counts, projection: projection };
+      return { ends: ends, counts: counts, projection: projection, type: series.type };
     }
 
     function chartSvg(series) {
       var W = GEO.W, H = GEO.H, padL = GEO.padL, padR = GEO.padR, padT = GEO.padT, padB = GEO.padB;
       var innerW = W - padL - padR, innerH = H - padT - padB;
+      var type = typeOf(series);
       var max = 1;
       series.counts.forEach(function (n) { if (n > max) max = n; });
       max = Math.ceil(max / 5) * 5;
@@ -11934,7 +12323,7 @@
       }
       var midY = padT + innerH / 2;
       svg += '<text x="14" y="' + midY + '" text-anchor="middle" class="chart-axis-label"' +
-        ' transform="rotate(-90 14 ' + midY + ')">Task count</text>';
+        ' transform="rotate(-90 14 ' + midY + ')">' + escapeHtml(type.axis) + '</text>';
       var i, j, k;
       var step = Math.max(5, Math.ceil(n / 7));
       var labelled = [];
@@ -11959,24 +12348,25 @@
         projection.forEach(function (v, p) {
           ppts.push(x(actual + p).toFixed(1) + ',' + y(v).toFixed(1));
         });
-        svg += '<polyline points="' + ppts.join(' ') + '" pathLength="1" class="chart-projection" fill="none"/>';
+        svg += '<polyline points="' + ppts.join(' ') + '" class="chart-projection" fill="none"/>';
       }
       for (k = 0; k < actual; k++) {
         svg += '<circle cx="' + x(k).toFixed(1) + '" cy="' + y(series.counts[k]).toFixed(1) +
-          '" r="4" class="chart-dot"><title>' + series.counts[k] +
-          ' tasks remaining, ' + escapeHtml(ReportChart.longDate(ReportChart.dayStart(series.ends[k]))) + '</title></circle>';
+          '" r="4" class="chart-dot"><title>' + escapeHtml(type.title(series.counts[k])) +
+          ', ' + escapeHtml(ReportChart.longDate(ReportChart.dayStart(series.ends[k]))) + '</title></circle>';
       }
       svg += ReportChart.crosshairLine(GEO) + '</svg>';
       return svg;
     }
 
     function tipFor(series, i) {
+      var type = typeOf(series);
       var actual = i < series.counts.length;
       return {
         title: ReportChart.longDate(ReportChart.dayStart(series.ends[i])),
         rows: [{
-          label: actual ? 'Tasks remaining' : 'Projected remaining',
-          value: actual ? series.counts[i] : Math.ceil(series.projection[i - series.counts.length])
+          label: actual ? type.remaining : 'Projected remaining',
+          value: actual ? roundTenth(series.counts[i]) : type.projected(series.projection[i - series.counts.length])
         }]
       };
     }
@@ -11989,6 +12379,71 @@
       }
     }
 
+    function clearChart() {
+      var host = qs('burndown-chart');
+      if (host) host.innerHTML = '';
+    }
+
+    function defaultTarget(columns) {
+      var done = columns.filter(function (c) { return c.is_done; })[0] || columns[columns.length - 1];
+      return done ? done.id : '';
+    }
+
+    function controls(data) {
+      var columns = data.columns || [];
+      var options = columns.map(function (c) { return { value: c.id, text: c.name }; });
+      var start = new Date();
+      start.setDate(start.getDate() - DAYS);
+      return [{
+        id: 'valueType', label: 'Value type', value: 'count',
+        options: Object.keys(VALUE_TYPES).map(function (key) {
+          return { value: key, text: VALUE_TYPES[key].text };
+        })
+      }, {
+        id: 'target', label: 'Target column', value: defaultTarget(columns), options: options
+      }, {
+        id: 'from', label: 'From columns', multi: true,
+        value: columns.map(function (c) { return c.id; }), options: options
+      }, {
+        id: 'start', label: 'Start date', type: 'date', value: isoDate(start)
+      }, {
+        id: 'basis', label: 'Projection basis', value: String(DAYS),
+        options: BASIS_DAYS.map(function (n) { return { value: String(n), text: 'Last ' + n + ' days' }; })
+      }].concat(ReportFilter.taskControls(data));
+    }
+
+    function render(data, values) {
+      var columns = data.columns || [];
+      var start = ReportBreakdown.parseDay(values.start);
+      var today = new Date();
+      var earliest = new Date(today.getFullYear(), today.getMonth(), today.getDate() - ReportRange.MAX_DAYS).getTime();
+      var problem = null;
+      if (start === null || start > today.getTime()) problem = 'Pick a start date on or before today.';
+      else if (start < earliest) problem = 'Pick a start date within the last ' + ReportRange.MAX_YEARS + ' years.';
+      else if (!values.from.length) problem = 'Choose at least one From column.';
+      if (problem) {
+        clearChart();
+        setStatus(problem);
+        return;
+      }
+      var target = columns.filter(function (c) { return c.id === values.target; })[0];
+      var tasks = ReportFilter.filterTasks(data.tasks || [], values);
+      var series = remainingByDay(tasks, {
+        start: new Date(start),
+        valueType: values.valueType,
+        basis: parseInt(values.basis, 10),
+        target: values.target,
+        targetDone: !!(target && target.is_done),
+        from: values.from.length === columns.length ? null : values.from,
+        cols: ColumnHistory.lookup(data)
+      });
+      renderChart(series);
+      var current = series.counts.length ? series.counts[series.counts.length - 1] : 0;
+      if ((data.tasks || []).length === 0) setStatus('No tasks on this board.');
+      else if (tasks.length === 0) setStatus('No tasks match the filter.');
+      else setStatus(typeOf(series).status(current));
+    }
+
     function init(boardId) {
       if (initialized) return;
       initialized = true;
@@ -11998,18 +12453,20 @@
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (data) {
-        var series = remainingByDay(data.tasks || []);
-        renderChart(series);
-        var current = series.counts.length ? series.counts[series.counts.length - 1] : 0;
-        setStatus((data.tasks || []).length === 0
-          ? 'No tasks on this board.'
-          : (current === 1 ? '1 task remaining.' : current + ' tasks remaining.'));
+        ReportFilter.open(qs('report-filter'), controls(data), function (values) {
+          render(data, values);
+        }, function (err) {
+          setStatus('Could not draw the chart: ' + err.message);
+        });
       }).catch(function (err) {
         setStatus('Could not load task data: ' + err.message);
       });
     }
 
-    return { init: init, chartSvg: chartSvg, tipFor: tipFor, projectSeries: projectSeries };
+    return {
+      init: init, chartSvg: chartSvg, tipFor: tipFor, projectSeries: projectSeries,
+      remainingByDay: remainingByDay, controls: controls, render: render
+    };
   })();
 
   // KF-340: Cycle & lead time report page. Average cycle/lead time per week
@@ -12266,108 +12723,21 @@
   var CumulativeFlowPage = (function () {
     var initialized = false;
     var DAYS = 30;
+    var hiddenBands = {};
     var GEO = { W: 720, H: 320, padL: 46, padR: 32, padT: 16, padB: 34 };
 
     // One color per column band.
     var PALETTE = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
       '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac'];
 
+    var roundTenth = ReportRange.roundTenth;
+    var PERIOD = { THIS_MONTH: 'this-month', LAST_MONTH: 'last-month', ABSOLUTE: 'absolute', RELATIVE: 'relative' };
+
     function qs(id) { return document.getElementById(id); }
 
     function setStatus(msg) {
       var el = qs('cumulative-flow-status');
       if (el) el.textContent = msg;
-    }
-
-    function parseMoveDetail(detail) {
-      // "Moved from {from} to {to}" — split on the last " to " so column
-      // names containing " to " parse deterministically.
-      var body = detail.slice('Moved from '.length);
-      var i = body.lastIndexOf(' to ');
-      if (i === -1) return null;
-      return { from: body.slice(0, i), to: body.slice(i + 4) };
-    }
-
-    // The column name a history event recorded the task arriving in, or
-    // null for other events.
-    function recordedDestination(e) {
-      if (e.kind === 'created' && e.detail.indexOf('Task created in ') === 0) {
-        return e.detail.slice('Task created in '.length);
-      }
-      if (e.kind === 'moved' && e.detail.indexOf('Moved from ') === 0) {
-        var m = parseMoveDetail(e.detail);
-        return m ? m.to : null;
-      }
-      return null;
-    }
-
-    // KF-350: bands are columns keyed by id. An event that carries a
-    // column id joins that column's band even after the column is deleted,
-    // and a deleted column's band takes the newest name recorded for its
-    // id. Name-only history maps by current name, then former name, then a
-    // deleted column's recorded names, else gets a band of its own.
-    function columnLookup(data) {
-      var label = {};
-      var current = {};
-      var byName = {};
-      (data.columns || []).forEach(function (c) {
-        label[c.id] = c.name;
-        current[c.id] = true;
-        byName[c.name] = c.id;
-      });
-      (data.columns || []).forEach(function (c) {
-        (c.former_names || []).forEach(function (old) {
-          if (byName[old] === undefined) byName[old] = c.id;
-        });
-      });
-      var newest = {};
-      (data.tasks || []).forEach(function (t) {
-        (t.history || []).forEach(function (e) {
-          var id = e.column_id;
-          var name = recordedDestination(e);
-          var at = Date.parse(e.created_at);
-          if (!id || current[id] || name == null || isNaN(at)) return;
-          if (!newest[id] || at >= newest[id].at) newest[id] = { at: at, name: name };
-          if (byName[name] === undefined) byName[name] = id;
-        });
-      });
-      Object.keys(newest).forEach(function (id) { label[id] = newest[id].name; });
-      return { label: label, current: current, byName: byName };
-    }
-
-    // The band key of the column an event put the task in, or null.
-    function eventKey(e, cols) {
-      var name = recordedDestination(e);
-      if (name == null) return null;
-      if (e.column_id && cols.label[e.column_id] !== undefined) return e.column_id;
-      if (cols.byName[name] !== undefined) return cols.byName[name];
-      var key = 'name:' + name;
-      cols.label[key] = name;
-      return key;
-    }
-
-    // Per-task column timeline: [{at: ms, col: band key}] sorted ascending.
-    // "created" events carry the initial column; "moved" events carry the
-    // destination. Tasks with no usable events fall back to their current
-    // column for the whole window.
-    function timelineFor(task, cols) {
-      var tl = [];
-      (task.history || []).forEach(function (e) {
-        var d = new Date(e.created_at);
-        if (isNaN(d.getTime())) return;
-        var key = eventKey(e, cols);
-        if (key) tl.push({ at: d.getTime(), col: key });
-      });
-      tl.sort(function (a, b) { return a.at - b.at; });
-      var home = cols.current[task.column_id] ? task.column_id : null;
-      if (tl.length === 0) {
-        var c = new Date(task.created_at);
-        if (!isNaN(c.getTime()) && home) tl.push({ at: c.getTime(), col: home });
-      }
-      // KF-350: the timeline ends in the task's current column, whatever
-      // name its last event recorded.
-      if (home && tl.length > 0) tl[tl.length - 1].col = home;
-      return tl;
     }
 
     // Band order: the board's runtime columns first, then any deleted
@@ -12379,37 +12749,62 @@
       order.forEach(function (k) { seen[k] = true; });
       (data.tasks || []).forEach(function (t) {
         (t.history || []).forEach(function (e) {
-          var key = eventKey(e, cols);
+          var key = ColumnHistory.eventKey(e, cols);
           if (key && !seen[key]) { seen[key] = true; order.push(key); }
         });
       });
       return order;
     }
 
-    function seriesByDay(data) {
-      var ends = [];
-      var today = new Date();
-      today.setHours(23, 59, 59, 999);
-      for (var i = DAYS - 1; i >= 0; i--) {
-        var d = new Date(today);
-        d.setDate(d.getDate() - i);
-        ends.push(d);
+    function lastDays(n, now) {
+      var start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (n - 1));
+      return { start: start, end: now };
+    }
+
+    function periodRange(values, now) {
+      var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      var y = today.getFullYear(), m = today.getMonth();
+      var range;
+      if (values.period === PERIOD.THIS_MONTH) {
+        range = { start: new Date(y, m, 1), end: today };
+      } else if (values.period === PERIOD.LAST_MONTH) {
+        range = { start: new Date(y, m - 1, 1), end: new Date(y, m, 0) };
+      } else if (values.period === PERIOD.ABSOLUTE) {
+        var a = ReportBreakdown.parseDay(values.from), b = ReportBreakdown.parseDay(values.to);
+        if (a === null || b === null || b < a) return null;
+        range = { start: new Date(a), end: new Date(Math.min(b, today.getTime())) };
+        if (range.end < range.start) return null;
+      } else if (values.period === PERIOD.RELATIVE) {
+        var n = parseInt(values.days, 10);
+        if (!(n >= 1)) return null;
+        range = lastDays(n, today);
+      } else {
+        range = lastDays(parseInt(values.period, 10) || DAYS, today);
       }
-      var cols = columnLookup(data);
+      if ((range.end - range.start) / ReportRange.DAY_MS > ReportRange.MAX_DAYS) return null;
+      return range;
+    }
+
+    function seriesByDay(data, counted, range, type) {
+      var valueOf = (ReportValue[type] || ReportValue.count).valueOf;
+      var span = range || lastDays(DAYS, new Date());
+      var ends = ReportRange.dayEnds(span.start, span.end);
+      var cols = ColumnHistory.lookup(data);
       var order = columnOrder(data, cols);
       var idx = {};
       order.forEach(function (key, k) { idx[key] = k; });
       var counts = order.map(function () {
         return ends.map(function () { return 0; });
       });
-      (data.tasks || []).forEach(function (t) {
-        var tl = timelineFor(t, cols);
+      (counted || data.tasks || []).forEach(function (t) {
+        var tl = ColumnHistory.timelineFor(t, cols);
         if (tl.length === 0) return;
+        var value = valueOf(t);
         var p = 0;
         ends.forEach(function (e, di) {
           var ms = e.getTime();
           while (p + 1 < tl.length && tl[p + 1].at <= ms) p++;
-          if (tl[p].at <= ms && idx[tl[p].col] !== undefined) counts[idx[tl[p].col]][di]++;
+          if (tl[p].at <= ms && idx[tl[p].col] !== undefined) counts[idx[tl[p].col]][di] += value;
         });
       });
       // KF-350: a band only history knows (a deleted column, or a name no
@@ -12422,17 +12817,28 @@
         ends: ends,
         order: order.filter(function (_, k) { return keep[k]; })
           .map(function (key) { return cols.label[key]; }),
-        counts: counts.filter(function (_, k) { return keep[k]; })
+        counts: counts.filter(function (_, k) { return keep[k]; }),
+        type: type
       };
     }
 
+    function shownBands(s) {
+      var shown = [];
+      s.order.forEach(function (name, b) {
+        if (!(s.hidden && s.hidden[name])) shown.push(b);
+      });
+      return shown;
+    }
+
     function chartSvg(s) {
+      var shown = shownBands(s);
+      var axis = (ReportValue[s.type] || ReportValue.count).axis;
       var W = GEO.W, H = GEO.H, padL = GEO.padL, padR = GEO.padR, padT = GEO.padT, padB = GEO.padB;
       var innerW = W - padL - padR, innerH = H - padT - padB;
       var n = s.ends.length;
       var totals = s.ends.map(function (_, di) {
         var t = 0;
-        s.counts.forEach(function (c) { t += c[di]; });
+        shown.forEach(function (b) { t += s.counts[b][di]; });
         return t;
       });
       var max = 1;
@@ -12454,9 +12860,10 @@
       }
       var midY = padT + innerH / 2;
       svg += '<text x="14" y="' + midY + '" text-anchor="middle" class="chart-axis-label"' +
-        ' transform="rotate(-90 14 ' + midY + ')">Tasks</text>';
+        ' transform="rotate(-90 14 ' + midY + ')">' + escapeHtml(axis) + '</text>';
       var i;
-      for (i = 0; i < n; i += 5) {
+      var step = Math.max(5, Math.ceil(n / 7));
+      for (i = 0; i < n; i += step) {
         svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
           '" text-anchor="middle" class="chart-tick">' +
           escapeHtml(ReportChart.shortDate(s.ends[i])) + '</text>';
@@ -12467,6 +12874,7 @@
       var lower = [];
       for (var di = 0; di < n; di++) lower.push(0);
       for (var b = m - 1; b >= 0; b--) {
+        if (shown.indexOf(b) === -1) continue;
         var upper = lower.map(function (lo, k) { return lo + s.counts[b][k]; });
         var d = 'M' + x(0).toFixed(1) + ',' + y(upper[0]).toFixed(1);
         for (var j = 1; j < n; j++) d += ' L' + x(j).toFixed(1) + ',' + y(upper[j]).toFixed(1);
@@ -12476,7 +12884,7 @@
         var peak = 0;
         s.counts[b].forEach(function (c) { if (c > peak) peak = c; });
         svg += '<path d="' + d + '" fill="' + color + '" fill-opacity="0.75" stroke="' + color + '">' +
-          '<title>' + escapeHtml(s.order[b]) + ': up to ' + peak + ' tasks</title></path>';
+          '<title>' + escapeHtml(s.order[b]) + ': up to ' + roundTenth(peak) + ' ' + (ReportValue[s.type] || ReportValue.count).unit + '</title></path>';
         lower = upper;
       }
       svg += ReportChart.crosshairLine(GEO) + '</svg>';
@@ -12486,13 +12894,17 @@
     function tipFor(s, i) {
       return {
         title: ReportChart.longDate(ReportChart.dayStart(s.ends[i])),
-        rows: s.order.map(function (name, b) {
-          return { color: PALETTE[b % PALETTE.length], label: name, value: s.counts[b][i] };
+        rows: shownBands(s).map(function (b) {
+          return { color: PALETTE[b % PALETTE.length], label: s.order[b], value: roundTenth(s.counts[b][i]) };
         })
       };
     }
 
+    var current = null;
+
     function renderChart(s) {
+      current = s;
+      s.hidden = hiddenBands;
       var host = qs('cumulative-flow-chart');
       if (host) {
         host.innerHTML = chartSvg(s);
@@ -12504,11 +12916,78 @@
       if (legend) {
         var html = '';
         s.order.forEach(function (name, bi) {
-          html += '<span class="cfd-legend-item"><span class="cfd-swatch" style="background:' +
-            PALETTE[bi % PALETTE.length] + '"></span>' + escapeHtml(name) + '</span>';
+          html += '<button type="button" class="cfd-legend-item" data-band="' + bi + '" aria-pressed="' +
+            (hiddenBands[name] ? 'false' : 'true') + '"><span class="cfd-swatch" style="background:' +
+            PALETTE[bi % PALETTE.length] + '"></span>' + escapeHtml(name) + '</button>';
         });
         legend.innerHTML = html;
       }
+    }
+
+    function toggleBand(index) {
+      if (!current || !current.order[index]) return;
+      var name = current.order[index];
+      hiddenBands[name] = !hiddenBands[name];
+      renderChart(current);
+    }
+
+    function unitText(type, n) {
+      var unit = (ReportValue[type] || ReportValue.count).unit;
+      return roundTenth(n) + ' ' + (n === 1 ? unit.replace(/s$/, '') : unit);
+    }
+
+    function controls(data) {
+      var now = new Date();
+      var from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - DAYS);
+      return [{
+        id: 'valueType', label: 'Value type', value: 'count',
+        options: Object.keys(ReportValue).map(function (key) {
+          return { value: key, text: ReportValue[key].text };
+        })
+      }, {
+        id: 'period', label: 'Period', value: String(DAYS),
+        options: [
+          { value: '7', text: 'Last 7 days' },
+          { value: '30', text: 'Last 30 days' },
+          { value: PERIOD.THIS_MONTH, text: 'This month' },
+          { value: PERIOD.LAST_MONTH, text: 'Last month' },
+          { value: PERIOD.ABSOLUTE, text: 'Custom absolute' },
+          { value: PERIOD.RELATIVE, text: 'Custom relative' }
+        ]
+      }, {
+        id: 'from', label: 'From', type: 'date', value: isoDate(from),
+        when: { id: 'period', value: PERIOD.ABSOLUTE }
+      }, {
+        id: 'to', label: 'To', type: 'date', value: isoDate(now),
+        when: { id: 'period', value: PERIOD.ABSOLUTE }
+      }, {
+        id: 'days', label: 'Days back', type: 'number', max: ReportRange.MAX_DAYS, value: String(DAYS),
+        when: { id: 'period', value: PERIOD.RELATIVE }
+      }].concat(ReportFilter.taskControls(data));
+    }
+
+    function render(data, values) {
+      var range = periodRange(values, new Date());
+      if (!range) {
+        current = null;
+        var blank = qs('cumulative-flow-chart');
+        if (blank) blank.innerHTML = '';
+        var emptyLegend = qs('cumulative-flow-legend');
+        if (emptyLegend) emptyLegend.innerHTML = '';
+        setStatus('Pick a valid period of at most ' + ReportRange.MAX_YEARS + ' years that starts on or before today.');
+        return;
+      }
+      var tasks = ReportFilter.filterTasks(data.tasks || [], values);
+      var s = seriesByDay(data, tasks, range, values.valueType);
+      renderChart(s);
+      var total = 0;
+      if (s.ends.length) {
+        var last = s.ends.length - 1;
+        s.counts.forEach(function (c) { total += c[last]; });
+      }
+      if ((data.tasks || []).length === 0) setStatus('No tasks on this board.');
+      else if (tasks.length === 0) setStatus('No tasks match the filter.');
+      else setStatus(unitText(s.type, total) + ' across ' + s.order.length + ' columns on the last day of the period.');
     }
 
     function init(boardId) {
@@ -12520,25 +12999,28 @@
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (data) {
-        var s = seriesByDay(data);
-        renderChart(s);
-        var total = 0;
-        if (s.ends.length) {
-          var last = s.ends.length - 1;
-          s.counts.forEach(function (c) { total += c[last]; });
+        var legend = qs('cumulative-flow-legend');
+        if (legend) {
+          legend.addEventListener('click', function (e) {
+            var button = e.target.closest ? e.target.closest('[data-band]') : null;
+            if (button) toggleBand(parseInt(button.getAttribute('data-band'), 10));
+          });
         }
-        setStatus((data.tasks || []).length === 0
-          ? 'No tasks on this board.'
-          : (total === 1
-            ? '1 task across ' + s.order.length + ' columns over the last 30 days.'
-            : total + ' tasks across ' + s.order.length + ' columns over the last 30 days.'));
+        ReportFilter.open(qs('report-filter'), controls(data), function (values) {
+          render(data, values);
+        }, function (err) {
+          setStatus('Could not draw the chart: ' + err.message);
+        });
       }).catch(function (err) {
         setStatus('Could not load task data: ' + err.message);
       });
     }
 
     // seriesByDay is pure; exposed for the KF-350 check.
-    return { init: init, seriesByDay: seriesByDay, chartSvg: chartSvg, tipFor: tipFor };
+    return {
+      init: init, seriesByDay: seriesByDay, chartSvg: chartSvg, tipFor: tipFor,
+      periodRange: periodRange, controls: controls, render: render
+    };
   })();
 
   // KF-341: Due date performance report page. How well tasks meet their due
@@ -15041,6 +15523,9 @@
         case 'filter':
           this.openFilter();
           break;
+        case 'mass-update':
+          MassUpdate.open();
+          break;
         case 'layout':
           this.editLayout();
           break;
@@ -17541,6 +18026,430 @@
     });
   }
   bindCalls();
+
+  var MassUpdate = (function () {
+    var STEPS = ['filter', 'select', 'action', 'preview'];
+    var step = 0;
+    var picked = {};
+    var matches = [];
+    var lastFilter = '';
+    var request = null;
+    var previewSeq = 0;
+    var applying = false;
+    var targetColumns = [];
+
+    function byId(id) { return document.getElementById(id); }
+
+    function stepSection(name) {
+      return document.querySelector('#mass-update-dialog [data-mu-step="' + name + '"]');
+    }
+
+    function showError(message) {
+      var box = byId('mu-error');
+      box.textContent = message || '';
+      box.hidden = !message;
+    }
+
+    function addOption(select, value, text) {
+      var option = document.createElement('option');
+      option.value = value;
+      option.textContent = text;
+      select.appendChild(option);
+    }
+
+    function boardColumns() {
+      return Array.prototype.map.call(document.querySelectorAll('#column-headers-row .columnHeader'), function (header) {
+        return { id: header.dataset.columnId, name: header.dataset.columnName, done: header.dataset.isDone === '1' };
+      });
+    }
+
+    function cardLabels(card) {
+      try { return JSON.parse(card.dataset.labels || '[]'); } catch (e) { return []; }
+    }
+
+    function fillFilters() {
+      var columns = byId('mu-columns');
+      columns.innerHTML = '';
+      boardColumns().forEach(function (column) { addOption(columns, column.id, column.name); });
+
+      var color = byId('mu-color');
+      color.innerHTML = '';
+      addOption(color, 'all', 'Any');
+      document.querySelectorAll('#board-colors span[data-value]').forEach(function (swatch) {
+        addOption(color, swatch.dataset.value, swatch.dataset.label || swatch.dataset.value);
+      });
+
+      var label = byId('mu-label');
+      label.innerHTML = '';
+      addOption(label, 'all', 'Any');
+      var seen = {};
+      document.querySelectorAll('.task-card').forEach(function (card) {
+        cardLabels(card).forEach(function (name) { seen[name] = true; });
+      });
+      Object.keys(seen).sort().forEach(function (name) { addOption(label, name, name); });
+
+      var member = byId('mu-member');
+      member.innerHTML = '';
+      addOption(member, 'all', 'Any');
+      addOption(member, 'none', 'Unassigned');
+      fetchJson('/api/members').catch(function () { return []; }).then(function (roster) {
+        (roster || []).forEach(function (user) { addOption(member, user.id, user.username); });
+      });
+
+      byId('mu-period').value = 'all';
+      byId('mu-due').value = 'all';
+      byId('mu-due-day').value = '';
+      byId('mu-due-day-field').hidden = true;
+    }
+
+    function readFilter() {
+      return {
+        columns: Array.prototype.filter.call(byId('mu-columns').options, function (o) { return o.selected; })
+          .map(function (o) { return o.value; }),
+        period: byId('mu-period').value,
+        color: byId('mu-color').value,
+        label: byId('mu-label').value,
+        member: byId('mu-member').value,
+        due: byId('mu-due').value,
+        dueDay: byId('mu-due-day').value
+      };
+    }
+
+    function dueMatches(card, filter) {
+      var dueAt = card.dataset.dueAt;
+      if (filter.due === 'all') return true;
+      if (filter.due === 'has') return !!dueAt;
+      if (filter.due === 'none' || filter.due === 'overdue') {
+        return BoardChrome.dateMatches(filter.due, dueAt, card.dataset.dueDone === '1');
+      }
+      if (!dueAt || !filter.dueDay) return false;
+      var day = isoDate(parseDueAt(dueAt));
+      return filter.due === 'before' ? day <= filter.dueDay : day >= filter.dueDay;
+    }
+
+    function cardMatches(card, filter, doneColumns) {
+      var list = card.closest('.task-list');
+      var columnId = list ? list.dataset.columnId : '';
+      if (filter.columns.length && filter.columns.indexOf(columnId) === -1) return false;
+      if (filter.period !== 'all' && doneColumns[columnId]) {
+        var range = periodToRange(filter.period);
+        var day = card.dataset.groupDay || '';
+        if (!day || day < range[0] || day > range[1]) return false;
+      }
+      if (filter.color !== 'all' && card.dataset.colorValue !== filter.color) return false;
+      if (filter.label !== 'all' && cardLabels(card).indexOf(filter.label) === -1) return false;
+      var members = (card.dataset.memberIds || '').split(',').filter(Boolean);
+      if (filter.member === 'none' && members.length) return false;
+      if (filter.member !== 'all' && filter.member !== 'none' && members.indexOf(filter.member) === -1) return false;
+      return dueMatches(card, filter);
+    }
+
+    function findMatches(filter) {
+      var names = {};
+      var doneColumns = {};
+      boardColumns().forEach(function (column) {
+        names[column.id] = column.name;
+        doneColumns[column.id] = column.done;
+      });
+      return Array.prototype.filter.call(document.querySelectorAll('.task-card'), function (card) {
+        return cardMatches(card, filter, doneColumns);
+      }).map(function (card) {
+        var list = card.closest('.task-list');
+        return {
+          id: card.dataset.taskId,
+          name: card.dataset.taskName || '',
+          color: card.dataset.colorValue || '',
+          column: list ? names[list.dataset.columnId] || '' : ''
+        };
+      });
+    }
+
+    function pickedIds() {
+      return matches.filter(function (task) { return picked[task.id]; }).map(function (task) { return task.id; });
+    }
+
+    function renderCount() {
+      var count = matches.length;
+      byId('mu-count').textContent = count + (count === 1 ? ' task matches your filter' : ' tasks match your filter');
+      byId('mu-next').disabled = !pickedIds().length;
+    }
+
+    function renderList() {
+      var list = byId('mu-list');
+      list.innerHTML = '';
+      matches.forEach(function (task) {
+        var row = document.createElement('label');
+        row.className = 'mu-row';
+        var box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = !!picked[task.id];
+        box.dataset.taskId = task.id;
+        var name = document.createElement('span');
+        name.className = 'mu-row-name taskColor-' + task.color;
+        name.textContent = task.name;
+        var column = document.createElement('span');
+        column.className = 'mu-row-column';
+        column.textContent = task.column;
+        row.appendChild(box);
+        row.appendChild(name);
+        row.appendChild(column);
+        list.appendChild(row);
+      });
+      renderCount();
+    }
+
+    function enterSelect() {
+      var filter = readFilter();
+      var signature = JSON.stringify(filter);
+      if (signature !== lastFilter) {
+        lastFilter = signature;
+        matches = findMatches(filter);
+        picked = {};
+        matches.forEach(function (task) { picked[task.id] = true; });
+      }
+      renderList();
+    }
+
+    function fillMoveColumns(selectedId) {
+      var select = byId('mu-move-column');
+      select.innerHTML = '';
+      targetColumns.forEach(function (column) { addOption(select, column.id, column.name); });
+      if (selectedId) select.value = selectedId;
+    }
+
+    function loadMoveColumns(boardIdValue) {
+      if (boardIdValue === boardId()) {
+        targetColumns = boardColumns();
+        fillMoveColumns(null);
+        return;
+      }
+      fetchJson('/api/boards/' + encodeURIComponent(boardIdValue) + '/columns').then(function (columns) {
+        if (byId('mu-move-board').value !== boardIdValue) return;
+        targetColumns = columns || [];
+        fillMoveColumns(null);
+      }).catch(function () { showError('Could not load the columns of that board.'); });
+    }
+
+    function chosen(selectId) {
+      return Array.prototype.filter.call(byId(selectId).options, function (o) { return o.selected; })
+        .map(function (o) { return o.value; });
+    }
+
+    function fillRemovableLabels() {
+      var held = {};
+      pickedIds().forEach(function (id) {
+        var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
+        if (card) cardLabels(card).forEach(function (name) { held[name] = true; });
+      });
+      var keep = chosen('mu-labels-remove');
+      var select = byId('mu-labels-remove');
+      select.innerHTML = '';
+      Object.keys(held).sort().forEach(function (name) {
+        addOption(select, name, name);
+        select.lastChild.selected = keep.indexOf(name) !== -1;
+      });
+    }
+
+    function fillMembers() {
+      var remove = byId('mu-members-remove');
+      var add = byId('mu-members-add');
+      remove.innerHTML = '';
+      add.innerHTML = '';
+      fetchJson('/api/members').catch(function () { return []; }).then(function (roster) {
+        (roster || []).forEach(function (user) {
+          addOption(remove, user.id, user.username);
+          addOption(add, user.id, user.username);
+        });
+      });
+    }
+
+    function fillActionForms() {
+      var board = byId('mu-move-board');
+      board.innerHTML = '';
+      addOption(board, boardId(), boardNameFor(boardId()));
+      loadMoveColumns(boardId());
+      fetchJson('/api/boards').catch(function () { return []; }).then(function (boards) {
+        (boards || []).forEach(function (other) {
+          if (other.id !== boardId()) addOption(board, other.id, other.name);
+        });
+      });
+
+      var color = byId('mu-set-color');
+      color.innerHTML = '';
+      document.querySelectorAll('#board-colors span[data-id]').forEach(function (swatch) {
+        addOption(color, swatch.dataset.id, swatch.dataset.label || swatch.dataset.value);
+      });
+      byId('mu-labels-add').value = '';
+      fillMembers();
+      byId('mu-action').value = 'move';
+      showActionForm();
+    }
+
+    function showActionForm() {
+      var action = byId('mu-action').value;
+      document.querySelectorAll('#mass-update-dialog [data-mu-form]').forEach(function (form) {
+        form.hidden = form.dataset.muForm !== action;
+      });
+    }
+
+    function actionRequest() {
+      var action = byId('mu-action').value;
+      var body = { task_ids: pickedIds(), action: action };
+      if (action === 'move') {
+        body.column_id = byId('mu-move-column').value;
+        body.position = 1000000;
+        if (!body.column_id) return 'Choose a column to move the tasks to.';
+      } else if (action === 'color') {
+        body.color_id = byId('mu-set-color').value;
+        if (!body.color_id) return 'Choose a color.';
+      } else if (action === 'labels') {
+        body.remove_labels = chosen('mu-labels-remove');
+        body.add_labels = byId('mu-labels-add').value.split(',').map(function (name) { return name.trim(); })
+          .filter(Boolean);
+        if (!body.remove_labels.length && !body.add_labels.length) return 'Choose labels to remove or add.';
+      } else if (action === 'members') {
+        body.remove_member_ids = chosen('mu-members-remove');
+        body.add_member_ids = chosen('mu-members-add');
+        if (!body.remove_member_ids.length && !body.add_member_ids.length) return 'Choose members to remove or add.';
+      }
+      return body;
+    }
+
+    function postBulkRequest(body) {
+      return api('/api/boards/' + encodeURIComponent(boardId()) + '/tasks/bulk', 'POST', body).then(function (res) {
+        return res.text().then(function (text) {
+          var data = null;
+          try { data = JSON.parse(text); } catch (e) { data = null; }
+          return { ok: res.ok, data: data, message: (data && data.message) || text };
+        });
+      });
+    }
+
+    function renderPreview(tasks) {
+      var body = byId('mu-preview-body');
+      body.innerHTML = '';
+      tasks.forEach(function (task) {
+        var row = document.createElement('tr');
+        [task.name, task.before, task.after].forEach(function (text) {
+          var cell = document.createElement('td');
+          cell.textContent = text;
+          row.appendChild(cell);
+        });
+        body.appendChild(row);
+      });
+      var count = tasks.length;
+      byId('mu-preview-count').textContent = count + (count === 1 ? ' task will be updated' : ' tasks will be updated');
+    }
+
+    function enterPreview() {
+      var body = actionRequest();
+      if (typeof body === 'string') {
+        show(step - 1);
+        showError(body);
+        return;
+      }
+      request = body;
+      var seq = ++previewSeq;
+      renderPreview([]);
+      byId('mu-apply').disabled = true;
+      var dry = { dry_run: true };
+      Object.keys(body).forEach(function (key) { dry[key] = body[key]; });
+      postBulkRequest(dry).then(function (res) {
+        if (seq !== previewSeq || STEPS[step] !== 'preview') return;
+        if (!res.ok) {
+          show(step - 1);
+          showError(res.message || 'The update was refused, so nothing would change.');
+          return;
+        }
+        renderPreview(res.data.tasks || []);
+        byId('mu-apply').disabled = false;
+      }).catch(function () {
+        if (seq !== previewSeq || STEPS[step] !== 'preview') return;
+        show(step - 1);
+        showError('Could not preview the update.');
+      });
+    }
+
+    function apply() {
+      if (!request || applying) return;
+      var count = request.task_ids.length;
+      var message = count + (count === 1 ? ' task' : ' tasks') + ' will be updated. Do you want to continue?';
+      showConfirmDialog('Apply updates', message, 'Apply updates', function () {
+        applying = true;
+        postBulkRequest(request).then(function (res) {
+          applying = false;
+          if (res.ok) {
+            window.location.reload();
+            return;
+          }
+          show(2);
+          showError(res.message || 'The update was refused, so nothing changed.');
+        }).catch(function () {
+          applying = false;
+          showError('Could not apply the update.');
+        });
+      });
+    }
+
+    function show(index) {
+      step = index;
+      showError('');
+      STEPS.forEach(function (name, i) { stepSection(name).hidden = i !== step; });
+      var name = STEPS[step];
+      byId('mu-prev').hidden = step === 0;
+      byId('mu-next').hidden = name === 'preview';
+      byId('mu-apply').hidden = name !== 'preview';
+      byId('mu-next').disabled = false;
+      if (name === 'select') enterSelect();
+      else if (name === 'action') fillRemovableLabels();
+      else if (name === 'preview') enterPreview();
+    }
+
+    var wired = false;
+    function wire() {
+      if (wired) return;
+      wired = true;
+      byId('mu-next').addEventListener('click', function () { show(step + 1); });
+      byId('mu-prev').addEventListener('click', function () { show(step - 1); });
+      byId('mu-apply').addEventListener('click', apply);
+      byId('mu-action').addEventListener('change', showActionForm);
+      byId('mu-move-board').addEventListener('change', function () {
+        loadMoveColumns(byId('mu-move-board').value);
+      });
+      byId('mu-due').addEventListener('change', function () {
+        var value = byId('mu-due').value;
+        byId('mu-due-day-field').hidden = value !== 'before' && value !== 'after';
+      });
+      byId('mu-select-all').addEventListener('click', function () {
+        matches.forEach(function (task) { picked[task.id] = true; });
+        renderList();
+      });
+      byId('mu-clear-all').addEventListener('click', function () {
+        picked = {};
+        renderList();
+      });
+      byId('mu-list').addEventListener('change', function (e) {
+        var box = e.target.closest('input[type="checkbox"]');
+        if (!box) return;
+        if (box.checked) picked[box.dataset.taskId] = true;
+        else delete picked[box.dataset.taskId];
+        renderCount();
+      });
+    }
+
+    function open() {
+      wire();
+      fillFilters();
+      fillActionForms();
+      matches = [];
+      picked = {};
+      lastFilter = '';
+      show(0);
+      byId('mass-update-dialog').hidden = false;
+    }
+
+    return { open: open };
+  })();
 
   // Exposed for data-call handlers and debugging.
   window.closeModal = closeModal;

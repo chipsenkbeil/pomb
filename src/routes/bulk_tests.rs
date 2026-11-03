@@ -6,8 +6,8 @@ use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::{ChangeOutcome, Db};
-use crate::models::{AccountId, Actor, AuthScope, color_value_to_size};
+use crate::db::{ChangeOutcome, Commit, Db, NewWebhook};
+use crate::models::{AccountId, Actor, AuthScope, WebhookEvent, color_value_to_size};
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -428,7 +428,7 @@ async fn bulk_change_should_write_nothing_when_a_later_task_is_missing() {
 
     let outcome = fx
         .db
-        .apply_tasks_change(&ids, Actor::SYSTEM, |task, _| {
+        .apply_tasks_change(&ids, Commit::Write, Actor::SYSTEM, |task, _| {
             task.name = "changed".to_string();
             Ok::<(), ()>(())
         })
@@ -448,7 +448,7 @@ async fn bulk_change_should_write_nothing_when_a_later_task_is_refused() {
 
     let outcome = fx
         .db
-        .apply_tasks_change(&ids, Actor::SYSTEM, |task, _| {
+        .apply_tasks_change(&ids, Commit::Write, Actor::SYSTEM, |task, _| {
             if task.id == b {
                 return Err("refused");
             }
@@ -674,4 +674,340 @@ async fn estimated_hours_limit_should_refuse_a_move_past_the_hours_and_show_in_t
     let page = fx.send("GET", &format!("/b/{board}"), None).await;
     let html = page.body.as_str().expect("html");
     assert!(html.contains(">3h / 3h<"), "{html}");
+}
+
+fn labels_of(fx: &Fixture, id: &str) -> Vec<String> {
+    fx.db.task(id).expect("read").expect("task").labels
+}
+
+async fn labelled(fx: &Fixture, column: &str, name: &str, labels: &[&str]) -> String {
+    let body = json!({"column_id": column, "name": name, "labels": labels});
+    let reply = fx.send("POST", "/api/tasks", Some(body)).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+    reply.body["id"].as_str().expect("id").to_string()
+}
+
+#[tokio::test]
+async fn bulk_labels_should_remove_and_add_on_every_task_with_an_event_each() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = labelled(&fx, &columns[0], "a", &["old", "keep"]).await;
+    let b = labelled(&fx, &columns[0], "b", &["old"]).await;
+
+    let body = json!({
+        "task_ids": [a, b],
+        "action": "labels",
+        "remove_labels": ["old"],
+        "add_labels": [" new ", "keep"],
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["count"], 2);
+    assert_eq!(labels_of(&fx, &a), ["keep", "new"]);
+    assert_eq!(labels_of(&fx, &b), ["new", "keep"]);
+    for id in [&a, &b] {
+        let task = fx.db.task(id).expect("read").expect("task");
+        let events = task
+            .history
+            .iter()
+            .filter(|e| e.kind == "labels_updated")
+            .count();
+        assert_eq!(events, 1);
+    }
+}
+
+#[tokio::test]
+async fn bulk_labels_should_refuse_a_request_without_labels() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+
+    let body = json!({"task_ids": [a], "action": "labels", "add_labels": [" "]});
+
+    assert_eq!(fx.bulk(&board, body).await.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn bulk_labels_should_change_nothing_for_a_label_past_the_length_cap() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+
+    let body = json!({"task_ids": [a], "action": "labels", "add_labels": ["x".repeat(51)]});
+    let reply = fx.bulk(&board, body).await;
+
+    assert!(reply.status.is_client_error(), "{}", reply.body);
+    assert!(labels_of(&fx, &a).is_empty());
+}
+
+#[tokio::test]
+async fn bulk_move_dry_run_should_leave_sibling_positions_and_the_outbox_alone() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let hook = fx
+        .db
+        .create_webhook(NewWebhook {
+            board_id: board.clone(),
+            name: "Hook".to_string(),
+            url: "https://example.com/hook".to_string(),
+            events: vec![WebhookEvent::TaskChanged],
+            column_id: None,
+            enabled: true,
+        })
+        .expect("webhook");
+    let a = fx.task(&columns[0], "a").await;
+    fx.task(&columns[1], "d").await;
+    fx.task(&columns[1], "e").await;
+    let positions = || {
+        let mut tasks = fx.db.board_tasks(&board).expect("tasks");
+        tasks.sort_by(|a, b| a.name.cmp(&b.name));
+        tasks
+            .into_iter()
+            .map(|task| (task.name, task.column_id, task.position))
+            .collect::<Vec<_>>()
+    };
+    let before = positions();
+    let queued = fx.db.webhook_outbox(&hook.id).expect("outbox").len();
+
+    let body = json!({"task_ids": [a], "action": "move", "column_id": columns[1], "position": 1, "dry_run": true});
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(positions(), before);
+    assert_eq!(
+        fx.db.webhook_outbox(&hook.id).expect("outbox").len(),
+        queued
+    );
+}
+
+#[tokio::test]
+async fn bulk_labels_should_change_nothing_when_the_result_passes_the_label_cap() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let full: Vec<String> = (0..50).map(|n| format!("l{n}")).collect();
+    let b = labelled(
+        &fx,
+        &columns[0],
+        "b",
+        &full.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+    .await;
+
+    let body = json!({"task_ids": [a, b], "action": "labels", "add_labels": ["extra"]});
+    let reply = fx.bulk(&board, body).await;
+
+    assert!(reply.status.is_client_error(), "{}", reply.body);
+    assert!(labels_of(&fx, &a).is_empty());
+}
+
+#[tokio::test]
+async fn bulk_dry_run_should_list_old_and_new_labels_and_change_nothing() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = labelled(&fx, &columns[0], "a", &["old"]).await;
+    let b = fx.task(&columns[0], "b").await;
+    let before = fx.db.task(&a).expect("read").expect("task");
+
+    let body = json!({
+        "task_ids": [a, b],
+        "action": "labels",
+        "remove_labels": ["old"],
+        "add_labels": ["new"],
+        "dry_run": true,
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["count"], 2);
+    assert_eq!(
+        reply.body["tasks"],
+        json!([
+            {"id": a, "name": "a", "before": "old", "after": "new"},
+            {"id": b, "name": "b", "before": "(none)", "after": "new"},
+        ])
+    );
+    let after = fx.db.task(&a).expect("read").expect("task");
+    assert_eq!(after.labels, before.labels);
+    assert_eq!(after.updated_at, before.updated_at);
+    assert_eq!(after.history.len(), before.history.len());
+    assert!(labels_of(&fx, &b).is_empty());
+}
+
+#[tokio::test]
+async fn bulk_dry_run_should_list_old_and_new_color_and_change_nothing() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let colors = fx.db.list_colors(&board).expect("colors");
+    let red = colors.iter().find(|c| c.value == "red").expect("red");
+    let before = fx.db.task(&a).expect("read").expect("task");
+
+    let body = json!({"task_ids": [a], "action": "color", "color_id": red.id, "dry_run": true});
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let preview = &reply.body["tasks"][0];
+    assert_eq!(preview["id"], json!(a));
+    assert_ne!(preview["before"], preview["after"]);
+    assert_eq!(preview["after"], json!(red.label.clone()));
+    let after = fx.db.task(&a).expect("read").expect("task");
+    assert_eq!(after.color_id, before.color_id);
+    assert_eq!(after.size, before.size);
+    assert_eq!(after.history.len(), before.history.len());
+}
+
+#[tokio::test]
+async fn bulk_dry_run_should_list_old_and_new_members_and_change_nothing() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+
+    let body = json!({
+        "task_ids": [a],
+        "action": "members",
+        "add_member_ids": [fx.admin.as_str()],
+        "dry_run": true,
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["tasks"][0]["before"], "(none)");
+    assert_eq!(reply.body["tasks"][0]["after"], "admin");
+    assert!(
+        fx.db
+            .task(&a)
+            .expect("read")
+            .expect("task")
+            .member_ids
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn bulk_dry_run_should_list_old_and_new_column_and_move_nothing() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (_other, other_columns) = fx.board("Other", &["Review"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[1], "b").await;
+
+    let same =
+        json!({"task_ids": [a, b], "action": "move", "column_id": columns[1], "dry_run": true});
+    let reply = fx.bulk(&board, same).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(
+        reply.body["tasks"],
+        json!([
+            {"id": a, "name": "a", "before": "Todo", "after": "Doing"},
+            {"id": b, "name": "b", "before": "Doing", "after": "Doing"},
+        ])
+    );
+    let across =
+        json!({"task_ids": [a], "action": "move", "column_id": other_columns[0], "dry_run": true});
+    let reply = fx.bulk(&board, across).await;
+    assert_eq!(reply.body["tasks"][0]["after"], "Other / Review");
+    assert_eq!(fx.cell(&board, &columns[0]), ["a"]);
+    assert_eq!(fx.cell(&board, &columns[1]), ["b"]);
+    let moved = fx.db.task(&a).expect("read").expect("task");
+    assert!(moved.history.iter().all(|event| event.kind != "moved"));
+}
+
+#[tokio::test]
+async fn bulk_dry_run_should_refuse_what_the_real_request_refuses() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (_other, other_columns) = fx.board("Other", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let foreign = fx.task(&other_columns[0], "f").await;
+    let locked = labelled(&fx, &columns[0], "l", &["needs:human"]).await;
+
+    for ids in [
+        json!([a, foreign]),
+        json!([a, "missing"]),
+        json!([a, locked]),
+    ] {
+        let body =
+            json!({"task_ids": ids, "action": "labels", "add_labels": ["x"], "dry_run": true});
+        let reply = fx.bulk(&board, body).await;
+        assert!(reply.status.is_client_error(), "{ids}: {}", reply.body);
+    }
+    assert!(labels_of(&fx, &a).is_empty());
+}
+
+#[tokio::test]
+async fn bulk_should_refuse_the_whole_request_when_one_task_is_locked() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let a = fx.task(&columns[0], "a").await;
+    let locked = labelled(&fx, &columns[0], "l", &["needs:human"]).await;
+
+    let actions = [
+        json!({"action": "labels", "add_labels": ["x"]}),
+        json!({"action": "move", "column_id": columns[1]}),
+    ];
+    for action in actions {
+        let mut body = action.clone();
+        body["task_ids"] = json!([a, locked]);
+        let reply = fx.bulk(&board, body).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::FORBIDDEN,
+            "{action}: {}",
+            reply.body
+        );
+        assert_eq!(reply.body["code"], "card_locked");
+    }
+    assert!(labels_of(&fx, &a).is_empty());
+    assert_eq!(fx.cell(&board, &columns[0]), ["a", "l"]);
+}
+
+#[tokio::test]
+async fn bulk_should_refuse_a_task_in_the_recycle_bin() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let gone = fx.task(&columns[0], "gone").await;
+    let reply = fx.send("DELETE", &format!("/api/tasks/{gone}"), None).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+
+    let body = json!({"task_ids": [a, gone], "action": "labels", "add_labels": ["x"]});
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.body);
+    assert!(labels_of(&fx, &a).is_empty());
+}
+
+#[tokio::test]
+async fn bulk_should_queue_one_webhook_event_for_each_changed_task_and_none_for_a_dry_run() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let hook = fx
+        .db
+        .create_webhook(NewWebhook {
+            board_id: board.clone(),
+            name: "Hook".to_string(),
+            url: "https://example.com/hook".to_string(),
+            events: vec![WebhookEvent::TaskChanged],
+            column_id: None,
+            enabled: true,
+        })
+        .expect("webhook");
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    let queued = || fx.db.webhook_outbox(&hook.id).expect("outbox").len();
+    let base = queued();
+
+    let dry = json!({"task_ids": [a, b], "action": "labels", "add_labels": ["x"], "dry_run": true});
+    assert_eq!(fx.bulk(&board, dry).await.status, StatusCode::OK);
+    assert_eq!(queued(), base);
+
+    let real = json!({"task_ids": [a, b], "action": "labels", "add_labels": ["x"]});
+    assert_eq!(fx.bulk(&board, real).await.status, StatusCode::OK);
+    assert_eq!(queued(), base + 2);
+
+    let moved = json!({"task_ids": [a, b], "action": "move", "column_id": columns[1]});
+    assert_eq!(fx.bulk(&board, moved).await.status, StatusCode::OK);
+    assert_eq!(queued(), base + 4);
 }

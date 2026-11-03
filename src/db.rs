@@ -555,6 +555,26 @@ pub struct MoveGuards<'a> {
     pub batch: &'a [String],
 }
 
+/// What a bulk write does with its transaction once every task changed.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Commit {
+    /// Commit the write.
+    Write,
+    /// End the transaction without a commit, so the run only checks.
+    Discard,
+}
+
+impl Commit {
+    /// Ends `txn` the way this mode says.
+    fn finish(self, txn: WriteTxn<'_>) -> DbResult<()> {
+        match self {
+            Self::Write => txn.commit()?,
+            Self::Discard => txn.abort()?,
+        }
+        Ok(())
+    }
+}
+
 /// Typed outcome for [`Db::apply_tasks_change`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChangeOutcome<E> {
@@ -9516,10 +9536,12 @@ impl Db {
 
     /// Runs `f` on each of `ids` in one write transaction and stores every row with `updated_at`
     /// stamped. The first task `f` refuses ends the run with its error and writes nothing, and a
-    /// missing task does the same.
+    /// missing task does the same. With `Commit::Discard` the run ends without a commit even when every
+    /// task changed, so it checks and writes nothing.
     pub fn apply_tasks_change<E, F>(
         &self,
         ids: &[String],
+        commit: Commit,
         actor: Actor<'_>,
         mut f: F,
     ) -> DbResult<ChangeOutcome<E>>
@@ -9539,7 +9561,7 @@ impl Db {
             task.updated_at = Some(Utc::now().to_rfc3339());
             txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
         }
-        txn.commit()?;
+        commit.finish(txn)?;
         Ok(ChangeOutcome::Changed)
     }
 
@@ -9820,13 +9842,15 @@ impl Db {
     /// Moves every task in `ids` into one cell, the first at `position` and each next one right
     /// after the one before, so the tasks keep the order given. The moves share one write
     /// transaction: when any task is missing, none moves. A move to another column logs the same
-    /// `moved` event a single move does, and the target column's WIP limit does not block.
+    /// `moved` event a single move does, and the target column's WIP limit does not block. With
+    /// `Commit::Discard` every move runs and the transaction ends without a commit.
     pub fn move_tasks_logged(
         &self,
         ids: &[String],
         column_id: &str,
         swimlane_id: Option<&str>,
         position: f64,
+        commit: Commit,
         actor: Actor<'_>,
     ) -> DbResult<MoveOutcome> {
         let txn = self.db.begin_write()?;
@@ -9854,7 +9878,7 @@ impl Db {
                 return Ok(outcome);
             }
         }
-        txn.commit()?;
+        commit.finish(txn)?;
         Ok(MoveOutcome::Moved)
     }
 

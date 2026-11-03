@@ -19,6 +19,8 @@ eval(fn('  function clockText(d) {'));
 eval(block('  var ReportChart = (function () {'));
 eval(src.slice(src.indexOf('  function isoDate(d) {'), src.indexOf('\n  }\n', src.indexOf('  function isoDate(d) {')) + 4));
 eval(block('  var ReportBreakdown = (function () {'));
+eval(block('  var ReportRange = (function () {'));
+eval(block('  var ReportValue = (function () {'));
 eval(block('  var BurndownPage = (function () {'));
 eval(block('  var MonteCarloPage = (function () {'));
 
@@ -48,7 +50,7 @@ check('projection runs until the remaining tasks reach zero', series.projection,
 check('projection extends the dates one day each', series.ends.length, 34);
 check('projection keeps the actual counts', series.counts.length, 30);
 var proj = BurndownPage.chartSvg(series);
-check('burndown draws the projection line', /<polyline[^>]*pathLength="1"[^>]*class="chart-projection"/.test(proj), true);
+check('burndown draws the projection line', /<polyline[^>]*class="chart-projection"/.test(proj), true);
 check('burndown labels the projected end date', ticks(proj).slice(-1)[0], 'Nov 3');
 check('burndown tooltip on a projected day', BurndownPage.tipFor(series, 31),
   { title: '1 November 12:00 AM', rows: [{ label: 'Projected remaining', value: 3 }] });

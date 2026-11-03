@@ -56,9 +56,9 @@ use crate::backup::{BackupFile, RunError};
 use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
     AdminActionOutcome, BoardDenied, Bound, ChangeOutcome, ChildRef, ClaimOutcome, ClaimRequest,
-    ColumnDeleteOutcome, ColumnKind, ColumnWatch, CommentWrite, CopyTasks, DeviceAuthCreateOutcome,
-    DeviceGrant, DevicePoll, DuplicateAttachment, EventRead, FeedAdd, FencedWrite,
-    FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LargestUse, LinkAddOutcome,
+    ColumnDeleteOutcome, ColumnKind, ColumnWatch, CommentWrite, Commit, CopyTasks,
+    DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment, EventRead, FeedAdd,
+    FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LargestUse, LinkAddOutcome,
     LinkDeleteOutcome, LinkReads, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards,
     MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement,
     NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedTask, PaletteStrandsColor,
@@ -9100,6 +9100,8 @@ enum BulkTasksAction {
     /// Gives the tasks the board color `color_id`, with the history event and size change a
     /// single color update makes.
     Color,
+    /// Adds the labels in `add_labels` and removes those in `remove_labels`.
+    Labels,
     /// Adds the members in `add_member_ids` and removes those in `remove_member_ids`.
     Members,
     /// Removes every member from the tasks.
@@ -9113,6 +9115,10 @@ struct BulkTasksInput {
     task_ids: Vec<String>,
     /// What to do to every task in `task_ids`.
     action: BulkTasksAction,
+    /// Checks the whole request as a real one would and changes nothing, answering with the old
+    /// and new value of every task in `tasks`.
+    #[serde(default)]
+    dry_run: bool,
     /// `move`: the target column, on any board of the account.
     column_id: Option<String>,
     /// `move`: the target swimlane on the target board. Without one each task keeps its lane, or
@@ -9125,24 +9131,46 @@ struct BulkTasksInput {
     position: Option<f64>,
     /// `color`: the color slot id on the board.
     color_id: Option<String>,
+    /// `labels`: labels to add to each task.
+    add_labels: Option<Vec<String>>,
+    /// `labels`: labels to remove from each task.
+    remove_labels: Option<Vec<String>>,
     /// `members`: user ids to add to each task.
     add_member_ids: Option<Vec<String>>,
     /// `members`: user ids to remove from each task.
     remove_member_ids: Option<Vec<String>>,
 }
 
+/// What a bulk request changes on one task.
+#[derive(serde::Serialize, ToSchema)]
+struct BulkTaskPreview {
+    /// The task id.
+    id: String,
+    /// The task name.
+    name: String,
+    /// The value the action changes, as the task holds it now. The text (none) stands for no value.
+    before: String,
+    /// The value the task holds after the action.
+    after: String,
+}
+
 /// The outcome of a bulk task request.
 #[derive(serde::Serialize, ToSchema)]
 struct BulkTasksResult {
-    /// How many tasks changed.
+    /// How many tasks changed, or would change under `dry_run`.
     count: usize,
+    /// The old and new value of each task in the order of `task_ids`, only under `dry_run`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tasks: Vec<BulkTaskPreview>,
 }
 
 /// Changes several tasks of one board in one request. The change is all or nothing: when any task
-/// cannot change, none does. `color`, `members` and `unassign_members` write one history event
-/// per changed field on every task. `move` keeps the order of `task_ids`, logs the same history
-/// event a single move does, stamps and clears the Done time like it, and ignores the target
-/// column's WIP limit. It needs `tasks.write` alone.
+/// cannot change, none does. `color`, `labels`, `members` and `unassign_members` write one history
+/// event per changed field on every task. `move` keeps the order of `task_ids`, logs the same
+/// history event a single move does, stamps and clears the Done time like it, and ignores the
+/// target column's WIP limit. Every changed task queues the webhook events a single change
+/// queues. With `dry_run` the request runs every check and write of a real one, commits nothing
+/// and lists each task's old and new value. It needs `tasks.write` alone.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/tasks/bulk",
@@ -9151,9 +9179,10 @@ struct BulkTasksResult {
     params(("id" = String, Path, description = "Board id")),
     request_body = BulkTasksInput,
     responses(
-        (status = 200, description = "Every task changed", body = BulkTasksResult),
-        (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, or a `members` change with no ids or an id that is not the account"),
-        (status = 404, description = "Board or task not found"),
+        (status = 200, description = "Every task changed, or would change under `dry_run`", body = BulkTasksResult),
+        (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, or a `members` change with no ids or an id that is not the account"),
+        (status = 403, description = "A task carries a locking label and the token is not the owner's"),
+        (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -9187,7 +9216,13 @@ async fn bulk_tasks(
     }
 
     let actor = user.actor();
-    match input.action {
+    let dry_run = input.dry_run;
+    let commit = if dry_run {
+        Commit::Discard
+    } else {
+        Commit::Write
+    };
+    let previews = match input.action {
         BulkTasksAction::Color => {
             let color_id = input
                 .color_id
@@ -9198,11 +9233,29 @@ async fn bulk_tasks(
                 .map_err(AppError::from)?
                 .filter(|color| color.row().board_id == board.row().id)
                 .ok_or_else(|| AppError::bad_request("unknown color"))?;
-            bulk_change(db, &tasks, actor, |task, _| {
+            let show: BulkShow = |task, context, _| {
+                color_value(task.color_id.as_deref(), &context.colors).unwrap_or_else(none_text)
+            };
+            bulk_change(db, &tasks, commit, actor, show, |task, _| {
                 task.color_id = Some(color.row().id.clone());
                 task.size = color_value_to_size(&color.row().value);
                 Ok(())
-            })?;
+            })?
+        }
+        BulkTasksAction::Labels => {
+            let add = clean_labels(&input.add_labels.unwrap_or_default());
+            let remove = clean_labels(&input.remove_labels.unwrap_or_default());
+            if add.is_empty() && remove.is_empty() {
+                return Err(AppError::bad_request(
+                    "labels needs add_labels or remove_labels",
+                ));
+            }
+            let show: BulkShow =
+                |task, _, _| event_value(&task.labels.join(", ")).unwrap_or_else(none_text);
+            bulk_change(db, &tasks, commit, actor, show, |task, _| {
+                task.labels = patched_labels(&task.labels, None, Some(&add), Some(&remove));
+                Ok(())
+            })?
         }
         BulkTasksAction::Members => {
             let add = input.add_member_ids.unwrap_or_default();
@@ -9219,16 +9272,16 @@ async fn bulk_tasks(
             {
                 return Err(AppError::bad_request("unknown member"));
             }
-            bulk_change(db, &tasks, actor, |task, _| {
+            bulk_change(db, &tasks, commit, actor, show_members, |task, _| {
                 task.set_members(merged_members(&task.member_ids, &add, &remove));
                 Ok(())
-            })?;
+            })?
         }
         BulkTasksAction::UnassignMembers => {
-            bulk_change(db, &tasks, actor, |task, _| {
+            bulk_change(db, &tasks, commit, actor, show_members, |task, _| {
                 task.set_members(Vec::new());
                 Ok(())
-            })?;
+            })?
         }
         BulkTasksAction::Move => {
             let column_id = input
@@ -9257,8 +9310,20 @@ async fn bulk_tasks(
                     None => placement_index(new_task_placement(db, &column.row().board_id)?),
                 }
             };
+            let previews = if dry_run {
+                move_previews(db, &board, &tasks, column.row())?
+            } else {
+                Vec::new()
+            };
             match db
-                .move_tasks_logged(&tasks, &column, swimlane_id.as_deref(), position, actor)
+                .move_tasks_logged(
+                    &tasks,
+                    &column,
+                    swimlane_id.as_deref(),
+                    position,
+                    commit,
+                    actor,
+                )
                 .map_err(AppError::from)?
             {
                 MoveOutcome::Moved => {}
@@ -9267,27 +9332,84 @@ async fn bulk_tasks(
                     return Err(AppError::conflict("the tasks could not be moved"));
                 }
             }
+            previews
         }
-    }
-    Ok(Json(BulkTasksResult { count: tasks.len() }))
+    };
+    Ok(Json(BulkTasksResult {
+        count: tasks.len(),
+        tasks: if dry_run { previews } else { Vec::new() },
+    }))
+}
+
+/// Renders the value a bulk action changes on one task, from the context of the write.
+type BulkShow = fn(&TaskRow, &TaskContext, &[UserRow]) -> String;
+
+/// Returns the text of a missing value.
+fn none_text() -> String {
+    NO_VALUE.to_string()
+}
+
+/// Renders the members of `task` by user name.
+fn show_members(task: &TaskRow, _: &TaskContext, users: &[UserRow]) -> String {
+    member_names(&task.member_ids, users).unwrap_or_else(none_text)
+}
+
+/// Returns the old and new column of each of `tasks` for a move into `column`, naming the board
+/// too when it is not the one in the path.
+fn move_previews(
+    db: &AccountDb,
+    board: &OwnedBoard,
+    tasks: &[OwnedTask],
+    column: &ColumnRow,
+) -> Result<Vec<BulkTaskPreview>, AppError> {
+    let place = |column: &ColumnRow| -> Result<String, AppError> {
+        if column.board_id == board.row().id {
+            return Ok(column.name.clone());
+        }
+        let other = found(db.board(&column.board_id), "board not found")?;
+        Ok(format!("{} / {}", other.row().name, column.name))
+    };
+    let after = place(column)?;
+    tasks
+        .iter()
+        .map(|task| {
+            let held = found(db.column(&task.row().column_id), "column not found")?;
+            Ok(BulkTaskPreview {
+                id: task.row().id.clone(),
+                name: task.row().name.clone(),
+                before: place(held.row())?,
+                after: after.clone(),
+            })
+        })
+        .collect()
 }
 
 /// Runs `edit` on every task in one write and writes the history events of each change as a single
-/// update does. A task that cannot change leaves all unchanged.
+/// update does. A task that cannot change leaves all unchanged, and `dry_run` commits nothing.
+/// Returns the value `show` renders on each task before and after `edit`.
 fn bulk_change<F>(
     db: &AccountDb,
     tasks: &[OwnedTask],
+    commit: Commit,
     actor: Actor<'_>,
+    show: BulkShow,
     mut edit: F,
-) -> Result<(), AppError>
+) -> Result<Vec<BulkTaskPreview>, AppError>
 where
     F: FnMut(&mut TaskRow, &TaskContext) -> Result<(), AppError>,
 {
     let users = db.list_users().map_err(AppError::from)?;
+    let mut previews = Vec::with_capacity(tasks.len());
     let outcome = db
-        .apply_tasks_change(tasks, actor, |task, context| {
+        .apply_tasks_change(tasks, commit, actor, |task, context| {
             let before = task.clone();
             edit(task, context)?;
+            previews.push(BulkTaskPreview {
+                id: task.id.clone(),
+                name: task.name.clone(),
+                before: show(&before, context, &users),
+                after: show(task, context, &users),
+            });
             let size_from_color = before.color_id != task.color_id;
             let events = update_history(
                 &before,
@@ -9304,7 +9426,7 @@ where
         })
         .map_err(AppError::from)?;
     match outcome {
-        ChangeOutcome::Changed => Ok(()),
+        ChangeOutcome::Changed => Ok(previews),
         ChangeOutcome::Refused(error) => Err(error),
         ChangeOutcome::NotFound => Err(AppError::not_found("task not found")),
     }

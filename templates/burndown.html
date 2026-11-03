@@ -3,8 +3,13 @@
 {% block shell_class %} bshell-nonav bshell-report{% endblock %}
 {% block shell_title %}Burndown{% endblock %}
 {% block shell_body %}
-<p class="settings-hint">How many tasks remain to be done on <strong>{{ board_name }}</strong>: open tasks per day over the last 30 days.</p>
-<div id="burndown-chart" class="chart-host" role="img" aria-label="Burndown chart"></div>
-<p id="burndown-status" class="settings-hint" role="status"></p>
+<p class="settings-hint">How many tasks remain to be done on <strong>{{ board_name }}</strong>: the work still to do each day since the start date.</p>
+<div class="chart-layout">
+  {% include "_report_filter.html" %}
+  <div class="chart-main">
+    <div id="burndown-chart" class="chart-host" role="img" aria-label="Burndown chart"></div>
+    <p id="burndown-status" class="settings-hint" role="status"></p>
+  </div>
+</div>
 {% endblock %}
 {% block shell_scripts %}<div hidden data-page-init="BurndownPage" data-board-id="{{ board_id }}"></div>{% endblock %}
