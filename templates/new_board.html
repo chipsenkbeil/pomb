@@ -24,53 +24,59 @@
       </label>
     </div>
     <h3>Start from</h3>
-    <div class="settings-form">
-      <div class="bshell-scroll">
-        <table class="bshell-table">
-          <tbody>
-            <tr>
-              <td>
-                <label class="check-label"><input type="radio" name="template_id" value="" checked> <strong>Simple task board</strong></label>
-                <div class="settings-hint tpl-desc">The columns To-do, Doing and Done, and the standard color palette with Brown and White off.</div>
-              </td>
-              <td class="num"></td>
-            </tr>
-            {% for t in templates %}
-            <tr>
-              <td>
-                <label class="check-label"><input type="radio" name="template_id" value="{{ t.id }}"> <strong>{{ t.name }}</strong></label>
-                {% if t.built_in || !t.description.is_empty() %}<div class="settings-hint tpl-desc">{% if t.built_in %}Built-in. {% endif %}{{ t.description }}</div>{% endif %}
-              </td>
-              <td class="num">{% if !t.built_in %}<button type="button" class="kf-btn kf-btn-danger" data-delete-template="{{ t.id }}">Delete</button>{% endif %}</td>
-            </tr>
-            {% endfor %}
-            {% if !chrome.boards.is_empty() %}
-            <tr>
-              <td>
-                <label class="check-label"><input type="radio" name="template_id" value="" id="nb-copy-radio"> <strong>Copy existing board</strong></label>
-                <div class="settings-hint tpl-desc">The columns, colors, limits and swimlanes of a board you have, and optionally its first 200 tasks.</div>
-                <div class="settings-form" id="nb-copy-fields" hidden>
-                  <label>Board to copy
-                    <select id="nb-copy-board">
-                      {% for b in chrome.boards %}
-                      <option value="{{ b.id }}">{{ b.name }}</option>
-                      {% endfor %}
-                    </select>
-                  </label>
-                  <label>Name of copy
-                    <input type="text" id="nb-copy-name">
-                  </label>
-                  <label class="check-label"><input type="checkbox" id="nb-copy-tasks"> Copy tasks</label>
-                  <label class="check-label"><input type="checkbox" id="nb-copy-clear" disabled> Clear members from the copied tasks</label>
-                </div>
-              </td>
-              <td class="num"></td>
-            </tr>
-            {% endif %}
-          </tbody>
-        </table>
-      </div>
+    <div class="nb-chips" role="group" aria-label="Layout categories">
+      <button type="button" class="nb-chip nb-chip-on" data-nb-chip="">All</button>
+      {% for panel in panels %}
+      <button type="button" class="nb-chip" data-nb-chip="{{ panel.label }}">{{ panel.label }}</button>
+      {% endfor %}
     </div>
+    <div class="settings-form">
+      {% for panel in panels %}
+      <div class="nb-panel" data-nb-panel="{{ panel.label }}">
+        <h4 class="nb-panel-title">{{ panel.label }}</h4>
+        <div class="nb-cards">
+          {% if panel.is_general %}
+          <label class="nb-card">
+            <input type="radio" name="template_id" value="" checked>
+            <strong>Simple task board</strong>
+            <span class="settings-hint tpl-desc">The columns To-do, Doing and Done, and the standard color palette with Brown and White off.</span>
+            <span class="nb-preview"><i>To-do</i><i>Doing</i><i>Done</i></span>
+          </label>
+          {% endif %}
+          {% for t in panel.templates %}
+          <label class="nb-card">
+            <input type="radio" name="template_id" value="{{ t.id }}">
+            <strong>{{ t.name }}</strong>
+            {% if !t.description.is_empty() %}<span class="settings-hint tpl-desc">{{ t.description }}</span>{% endif %}
+            {% if !t.columns.is_empty() %}<span class="nb-preview">{% for column in t.columns %}<i>{{ column }}</i>{% endfor %}</span>{% endif %}
+            {% if !t.built_in %}<button type="button" class="kf-btn kf-btn-danger" data-delete-template="{{ t.id }}">Delete</button>{% endif %}
+          </label>
+          {% endfor %}
+          {% if panel.is_yours && !chrome.boards.is_empty() %}
+          <div class="nb-card nb-card-wide">
+            <label class="check-label"><input type="radio" name="template_id" value="" id="nb-copy-radio"> <strong>Copy existing board</strong></label>
+            <div class="settings-hint tpl-desc">The columns, colors, limits and swimlanes of a board you have, and optionally its first 200 tasks.</div>
+            <div class="settings-form" id="nb-copy-fields" hidden>
+              <label>Board to copy
+                <select id="nb-copy-board">
+                  {% for b in chrome.boards %}
+                  <option value="{{ b.id }}">{{ b.name }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Name of copy
+                <input type="text" id="nb-copy-name">
+              </label>
+              <label class="check-label"><input type="checkbox" id="nb-copy-tasks"> Copy tasks</label>
+              <label class="check-label"><input type="checkbox" id="nb-copy-clear" disabled> Clear members from the copied tasks</label>
+            </div>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="settings-hint" id="nb-selected"></p>
     <div id="nb-error" class="form-error" hidden></div>
     <div class="kf-btn-row">
       <button type="button" class="kf-btn kf-btn-success kf-btn-large" id="nb-create">Create board</button>

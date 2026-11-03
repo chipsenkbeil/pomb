@@ -13,9 +13,9 @@ use super::{
     TOKENS_BY_ACCOUNT, USERNAMES, USERS, index_in, mmap_remove, move_row_to, read_one, row_in,
     rows_in, txn_credential_registered, txn_end_sessions_of, txn_insert_passkey, txn_insert_user,
     txn_instance_settings, txn_mmap_get, txn_owner_boards, txn_read_one, txn_refuse_stranded,
-    txn_remove_board, txn_remove_entry, txn_remove_passkeys_of, txn_remove_template,
-    txn_remove_tokens_of, txn_store_passkey, txn_template_snapshot, txn_templates_of,
-    txn_unindex_device_expiry, write_one,
+    txn_remove_board, txn_remove_entry, txn_remove_memberships_of, txn_remove_passkeys_of,
+    txn_remove_template, txn_remove_tokens_of, txn_store_passkey, txn_template_snapshot,
+    txn_templates_of, txn_unindex_device_expiry, write_one,
 };
 use crate::models::{
     AccountId, AccountRole, AccountStatus, Actor, DeviceAuthRow, DeviceAuthStatus, InstanceMode,
@@ -163,7 +163,7 @@ pub struct AccountSummary {
 
 /// Returns the id of the account whose handle is `handle` in any case, from an open usernames
 /// table.
-fn handle_owner_in<R>(tbl: &R, handle: &str) -> DbResult<Option<String>>
+pub(super) fn handle_owner_in<R>(tbl: &R, handle: &str) -> DbResult<Option<String>>
 where
     R: ReadableTable<&'static str, &'static str>,
 {
@@ -204,6 +204,7 @@ pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbRe
     for board in txn_owner_boards(txn, id)? {
         attachment_ids.extend(txn_remove_board(txn, &board)?);
     }
+    txn_remove_memberships_of(txn, id)?;
     {
         let mut entries = txn.open_table(TIME_ENTRIES)?;
         for entry_id in index_in(txn, ENTRIES_BY_ACCOUNT, id)? {

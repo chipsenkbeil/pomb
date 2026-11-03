@@ -3,6 +3,7 @@ use std::collections::{BTreeSet, HashMap};
 use redb::WriteTransaction;
 
 use super::membership::txn_delete_account;
+use super::sharing::txn_has_memberships;
 use super::{
     BOARDS, BOARDS_BY_OWNER, Db, DbResult, PRUNE_STATUS_KEY, SETTINGS, USERS, read_one, rows_in,
     txn_instance_settings, txn_mark_unrecorded_boards_used, txn_owner_boards, txn_read_one,
@@ -179,7 +180,8 @@ impl Db {
                 let kept = user.role == AccountRole::Admin
                     || user.status == AccountStatus::Pending
                     || !idle
-                    || !txn_owner_boards(&txn, id)?.is_empty();
+                    || !txn_owner_boards(&txn, id)?.is_empty()
+                    || txn_has_memberships(&txn, id)?;
                 if !kept {
                     attachment_ids.extend(txn_delete_account(&txn, &user)?);
                     removed.push(user.account_id());

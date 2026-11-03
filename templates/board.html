@@ -21,7 +21,13 @@
      while timing it becomes a dark chip (golden board/02, timer/22, 28). -->
 <div class="board-header-row">
   <h1 class="board-bar-title">{{ board_name }}</h1>
-  <span class="owner-avatar board-member-avatar" title="Board owner: {{ chrome.display_name }}" aria-label="Board owner: {{ chrome.display_name }}" style="{{ chrome.avatar.style }}">{% if let Some(url) = chrome.avatar.image %}<img src="{{ url }}" alt="">{% else %}{{ chrome.avatar.text }}{% endif %}</span>
+  {% for member in members %}{% if member.username == chrome.username %}{% if let Some(role) = member.role %}<button type="button" class="owner-avatar board-member-avatar" style="{{ member.avatar.style }}" data-member-id="{{ member.id }}" data-member-name="{{ member.username }}" data-member-role="{{ role.as_str() }}" title="{{ member.display_name }}, {{ role.as_str() }}" aria-label="{{ member.display_name }}, {{ role.as_str() }}" aria-haspopup="dialog">{% if let Some(url) = member.avatar.image %}<img src="{{ url }}" alt="">{% else %}{{ member.avatar.text }}{% endif %}</button>{% endif %}{% endif %}{% endfor %}
+  {% for member in members %}{% if member.username != chrome.username %}{% if let Some(role) = member.role %}<button type="button" class="owner-avatar board-member-avatar board-member-other" style="{{ member.avatar.style }}" data-member-id="{{ member.id }}" data-member-name="{{ member.username }}" data-member-role="{{ role.as_str() }}" title="{{ member.display_name }}, {{ role.as_str() }}" aria-label="{{ member.display_name }}, {{ role.as_str() }}" aria-haspopup="dialog">{% if let Some(url) = member.avatar.image %}<img src="{{ url }}" alt="">{% else %}{{ member.avatar.text }}{% endif %}</button>{% endif %}{% endif %}{% endfor %}
+  <div id="member-popover" class="member-popover" role="dialog" aria-label="Board member" hidden>
+    <div class="member-popover-name" id="member-popover-name"></div>
+    <div class="member-popover-role" id="member-popover-role"></div>
+    <button type="button" class="member-popover-filter" id="member-popover-filter">Filter on user</button>
+  </div>
   <button type="button" id="invite-btn" class="board-bar-btn" title="Invite to board" aria-label="Invite to board"><svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true" focusable="false"><path d="M5.5 0v11M0 5.5h11" stroke="#4d4d4d" stroke-width="3"/></svg></button>
   <span class="board-header-spacer"></span>
   <button type="button" id="finder-btn" class="board-bar-btn" data-finder-open title="Search cards" aria-label="Search cards"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.7"/><path d="M10 10l4.5 4.5"/></svg></button>
@@ -37,7 +43,7 @@
   </button>
   <a href="#" id="filter-reset" class="filter-reset-link" hidden>Reset filter</a>
   <!-- KF-309: solid pencil glyph (KanbanFlow parity) — was a thin &#9998; text glyph. Outer silhouette subpath only: renders fully solid under the nonzero fill rule. -->
-  <button type="button" id="edit-layout-btn" class="board-bar-btn" title="Edit board layout" aria-label="Edit board layout"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10z"/></svg></button>
+{% if role.is_owner() %}  <button type="button" id="edit-layout-btn" class="board-bar-btn" title="Edit board layout" aria-label="Edit board layout"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10z"/></svg></button>{% endif %}
   <!-- KF-204: "Menu" text label next to hamburger (KanbanFlow parity). -->
   <button type="button" id="board-menu-btn" class="board-bar-btn" aria-haspopup="menu" aria-expanded="false" title="Menu" aria-label="Menu"><svg class="menu-bars" aria-hidden="true" width="19" height="13" viewBox="0 0 19 13" fill="none"><rect x="0" y="0" width="19" height="2" fill="#494949"/><rect x="0" y="5.5" width="19" height="2" fill="#494949"/><rect x="0" y="11" width="19" height="2" fill="#494949"/></svg><span class="menu-label">Menu</span></button>
 </div>
@@ -118,7 +124,7 @@
            BoardChrome.loadFilterLabels from GET /api/boards/:id/labels. -->
       <div class="filter-labels-field">
         <input type="text" id="filter-labels-input" placeholder="Add labels..." autocomplete="off">
-        <button type="button" id="filter-labels-toggle" aria-label="Show labels" aria-expanded="false">&#9776;</button>
+        <button type="button" id="filter-labels-toggle" aria-label="Show labels" aria-expanded="false"><svg class="ico-bars" width="13" height="11" viewBox="0 0 13 11" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M0 1.5h13M0 5.5h13M0 9.5h13"/></svg></button>
       </div>
       <div id="filter-labels-list" hidden><span class="empty-note">Loading labels&hellip;</span></div>
     </section>
@@ -404,14 +410,14 @@
 
 <div class="board-layout">
 
-<main class="board-wrap" data-board-id="{{ board_id }}" data-new-tasks-at-top="{% if new_tasks_at_top %}1{% else %}0{% endif %}" data-default-members="{{ default_member_ids }}">
+<main class="board-wrap" data-board-id="{{ board_id }}" data-role="{{ role.as_str() }}" data-account="{{ chrome.username }}" data-new-tasks-at-top="{% if new_tasks_at_top %}1{% else %}0{% endif %}" data-default-members="{{ default_member_ids }}">
   <!-- KF-457: only the board region scrolls; the legend below stays put. -->
   <div class="board-scroll">
   <div class="board-table-wrap">
   <table class="board-table{% if layout.lane_label_column && layout.lane_names_folded %} board-table--names-folded{% endif %}" aria-label="{{ board_name }} board" style="--expanded-columns: {{ self.expanded_column_count() }}; --collapsed-columns: {{ self.collapsed_column_count() }}">
     <thead>
       <tr id="column-headers-row">
-        {% if layout.lane_label_column %}<th class="corner-cell" scope="col"><button type="button" class="lane-names-toggle" data-lane-names-toggle aria-pressed="{% if layout.lane_names_folded %}true{% else %}false{% endif %}" title="{% if layout.lane_names_folded %}Unfold the swimlane names{% else %}Fold the swimlane names{% endif %}" aria-label="Swimlane names">{% if layout.lane_names_folded %}+{% else %}&minus;{% endif %}</button></th>{% endif %}
+        {% if layout.lane_label_column %}<th class="corner-cell" scope="col">{% if role.is_owner() %}<button type="button" class="lane-names-toggle" data-lane-names-toggle aria-pressed="{% if layout.lane_names_folded %}true{% else %}false{% endif %}" title="{% if layout.lane_names_folded %}Unfold the swimlane names{% else %}Fold the swimlane names{% endif %}" aria-label="Swimlane names">{% if layout.lane_names_folded %}+{% else %}&minus;{% endif %}</button>{% endif %}</th>{% endif %}
         {% for col in columns %}
         <th class="columnHeader{% if col.over_limit %} columnHeader--warning columnHeader--limitWarning{% endif %}{% if col.collapsed %} columnHeader--collapsed{% endif %}"
             scope="col"
@@ -455,8 +461,8 @@
             <button type="button" class="columnHeader-markClear" hidden><span aria-hidden="true">&times;</span> <span class="columnHeader-markClearLabel"></span></button>
           </div>
           {% endif %}
-          <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>
-          <!-- KF-230: the vestigial hidden ⋮ button (KF-038) is removed; the
+{% if role.writes() %}          <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>{% endif %}
+          <!-- KF-230: the vestigial hidden kebab button (KF-038) is removed; the
                column menu opens on right-click only. -->
           <!-- KF-362: overdue tasks draw the line too; their count sits in
                the strip at the top of the column body. -->
@@ -476,11 +482,11 @@
             data-swimlane-name="{{ band.name }}"
             data-task-count="{{ band.task_count }}"
             data-collapsed="{% if folded %}1{% else %}0{% endif %}">
-          {% if folded %}
+          {% if folded && role.is_owner() %}
           <button type="button" class="swimlane-expand" data-lane-fold-toggle="{{ band.id }}" title="Expand {{ band.name }}" aria-label="Expand swimlane {{ band.name }}"><svg width="14" height="14" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>
           {% else %}
-          <span class="swimlane-name" data-lane-fold-toggle="{{ band.id }}" title="Click to collapse">{{ band.name }}</span>{% if !band.description.is_empty() %}<span class="swimlane-info" title="{{ band.description }}" aria-label="{{ band.description }}">i</span>{% endif %}
-          <span class="swimlane-grip" data-lane-resize="{{ band.id }}" title="Drag to resize" aria-hidden="true"></span>
+          <span class="swimlane-name"{% if role.is_owner() %} data-lane-fold-toggle="{{ band.id }}" title="Click to collapse"{% endif %}>{{ band.name }}</span>{% if !band.description.is_empty() %}<span class="swimlane-info" title="{{ band.description }}" aria-label="{{ band.description }}">i</span>{% endif %}
+          {% if role.is_owner() %}<span class="swimlane-grip" data-lane-resize="{{ band.id }}" title="Drag to resize" aria-hidden="true"></span>{% endif %}
           {% endif %}
         </th>
         {% endif %}
@@ -490,7 +496,7 @@
           {% if !layout.hide_swimlane_header %}
           <div class="lane-cellHead">
             <span class="lane-cellCount{% if cell.over_limit() %} lane-cellCount--over{% endif %}" data-lane-count data-limit="{% if let Some(limit) = cell.limit %}{{ limit }}{% endif %}"{% if cell.over_limit() %} title="*LIMIT EXCEEDED*"{% endif %}>{{ cell.count_label() }}</span>
-            {% if !folded %}<button type="button" class="lane-cellAdd" data-add-task-for="{{ cell.column_id }}" data-add-lane="{{ cell.swimlane_id }}" title="Add task" aria-label="Add task to {{ cell.column_name }} in {{ band.name }}"><svg width="18" height="18" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>{% endif %}
+            {% if !folded && role.writes() %}<button type="button" class="lane-cellAdd" data-add-task-for="{{ cell.column_id }}" data-add-lane="{{ cell.swimlane_id }}" title="Add task" aria-label="Add task to {{ cell.column_name }} in {{ band.name }}"><svg width="18" height="18" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>{% endif %}
           </div>
           {% endif %}
           {% if cell.overdue_count > 0 && !cell.collapsed %}<div class="columnOverdue" title="Overdue tasks: {{ cell.overdue_count }} / Total tasks: {{ cell.column_task_count }}"><span class="columnOverdue-text">{{ cell.overdue_count }} overdue task{% if cell.overdue_count > 1 %}s{% endif %}</span></div>{% endif %}
@@ -562,7 +568,7 @@
          board as a template lives with the layout tools. -->
     <button type="button" class="btn" id="save-template-btn">Save board as template</button>
   </div>
-  <p class="layout-view-hint">Drag a row to reorder, or use a column&#8217;s &#8942; menu.</p>
+  <p class="layout-view-hint">Drag a row to reorder, or use a column&#8217;s menu.</p>
   <!-- KF-180: the arrange area lists the existing columns and swimlanes with
        drag-reorder (SortableJS, wired in editLayout/initLayoutSortables). -->
   <div class="layout-arrange">
@@ -571,9 +577,9 @@
       <ul id="layout-columns-list" class="layout-list">
         {% for col in columns %}
         <li class="layout-list-item" data-column-id="{{ col.id }}" title="Drag to reorder">
-          <span class="layout-list-handle" aria-hidden="true">&#8942;&#8942;</span>
+          <span class="layout-list-handle" aria-hidden="true"><svg class="ico-grip" width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="1.5"/><circle cx="7.5" cy="2.5" r="1.5"/><circle cx="2.5" cy="8" r="1.5"/><circle cx="7.5" cy="8" r="1.5"/><circle cx="2.5" cy="13.5" r="1.5"/><circle cx="7.5" cy="13.5" r="1.5"/></svg></span>
           <span class="layout-list-name">{{ col.name }}</span>
-          <button type="button" class="layout-list-menu" data-layout-column-menu="{{ col.id }}" aria-haspopup="menu" aria-label="Menu for column {{ col.name }}">&#8942;</button>
+          <button type="button" class="layout-list-menu" data-layout-column-menu="{{ col.id }}" aria-haspopup="menu" aria-label="Menu for column {{ col.name }}"><svg class="ico-kebab" width="4" height="16" viewBox="0 0 4 16" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="2" cy="2.5" r="1.5"/><circle cx="2" cy="8" r="1.5"/><circle cx="2" cy="13.5" r="1.5"/></svg></button>
         </li>
         {% endfor %}
       </ul>
@@ -588,9 +594,9 @@
       <ul id="layout-swimlanes-list" class="layout-list">
         {% for band in bands %}
         <li class="layout-list-item" data-swimlane-id="{{ band.id }}" title="Drag to reorder">
-          <span class="layout-list-handle" aria-hidden="true">&#8942;&#8942;</span>
+          <span class="layout-list-handle" aria-hidden="true"><svg class="ico-grip" width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="1.5"/><circle cx="7.5" cy="2.5" r="1.5"/><circle cx="2.5" cy="8" r="1.5"/><circle cx="7.5" cy="8" r="1.5"/><circle cx="2.5" cy="13.5" r="1.5"/><circle cx="7.5" cy="13.5" r="1.5"/></svg></span>
           <span class="layout-list-name">{{ band.name }}</span>
-          <button type="button" class="layout-list-menu" data-layout-lane-menu="{{ band.id }}" aria-haspopup="menu" aria-label="Menu for swimlane {{ band.name }}">&#8942;</button>
+          <button type="button" class="layout-list-menu" data-layout-lane-menu="{{ band.id }}" aria-haspopup="menu" aria-label="Menu for swimlane {{ band.name }}"><svg class="ico-kebab" width="4" height="16" viewBox="0 0 4 16" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="2" cy="2.5" r="1.5"/><circle cx="2" cy="8" r="1.5"/><circle cx="2" cy="13.5" r="1.5"/></svg></button>
         </li>
         {% endfor %}
       </ul>
@@ -668,8 +674,8 @@
 </div>
 
 <div id="column-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Column menu">
-  <button type="button" data-col-act="edit">Edit</button>
-  <button type="button" data-col-act="collapse">Collapse</button>
+{% if role.is_owner() %}  <button type="button" data-col-act="edit">Edit</button>{% endif %}
+{% if role.is_owner() %}  <button type="button" data-col-act="collapse">Collapse</button>{% endif %}
   <button type="button" data-col-act="details">Show details</button>
   <button type="button" data-col-act="watch">Watch</button>
 </div>
@@ -690,15 +696,15 @@
      Move/Color open nested submenus; Start timer is a direct action (KF-329);
      Delete renders in ink black like KanbanFlow (KF-329). -->
 <div id="card-ctx-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Task menu">
-  <button type="button" data-card-act="timer"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.6V8l2.6 1.6"/></svg></span>Start timer</button>
-  <button type="button" data-card-act="move" aria-haspopup="menu"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5v13M1.5 8h13"/><path d="M5.8 3.7L8 1.5l2.2 2.2M5.8 12.3L8 14.5l2.2-2.2M3.7 5.8L1.5 8l2.2 2.2M12.3 5.8l2.2 2.2-2.2 2.2"/></svg></span>Move <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
-  <button type="button" data-card-act="color" aria-haspopup="menu"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 6.5h12M8 3v10"/></svg></span>Color <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
-  <button type="button" data-card-act="assign-members"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="5.8" cy="5.8" r="2.6"/><path d="M1.2 13.2c0-2.6 2.1-4.2 4.6-4.2s4.6 1.6 4.6 4.2"/><circle cx="11.4" cy="6.6" r="2.1"/><path d="M11.2 9.2c2 .4 3.6 1.8 3.6 4"/></svg></span>Assign members</button>
-  <button type="button" data-card-act="grouping-date" hidden><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10.5" rx="1.5"/><path d="M2 6.5h12M5.5 1.8v2.4M10.5 1.8v2.4"/></svg></span>Edit grouping date</button>
-  <button type="button" data-card-act="copy-here"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3.5v5A1.5 1.5 0 0 0 4 10h1.5"/></svg></span>Copy here</button>
-  <button type="button" data-card-act="copy"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3.5v5A1.5 1.5 0 0 0 4 10h1.5M9.5 7.5v4M7.5 9.5h4"/></svg></span>Copy task</button>
+{% if role.writes() %}  <button type="button" data-card-act="timer"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.6V8l2.6 1.6"/></svg></span>Start timer</button>{% endif %}
+{% if role.writes() %}  <button type="button" data-card-act="move" aria-haspopup="menu"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5v13M1.5 8h13"/><path d="M5.8 3.7L8 1.5l2.2 2.2M5.8 12.3L8 14.5l2.2-2.2M3.7 5.8L1.5 8l2.2 2.2M12.3 5.8l2.2 2.2-2.2 2.2"/></svg></span>Move <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>{% endif %}
+{% if role.writes() %}  <button type="button" data-card-act="color" aria-haspopup="menu"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 6.5h12M8 3v10"/></svg></span>Color <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>{% endif %}
+{% if role.writes() %}  <button type="button" data-card-act="assign-members"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="5.8" cy="5.8" r="2.6"/><path d="M1.2 13.2c0-2.6 2.1-4.2 4.6-4.2s4.6 1.6 4.6 4.2"/><circle cx="11.4" cy="6.6" r="2.1"/><path d="M11.2 9.2c2 .4 3.6 1.8 3.6 4"/></svg></span>Assign members</button>{% endif %}
+{% if role.writes() %}  <button type="button" data-card-act="grouping-date" hidden><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10.5" rx="1.5"/><path d="M2 6.5h12M5.5 1.8v2.4M10.5 1.8v2.4"/></svg></span>Edit grouping date</button>{% endif %}
+{% if role.writes() %}  <button type="button" data-card-act="copy-here"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3.5v5A1.5 1.5 0 0 0 4 10h1.5"/></svg></span>Copy here</button>{% endif %}
+{% if role.writes() %}  <button type="button" data-card-act="copy"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3.5v5A1.5 1.5 0 0 0 4 10h1.5M9.5 7.5v4M7.5 9.5h4"/></svg></span>Copy task</button>{% endif %}
   <button type="button" data-card-act="task-url"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.5 9.5l3-3"/><path d="M8.5 5.5l1.8-1.8a2.8 2.8 0 0 1 4 4L12.5 9.5a2.8 2.8 0 0 1-4 0"/><path d="M7.5 10.5l-1.8 1.8a2.8 2.8 0 0 1-4-4l1.8-1.8a2.8 2.8 0 0 1 4 0"/></svg></span>Task URL</button>
-  <button type="button" data-card-act="delete"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.3a1 1 0 0 0 1 .7h4.6a1 1 0 0 0 1-.7L12 4"/><path d="M6.5 7v4M9.5 7v4"/></svg></span>Delete</button>
+{% if role.writes() %}  <button type="button" data-card-act="delete"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.3a1 1 0 0 0 1 .7h4.6a1 1 0 0 0 1-.7L12 4"/><path d="M6.5 7v4M9.5 7v4"/></svg></span>Delete</button>{% endif %}
 </div>
 <div id="card-ctx-submenu" class="menu-pop menu-floating" hidden role="menu" aria-label="Task submenu"></div>
 <div id="bulk-ctx-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Selection menu">
@@ -988,6 +994,10 @@
           <option value="color">Update color</option>
           <option value="labels">Update labels</option>
           <option value="members">Update members</option>
+          <option value="subtasks">Update subtasks</option>
+          <option value="due_dates">Update due dates</option>
+          <option value="relations">Update relations</option>
+          <option value="delete">Delete tasks</option>
         </select>
       </label>
       <div data-mu-form="move">
@@ -1025,6 +1035,77 @@
           <span>Add members</span>
           <select id="mu-members-add" multiple size="4"></select>
         </label>
+      </div>
+      <div data-mu-form="subtasks" hidden>
+        <label class="dlg-field">
+          <span>Subtask</span>
+          <input type="text" id="mu-sub-name" maxlength="500" autocomplete="off" placeholder="Subtask name">
+        </label>
+        <div class="mu-inline">
+          <button type="button" class="btn btn-sm" id="mu-sub-add">Add</button>
+          <select id="mu-sub-template" aria-label="Subtask template"></select>
+          <button type="button" class="btn btn-sm" id="mu-sub-from-template">Add from template</button>
+        </div>
+        <ul id="mu-sub-rows" class="mu-chips" aria-label="Subtasks to add"></ul>
+      </div>
+      <div data-mu-form="due_dates" hidden>
+        <label class="dlg-field">
+          <span>Update</span>
+          <select id="mu-dd-mode">
+            <option value="add">Add due date</option>
+            <option value="change">Change due date</option>
+            <option value="delete">Delete due date</option>
+          </select>
+        </label>
+        <div id="mu-dd-fields">
+          <label class="dlg-field">
+            <span>Date</span>
+            <input type="date" id="mu-dd-date">
+          </label>
+          <label class="dlg-field">
+            <span>Time</span>
+            <input type="time" id="mu-dd-time">
+          </label>
+          <label class="dlg-field">
+            <span>Target column</span>
+            <select id="mu-dd-target"></select>
+          </label>
+          <label class="dlg-field" id="mu-dd-existing-field">
+            <span>Tasks that already have a due date</span>
+            <select id="mu-dd-existing">
+              <option value="skip">Skip the task</option>
+              <option value="replace">Replace its due date</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div data-mu-form="relations" hidden>
+        <label class="dlg-field">
+          <span>Remove relations</span>
+          <select id="mu-rel-remove" multiple size="4"></select>
+        </label>
+        <label class="dlg-field">
+          <span>Add relation</span>
+          <select id="mu-rel-kind">
+            <option value="related">Relates to</option>
+            <option value="blocked_by">Depends on</option>
+            <option value="blocks">Required by</option>
+            <option value="parent">Part of (umbrella)</option>
+            <option value="child">Umbrella of</option>
+          </select>
+        </label>
+        <label class="dlg-field">
+          <span>Search for task</span>
+          <input type="text" id="mu-rel-search" autocomplete="off" maxlength="200">
+        </label>
+        <div class="mu-inline">
+          <select id="mu-rel-target" aria-label="Task to relate"></select>
+          <button type="button" class="btn btn-sm" id="mu-rel-add">Add</button>
+        </div>
+        <ul id="mu-rel-rows" class="mu-chips" aria-label="Relations to add"></ul>
+      </div>
+      <div data-mu-form="delete" hidden>
+        <p class="dlg-text" id="mu-delete-note">The tasks move to the recycle bin, where they can be restored for 30 days.</p>
       </div>
     </section>
     <section data-mu-step="preview" aria-label="Updates preview" hidden>
@@ -1142,13 +1223,13 @@
   <button type="button" data-bm="filter" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" focusable="false"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg></span>Filter</button>
   <button type="button" data-bm="reports" role="menuitem" aria-haspopup="menu" aria-expanded="false"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" focusable="false"><rect x="2" y="9.5" width="3" height="4.5" rx="0.5"/><rect x="6.5" y="6.5" width="3" height="7.5" rx="0.5"/><rect x="11" y="3" width="3" height="11" rx="0.5"/></svg></span>Reports</button>
   <div class="menu-sep" role="separator" aria-hidden="true"></div>
-  <button type="button" data-bm="mass-update" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="2" y="2" width="9" height="9" rx="1.5"/><path d="M5 14h8a1 1 0 0 0 1-1V5"/><path d="M4.8 6.5l1.5 1.5 2.7-3"/></svg></span>Mass update</button>
-  <button type="button" data-bm="layout" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" focusable="false"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10z"/></svg></span>Board layout</button>
-  <button type="button" data-bm="settings" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" focusable="false"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg></span>Settings</button>
+{% if role.writes() %}  <button type="button" data-bm="mass-update" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="2" y="2" width="9" height="9" rx="1.5"/><path d="M5 14h8a1 1 0 0 0 1-1V5"/><path d="M4.8 6.5l1.5 1.5 2.7-3"/></svg></span>Mass update</button>{% endif %}
+{% if role.is_owner() %}  <button type="button" data-bm="layout" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" focusable="false"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10z"/></svg></span>Board layout</button>{% endif %}
+{% if role.is_owner() %}  <button type="button" data-bm="settings" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" focusable="false"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg></span>Settings</button>{% endif %}
   <button type="button" data-bm="members" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" focusable="false"><circle cx="8" cy="5.2" r="2.9"/><path d="M2.2 13.8c.6-3.2 2.9-5 5.8-5s5.2 1.8 5.8 5"/></svg></span>Members</button>
   <button type="button" data-bm="archive" role="menuitem" title="Download this board as a .tar.gz of readable JSON plus its attachment files"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M8 2v8M4.5 7L8 10.5 11.5 7M2.5 13.5h11"/></svg></span>Archive</button>
   <div class="menu-sep" role="separator" aria-hidden="true"></div>
-  <button type="button" data-bm="recycle" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.3a1 1 0 0 0 1 .7h4.6a1 1 0 0 0 1-.7L12 4"/><path d="M6.5 7v4M9.5 7v4"/></svg></span>Recycle bin</button>
+{% if role.writes() %}  <button type="button" data-bm="recycle" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.3a1 1 0 0 0 1 .7h4.6a1 1 0 0 0 1-.7L12 4"/><path d="M6.5 7v4M9.5 7v4"/></svg></span>Recycle bin</button>{% endif %}
   <div class="menu-sep" role="separator" aria-hidden="true"></div>
   <button type="button" data-bm="dark" role="menuitemcheckbox" aria-checked="false"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" focusable="false"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 2.4a5.6 5.6 0 0 1 0 11.2z" fill="currentColor"/></svg></span>Dark mode<span class="menu-switch" aria-hidden="true"><span class="menu-switch-knob"></span></span></button>
   <!-- KF-183: Color legend is a per-board toggle (menuitemcheckbox),
@@ -1302,10 +1383,20 @@
 
 <!-- Members / Invite dialog (single-admin honest copy) -->
 <div id="people-dialog" class="dlg-overlay" hidden>
-  <div class="dlg dlg-light" role="dialog" aria-label="Board members">
+  <div class="dlg dlg-light people-dlg" role="dialog" aria-label="Board members">
     <div class="dlg-title" id="people-dialog-title">Members</div>
-    <p id="people-dialog-body"></p>
+    <ul id="people-list" class="people-list"></ul>
+    <form id="people-add" class="people-add" hidden>
+      <input type="text" id="people-add-name" placeholder="Username" aria-label="Username" autocomplete="off" required>
+      <select id="people-add-role" aria-label="Role">
+        <option value="member">Member</option>
+        <option value="viewer">Viewer</option>
+      </select>
+      <button type="submit" class="btn btn-primary">Add</button>
+    </form>
+    <p id="people-error" class="people-error" role="alert" hidden></p>
     <div class="dlg-actions">
+      <button type="button" class="btn btn-danger" id="people-leave" hidden>Leave board</button>
       <button type="button" class="btn btn-primary" data-close-dialog>Close</button>
     </div>
   </div>

@@ -68,7 +68,7 @@ macro_rules! catalog {
 catalog! {
     BoardsRead, "boards.read", "boards", Read, "List and get boards, columns, swimlanes, palette, labels, fields and templates, and export board data.";
     BoardsCreate, "boards.create", "boards", Lead, "Create a board, blank or from a template.";
-    BoardsConfigure, "boards.configure", "boards", Admin, "Replace a board's config and change its settings.";
+    BoardsConfigure, "boards.configure", "boards", Admin, "Replace a board's config, change its settings and manage its members.";
     BoardsDelete, "boards.delete", "boards", Admin, "Delete a board.";
     ColumnsCreate, "columns.create", "columns", Lead, "Create a column, optionally marked as the done column.";
     ColumnsEdit, "columns.edit", "columns", Lead, "Rename a column and change its WIP limit, description, collapse state, config or done flag.";

@@ -22,8 +22,9 @@ use crate::db::{
     ModeSwitch, NewTimeEntry,
 };
 use crate::models::{
-    AccountId, AccountStatus, AuthScope, BoardAccess, DiskLimits, EntryKind, InstanceMode,
-    InstanceSettings, InviteRow, PruneSettings, Quotas, RateLimits, SECONDS_PER_DAY, Settings,
+    AccountId, AccountStatus, AuthScope, BoardAccess, BoardRole, DiskLimits, EntryKind,
+    InstanceMode, InstanceSettings, InviteRow, PruneSettings, Quotas, RateLimits, SECONDS_PER_DAY,
+    Settings,
 };
 
 /// Days since its last use for a board well past the default inactivity limit.
@@ -1548,6 +1549,7 @@ pub(super) fn admin_settings(mode: &str, cap: u32) -> Value {
         "limits": RateLimits::default(),
         "disk": DiskLimits::default(),
         "prune": PruneSettings::default(),
+        "disable_tips": false,
     })
 }
 
@@ -1717,6 +1719,26 @@ async fn prune_should_keep_a_pending_account_without_boards() {
     assert_eq!((status.boards_deleted, status.accounts_deleted), (1, 1));
     assert!(db.user(erin.as_str()).expect("read").is_none());
     assert_eq!(status_of(&fx.instance, &carol_id), AccountStatus::Pending);
+}
+
+#[tokio::test]
+async fn prune_should_keep_an_account_that_only_joined_a_board() {
+    let Requested { fx, .. } = requested().await;
+    let db = &fx.instance.db;
+    let keeper = db.create_user("keeper").expect("owner");
+    let board = db.create_board(&keeper, "Shared").expect("board");
+    let frank = db.create_user("frank").expect("member");
+    db.set_board_member(&board, "frank", BoardRole::Viewer)
+        .expect("join");
+    let start = Utc::now().timestamp();
+    db.touch_account(&frank, start - PRUNED_LONG_AGO_DAYS * SECONDS_PER_DAY);
+
+    let status = db
+        .prune_unused_boards(start + SECONDS_PER_DAY)
+        .expect("prune")
+        .expect("ran");
+    assert_eq!(status.accounts_deleted, 0);
+    assert!(db.user(frank.as_str()).expect("read").is_some());
 }
 
 #[tokio::test]

@@ -1033,6 +1033,7 @@ impl Builder<'_> {
                     token_id: None,
                     kind: comment.kind,
                     edited_at: comment.edited_at,
+                    reactions: Vec::new(),
                 })
             })
             .collect()

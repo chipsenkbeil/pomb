@@ -369,3 +369,34 @@ fn a_selected_highlighted_card_should_keep_its_stripe_with_and_without_hover() {
         );
     }
 }
+
+const TEXT_GLYPHS: [&str; 6] = ["☰", "⋮", "&#9776;", "&#8942;", "&vellip;", "&#x22ee;"];
+
+#[tokio::test]
+async fn the_board_page_should_draw_its_icons_as_svg_not_text_glyphs() {
+    let fx = Fixture::new();
+    fx.task_with(&["needs:human"]).await;
+    let html = fx.board_html().await;
+    for glyph in TEXT_GLYPHS {
+        assert!(!html.contains(glyph), "{glyph}");
+    }
+    assert!(html.contains("id=\"filter-labels-toggle\""));
+    assert!(html.contains("class=\"ico-kebab\""));
+}
+
+#[test]
+fn the_card_script_should_set_no_text_glyph_markup() {
+    let script = include_str!("../../static/app.js");
+    for line in script.lines().filter(|l| !l.trim_start().starts_with("//")) {
+        for glyph in TEXT_GLYPHS {
+            assert!(!line.contains(glyph), "{glyph} in {line}");
+        }
+    }
+}
+
+#[test]
+fn the_card_script_should_draw_its_script_built_icons_as_svg() {
+    let script = include_str!("../../static/app.js");
+    assert!(script.contains("class=\"ico-kebab\""));
+    assert!(script.contains("class=\"ico-grip\""));
+}

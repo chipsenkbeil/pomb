@@ -1477,21 +1477,24 @@ mod tests {
         let seeded = seed(dir.path());
         seeded
             .db
-            .create_entry_at(NewTimeEntry {
-                task_id: Some(&seeded.task),
-                started_at: "2026-10-29T10:00:00+00:00",
-                minutes: 10,
-                seconds: 600,
-                note: "by handle",
-                kind: EntryKind::Manual,
-                interrupted: false,
-                interrupt_reason: None,
-                labels: &[],
-                created_by: "alice",
-                activity_id: None,
-                role: Some("reviewer"),
-                token_name: Some("ci-bot"),
-            })
+            .create_entry_at(
+                &seeded.account,
+                NewTimeEntry {
+                    task_id: Some(&seeded.task),
+                    started_at: "2026-10-29T10:00:00+00:00",
+                    minutes: 10,
+                    seconds: 600,
+                    note: "by handle",
+                    kind: EntryKind::Manual,
+                    interrupted: false,
+                    interrupt_reason: None,
+                    labels: &[],
+                    created_by: "alice",
+                    activity_id: None,
+                    role: Some("reviewer"),
+                    token_name: Some("ci-bot"),
+                },
+            )
             .expect("entry");
         let doc = document(&archive_of(&seeded));
         let entries = doc["tasks"][0]["time_entries"].as_array().expect("entries");

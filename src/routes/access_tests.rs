@@ -11,14 +11,14 @@ use super::passkey_tests::{Reply, SoftAuthenticator, add_passkey, call, session_
 use super::server::{passkey_mode, unthrottled_limits};
 use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
-use crate::auth::{PENDING_ROUTES, new_api_token_record, required_permission};
+use crate::auth::{PENDING_ROUTES, new_api_token_record, required_permission, required_role};
 use crate::db::{
     AccountDb, BookmarkAdd, BootstrapToken, Change, Db, FeedAdd, FencedWrite, FieldCreateOutcome,
     LinkAddOutcome, NewComment, NewWebhook,
 };
 use crate::models::{
-    AccountId, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind, FieldOwner,
-    InstanceMode, LinkKind, ReportBookmark, SubtaskTemplate, WebhookEvent,
+    AccountId, Actor, ActorKind, AuthScope, BoardAccess, BoardRole, FieldDefRow, FieldKind,
+    FieldOwner, InstanceMode, LinkKind, ReportBookmark, SubtaskTemplate, WebhookEvent,
 };
 
 /// Largest response body a test reads.
@@ -48,6 +48,8 @@ const SUB_ID_PARAMS: &[&str] = &[
 pub(super) struct Ids {
     /// The account itself.
     account: String,
+    /// The account's handle, which names it in a request body.
+    handle: String,
     /// The board every other row sits on.
     board: String,
     /// A second board, for routes that name two.
@@ -344,6 +346,7 @@ pub(super) fn seed(
     let (attachment, version) = seed_attachment(&owned, &task);
     Ids {
         account: account.as_str().to_string(),
+        handle: name.to_ascii_lowercase(),
         link: seed_link(&owned, &task, &task2),
         comment: seed_comment(&owned, &task, name),
         attachment,
@@ -744,6 +747,9 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
             return Some(Payload::Form("name=Renamed".to_string()));
         }
         (&Method::PUT, "/api/boards/:id/config") => json!({"legend_visible": true}),
+        (&Method::PUT, "/api/boards/:id/members") => {
+            json!({"username": body_ids.handle, "role": "viewer"})
+        }
         (&Method::POST, "/api/boards/:id/fields") => {
             json!({"key": "new", "label": "New", "kind": "text"})
         }
@@ -798,6 +804,9 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
         }
         (&Method::POST, "/api/tasks/:id/comments") => json!({"body": "hello"}),
         (&Method::PATCH, "/api/tasks/:id/comments/:comment_id") => json!({"body": "edited"}),
+        (&Method::POST, "/api/tasks/:id/comments/:comment_id/reactions") => {
+            json!({"emoji": "\u{1F44D}"})
+        }
         (&Method::PATCH, "/api/tasks/:id/attachments/:attachment_id") => json!({"name": "b"}),
         (&Method::POST, "/api/tasks/:id/attachments/document") => {
             json!({"name": "notes", "text": "hi"})
@@ -833,6 +842,7 @@ fn missing() -> Ids {
     let fresh = || uuid::Uuid::new_v4().to_string();
     Ids {
         account: fresh(),
+        handle: fresh(),
         board: fresh(),
         board2: fresh(),
         column: fresh(),
@@ -873,6 +883,58 @@ fn without_ids(text: &str, ids: &[&Ids]) -> String {
 #[tokio::test]
 async fn cross_account_matrix_should_answer_not_found_for_every_owned_route() {
     attack_every_owned_route(&seeded().await).await;
+}
+
+/// A viewer and a member of A's board are refused with a 403, and change nothing, on every Board
+/// and Task route that needs a higher role, and on every Entity route that does.
+#[tokio::test]
+async fn cross_account_matrix_should_refuse_a_viewer_and_a_member_on_routes_above_their_role() {
+    let fx = accounts().await;
+    let mut covered = 0;
+    for role in [BoardRole::Viewer, BoardRole::Member] {
+        fx.db
+            .set_board_member(&fx.a_ids.board, &fx.b_ids.handle, role)
+            .expect("join");
+        for (method, path, class, _) in ROUTE_ACCESS {
+            if !matches!(
+                class,
+                RouteClass::Board | RouteClass::Task | RouteClass::Entity
+            ) || required_role(method, path) <= role
+            {
+                continue;
+            }
+            let foreign = uri(*class, path, &fx.a_ids, &fx.a_ids);
+            let attack = payload(method, path, &fx.b_ids);
+            let tasks = format!("/api/boards/{}/tasks", fx.a_ids.board);
+            let (_, before) =
+                send(&fx.app, Who::Token(&fx.a_token), &Method::GET, &tasks, None).await;
+            let (status, text) = send(
+                &fx.app,
+                Who::Token(&fx.b_token),
+                method,
+                &foreign,
+                attack.as_ref(),
+            )
+            .await;
+            if *class == RouteClass::Entity {
+                assert!(!status.is_success(), "{role:?} {method} {path}: {text}");
+            } else {
+                assert_eq!(
+                    status,
+                    StatusCode::FORBIDDEN,
+                    "{role:?} {method} {path}: {text}"
+                );
+            }
+            let (_, after) =
+                send(&fx.app, Who::Token(&fx.a_token), &Method::GET, &tasks, None).await;
+            assert!(
+                after == before,
+                "{role:?} {method} {path}: the refused request changed the board"
+            );
+            covered += 1;
+        }
+    }
+    assert!(covered > MIN_MATRIX_ROUTES, "covered only {covered}");
 }
 
 /// The matrix holds for accounts made through multi mode's real setup and invite registration,
@@ -1746,7 +1808,8 @@ struct Assigned {
 async fn assigned() -> Assigned {
     let seeded = seeded().await;
     let db = Db::connect(seeded.path.to_str().expect("utf8 path")).expect("connect");
-    let granted = seed(&db, &seeded.a, "Granted", String::new(), String::new());
+    let mut granted = seed(&db, &seeded.a, "Granted", String::new(), String::new());
+    granted.handle = "bob".to_string();
     let (mut record, token) = new_api_token_record(&seeded.a, "Scoped", AuthScope::Admin, None);
     record.boards = BoardAccess::Only(BTreeSet::from([
         granted.board.clone(),

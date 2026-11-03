@@ -10,10 +10,11 @@ use super::events::txn_record_events;
 use super::notifications::txn_record_task_notifications;
 use super::outbox::txn_queue_events;
 use super::{
-    ACCOUNT_USAGE, AVATARS, BOARDS, Bound, COLUMNS, Db, DbResult, FIELD_DEFS,
-    MAX_FIELD_DEF_ROW_BYTES, MAX_TASK_ROW_BYTES, QuotaExceeded, Rows, SWIMLANES, Store,
-    TASK_COLORS, TASKS, TEMPLATES, TIME_ENTRIES, WEBHOOKS, board_use_in, read_in, rows_in,
-    txn_member_quotas, txn_refuse_over_quota,
+    ACCOUNT_USAGE, AVATARS, BOARDS, Bound, COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, Db,
+    DbResult, FIELD_DEFS, FIELDS_BY_BOARD, MAX_FIELD_DEF_ROW_BYTES, MAX_TASK_ROW_BYTES,
+    QuotaExceeded, Rows, SWIMLANES, SWIMLANES_BY_BOARD, Store, TASK_COLORS, TASKS, TASKS_BY_COLUMN,
+    TEMPLATES, TIME_ENTRIES, WEBHOOKS, board_use_in, read_in, rows_in, txn_member_quotas,
+    txn_mmap_get, txn_refuse_over_quota,
 };
 use crate::disk::MIB;
 use crate::models::{
@@ -403,6 +404,26 @@ fn task_bytes(raw: &[u8]) -> DbResult<u64> {
     Ok(raw.len() as u64 + files)
 }
 
+/// Returns the bytes the board `board_id` counts against its owner: its tasks and layout rows,
+/// read inside an open write transaction. Recycle bin rows count against the account that
+/// deleted them.
+pub(super) fn txn_board_bytes(txn: &WriteTransaction, board_id: &str) -> DbResult<u64> {
+    let column_ids = txn_mmap_get(txn, COLUMNS_BY_BOARD, board_id)?;
+    let swimlane_ids = txn_mmap_get(txn, SWIMLANES_BY_BOARD, board_id)?;
+    let color_ids = txn_mmap_get(txn, COLORS_BY_BOARD, board_id)?;
+    let field_ids = txn_mmap_get(txn, FIELDS_BY_BOARD, board_id)?;
+    let mut task_ids = Vec::new();
+    for column_id in &column_ids {
+        task_ids.extend(txn_mmap_get(txn, TASKS_BY_COLUMN, column_id)?);
+    }
+    Ok(txn_task_bytes(txn, &task_ids)?
+        + txn_rows_bytes(txn, BOARDS, &[board_id.to_string()])?
+        + txn_rows_bytes(txn, COLUMNS, &column_ids)?
+        + txn_rows_bytes(txn, SWIMLANES, &swimlane_ids)?
+        + txn_rows_bytes(txn, TASK_COLORS, &color_ids)?
+        + txn_rows_bytes(txn, FIELD_DEFS, &field_ids)?)
+}
+
 /// Returns the bytes the stored rows of `task_ids` and their attachment files take, read inside
 /// an open write transaction, for a delete that removes them all.
 pub(super) fn txn_task_bytes(txn: &WriteTransaction, task_ids: &[String]) -> DbResult<u64> {
@@ -590,12 +611,12 @@ mod tests {
 
     use super::*;
     use crate::db::{
-        ColumnDeleteOutcome, ColumnPatch, FieldCreateOutcome, META, NewWebhook, SCHEMA_VERSION_KEY,
-        SwimlanePatch, WebhookPatch,
+        ColumnDeleteOutcome, ColumnPatch, FieldCreateOutcome, META, NewWebhook, OwnerChange,
+        SCHEMA_VERSION_KEY, SwimlanePatch, WebhookPatch,
     };
     use crate::models::{
-        AccountId, Actor, BIN_RETENTION_DAYS, FieldColumn, FieldKind, FieldOwner, InstanceMode,
-        LinkKind, SECONDS_PER_DAY, WebhookEvent,
+        AccountId, Actor, BIN_RETENTION_DAYS, BoardRole, FieldColumn, FieldKind, FieldOwner,
+        InstanceMode, LinkKind, SECONDS_PER_DAY, WebhookEvent,
     };
 
     /// An open database with its admin and a member with one column.
@@ -1114,5 +1135,125 @@ mod tests {
             "a board and its column count"
         );
         assert_counts_match(&db);
+    }
+
+    #[test]
+    fn changing_the_board_owner_should_move_the_boards_bytes_and_keep_the_counts_true() {
+        let fx = fixture();
+        let carol = fx.db.create_user("carol").expect("carol");
+        let task = fx
+            .db
+            .create_task(&fx.column, None, "Task", 1, None)
+            .expect("task");
+        fx.db
+            .add_attachment(
+                &task,
+                "a.bin",
+                "application/octet-stream",
+                &[3; 2048],
+                Actor::SYSTEM,
+            )
+            .expect("attach")
+            .expect("task");
+        let binned = fx
+            .db
+            .create_task(&fx.column, None, "Binned", 1, None)
+            .expect("task");
+        assert!(fx.db.delete_task(&binned, Actor::SYSTEM).expect("delete"));
+        fx.db
+            .add_board_feed(&fx.board, "Calendar", "feed-secret")
+            .expect("feed");
+        let held = stored(&fx.db, &fx.member);
+        assert!(held > 2048);
+        fx.db
+            .set_board_member(&fx.board, "carol", BoardRole::Member)
+            .expect("join");
+        let outcome = fx
+            .db
+            .change_board_owner(&fx.board, &fx.member, "carol")
+            .expect("change");
+        assert!(matches!(outcome, OwnerChange::Changed(_)));
+        let (kept, moved) = (stored(&fx.db, &fx.member), stored(&fx.db, &carol));
+        assert!(kept + moved < held, "the dropped feed frees its bytes");
+        assert!(
+            moved > 2048 && kept > 0,
+            "the bin row stays with its deleter"
+        );
+        assert_counts_match(&fx.db);
+        assert!(
+            fx.db
+                .board_by_feed_token("feed-secret")
+                .expect("feed")
+                .is_none(),
+            "the previous owner's calendar feed stops working"
+        );
+        let roles: Vec<_> = fx
+            .db
+            .board_members(&fx.board)
+            .expect("members")
+            .into_iter()
+            .map(|member| (member.user.username, member.role))
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                ("carol".to_string(), BoardRole::Owner),
+                ("bob".to_string(), BoardRole::Member)
+            ]
+        );
+        assert_eq!(fx.db.joined_boards(&fx.member).expect("joined").len(), 1);
+        assert!(fx.db.joined_boards(&carol).expect("joined").is_empty());
+        let again = fx
+            .db
+            .change_board_owner(&fx.board, &fx.member, "carol")
+            .expect("change");
+        assert!(matches!(again, OwnerChange::NoBoard));
+    }
+
+    #[test]
+    fn changing_the_board_owner_should_refuse_a_stranger_the_owner_and_a_full_account() {
+        let fx = fixture();
+        let carol = fx.db.create_user("carol").expect("carol");
+        let change = |handle: &str| {
+            fx.db
+                .change_board_owner(&fx.board, &fx.member, handle)
+                .expect("change")
+        };
+        assert!(matches!(change("carol"), OwnerChange::NotMember));
+        assert!(matches!(change("nobody"), OwnerChange::NoAccount));
+        assert!(matches!(change("bob"), OwnerChange::IsOwner));
+        fx.db
+            .set_board_member(&fx.board, "carol", BoardRole::Viewer)
+            .expect("join");
+        fx.db
+            .update_instance_settings(|settings| settings.quotas.boards_per_account = 1)
+            .expect("quotas");
+        fx.db.create_board(&carol, "Held").expect("board");
+        let refused = fx
+            .db
+            .change_board_owner(&fx.board, &fx.member, "carol")
+            .expect_err("quota");
+        assert!(refused.downcast_ref::<QuotaExceeded>().is_some());
+        assert_counts_match(&fx.db);
+        fx.db
+            .update_instance_settings(|settings| {
+                settings.quotas.boards_per_account = 10;
+                settings.quotas.stored_mib_per_account = 0;
+            })
+            .expect("quotas");
+        let full = fx
+            .db
+            .change_board_owner(&fx.board, &fx.member, "carol")
+            .expect_err("bytes");
+        assert!(full.downcast_ref::<QuotaExceeded>().is_some());
+        assert_counts_match(&fx.db);
+        let members = fx.db.board_members(&fx.board).expect("members");
+        assert_eq!(
+            members
+                .iter()
+                .map(|member| member.user.username.as_str())
+                .collect::<Vec<_>>(),
+            ["bob", "carol"]
+        );
     }
 }

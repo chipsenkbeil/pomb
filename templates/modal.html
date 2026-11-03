@@ -73,6 +73,7 @@
           <button type="button" class="tm-sect-kebab" data-tm-menu="tm-comments-menu" aria-label="Comment section options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="currentColor"/><circle cx="2.5" cy="8" r="2.3" fill="currentColor"/><circle cx="2.5" cy="13.5" r="2.3" fill="currentColor"/></svg></button>
           <div id="tm-comments-menu" class="tm-menu" hidden role="menu">
             <button type="button" data-tm-act="add-comment">Add comment</button>
+            <button type="button" data-tm-act="comment-order">Change order - newest to oldest</button>
           </div>
         </div>
         {% let kinds = task.comment_kinds() %}
@@ -100,6 +101,7 @@
                 </div>
               </div>
               <div class="tm-comment-body"><div class="tm-md tm-md-rendered">{{ c.body_html|safe }}</div><div class="tm-md-raw">{{ c.body }}</div></div>
+              {% if !c.reactions.is_empty() %}<div class="tm-reactions">{% for p in c.reactions %}<button type="button" class="tm-reaction{% if p.mine %} tm-reaction-mine{% endif %}" data-comment-react="{{ c.id }}" data-emoji="{{ p.emoji }}" aria-pressed="{{ p.mine }}">{{ p.emoji }} <span class="tm-reaction-count">{{ p.count }}</span></button>{% endfor %}</div>{% endif %}
             </div>
             <div id="tm-cmenu-{{ c.id }}" class="tm-menu tm-cmenu" hidden role="menu">
               <button type="button" data-comment-edit="{{ c.id }}">Edit</button>
@@ -304,10 +306,10 @@
           <div class="tm-side-body" id="tm-body-claim">
             {% if let Some(fence) = task.claim_fence %}
             <p class="tm-side-note" id="modal-claim">{{ task.claim_title }}{% if let Some(role) = task.claim_role %} ({{ role }}){% endif %}</p>
-            <button type="button" class="tm-side-btn" data-claim-release="{{ fence }}">Release claim</button>
+            {% if role.writes() %}<button type="button" class="tm-side-btn" data-claim-release="{{ fence }}">Release claim</button>{% endif %}
             {% else %}
             <p class="tm-side-note" id="modal-claim">Not claimed</p>
-            <label class="tm-claim-lease">Lease
+            {% if role.writes() %}<label class="tm-claim-lease">Lease
               <select id="tm-claim-ttl" aria-label="Claim lease">
                 <option value="3600">1 hour</option>
                 <option value="14400" selected>4 hours</option>
@@ -315,7 +317,7 @@
                 <option value="86400">24 hours</option>
               </select>
             </label>
-            <button type="button" class="tm-side-btn" data-claim-take>Claim</button>
+            <button type="button" class="tm-side-btn" data-claim-take>Claim</button>{% endif %}
             {% endif %}
             <div class="tm-field-error" id="tm-claim-error" role="alert" hidden></div>
           </div>
@@ -407,7 +409,7 @@
          right edge, against the dimmed board — circle + label pill rows,
          top→bottom: Add, Move, Timer, Reports, More, Delete (KF-252). -->
     <div class="task-modal-iconbar" role="toolbar" aria-label="Task actions">
-      <div class="tm-action">
+      {% if role.writes() %}<div class="tm-action">
         <button type="button" class="tm-icon-btn" data-tm-menu="tm-add-menu" aria-haspopup="menu" aria-label="Add">
           <span class="tm-icon tm-glyph-lg" aria-hidden="true">+</span><span class="tm-icon-label">Add</span>
         </button>
@@ -446,7 +448,7 @@
           <button type="button" data-tm-act="start-stopwatch">Start Stopwatch</button>
           <button type="button" data-tm-act="time-log">Time log</button>
         </div>
-      </div>
+      </div>{% endif %}
       <div class="tm-action">
         <button type="button" class="tm-icon-btn" data-tm-menu="tm-reports-menu" aria-haspopup="menu" aria-label="Reports">
           <span class="tm-icon" aria-hidden="true"><svg width="22" height="20" viewBox="0 0 22 20" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11,0.5 21,5.2 11,8.5 1,5.2"/><path d="M1.5 9.5 L11 13.5 L20.5 9.5"/><path d="M1.5 14.5 L11 18.5 L20.5 14.5"/></g></svg></span><span class="tm-icon-label">Reports</span>
@@ -471,11 +473,11 @@
           <button type="button" data-tm-act="shortcuts">Keyboard shortcuts</button>
         </div>
       </div>
-      <div class="tm-action">
+      {% if role.writes() %}<div class="tm-action">
         <button type="button" class="tm-icon-btn" data-tm-act="delete" aria-label="Delete">
           <span class="tm-icon" aria-hidden="true">&#128465;</span><span class="tm-icon-label">Delete</span>
         </button>
-      </div>
+      </div>{% endif %}
     </div><!-- /task-modal-iconbar -->
   </div><!-- /task-modal-wrap -->
 </div>

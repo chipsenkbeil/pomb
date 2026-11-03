@@ -268,6 +268,7 @@ async fn history_should_hold_comments_and_deleted_tasks() {
                 token_id: None,
                 kind: None,
                 edited_at: None,
+                reactions: Vec::new(),
             });
             ((), true)
         })

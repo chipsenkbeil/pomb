@@ -199,10 +199,7 @@ async fn board_and_settings_pages_should_show_the_full_name() {
     )
     .await;
     let board = fx.page(&format!("/b/{}", fx.board)).await;
-    assert!(
-        board.contains(r#"title="Board owner: Ada Lovelace""#),
-        "{board}"
-    );
+    assert!(board.contains(r#"title="Ada Lovelace, owner""#), "{board}");
     let settings = fx.page("/settings").await;
     assert!(
         settings.contains(r#"id="profile-full-name""#)
@@ -651,4 +648,54 @@ async fn every_page_clock_time_should_carry_its_instant_for_the_browser() {
             "{instant}"
         );
     }
+}
+
+#[tokio::test]
+async fn tips_should_hide_when_the_account_turns_them_off() {
+    let fx = Fixture::new();
+    let uri = format!("/b/{}", fx.board);
+    let off = fx
+        .send("PUT", "/api/settings", Some(json!({ "show_tips": false })))
+        .await;
+    assert_eq!(off.body["show_tips"], json!(false));
+    let hidden = fx.page(&uri).await;
+    assert!(!hidden.contains(r#"id="help-tips""#), "{hidden}");
+    fx.send("PUT", "/api/settings", Some(json!({ "show_tips": true })))
+        .await;
+    let back = fx.page(&uri).await;
+    assert!(back.contains(r#"data-hint="members""#), "{back}");
+}
+
+#[tokio::test]
+async fn tips_should_hide_for_every_account_when_the_admin_disables_them() {
+    let fx = Fixture::new();
+    let uri = format!("/b/{}", fx.board);
+    fx.db
+        .update_instance_settings(|settings| settings.disable_tips = true)
+        .expect("disable");
+    let disabled = fx.page(&uri).await;
+    assert!(!disabled.contains(r#"id="help-tips""#), "{disabled}");
+    let own = fx
+        .send("PUT", "/api/settings", Some(json!({ "show_tips": true })))
+        .await;
+    assert_eq!(own.body["show_tips"], json!(true));
+    let still = fx.page(&uri).await;
+    assert!(!still.contains(r#"id="help-tips""#), "{still}");
+    fx.db
+        .update_instance_settings(|settings| settings.disable_tips = false)
+        .expect("enable");
+    let enabled = fx.page(&uri).await;
+    assert!(enabled.contains(r#"id="help-tips""#), "{enabled}");
+}
+
+#[tokio::test]
+async fn tip_switches_should_be_stored() {
+    let fx = Fixture::new();
+    fx.send("PUT", "/api/settings", Some(json!({ "show_tips": false })))
+        .await;
+    fx.db
+        .update_instance_settings(|settings| settings.disable_tips = true)
+        .expect("disable");
+    assert!(!fx.db.settings(&fx.admin).expect("settings").show_tips);
+    assert!(fx.db.instance_settings().expect("instance").disable_tips);
 }

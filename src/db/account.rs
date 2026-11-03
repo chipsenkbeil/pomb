@@ -13,28 +13,29 @@ use serde::de::DeserializeOwned;
 use tokio::sync::watch;
 
 use super::{
-    AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardSnapshot,
-    BookmarkAdd, BookmarkPatch, COLUMNS, Change, ChangeOutcome, ClaimOutcome, ClaimRequest,
-    ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Commit,
-    CopyTasks, Db, DbResult, DeviceGrant, EventRead, FIELD_DEFS, FeedAdd, FencedWrite,
-    FieldCreateOutcome, Incoming, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, MoveGuards,
-    MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage,
-    PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome, Reads, RestoreOutcome, Rows, SWIMLANES,
-    SessionEndOutcome, SessionListing, SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
-    SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext,
-    TemplateDeleteOutcome, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board, index_in,
-    link_event_target, links_blocked_in, no_signed_in_account, owns_board_in, read_in,
-    redacted_history,
+    AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardMember,
+    BoardSnapshot, BookmarkAdd, BookmarkPatch, COLUMNS, Change, ChangeOutcome, ClaimOutcome,
+    ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite,
+    Commit, CopyTasks, Db, DbResult, DeviceGrant, EventRead, FIELD_DEFS, FeedAdd, FencedWrite,
+    FieldCreateOutcome, Incoming, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, LinkEdit,
+    LinkRefusal, MemberSet, MoveGuards, MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry,
+    NewWebhook, NotificationPage, OwnerChange, PasskeyAddOutcome, PasskeyDeleteOutcome,
+    PurgeOutcome, Reads, RestoreOutcome, Rows, SWIMLANES, SessionEndOutcome, SessionListing,
+    SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
+    SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome,
+    UmbrellaChange, WEBHOOKS, WebhookPatch, first_board, index_in, link_event_target,
+    links_blocked_in, no_signed_in_account, read_in, redacted_history, role_in, task_role_in,
 };
 use crate::auth::{
-    AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission,
+    AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission, required_role,
 };
 use crate::models::{
     AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, AuthScope, Avatar, BinRow,
-    BoardAccess, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange, DeviceAuthRow,
-    EventChange, EventKind, FieldDefRow, LinkKind, Numbering, PasskeyRow, PruneNotice,
-    RecoveryCodeRow, ReportBookmark, Settings, SwimlaneRow, TaskAttachment, TaskBrief, TaskCard,
-    TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow, WebhookRow,
+    BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange,
+    DeviceAuthRow, EventChange, EventKind, FieldDefRow, LinkKind, Numbering, PasskeyRow,
+    PruneNotice, RecoveryCodeRow, ReportBookmark, Settings, SwimlaneRow, TaskAttachment, TaskBrief,
+    TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
+    WebhookRow,
 };
 use crate::permissions::Permission;
 
@@ -55,6 +56,29 @@ impl fmt::Display for BoardDenied {
 }
 
 impl std::error::Error for BoardDenied {}
+
+/// A board the account holds a role on that does not allow the route, which the API answers with
+/// a 403.
+#[derive(Clone, Debug)]
+pub struct RoleDenied {
+    /// The board whose role falls short.
+    pub board_id: String,
+    /// The lowest role the refused route needs.
+    pub needs: BoardRole,
+}
+
+impl fmt::Display for RoleDenied {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "your role on board {} is below the {} role this route needs",
+            self.board_id,
+            self.needs.as_str()
+        )
+    }
+}
+
+impl std::error::Error for RoleDenied {}
 
 /// A row the bound account owns, checked in the read transaction that loaded it, so a mutation
 /// that takes it can only reach that account's data.
@@ -281,7 +305,7 @@ impl LinkReads {
         let board = match read_in::<ColumnRow>(&self.txn, COLUMNS, id)? {
             Some(column)
                 if self.access.allows(&column.board_id)
-                    && owns_board_in(&self.txn, &self.account, &column.board_id)? =>
+                    && role_in(&self.txn, &self.account, &column.board_id)?.is_some() =>
             {
                 if self.record_use {
                     self.db
@@ -308,9 +332,11 @@ impl LinkReads {
         if let Some(name) = self.board_names.get(id) {
             return Ok(name.clone());
         }
-        let name = read_in::<BoardRow>(&self.txn, BOARDS, id)?
-            .filter(|board| board.owner_id == self.account.as_str() && self.access.allows(id))
-            .map(|board| board.name);
+        let name = if self.access.allows(id) && role_in(&self.txn, &self.account, id)?.is_some() {
+            read_in::<BoardRow>(&self.txn, BOARDS, id)?.map(|board| board.name)
+        } else {
+            None
+        };
         self.board_names.insert(id.to_string(), name.clone());
         Ok(name)
     }
@@ -349,21 +375,21 @@ impl LinkReads {
         for link in &mut links {
             link.board_id = self.task_board(&link.target_id)?;
         }
-        if matches!(self.access, BoardAccess::Only(_)) {
-            links.retain(|link| link.board_id.is_some());
-        }
+        links.retain(|link| link.board_id.is_some());
         Ok(links)
     }
 
     /// Returns whether the token may read `event`: a link event that names a task outside its set
     /// stays hidden.
     fn shows_event(&mut self, event: &TaskEvent) -> DbResult<bool> {
-        match link_event_target(event) {
-            Some(target) if matches!(self.access, BoardAccess::Only(_)) => {
-                Ok(self.head(target)?.is_some())
-            }
-            _ => Ok(true),
+        let Some(target) = link_event_target(event) else {
+            return Ok(true);
+        };
+        if matches!(self.access, BoardAccess::Only(_)) {
+            return Ok(self.head(target)?.is_some());
         }
+        let exists = read_in::<TaskHead>(&self.txn, TASKS, target)?.is_some();
+        Ok(!exists || self.head(target)?.is_some())
     }
 
     /// Returns whether column `id` sits on a board of the account that lies outside the token's
@@ -373,7 +399,7 @@ impl LinkReads {
             return Ok(false);
         };
         Ok(!self.access.allows(&column.board_id)
-            && owns_board_in(&self.txn, &self.account, &column.board_id)?)
+            && role_in(&self.txn, &self.account, &column.board_id)?.is_some())
     }
 
     /// Returns the children named by the `child` links among `links`, in link order. A child the
@@ -505,6 +531,8 @@ pub struct AccountDb {
     boards: BoardAccess,
     /// The permission a [`BoardDenied`] names.
     permission: Permission,
+    /// The lowest role on a board that the route behind the handle accepts.
+    needs: BoardRole,
     /// The API token behind the handle, whose set a board it creates joins.
     token_id: Option<String>,
     /// Serializes this account's timer reads and writes.
@@ -521,6 +549,7 @@ impl Db {
             account: account.clone(),
             boards: BoardAccess::All,
             permission: Permission::BoardsRead,
+            needs: BoardRole::Owner,
             token_id: None,
         }
     }
@@ -545,12 +574,14 @@ impl FromRequestParts<AppState> for AccountDb {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
         match parts.extensions.get::<AuthUser>() {
             Some(user) if user.status == AccountStatus::Active => {
-                let permission = parts
-                    .extensions
-                    .get::<MatchedPath>()
+                let matched = parts.extensions.get::<MatchedPath>();
+                let permission = matched
                     .and_then(|path| required_permission(&parts.method, path.as_str()))
                     .unwrap_or(Permission::BoardsRead);
-                Ok(state.db.account_of(user, permission))
+                let needs = matched.map_or(BoardRole::Owner, |path| {
+                    required_role(&parts.method, path.as_str())
+                });
+                Ok(state.db.account_of(user, permission).needing(needs))
             }
             Some(_) => Err(account_pending()),
             None => Err(no_signed_in_account()),
@@ -571,10 +602,22 @@ impl AccountDb {
         Ok(self.db.instance_settings()?.disk.max_attachment_bytes())
     }
 
+    /// Returns whether the admin turned the first-visit tips off for every account.
+    pub fn tips_disabled(&self) -> DbResult<bool> {
+        Ok(self.db.instance_settings()?.disable_tips)
+    }
+
     /// Returns the id of the account the handle is bound to.
     #[must_use]
     pub fn account_id(&self) -> &AccountId {
         &self.account
+    }
+
+    /// Returns the handle held to routes that accept `role` and above on a board.
+    #[must_use]
+    pub fn needing(mut self, role: BoardRole) -> Self {
+        self.needs = role;
+        self
     }
 
     /// Returns whether the handle holds its boards to an assigned set.
@@ -593,14 +636,36 @@ impl AccountDb {
         }))
     }
 
-    /// Returns whether the account owns board `board_id`, refusing a board of the account outside
-    /// the token's set with [`BoardDenied`].
+    /// Returns whether the account owns or joined board `board_id`, refusing a board outside the
+    /// token's set with [`BoardDenied`] and one where the account's role falls short of the
+    /// route's with [`RoleDenied`].
     fn reaches(&self, txn: &ReadTransaction, board_id: &str) -> DbResult<bool> {
-        if !owns_board_in(txn, &self.account, board_id)? {
+        let Some(role) = self.role_on(txn, board_id)? else {
             return Ok(false);
-        }
-        self.check_granted(board_id)?;
+        };
+        self.check_role(board_id, role)?;
         Ok(true)
+    }
+
+    /// Returns the role the account holds on board `board_id` whatever the route needs, refusing
+    /// a board outside the token's set with [`BoardDenied`].
+    fn role_on(&self, txn: &ReadTransaction, board_id: &str) -> DbResult<Option<BoardRole>> {
+        let role = role_in(txn, &self.account, board_id)?;
+        if role.is_some() {
+            self.check_granted(board_id)?;
+        }
+        Ok(role)
+    }
+
+    /// Returns [`RoleDenied`] when `role` on board `board_id` falls short of the route's.
+    fn check_role(&self, board_id: &str, role: BoardRole) -> DbResult<()> {
+        if role >= self.needs {
+            return Ok(());
+        }
+        Err(Box::new(RoleDenied {
+            board_id: board_id.to_string(),
+            needs: self.needs,
+        }))
     }
 
     /// Returns whether task `id` sits on a board in the token's set.
@@ -620,6 +685,26 @@ impl AccountDb {
             self.owned_head(id)?;
         }
         Ok(())
+    }
+
+    /// Refuses with [`RoleDenied`] when the account's role on the board of task `id` falls short
+    /// of the route's, as a write that rewrites the task would otherwise reach a board the
+    /// account may only read. A task that is gone or sits on no board is left to the write.
+    fn check_linked_role(&self, id: &str) -> DbResult<()> {
+        let txn = self.db.read()?;
+        let Some(head) = read_in::<TaskHead>(&txn, TASKS, id)? else {
+            return Ok(());
+        };
+        let Some(column) = read_in::<ColumnRow>(&txn, COLUMNS, &head.column_id)? else {
+            return Ok(());
+        };
+        match role_in(&txn, &self.account, &column.board_id)? {
+            Some(role) => self.check_role(&column.board_id, role),
+            None => Err(Box::new(RoleDenied {
+                board_id: column.board_id,
+                needs: self.needs,
+            })),
+        }
     }
 
     /// Refuses with [`BoardDenied`] when task `id` links with a task outside the token's set,
@@ -735,16 +820,17 @@ impl AccountDb {
         self.db.update_settings_with(&self.account, edit)
     }
 
-    /// Returns board `id` when the account owns it.
+    /// Returns board `id` when the account owns or joined it.
     pub fn board(&self, id: &str) -> DbResult<Option<OwnedBoard>> {
         let txn = self.db.read()?;
-        let board = read_in::<BoardRow>(&txn, BOARDS, id)?
-            .filter(|board| board.owner_id == self.account.as_str());
-        if board.is_some() {
-            self.check_granted(id)?;
-            self.mark_used(id);
+        let Some(board) = read_in::<BoardRow>(&txn, BOARDS, id)? else {
+            return Ok(None);
+        };
+        if !self.reaches(&txn, id)? {
+            return Ok(None);
         }
-        Ok(board.map(Owned))
+        self.mark_used(id);
+        Ok(Some(Owned(board)))
     }
 
     /// Returns a snapshot of board `id` that reads through one transaction, when the account owns
@@ -805,10 +891,80 @@ impl AccountDb {
         Ok(boards)
     }
 
-    /// Returns the id of the lowest-position unarchived board of [`AccountDb::list_boards`], or of
-    /// the lowest-position archived one when every board is archived.
+    /// Returns every board in the token's set that the account owns or joined, with its role: the
+    /// owned boards by position first, then the joined ones by name.
+    pub fn list_reachable_boards(&self) -> DbResult<Vec<(BoardRow, BoardRole)>> {
+        let owned = self
+            .list_boards()?
+            .into_iter()
+            .map(|board| (board, BoardRole::Owner));
+        let joined = self
+            .db
+            .joined_boards(&self.account)?
+            .into_iter()
+            .filter(|(board, _)| self.boards.allows(&board.id));
+        Ok(owned.chain(joined).collect())
+    }
+
+    /// Returns every board in the token's set that the account owns or joined, without the roles.
+    pub fn list_accessible_boards(&self) -> DbResult<Vec<BoardRow>> {
+        Ok(self
+            .list_reachable_boards()?
+            .into_iter()
+            .map(|(board, _)| board)
+            .collect())
+    }
+
+    /// Returns every account on the board with its role, the owner first.
+    pub fn board_members(&self, board: &OwnedBoard) -> DbResult<Vec<BoardMember>> {
+        self.db.board_members(&board.row().id)
+    }
+
+    /// Gives the account with handle `handle` the role `role` on the board.
+    pub fn set_board_member(
+        &self,
+        board: &OwnedBoard,
+        handle: &str,
+        role: BoardRole,
+    ) -> DbResult<MemberSet> {
+        self.db.set_board_member(&board.row().id, handle, role)
+    }
+
+    /// Hands the board to its member with handle `handle`, and the account stays on it as a
+    /// member.
+    pub fn change_board_owner(&self, board: &OwnedBoard, handle: &str) -> DbResult<OwnerChange> {
+        self.db
+            .change_board_owner(&board.row().id, &self.account, handle)
+    }
+
+    /// Returns the role the account holds on the board, [`BoardRole::Viewer`] when it holds none.
+    pub fn board_role(&self, board: &OwnedBoard) -> DbResult<BoardRole> {
+        let held = role_in(&self.db.read()?, &self.account, &board.row().id)?;
+        Ok(held.unwrap_or(BoardRole::Viewer))
+    }
+
+    /// Refuses with [`RoleDenied`] unless the account holds at least `role` on the board.
+    pub fn require_role(&self, board: &OwnedBoard, role: BoardRole) -> DbResult<()> {
+        let held = role_in(&self.db.read()?, &self.account, &board.row().id)?;
+        if held.is_some_and(|held| held >= role) {
+            return Ok(());
+        }
+        Err(Box::new(RoleDenied {
+            board_id: board.row().id.clone(),
+            needs: role,
+        }))
+    }
+
+    /// Removes the account `member` from the board, and returns whether it held a role there.
+    pub fn remove_board_member(&self, board: &OwnedBoard, member: &AccountId) -> DbResult<bool> {
+        self.db.remove_board_member(&board.row().id, member)
+    }
+
+    /// Returns the id of the lowest-position unarchived board of
+    /// [`AccountDb::list_accessible_boards`], or of the lowest-position archived one when every
+    /// board is archived.
     pub fn first_board_id(&self) -> DbResult<Option<String>> {
-        Ok(first_board(&self.list_boards()?))
+        Ok(first_board(&self.list_accessible_boards()?))
     }
 
     /// Trims a board name and checks it is 1-100 characters long.
@@ -971,10 +1127,14 @@ impl AccountDb {
         self.db.ensure_default_swimlane(&board.row().id)
     }
 
-    /// Returns every task on board `board_id` with minutes filled in, in board order; empty for
-    /// another account's board.
+    /// Returns every task on board `board_id` with the account's own minutes filled in, in board
+    /// order, and empty for a board the account holds no role on.
     pub fn board_tasks(&self, board_id: &str) -> DbResult<Vec<TaskRow>> {
-        self.on_own_board(board_id, || self.db.board_tasks(board_id))
+        let mut tasks = self.on_own_board(board_id, || self.db.board_tasks(board_id))?;
+        for task in &mut tasks {
+            task.total_minutes = self.db.task_minutes_of(&self.account, &task.id)?;
+        }
+        Ok(tasks)
     }
 
     /// Returns the ids of the tasks on board `board_id` in the order of
@@ -1002,7 +1162,7 @@ impl AccountDb {
         mut visit: impl FnMut(TaskCard) -> DbResult<()>,
     ) -> DbResult<()> {
         self.visit_board_tasks(board_id, |mut card: TaskCard| {
-            card.total_minutes = self.db.task_total_minutes(&card.id)?;
+            card.total_minutes = self.db.task_minutes_of(&self.account, &card.id)?;
             visit(card)
         })
     }
@@ -1014,7 +1174,7 @@ impl AccountDb {
             return Ok(None);
         };
         let mut row = task.into_row();
-        row.total_minutes = self.db.task_total_minutes(id)?;
+        row.total_minutes = self.db.task_minutes_of(&self.account, id)?;
         if self.restricted() {
             let mut reads = self.link_reads()?;
             let mut links = Vec::new();
@@ -1277,6 +1437,11 @@ impl AccountDb {
             .is_none_or(|owner| owner == self.account.as_str() && !self.restricted())
     }
 
+    /// Returns the column names of a template the handle listed.
+    pub fn template_columns(&self, template: &BoardTemplateRow) -> DbResult<Vec<String>> {
+        self.db.template_columns(&template.id)
+    }
+
     /// Returns the templates the handle sees, built-ins first, then by name.
     pub fn list_templates(&self) -> DbResult<Vec<BoardTemplateRow>> {
         let mut templates = self.db.list_templates(&self.account)?;
@@ -1373,7 +1538,7 @@ impl AccountDb {
                 continue;
             };
             let board_id = column.board_id;
-            if !owns_board_in(&txn, &self.account, &board_id)? {
+            if role_in(&txn, &self.account, &board_id)?.is_none() {
                 continue;
             }
             if found.replace((board_id, key.value().to_owned())).is_some() {
@@ -1397,7 +1562,7 @@ impl AccountDb {
         let Some(column) = read_in::<ColumnRow>(&txn, COLUMNS, &head.column_id)? else {
             return Ok(None);
         };
-        if !self.reaches(&txn, &column.board_id)? {
+        if self.role_on(&txn, &column.board_id)?.is_none() {
             return Ok(None);
         }
         self.mark_used(&column.board_id);
@@ -1414,7 +1579,7 @@ impl AccountDb {
         let Some(mut task) = self.task(id)? else {
             return Ok(None);
         };
-        task.row.total_minutes = self.db.task_total_minutes(id)?;
+        task.row.total_minutes = self.db.task_minutes_of(&self.account, id)?;
         Ok(Some(task))
     }
 
@@ -1529,7 +1694,55 @@ impl AccountDb {
     /// links.
     pub fn delete_task(&self, task: &OwnedTask, actor: Actor<'_>) -> DbResult<bool> {
         self.check_links_granted(&task.row().id)?;
+        for link in self.db.list_task_links(&task.row().id)?.unwrap_or_default() {
+            self.check_linked_role(&link.target_id)?;
+        }
         self.db.delete_task(&task.row().id, actor)
+    }
+
+    /// Moves each of `tasks` into the recycle bin in one write transaction, as
+    /// [`AccountDb::delete_task`] does for one. Returns `false` and moves none when any task is
+    /// missing. With [`Commit::Discard`] it moves none.
+    pub fn delete_tasks_logged(
+        &self,
+        tasks: &[OwnedTask],
+        commit: Commit,
+        actor: Actor<'_>,
+    ) -> DbResult<bool> {
+        let mut ids = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            self.check_links_granted(&task.row().id)?;
+            for link in self.db.list_task_links(&task.row().id)?.unwrap_or_default() {
+                self.check_linked_role(&link.target_id)?;
+            }
+            ids.push(task.row().id.clone());
+        }
+        self.db.delete_tasks_logged(&ids, commit, actor)
+    }
+
+    /// Edits the links of each of `tasks` in one write transaction, writing nothing when a change
+    /// is refused or a task is missing. A token with a set must reach the other end of every link
+    /// it removes. With [`Commit::Discard`] it writes nothing even when every change succeeds.
+    pub fn change_links_logged(
+        &self,
+        tasks: &[OwnedTask],
+        edit: &LinkEdit<'_>,
+        commit: Commit,
+        actor: Actor<'_>,
+    ) -> DbResult<ChangeOutcome<LinkRefusal>> {
+        let mut ids = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            if !edit.remove.is_empty() {
+                self.check_links_granted(&task.row().id)?;
+            }
+            for link in self.db.list_task_links(&task.row().id)?.unwrap_or_default() {
+                if edit.remove.contains(&(link.kind, link.target_id.clone())) {
+                    self.check_linked_role(&link.target_id)?;
+                }
+            }
+            ids.push(task.row().id.clone());
+        }
+        self.db.change_links_logged(&ids, edit, commit, actor)
     }
 
     /// Removes a task its own creation takes back, leaving nothing in the recycle bin.
@@ -1659,6 +1872,19 @@ impl AccountDb {
             .edit_comment(&task.row().id, comment_id, body, owner, actor)
     }
 
+    /// Toggles the `handle` account's `emoji` reaction to a comment.
+    pub fn toggle_comment_reaction(
+        &self,
+        task: &OwnedTask,
+        comment_id: &str,
+        emoji: &str,
+        handle: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<CommentWrite<TaskComment>> {
+        self.db
+            .toggle_comment_reaction(&task.row().id, comment_id, emoji, handle, actor)
+    }
+
     /// Links `task` to `target`, both on the account's boards, recording the API `token_id` that
     /// asked.
     pub fn add_task_link(
@@ -1683,6 +1909,7 @@ impl AccountDb {
         let held = task.row().links.iter();
         if let Some(link) = held.clone().find(|link| link.kind == LinkKind::Parent) {
             self.check_task_granted(&link.target_id)?;
+            self.check_linked_role(&link.target_id)?;
         }
         self.db
             .change_umbrella(&task.row().id, &umbrella.row().id, actor)
@@ -1711,16 +1938,13 @@ impl AccountDb {
         )
     }
 
-    /// Returns a task's links as seen from it, without a link to a task outside the token's set.
-    /// Returns [`None`] when the account does not own the task.
+    /// Returns a task's links as seen from it, without a link to a task the account holds no role
+    /// on or the token's set leaves out. Returns [`None`] when the account does not own the task.
     pub fn list_task_links(&self, task_id: &str) -> DbResult<Option<Vec<TaskLink>>> {
         if self.owned_head(task_id)?.is_none() {
             return Ok(None);
         }
-        if self.restricted() {
-            return Ok(Some(self.link_reads()?.task_links(task_id)?));
-        }
-        self.db.list_task_links(task_id)
+        Ok(Some(self.link_reads()?.task_links(task_id)?))
     }
 
     /// Returns the board a task sits on; [`None`] when the account does not own the task.
@@ -1737,11 +1961,12 @@ impl AccountDb {
         owner: Option<&str>,
         actor: Actor<'_>,
     ) -> DbResult<LinkDeleteOutcome> {
-        if self.restricted() {
-            let links = self.db.list_task_links(&task.row().id)?.unwrap_or_default();
-            if let Some(link) = links.iter().find(|link| link.id == link_id) {
+        let links = self.db.list_task_links(&task.row().id)?.unwrap_or_default();
+        if let Some(link) = links.iter().find(|link| link.id == link_id) {
+            if self.restricted() {
                 self.check_task_granted(&link.target_id)?;
             }
+            self.check_linked_role(&link.target_id)?;
         }
         self.db
             .delete_task_link(&task.row().id, link_id, owner, actor)
@@ -1998,9 +2223,9 @@ impl AccountDb {
             .log_change_event(&task.row().id, kind, detail, actor, change)
     }
 
-    /// Returns the minutes logged on a task.
+    /// Returns the minutes the account logged on a task.
     pub fn task_minutes(&self, task: &OwnedTask) -> DbResult<i64> {
-        self.db.task_total_minutes(&task.row().id)
+        self.db.task_minutes_of(&self.account, &task.row().id)
     }
 
     /// Bumps a task's completed-pomodori counter.
@@ -2095,12 +2320,18 @@ impl AccountDb {
         self.db.delete_webhook(&hook.row().id)
     }
 
-    /// Returns time entry `id` when the account logged it, refusing one on a task outside the
-    /// token's set with [`BoardDenied`].
+    /// Returns time entry `id` when the account logged it and still holds a role on the board of
+    /// its task, hiding one on a task outside the token's set.
     pub fn entry(&self, id: &str) -> DbResult<Option<OwnedEntry>> {
         let txn = self.db.read()?;
         let entry = read_in::<TimeEntryRow>(&txn, TIME_ENTRIES, id)?
             .filter(|entry| entry.account_id == self.account.as_str());
+        if let Some(entry) = &entry
+            && read_in::<TaskHead>(&txn, TASKS, &entry.task_id)?.is_some()
+            && task_role_in(&txn, &self.account, &entry.task_id)?.is_none()
+        {
+            return Ok(None);
+        }
         if let Some(entry) = &entry
             && self.restricted()
             && !entry.task_id.is_empty()
@@ -2127,12 +2358,15 @@ impl AccountDb {
         Ok(reachable)
     }
 
-    /// Returns a task's time entries, newest first; empty for a task the account does not own.
+    /// Returns the time entries the account logged on a task, newest first; empty for a task on a
+    /// board the account holds no role on.
     pub fn list_entries(&self, task_id: &str) -> DbResult<Vec<TimeEntryRow>> {
         if self.task(task_id)?.is_none() {
             return Ok(Vec::new());
         }
-        self.db.list_entries(task_id)
+        let mut entries = self.db.list_entries(task_id)?;
+        entries.retain(|entry| entry.account_id == self.account.as_str());
+        Ok(entries)
     }
 
     /// Returns every time entry the account logged that the token reaches, in no set order.
@@ -2170,7 +2404,7 @@ impl AccountDb {
                     let board = match column {
                         Some(column)
                             if self.boards.allows(&column.board_id)
-                                && owns_board_in(&txn, &self.account, &column.board_id)? =>
+                                && role_in(&txn, &self.account, &column.board_id)?.is_some() =>
                         {
                             Some(column.board_id)
                         }
@@ -2197,13 +2431,16 @@ impl AccountDb {
     ) -> DbResult<bool> {
         let task_id = Some(task.row().id.as_str());
         self.db
-            .log_task_time(NewTimeEntry { task_id, ..entry }, actor)
+            .log_task_time(&self.account, NewTimeEntry { task_id, ..entry }, actor)
     }
 
     /// Creates a time entry for the account; [`None`] when its task is gone or another account's.
     pub fn create_entry_full(&self, entry: NewTimeEntry<'_>) -> DbResult<Option<String>> {
         if let Some(task_id) = entry.task_id {
             self.check_task_granted(task_id)?;
+            if self.task(task_id)?.is_none() {
+                return Ok(None);
+            }
         }
         self.db.create_entry_full(&self.account, entry)
     }
@@ -2215,7 +2452,8 @@ impl AccountDb {
         entry: NewTimeEntry<'_>,
     ) -> DbResult<Option<String>> {
         let task_id = Some(task.row().id.as_str());
-        self.db.create_entry_at(NewTimeEntry { task_id, ..entry })
+        self.db
+            .create_entry_at(&self.account, NewTimeEntry { task_id, ..entry })
     }
 
     /// Updates a time entry, moving it to `task` or making it task-less with [`None`].

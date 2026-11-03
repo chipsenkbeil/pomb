@@ -39,6 +39,7 @@ mod csrf;
 mod db;
 mod disk;
 mod labels;
+mod layouts;
 mod limit;
 mod markdown;
 mod models;

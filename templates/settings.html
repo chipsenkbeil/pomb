@@ -45,6 +45,11 @@
         <button type="button" class="kf-btn" id="avatar-change">Change avatar</button>
       </div>
     </section>
+    <section class="settings-section">
+      <h2>Tips</h2>
+      <label class="check-label"><input type="checkbox" id="show-tips"{% if settings.show_tips %} checked{% endif %}> Show tips in the help menu</label>
+      <p class="settings-hint">The admin can turn tips off for every account.</p>
+    </section>
   </div>
 
   <div id="date-time" class="settings-pane" hidden>

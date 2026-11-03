@@ -30,6 +30,7 @@ mod notifications;
 mod outbox;
 mod prune;
 mod public;
+mod sharing;
 mod snapshot;
 mod store;
 #[cfg(test)]
@@ -65,7 +66,8 @@ use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
 pub use self::account::{
-    AccountDb, BoardDenied, ChildRef, LinkReads, OwnedBoard, OwnedTask, UmbrellaPart, UmbrellaRef,
+    AccountDb, BoardDenied, ChildRef, LinkReads, OwnedBoard, OwnedTask, RoleDenied, UmbrellaPart,
+    UmbrellaRef,
 };
 use self::activity::Activity;
 use self::bin::txn_remove_board_bin;
@@ -84,6 +86,11 @@ pub use self::membership::{
 pub use self::notifications::{Change, NotificationPage};
 use self::outbox::txn_remove_webhook_outbox;
 pub use self::public::PublicDb;
+pub use self::sharing::{BoardMember, MemberSet, OwnerChange};
+use self::sharing::{
+    role_in, task_role_in, txn_board_accounts, txn_refuse_timer_below_member,
+    txn_remove_members_of_board, txn_remove_memberships_of,
+};
 pub use self::snapshot::{BoardSnapshot, OfflineDb};
 pub use self::store::{Store, WriteTxn};
 pub use self::usage::LargestUse;
@@ -101,19 +108,20 @@ use crate::auth::{
 use crate::backup::Backups;
 use crate::disk::{DiskGuard, MIB};
 use crate::labels::LabelSettings;
+use crate::layouts::{LAYOUTS, Layout};
 use crate::limit::{Limits, TrustProxy};
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
     AttachmentVersion, AuthScope, BackupSettings, BackupStatus, BinRow, BoardAccess, BoardFeed,
-    BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange, DeviceAuthRow, DeviceAuthStatus,
-    EntryKind, EventChange, FieldDefRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind,
-    MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS, MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER,
-    MAX_NUMBERING_PREFIX_CHARS, MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NUMBERING_KEY, Numbering,
-    PasskeyRow, Quota, Quotas, RecoveryCodeRow, ReportBookmark, Responsible, SessionRow, Settings,
-    Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink,
-    TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes,
-    custom_color_value, format_minutes, is_custom_color, lighter_hex, normalize_hex,
-    standard_color, text_contrast,
+    BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CommentReaction, CoverChange,
+    DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange, FieldDefRow, InstanceMode,
+    InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS,
+    MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
+    MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NUMBERING_KEY, Numbering, PasskeyRow, Quota, Quotas,
+    RecoveryCodeRow, ReportBookmark, Responsible, SessionRow, Settings, Subtask, SwimlaneRow,
+    TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TextCap,
+    TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes, custom_color_value,
+    format_minutes, is_custom_color, lighter_hex, normalize_hex, standard_color, text_contrast,
 };
 use crate::permissions::Permission;
 use crate::rules;
@@ -386,6 +394,34 @@ pub enum LinkAddOutcome {
     HasParent,
     /// Refused: the umbrella sits under the child, so the link would close a parent cycle.
     ParentCycle,
+}
+
+/// The link changes [`Db::change_links_logged`] makes on each task.
+#[derive(Copy, Clone, Debug)]
+pub struct LinkEdit<'a> {
+    /// The relations to remove, each as the kind the task shows and the other task.
+    pub remove: &'a [(LinkKind, String)],
+    /// The relations to add, each as the kind the task shows and the other task.
+    pub add: &'a [(LinkKind, String)],
+    /// The API token an added link records, or none for the browser.
+    pub token_id: Option<&'a str>,
+    /// The API token a removal is limited to, or none to remove any link.
+    pub owner: Option<&'a str>,
+}
+
+/// Why [`Db::change_links_logged`] refused a change.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum LinkRefusal {
+    /// The `blocked_by` chain would loop back to the task.
+    Cycle,
+    /// The two tasks already have a relation of another type.
+    Duplicate,
+    /// The child already has an umbrella.
+    HasParent,
+    /// The umbrella sits under the child.
+    ParentCycle,
+    /// A link to remove was not created by the API token the removal is limited to.
+    NotOwner,
 }
 
 /// Typed outcome for [`Db::delete_task_link`].
@@ -1240,8 +1276,33 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// new stamp makes a version-53 binary refuse a file whose bookmarks it would drop on its next
 /// board save.
 ///
+/// Version 55 adds, over version 54 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskComment`: `reactions`, the `CommentReaction` of each account and emoji.
+///
+/// The upgrade rewrites no row, so a comment from before the upgrade holds no reactions. The new
+/// stamp makes a version-54 binary refuse a file whose reactions it would drop on its next task
+/// save. A board archive carries no reactions, since the accounts that gave them may not exist
+/// where the archive is imported.
+///
+/// Version 56 adds, over version 55, `BoardMemberRow` and `BoardRole`, stored as rows of the table
+/// `board_members` (keyed `<board id>|<account id>`), with the multimaps `members_by_board` and
+/// `boards_by_member` indexing them. An account that joined a board it does not own holds one row
+/// there, and the board's `owner_id` still names its owner. The upgrade rewrites no row, so every
+/// board reads as having no members. The new stamp makes a version-55 binary refuse a file whose
+/// boards other accounts joined, which it would hide from them and leave dangling on a board delete.
+///
+/// Version 57 adds, over version 56 (additive, read from older rows through a serde default):
+///
+/// 1. `Settings`: `show_tips`, whether the account sees the first-visit tips, read as on.
+/// 2. `InstanceSettings`: `disable_tips`, whether the admin turned the tips off for every account,
+///    read as off.
+///
+/// The upgrade rewrites no row. The new stamp makes a version-56 binary refuse a file whose tip
+/// switches it would drop on its next settings save.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 54;
+pub const SCHEMA_VERSION: u64 = 57;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1302,6 +1363,9 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "2cb1661e822c7d059b59e6018ad072dee1e5b03236574714b1aa1bbdf7289133",
     "41ef38f21ae22ac033cebb5bdefa2240fd783b10c642a8d1187bcb53962d7937",
     "2e95a79f7700532bed2bf98ad082756690715b2aa950c21bf59c0e1f3520b8cd",
+    "dfd39048866caf54730ca8c1bd13904d404f57314bd3cd4e4ac5d764a59bf2b1",
+    "26879f4069c114a3dac70192954b9e787d42d63b504f1e1acdca47e1839868cf",
+    "e7a53b9d817be858118e1204c0350d7ec3c1de04c6e251227c9f289704cdc4b2",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -2048,6 +2112,15 @@ const LINKS_BY_TARGET: MultimapTableDefinition<'_, &str, &str> =
 /// account id -> id of each board it owns, with ownerless boards under the empty id.
 const BOARDS_BY_OWNER: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("boards_by_owner");
+/// `<board id>|<account id>` -> [`BoardMemberRow`] for each account that joined a board it does
+/// not own.
+const BOARD_MEMBERS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("board_members");
+/// board id -> id of each account that joined it.
+const MEMBERS_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("members_by_board");
+/// account id -> id of each board it joined.
+const BOARDS_BY_MEMBER: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("boards_by_member");
 /// account id -> id of each template it saved, with built-in templates under
 /// [`BUILT_IN_TEMPLATES`] and ownerless ones under the empty id.
 const TEMPLATES_BY_OWNER: MultimapTableDefinition<'_, &str, &str> =
@@ -2710,11 +2783,6 @@ fn index_in(txn: &impl Reads, index: Index, key: &str) -> DbResult<Vec<String>> 
 /// Returns the board `id` when `account` owns it, read inside an open transaction.
 fn owned_board_in(txn: &impl Reads, account: &AccountId, id: &str) -> DbResult<Option<BoardRow>> {
     Ok(read_in::<BoardRow>(txn, BOARDS, id)?.filter(|board| board.owner_id == account.as_str()))
-}
-
-/// Returns whether `account` owns board `id`, read inside an open transaction.
-fn owns_board_in(txn: &impl Reads, account: &AccountId, id: &str) -> DbResult<bool> {
-    Ok(owned_board_in(txn, account, id)?.is_some())
 }
 
 /// Returns the account that owns the board task `id` sits on, read inside an open transaction.
@@ -3578,6 +3646,7 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<St
         }
     }
     txn_remove_events(txn, id)?;
+    txn_remove_members_of_board(txn, id, &task_ids)?;
     txn_clear_timer_if(txn, &board.owner_id, |task_id| {
         task_ids.iter().any(|id| id == task_id)
     })?;
@@ -5050,6 +5119,28 @@ fn simple_task_board_snapshot() -> serde_json::Value {
     })
 }
 
+/// Returns the snapshot of a built-in layout: the simple board's palette and lane with the columns
+/// of `layout`.
+fn layout_snapshot(layout: &Layout) -> serde_json::Value {
+    let last = layout.columns.len() - 1;
+    let columns: Vec<serde_json::Value> = layout
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(position, name)| {
+            serde_json::json!({
+                "name": name,
+                "wip_limit": null,
+                "is_done": position == last,
+                "position": position,
+            })
+        })
+        .collect();
+    let mut snapshot = simple_task_board_snapshot();
+    snapshot["columns"] = serde_json::Value::Array(columns);
+    snapshot
+}
+
 /// Config-bag update that names `lane_id` as a board's main swimlane.
 fn main_swimlane_entry(lane_id: &str) -> serde_json::Map<String, serde_json::Value> {
     let mut entry = serde_json::Map::new();
@@ -5097,8 +5188,8 @@ pub struct SwimlanePatch<'a> {
     pub height: Option<Option<i64>>,
 }
 
-/// One built-in board template: (name, description, snapshot builder).
-type BuiltinTemplateSpec = (&'static str, &'static str, fn() -> serde_json::Value);
+/// One built-in board template: (name, description, snapshot).
+type BuiltinTemplateSpec = (&'static str, &'static str, serde_json::Value);
 
 /// Parameters for inserting a [`ColorRow`] (keeps `txn_insert_color`
 /// under clippy's argument-count lint).
@@ -5241,6 +5332,9 @@ impl Db {
             txn.open_multimap_table(DEVICES_BY_EXPIRY)?;
             txn.open_table(BOARD_EVENTS)?;
             txn.open_table(EVENT_WAKEUPS)?;
+            txn.open_table(BOARD_MEMBERS)?;
+            txn.open_multimap_table(MEMBERS_BY_BOARD)?;
+            txn.open_multimap_table(BOARDS_BY_MEMBER)?;
             txn.open_table(NOTIFICATIONS)?;
         }
         txn.commit()?;
@@ -5509,17 +5603,26 @@ impl Db {
             (
                 Self::BUILTIN_TEMPLATE_NAME,
                 "Pomodoro board: task colors for 1/2/3/>3 pomodori plus a ready-to-use column layout.",
-                pomodoro_template_snapshot as fn() -> serde_json::Value,
+                pomodoro_template_snapshot(),
             ),
             (
                 Self::KANBAN_BASICS_TEMPLATE_NAME,
                 "Kanban basics: the standard color palette with the classic To-do / In progress / Done column layout.",
-                kanban_basics_template_snapshot as fn() -> serde_json::Value,
+                kanban_basics_template_snapshot(),
             ),
-        ];
+        ]
+        .into_iter()
+        .chain(LAYOUTS.iter().map(|layout| {
+            (
+                layout.name,
+                layout.description,
+                layout_snapshot(layout),
+            )
+        }))
+        .collect();
         let mut wanted_id = None;
-        for (name, description, snapshot_fn) in &builtins {
-            let snapshot = serde_json::to_vec(&snapshot_fn())?;
+        for (name, description, snapshot) in &builtins {
+            let snapshot = serde_json::to_vec(snapshot)?;
             let (existing, current) = {
                 let txn = self.read()?;
                 let existing = txn_templates_of(&txn, BUILT_IN_TEMPLATES)?
@@ -7349,6 +7452,24 @@ impl Db {
         read_one(&self.db, TEMPLATES, id)
     }
 
+    /// Returns the column names of the snapshot of template `id`, left to right.
+    pub fn template_columns(&self, id: &str) -> DbResult<Vec<String>> {
+        let txn = self.read()?;
+        let snapshot = txn_template_snapshot(&txn, id)?;
+        let mut columns: Vec<(i64, String)> = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot["columns"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|column| {
+                let name = column["name"].as_str()?;
+                Some((column["position"].as_i64().unwrap_or(0), name.to_owned()))
+            })
+            .collect();
+        columns.sort_by_key(|(position, _)| *position);
+        Ok(columns.into_iter().map(|(_, name)| name).collect())
+    }
+
     /// Typed outcome: built-in templates cannot be deleted.
     pub fn delete_template(&self, id: &str) -> DbResult<TemplateDeleteOutcome> {
         let template = match self.template(id)? {
@@ -7948,6 +8069,19 @@ impl Db {
         Ok(total)
     }
 
+    /// Returns the minutes `account` logged on a task.
+    pub fn task_minutes_of(&self, account: &AccountId, task_id: &str) -> DbResult<i64> {
+        let mut total = 0;
+        for entry_id in mmap_get(&self.db, ENTRIES_BY_TASK, task_id)? {
+            if let Some(entry) = self.entry(&entry_id)?
+                && entry.account_id == account.as_str()
+            {
+                total += entry.minutes;
+            }
+        }
+        Ok(total)
+    }
+
     /// One task with its total logged minutes filled in.
     pub fn task_with_minutes(&self, id: &str) -> DbResult<Option<TaskRow>> {
         match self.task(id)? {
@@ -8350,6 +8484,7 @@ impl Db {
             token_id: new.token_id.filter(|id| !id.is_empty()).map(str::to_string),
             edited_at: None,
             kind: new.kind.map(str::to_string),
+            reactions: Vec::new(),
         };
         let txn = self.db.begin_write()?;
         let owner = task_owner_in(&txn, task_id)?;
@@ -8425,11 +8560,58 @@ impl Db {
         Ok(outcome.unwrap_or(CommentWrite::NotFound))
     }
 
+    /// Adds the `handle` account's `emoji` reaction to a comment, or takes it back when the
+    /// account already gave it, and returns the comment.
+    pub fn toggle_comment_reaction(
+        &self,
+        task_id: &str,
+        comment_id: &str,
+        emoji: &str,
+        handle: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<CommentWrite<TaskComment>> {
+        let outcome = self.apply_task_change(task_id, actor, |task| {
+            let Some(comment) = task.comments.iter_mut().find(|c| c.id == comment_id) else {
+                return (CommentWrite::NotFound, false);
+            };
+            let before = comment.reactions.len();
+            comment
+                .reactions
+                .retain(|r| !(r.emoji == emoji && r.handle == handle));
+            if comment.reactions.len() == before {
+                comment.reactions.push(CommentReaction {
+                    emoji: emoji.to_string(),
+                    handle: handle.to_string(),
+                });
+            }
+            (CommentWrite::Done(comment.clone()), true)
+        })?;
+        Ok(outcome.unwrap_or(CommentWrite::NotFound))
+    }
+
     /// Link `task_id` to `target_id` in one transaction. A `blocks` link is stored as `blocked_by`
     /// on the target, and a `child` link as `parent` on the target; asking for a link that already
     /// exists returns it unchanged. A new link records the API `token_id` that created it.
     pub fn add_task_link(
         &self,
+        task_id: &str,
+        kind: LinkKind,
+        target_id: &str,
+        token_id: Option<&str>,
+        actor: Actor<'_>,
+    ) -> DbResult<LinkAddOutcome> {
+        let txn = self.db.begin_write()?;
+        let outcome = Self::add_link_in(&txn, task_id, kind, target_id, token_id, actor)?;
+        if matches!(outcome, LinkAddOutcome::Added(_)) {
+            txn.commit()?;
+        }
+        Ok(outcome)
+    }
+
+    /// Links `task_id` to `target_id` inside the caller's write transaction, which the caller
+    /// commits when the outcome is [`LinkAddOutcome::Added`] and drops otherwise.
+    fn add_link_in(
+        txn: &WriteTransaction,
         task_id: &str,
         kind: LinkKind,
         target_id: &str,
@@ -8446,7 +8628,6 @@ impl Db {
             target_id: target_id.to_string(),
             ..link.clone()
         };
-        let txn = self.db.begin_write()?;
         let link = {
             let mut tbl = txn.open_table(TASKS)?;
             let (Some(mut holder), Some(other)) =
@@ -8510,11 +8691,10 @@ impl Db {
             });
             push_event(&mut holder, "link_added", detail, actor);
             holder.updated_at = Some(now);
-            txn_store_task(&txn, &mut tbl, &holder, OverQuota::Refuse, actor)?;
+            txn_store_task(txn, &mut tbl, &holder, OverQuota::Refuse, actor)?;
             link
         };
-        mmap_insert(&txn, LINKS_BY_TARGET, stored_target, holder_id)?;
-        txn.commit()?;
+        mmap_insert(txn, LINKS_BY_TARGET, stored_target, holder_id)?;
         Ok(LinkAddOutcome::Added(as_requested(&link)))
     }
 
@@ -8633,8 +8813,107 @@ impl Db {
         actor: Actor<'_>,
     ) -> DbResult<LinkDeleteOutcome> {
         let txn = self.db.begin_write()?;
+        let outcome = Self::delete_link_in(&txn, task_id, link_id, owner, actor)?;
+        if outcome == LinkDeleteOutcome::Deleted {
+            txn.commit()?;
+        }
+        Ok(outcome)
+    }
+
+    /// Edits the links of each of `ids` in one write transaction: first it removes the link each
+    /// `remove` pair names where the task holds it, then it adds each `add` pair, as
+    /// [`Db::add_task_link`] does. A refused change or a missing task leaves every task unchanged,
+    /// and [`Commit::Discard`] ends the run without a commit. With an `owner`, only a link that API
+    /// token created may go.
+    pub fn change_links_logged(
+        &self,
+        ids: &[String],
+        edit: &LinkEdit<'_>,
+        commit: Commit,
+        actor: Actor<'_>,
+    ) -> DbResult<ChangeOutcome<LinkRefusal>> {
+        let txn = self.db.begin_write()?;
+        for id in ids {
+            if txn_read_one::<TaskRow>(&txn, TASKS, id)?.is_none() {
+                return Ok(ChangeOutcome::NotFound);
+            }
+            for (kind, target_id) in edit.remove {
+                let Some(link_id) = Self::held_link_in(&txn, id, *kind, target_id)? else {
+                    continue;
+                };
+                match Self::delete_link_in(&txn, id, &link_id, edit.owner, actor)? {
+                    LinkDeleteOutcome::Deleted => {}
+                    LinkDeleteOutcome::NotFound => return Ok(ChangeOutcome::NotFound),
+                    LinkDeleteOutcome::NotOwner => {
+                        return Ok(ChangeOutcome::Refused(LinkRefusal::NotOwner));
+                    }
+                }
+            }
+            for (kind, target_id) in edit.add {
+                match Self::add_link_in(&txn, id, *kind, target_id, edit.token_id, actor)? {
+                    LinkAddOutcome::Added(_) => {}
+                    LinkAddOutcome::NotFound => return Ok(ChangeOutcome::NotFound),
+                    LinkAddOutcome::Cycle => {
+                        return Ok(ChangeOutcome::Refused(LinkRefusal::Cycle));
+                    }
+                    LinkAddOutcome::Duplicate => {
+                        return Ok(ChangeOutcome::Refused(LinkRefusal::Duplicate));
+                    }
+                    LinkAddOutcome::HasParent => {
+                        return Ok(ChangeOutcome::Refused(LinkRefusal::HasParent));
+                    }
+                    LinkAddOutcome::ParentCycle => {
+                        return Ok(ChangeOutcome::Refused(LinkRefusal::ParentCycle));
+                    }
+                }
+            }
+        }
+        commit.finish(txn)?;
+        Ok(ChangeOutcome::Changed)
+    }
+
+    /// Returns the id of the link `task_id` shows with `target_id` as `kind`, held by either end.
+    fn held_link_in(
+        txn: &WriteTransaction,
+        task_id: &str,
+        kind: LinkKind,
+        target_id: &str,
+    ) -> DbResult<Option<String>> {
+        let (holder_id, stored_kind, stored_target) = match kind {
+            LinkKind::Blocks => (target_id, LinkKind::BlockedBy, task_id),
+            LinkKind::Child => (target_id, LinkKind::Parent, task_id),
+            other => (task_id, other, target_id),
+        };
+        let mut holders = vec![(holder_id, stored_target)];
+        if kind == LinkKind::Related {
+            holders.push((target_id, task_id));
+        }
+        for (holder_id, target) in holders {
+            let Some(holder) = txn_read_one::<TaskRow>(txn, TASKS, holder_id)? else {
+                continue;
+            };
+            if let Some(link) = holder
+                .links
+                .iter()
+                .find(|link| link.kind == stored_kind && link.target_id == target)
+            {
+                return Ok(Some(link.id.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Deletes a link listed on `task_id` inside the caller's write transaction, which the caller
+    /// commits when the outcome is [`LinkDeleteOutcome::Deleted`] and drops otherwise.
+    fn delete_link_in(
+        txn: &WriteTransaction,
+        task_id: &str,
+        link_id: &str,
+        owner: Option<&str>,
+        actor: Actor<'_>,
+    ) -> DbResult<LinkDeleteOutcome> {
         let mut holders = vec![task_id.to_string()];
-        holders.extend(txn_mmap_get(&txn, LINKS_BY_TARGET, task_id)?);
+        holders.extend(txn_mmap_get(txn, LINKS_BY_TARGET, task_id)?);
         let mut found = false;
         {
             let mut tbl = txn.open_table(TASKS)?;
@@ -8662,7 +8941,7 @@ impl Db {
                     .iter()
                     .any(|other| other.target_id == link.target_id);
                 holder.updated_at = Some(Utc::now().to_rfc3339());
-                txn_store_task(&txn, &mut tbl, &holder, OverQuota::Allow, actor)?;
+                txn_store_task(txn, &mut tbl, &holder, OverQuota::Allow, actor)?;
                 if !still_linked {
                     by_target.remove(link.target_id.as_str(), holder_id.as_str())?;
                 }
@@ -8673,7 +8952,6 @@ impl Db {
         if !found {
             return Ok(LinkDeleteOutcome::NotFound);
         }
-        txn.commit()?;
         Ok(LinkDeleteOutcome::Deleted)
     }
 
@@ -10113,6 +10391,14 @@ impl Db {
         let crosses_boards = old_column
             .as_ref()
             .is_some_and(|column| column.board_id != target.board_id);
+        if let Some(old_column) = old_column.as_ref().filter(|_| crosses_boards) {
+            for account in txn_board_accounts(txn, &old_column.board_id)? {
+                let kept = role_in(txn, &AccountId::new(account.clone()), &target.board_id)?;
+                if !matches!(kept, Some(role) if role >= BoardRole::Member) {
+                    txn_clear_timer_if(txn, &account, |task_id| task_id == id)?;
+                }
+            }
+        }
         if crosses_boards {
             let held = txn_board_task_count(txn, &target.board_id)?;
             txn_refuse_board_over_quota(txn, &target.board_id, Quota::TasksPerBoard, held + 1)?;
@@ -10410,9 +10696,15 @@ impl Db {
             .unwrap_or_default())
     }
 
-    /// Logs `entry` on its task and its `time_logged` history event in one write. Returns false,
-    /// writing nothing, when the entry names no task or the task does not exist.
-    pub fn log_task_time(&self, entry: NewTimeEntry<'_>, actor: Actor<'_>) -> DbResult<bool> {
+    /// Logs `entry` for `account` on its task and its `time_logged` history event in one write.
+    /// Returns false, writing nothing, when the entry names no task, the task does not exist or
+    /// `account` holds no role on its board.
+    pub fn log_task_time(
+        &self,
+        account: &AccountId,
+        entry: NewTimeEntry<'_>,
+        actor: Actor<'_>,
+    ) -> DbResult<bool> {
         let Some(task_id) = entry.task_id else {
             return Ok(false);
         };
@@ -10422,14 +10714,21 @@ impl Db {
             format!("Logged {}m", entry.seconds / 60)
         };
         let txn = self.db.begin_write()?;
-        let Some(account_id) = task_owner_in(&txn, task_id)? else {
+        if task_role_in(&txn, account, task_id)?.is_none() {
             return Ok(false);
-        };
-        let entry = entry.into_row(Uuid::new_v4().to_string(), task_id, account_id);
+        }
+        let entry = entry.into_row(
+            Uuid::new_v4().to_string(),
+            task_id,
+            account.as_str().to_string(),
+        );
         let mut before = 0;
         for entry_id in txn_mmap_get(&txn, ENTRIES_BY_TASK, task_id)? {
-            before += txn_read_one::<TimeEntryRow>(&txn, TIME_ENTRIES, &entry_id)?
-                .map_or(0, |held| held.minutes);
+            if let Some(held) = txn_read_one::<TimeEntryRow>(&txn, TIME_ENTRIES, &entry_id)?
+                && held.account_id == entry.account_id
+            {
+                before += held.minutes;
+            }
         }
         {
             let mut tasks = txn.open_table(TASKS)?;
@@ -10620,6 +10919,9 @@ impl Db {
     pub fn set_active_timer(&self, account: &AccountId, timer: &ActiveTimer) -> DbResult<()> {
         let txn = self.db.begin_write()?;
         txn_refuse_stranded(&txn, account)?;
+        if let Some(task_id) = &timer.task_id {
+            txn_refuse_timer_below_member(&txn, account, task_id)?;
+        }
         write_one(&txn, ACTIVE_TIMER, account.as_str(), timer)?;
         txn.commit()?;
         Ok(())
@@ -10667,7 +10969,7 @@ impl Db {
         let txn = self.db.begin_write()?;
         txn_refuse_stranded(&txn, account)?;
         let task_id = match entry.task_id {
-            Some(id) if task_owner_in(&txn, id)?.as_deref() == Some(account.as_str()) => id,
+            Some(id) if task_role_in(&txn, account, id)?.is_some() => id,
             Some(_) => return Ok(None),
             None => "",
         };
@@ -10686,18 +10988,22 @@ impl Db {
         Ok(Some(id))
     }
 
-    /// Creates the time entry `entry` on its task, for the account that owns the task. Returns
-    /// [`None`] when the entry names no task or the task does not exist.
-    pub fn create_entry_at(&self, entry: NewTimeEntry<'_>) -> DbResult<Option<String>> {
+    /// Creates the time entry `entry` on its task for `account`. Returns [`None`] when the entry
+    /// names no task, the task does not exist or `account` holds no role on its board.
+    pub fn create_entry_at(
+        &self,
+        account: &AccountId,
+        entry: NewTimeEntry<'_>,
+    ) -> DbResult<Option<String>> {
         let Some(task_id) = entry.task_id else {
             return Ok(None);
         };
         let txn = self.db.begin_write()?;
-        let Some(account_id) = task_owner_in(&txn, task_id)? else {
+        if task_role_in(&txn, account, task_id)?.is_none() {
             return Ok(None);
-        };
+        }
         let id = Uuid::new_v4().to_string();
-        let row = entry.into_row(id.clone(), task_id, account_id);
+        let row = entry.into_row(id.clone(), task_id, account.as_str().to_string());
         txn_store_entry(&txn, &row, OverQuota::Refuse)?;
         mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
         txn.commit()?;
@@ -13110,10 +13416,10 @@ mod schema_fingerprint_tests {
 
     use super::*;
     use crate::models::{
-        Avatar, AvatarKind, BoardEventRow, BreakActivity, DiskLimits, FieldColumn, InviteRow,
-        NotificationRow, OutboxRow, PruneSettings, PruneStatus, Quotas, RateLimits,
-        RegistrationMode, Responsible, SubtaskTemplate, TimeFormat, TimerMode, WebhookEvent,
-        WeekStart,
+        Avatar, AvatarKind, BoardEventRow, BoardMemberRow, BoardRole, BreakActivity, DiskLimits,
+        FieldColumn, InviteRow, NotificationRow, OutboxRow, PruneSettings, PruneStatus, Quotas,
+        RateLimits, RegistrationMode, Responsible, SubtaskTemplate, TimeFormat, TimerMode,
+        WebhookEvent, WeekStart,
     };
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
@@ -13417,6 +13723,8 @@ mod schema_fingerprint_tests {
             shape::<BinRow>("BinRow"),
             shape::<BoardAccess>("BoardAccess"),
             shape::<BoardEventRow>("BoardEventRow"),
+            shape::<BoardMemberRow>("BoardMemberRow"),
+            shape::<BoardRole>("BoardRole"),
             shape::<BoardFeed>("BoardFeed"),
             shape::<BoardRow>("BoardRow"),
             shape::<BoardTemplateRow>("BoardTemplateRow"),
@@ -13453,6 +13761,7 @@ mod schema_fingerprint_tests {
             shape::<SwimlaneRow>("SwimlaneRow"),
             shape::<TaskAttachment>("TaskAttachment"),
             shape::<TaskComment>("TaskComment"),
+            shape::<CommentReaction>("CommentReaction"),
             shape::<TaskEvent>("TaskEvent"),
             shape::<TaskRow>("TaskRow"),
             shape::<TimeEntryRow>("TimeEntryRow"),
@@ -13518,6 +13827,9 @@ mod schema_fingerprint_tests {
             multimap(WEBHOOKS_BY_BOARD),
             multimap(WEBHOOK_OUTBOX_BY_HOOK),
             multimap(LINKS_BY_TARGET),
+            table(BOARD_MEMBERS),
+            multimap(MEMBERS_BY_BOARD),
+            multimap(BOARDS_BY_MEMBER),
             multimap(BIN_BY_BOARD),
         ];
         tables.sort_unstable();

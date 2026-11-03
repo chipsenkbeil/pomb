@@ -233,6 +233,7 @@
       if (list._sortable) return;
       list._sortable = new Sortable(list, {
         group: 'tasks',
+        disabled: !!document.querySelector('.board-wrap[data-role="viewer"]'),
         animation: 150,
         draggable: '.task-card',
         ghostClass: 'sortable-placeholder',
@@ -1122,7 +1123,7 @@
       kebab.className = 'colorSelectMenu-kebab';
       kebab.setAttribute('aria-label', 'Color options');
       kebab.setAttribute('aria-haspopup', 'menu');
-      kebab.textContent = '⋮';
+      kebab.innerHTML = '<svg class="ico-kebab" width="4" height="16" viewBox="0 0 4 16" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="2" cy="2.5" r="1.5"/><circle cx="2" cy="8" r="1.5"/><circle cx="2" cy="13.5" r="1.5"/></svg>';
       var actions = document.createElement('div');
       actions.className = 'colorSelectMenu-actions';
       actions.setAttribute('role', 'menu');
@@ -1630,8 +1631,8 @@
       hideFloatingMenus();
       cardMenuCard = card;
       cardMenuPoint = { x: x, y: y };
-      document.querySelector('#card-ctx-menu [data-card-act="grouping-date"]').hidden =
-        !card.closest('[data-done-column="true"]');
+      var groupingDate = document.querySelector('#card-ctx-menu [data-card-act="grouping-date"]');
+      if (groupingDate) groupingDate.hidden = !card.closest('[data-done-column="true"]');
       placeMenu(document.getElementById('card-ctx-menu'), x, y);
     }
 
@@ -2240,6 +2241,54 @@
     });
     var delBtn = document.getElementById('board-delete-btn');
     delBtn.addEventListener('click', function () { window.location.href = delBtn.dataset.href; });
+    initChangeBoardOwner(id, err);
+  }
+
+  function initChangeBoardOwner(boardId, err) {
+    var view = document.getElementById('board-owner-view');
+    var form = document.getElementById('board-owner-form');
+    var select = document.getElementById('board-owner-select');
+    var url = '/api/boards/' + encodeURIComponent(boardId);
+    var show = function (editing) {
+      view.hidden = editing;
+      form.hidden = !editing;
+    };
+    var fail = function (message) {
+      err.textContent = message;
+      err.hidden = false;
+    };
+    var failOnError = function (res) {
+      if (res.ok) return res;
+      return res.text().then(function (t) { throw new Error(t || ('HTTP ' + res.status)); });
+    };
+    document.getElementById('board-owner-change').addEventListener('click', function () {
+      err.hidden = true;
+      api(url + '/members', 'GET')
+        .then(failOnError)
+        .then(function (res) { return res.json(); })
+        .then(function (members) {
+          var others = members.filter(function (m) { return m.role !== 'owner'; });
+          if (!others.length) {
+            fail('Add a member to the board first, then hand it over.');
+            return;
+          }
+          select.innerHTML = others.map(function (m) {
+            return '<option value="' + escapeHtml(m.username) + '">' + escapeHtml(m.username) + '</option>';
+          }).join('');
+          show(true);
+          select.focus();
+        })
+        .catch(function (ex) { fail('Could not load the members: ' + ex.message); });
+    });
+    document.getElementById('board-owner-cancel').addEventListener('click', function () { show(false); });
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      err.hidden = true;
+      api(url + '/owner', 'PUT', { username: select.value })
+        .then(failOnError)
+        .then(function () { window.location.href = '/b/' + encodeURIComponent(boardId); })
+        .catch(function (ex) { fail('Could not change the owner: ' + ex.message); });
+    });
   }
 
   // KF-306: column-delete confirmation with verbatim KanbanFlow text and the
@@ -2800,7 +2849,7 @@
       kebab.type = 'button';
       kebab.className = 'lane-limit-kebab';
       kebab.setAttribute('aria-label', 'Limit options');
-      kebab.textContent = '⋮';
+      kebab.innerHTML = '<svg class="ico-kebab" width="4" height="16" viewBox="0 0 4 16" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="2" cy="2.5" r="1.5"/><circle cx="2" cy="8" r="1.5"/><circle cx="2" cy="13.5" r="1.5"/></svg>';
       var menu = document.createElement('div');
       menu.className = 'lane-limit-menu';
       menu.hidden = true;
@@ -3002,6 +3051,12 @@
         document.body.classList.add('modal-open');
         showTaskHash(taskId);
         wireModal();
+        if (document.querySelector('.board-wrap[data-role="viewer"]')) {
+          document.querySelectorAll('#modal-root textarea, #modal-root input:not([type="search"])').forEach(function (field) {
+            field.readOnly = true;
+            if (field.type === 'checkbox') field.disabled = true;
+          });
+        }
       })
       .catch(function () { /* leave the board as-is on failure */ });
   }
@@ -4731,6 +4786,8 @@
         openModal(id, true);
         toast(wasDone ? 'Due date marked not done.' : 'Due date marked done.');
       }).catch(function () { toast('Could not save the due date.'); });
+    } else if (act === 'comment-order') {
+      toggleCommentOrder();
     } else if (act === 'add-comment') {
       if (showModalTab('comments')) return;
       var commentInput = document.getElementById('modal-comment-input');
@@ -5072,6 +5129,152 @@
     apply();
   }
 
+  var COMMENT_ORDER_KEY = 'pomb.commentsNewestFirst';
+
+  var commentsNewestFallback = false;
+
+  function loadCommentsNewestFirst() {
+    try { commentsNewestFallback = window.localStorage.getItem(COMMENT_ORDER_KEY) === '1'; } catch (e) { /* storage unavailable: keep the page-session copy */ }
+    return commentsNewestFallback;
+  }
+
+  function saveCommentsNewestFirst(on) {
+    commentsNewestFallback = on;
+    try { window.localStorage.setItem(COMMENT_ORDER_KEY, on ? '1' : '0'); } catch (e) { /* the page-session copy still holds it */ }
+  }
+
+  function applyCommentOrder(newest) {
+    var list = document.getElementById('modal-comments');
+    var composer = document.querySelector('#tm-panel-comments .tm-comment-composer');
+    var item = document.querySelector('[data-tm-act="comment-order"]');
+    if (!list || !composer) return;
+    if ((list.getAttribute('data-order') === 'newest') !== newest) {
+      Array.prototype.slice.call(list.children).reverse().forEach(function (row) { list.appendChild(row); });
+      list.setAttribute('data-order', newest ? 'newest' : 'oldest');
+    }
+    list.parentNode.insertBefore(composer, newest ? list : list.nextSibling);
+    if (item) item.textContent = newest ? 'Change order - oldest to newest' : 'Change order - newest to oldest';
+  }
+
+  function toggleCommentOrder() {
+    var newest = !loadCommentsNewestFirst();
+    saveCommentsNewestFirst(newest);
+    applyCommentOrder(newest);
+  }
+
+  var MENTION_LIST_MAX = 8;
+
+  var mentionMembers = null;
+
+  function loadMentionMembers() {
+    if (!mentionMembers) {
+      mentionMembers = api('/api/members', 'GET')
+        .then(function (res) { if (!res.ok) throw new Error('members failed'); return res.json(); })
+        .catch(function () { mentionMembers = null; return []; });
+    }
+    return mentionMembers;
+  }
+
+  function mentionAt(value, caret) {
+    var m = /(^|\s)@([\w.-]*)$/.exec(value.slice(0, caret));
+    return m ? { start: caret - m[2].length - 1, query: m[2].toLowerCase() } : null;
+  }
+
+  function mentionMatches(members, query) {
+    return members.filter(function (member) {
+      return member.username.toLowerCase().indexOf(query) !== -1
+        || (member.display_name || '').toLowerCase().indexOf(query) !== -1;
+    }).slice(0, MENTION_LIST_MAX);
+  }
+
+  function mentionInsert(value, caret, at, username) {
+    var text = '@' + username + (/^\s/.test(value.slice(caret)) ? '' : ' ');
+    return { value: value.slice(0, at.start) + text + value.slice(caret), caret: at.start + text.length };
+  }
+
+  function caretOf(input) {
+    return input.selectionStart == null ? input.value.length : input.selectionStart;
+  }
+
+  function wireMentions(input) {
+    var pop = null;
+    var matches = [];
+    var picked = 0;
+    var at = null;
+
+    function close() {
+      if (pop) pop.hidden = true;
+      matches = [];
+      at = null;
+    }
+
+    function choose(member) {
+      var caret = caretOf(input);
+      var next = mentionInsert(input.value, caret, at, member.username);
+      input.value = next.value;
+      close();
+      input.focus();
+      try { input.setSelectionRange(next.caret, next.caret); } catch (ignore) {}
+    }
+
+    function draw() {
+      if (!pop) {
+        pop = document.createElement('div');
+        pop.className = 'tm-mention-pop';
+        pop.setAttribute('role', 'listbox');
+        pop.setAttribute('aria-label', 'Mention a member');
+        document.body.appendChild(pop);
+      }
+      pop.textContent = '';
+      matches.forEach(function (member, i) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('role', 'option');
+        b.setAttribute('data-mention', member.username);
+        b.setAttribute('aria-selected', i === picked ? 'true' : 'false');
+        b.textContent = '@' + member.username + (member.display_name && member.display_name !== member.username ? ' ' + member.display_name : '');
+        b.addEventListener('mousedown', function (e) { e.preventDefault(); choose(member); });
+        pop.appendChild(b);
+      });
+      var r = input.getBoundingClientRect();
+      pop.style.left = r.left + 'px';
+      pop.style.top = (r.bottom + 2) + 'px';
+      pop.hidden = matches.length === 0;
+    }
+
+    input.addEventListener('input', function () {
+      var caret = caretOf(input);
+      var found = mentionAt(input.value, caret);
+      if (!found) { close(); return; }
+      loadMentionMembers().then(function (members) {
+        if (document.activeElement !== input) return;
+        var now = mentionAt(input.value, caretOf(input));
+        if (!now) return;
+        at = now;
+        matches = mentionMatches(members, now.query);
+        picked = 0;
+        draw();
+      });
+    });
+    input.addEventListener('keydown', function (e) {
+      if (!pop || pop.hidden || matches.length === 0) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        picked = (picked + (e.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length;
+        draw();
+      } else if ((e.key === 'Enter' && !e.metaKey && !e.ctrlKey) || e.key === 'Tab') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        choose(matches[picked]);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        close();
+      }
+    });
+    input.addEventListener('blur', close);
+  }
+
   function wireModalTaskRefs() {
     Array.prototype.forEach.call(document.querySelectorAll('#modal-root [data-open-task]'), function (el) {
       var open = function () { openRelatedTask(el); };
@@ -5093,6 +5296,10 @@
     buildModalColorPicker();
     buildTableFields();
     wireCommentFilter();
+    applyCommentOrder(loadCommentsNewestFirst());
+    var draftInput = document.getElementById('modal-comment-input');
+    if (draftInput && pendingCommentDraft !== null) draftInput.value = pendingCommentDraft;
+    pendingCommentDraft = null;
     wireModalTabs();
     wireModalTaskRefs();
     wireFieldGroups();
@@ -5127,9 +5334,12 @@
     syncMdToggle();
     // KF-254: the single-line composer submits on Enter (no Add button).
     var commentInput = document.getElementById('modal-comment-input');
-    if (commentInput) commentInput.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') { e.preventDefault(); addModalComment(); }
-    });
+    if (commentInput) {
+      wireMentions(commentInput);
+      commentInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); addModalComment(); }
+      });
+    }
     var closeBtn = overlay.querySelector('[data-close-modal]');
     if (closeBtn) closeBtn.addEventListener('click', closeModal);
     wireAttachments(overlay);
@@ -6169,7 +6379,7 @@
       var html = '';
       for (var i = 0; i < reasons.length; i++) {
         html += '<div class="ts-reason-row" data-index="' + i + '">' +
-          '<span class="ts-drag" title="Drag to reorder" aria-label="Drag to reorder">&#8942;&#8942;</span>' +
+          '<span class="ts-drag" title="Drag to reorder" aria-label="Drag to reorder"><svg class="ico-grip" width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="1.5"/><circle cx="7.5" cy="2.5" r="1.5"/><circle cx="2.5" cy="8" r="1.5"/><circle cx="7.5" cy="8" r="1.5"/><circle cx="2.5" cy="13.5" r="1.5"/><circle cx="7.5" cy="13.5" r="1.5"/></svg></span>' +
           '<span class="ts-reason-label" data-index="' + i + '" title="Click to rename">' +
           escapeHtml(reasons[i]) + '</span>' +
           '<button type="button" class="ts-reason-remove" aria-label="Remove">&times;</button></div>';
@@ -8651,7 +8861,9 @@
     }
     var act = MODAL_LETTER_ACTS[key];
     if (!act) return false;
-    modalAction(act, modal.querySelector('[data-tm-act="' + act + '"]'));
+    var source = modal.querySelector('[data-tm-act="' + act + '"]');
+    if (!source) return false;
+    modalAction(act, source);
     return true;
   }
 
@@ -9253,6 +9465,12 @@
     if (!body) { ta.focus(); return; }
     api('/api/tasks/' + encodeURIComponent(id) + '/comments', 'POST', { body: body })
       .then(function (res) { if (!res.ok) throw new Error('add failed'); return res.json(); })
+      .then(function () {
+        if (modalWatchedState()) return null;
+        return api('/api/tasks/' + encodeURIComponent(id) + '/watch', 'POST', { watched: true })
+          .then(function (resp) { if (resp.ok) setModalWatchUI(true); })
+          .catch(function () {});
+      })
       .then(function () { refreshModal(); toast('Comment added.'); })
       .catch(function () { toast('Could not add the comment.'); });
   }
@@ -9306,6 +9524,7 @@
     }
     save.addEventListener('click', submit);
     cancel.addEventListener('click', editor.cancel);
+    wireMentions(ta);
     ta.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); submit(); }
     });
@@ -9327,16 +9546,15 @@
     });
   }
 
-  // KF-254: emoji picker for the per-comment smiley tool. KanbanFlow opens
-  // a reaction picker; Pomb has no comment reactions, so picking an
-  // emoji inserts it into the comment composer instead.
-  var EMOJI_SET = ['\u{1F600}', '\u{1F601}', '\u{1F602}', '\u{1F642}', '\u{1F609}', '\u{1F60D}', '\u{1F44D}', '\u{1F44E}', '\u{1F389}', '\u2764\uFE0F', '\u{1F680}', '\u{1F440}'];
+  var EMOJI_SET = ['\u{1F44D}', '\u{1F44E}', '\u{1F601}', '\u{1F389}', '\u2764\uFE0F'];
   var emojiPop = null;
   var emojiAnchor = null;
+  var emojiCommentId = null;
 
   function closeEmojiPop() {
     if (emojiPop) emojiPop.hidden = true;
     emojiAnchor = null;
+    emojiCommentId = null;
   }
 
   function toggleEmojiPop(btn) {
@@ -9347,18 +9565,20 @@
       emojiPop.className = 'tm-emoji-pop';
       emojiPop.hidden = true;
       emojiPop.setAttribute('role', 'menu');
-      emojiPop.setAttribute('aria-label', 'Insert emoji');
+      emojiPop.setAttribute('aria-label', 'Add reaction');
       EMOJI_SET.forEach(function (ch) {
         var b = document.createElement('button');
         b.type = 'button';
         b.setAttribute('data-emoji', ch);
         b.textContent = ch;
-        b.setAttribute('aria-label', 'Insert ' + ch);
+        b.setAttribute('aria-label', 'React with ' + ch);
         emojiPop.appendChild(b);
       });
       document.body.appendChild(emojiPop);
     }
     emojiAnchor = btn;
+    var row = btn.closest('.tm-comment');
+    emojiCommentId = row && row.getAttribute('data-comment-id');
     emojiPop.hidden = false;
     var r = btn.getBoundingClientRect();
     var pw = emojiPop.offsetWidth;
@@ -9370,16 +9590,20 @@
     emojiPop.style.top = top + 'px';
   }
 
-  function insertEmoji(ch) {
-    closeEmojiPop();
-    var input = document.getElementById('modal-comment-input');
-    if (!input || !ch) return;
-    var start = input.selectionStart == null ? input.value.length : input.selectionStart;
-    var end = input.selectionEnd == null ? start : input.selectionEnd;
-    input.value = input.value.slice(0, start) + ch + input.value.slice(end);
-    var pos = start + ch.length;
-    input.focus();
-    try { input.setSelectionRange(pos, pos); } catch (ignore) {}
+  var pendingCommentDraft = null;
+
+  function reactToComment(commentId, emoji) {
+    var id = modalTaskId();
+    if (!id || !commentId || !emoji) return;
+    api('/api/tasks/' + encodeURIComponent(id) + '/comments/' + encodeURIComponent(commentId) + '/reactions', 'POST', { emoji: emoji })
+      .then(function (res) { if (!res.ok) throw new Error('react failed'); return true; })
+      .catch(function () { toast('Could not save the reaction.'); return false; })
+      .then(function (saved) {
+        if (!saved) return;
+        var composer = document.getElementById('modal-comment-input');
+        pendingCommentDraft = composer ? composer.value : null;
+        refreshModal();
+      });
   }
 
   function hasFiles(e) {
@@ -9938,13 +10162,20 @@
       deleteTimeEntry(del.getAttribute('data-delete-entry'));
     });
 
-    // Modal comments (KF-254): the per-comment ⋮ menu carries Delete; the
-    // smiley opens an emoji picker that inserts into the composer input.
+    // The per-comment ⋮ menu carries Delete; the
+    // smiley opens the reaction picker.
     document.addEventListener('click', function (e) {
       var emojiBtn = e.target.closest('[data-comment-emoji]');
       if (emojiBtn) { toggleEmojiPop(emojiBtn); return; }
       var emojiPick = e.target.closest('.tm-emoji-pop button');
-      if (emojiPick) { insertEmoji(emojiPick.getAttribute('data-emoji')); return; }
+      if (emojiPick) {
+        var pickedFor = emojiCommentId;
+        closeEmojiPop();
+        reactToComment(pickedFor, emojiPick.getAttribute('data-emoji'));
+        return;
+      }
+      var pill = e.target.closest('[data-comment-react]');
+      if (pill && !document.querySelector('.board-wrap[data-role="viewer"]')) { closeEmojiPop(); reactToComment(pill.getAttribute('data-comment-react'), pill.getAttribute('data-emoji')); return; }
       if (!e.target.closest('.tm-emoji-pop')) closeEmojiPop();
       var cedit = e.target.closest('[data-comment-edit]');
       if (cedit) { closeAllTmMenus(); editModalComment(cedit.getAttribute('data-comment-edit')); }
@@ -16011,7 +16242,7 @@
       this.initLegend();
       this.initFilter();
       this.initBarButtons();
-      if (window.location.hash === '#layout') this.editLayout();
+      if (window.location.hash === '#layout' && document.querySelector('.board-wrap[data-role="owner"]')) this.editLayout();
       this.initEsc();
       this.initHelp();
     },
@@ -16147,7 +16378,7 @@
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/settings';
           break;
         case 'members':
-          this.peopleDialog('Members', this.ownerName() + ' \u2014 Board owner.');
+          this.peopleDialog();
           break;
         case 'archive':
           window.location.href = '/api/boards/' + encodeURIComponent(boardId()) + '/archive';
@@ -16977,12 +17208,50 @@
       });
     },
 
+    initMemberPopover: function () {
+      var self = this;
+      var popover = document.getElementById('member-popover');
+      if (!popover) return;
+      var labels = { owner: 'Owner', member: 'Member', viewer: 'Viewer' };
+      var current = null;
+      var close = function () {
+        popover.hidden = true;
+        current = null;
+      };
+      document.querySelectorAll('.board-member-avatar').forEach(function (avatar) {
+        avatar.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (current === avatar) { close(); return; }
+          current = avatar;
+          document.getElementById('member-popover-name').textContent = avatar.dataset.memberName;
+          document.getElementById('member-popover-role').textContent = labels[avatar.dataset.memberRole];
+          popover.dataset.memberId = avatar.dataset.memberId;
+          popover.hidden = false;
+          popover.style.left = avatar.offsetLeft + 'px';
+        });
+      });
+      document.getElementById('member-popover-filter').addEventListener('click', function () {
+        self.setRadio('f-user', 'user:' + popover.dataset.memberId);
+        self.applyFilter();
+        self.maybeSaveFilter();
+        self.openFilter();
+        close();
+      });
+      document.addEventListener('click', function (e) {
+        if (!popover.hidden && !e.target.closest('#member-popover')) close();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') close();
+      });
+    },
+
     // ----- board-bar buttons -----
     initBarButtons: function () {
       var self = this;
+      this.initMemberPopover();
       var invite = document.getElementById('invite-btn');
       if (invite) invite.addEventListener('click', function () {
-        self.peopleDialog('Invite to board', 'Pomb is single-user \u2014 boards cannot be shared yet.');
+        self.peopleDialog();
       });
       var layout = document.getElementById('edit-layout-btn');
       if (layout) layout.addEventListener('click', function () { self.editLayout(); });
@@ -17072,12 +17341,117 @@
       if (typeof TimerUI !== 'undefined' && TimerUI.renderPill) TimerUI.renderPill();
     },
 
-    peopleDialog: function (title, body) {
+    peopleDialog: function () {
       var dlg = document.getElementById('people-dialog');
       if (!dlg) return;
-      document.getElementById('people-dialog-title').textContent = title;
-      document.getElementById('people-dialog-body').textContent = body;
+      var wrap = document.querySelector('.board-wrap');
+      var roleLabels = { owner: 'Owner', member: 'Member', viewer: 'Viewer' };
+      var assignable = ['member', 'viewer'];
+      var isOwner = wrap.dataset.role === 'owner';
+      var account = wrap.dataset.account;
+      var base = '/api/boards/' + encodeURIComponent(boardId()) + '/members';
+      var list = document.getElementById('people-list');
+      var form = document.getElementById('people-add');
+      var leave = document.getElementById('people-leave');
+      var error = document.getElementById('people-error');
+      form.hidden = !isOwner;
+      leave.hidden = isOwner;
+
+      function fail(message) {
+        error.textContent = message;
+        error.hidden = false;
+      }
+
+      function respond(res) {
+        if (res.ok) {
+          error.hidden = true;
+          return reload();
+        }
+        var shown = res.status === 400 || res.status === 404;
+        return res.text().then(function (text) {
+          fail(shown && text ? text : 'Could not change the members.');
+          return reload();
+        });
+      }
+
+      function send(request) {
+        return request.then(respond).catch(function () { fail('Network error.'); });
+      }
+
+      function roleCell(member) {
+        if (member.role === 'owner' || !isOwner) {
+          var label = document.createElement('span');
+          label.className = 'people-role';
+          label.textContent = roleLabels[member.role];
+          return label;
+        }
+        var select = document.createElement('select');
+        select.className = 'people-role-select';
+        select.setAttribute('aria-label', 'Role of ' + member.username);
+        assignable.forEach(function (role) {
+          var option = document.createElement('option');
+          option.value = role;
+          option.textContent = roleLabels[role];
+          option.selected = member.role === role;
+          select.appendChild(option);
+        });
+        select.addEventListener('change', function () {
+          send(api(base, 'PUT', { username: member.username, role: select.value }));
+        });
+        return select;
+      }
+
+      function render(members) {
+        list.textContent = '';
+        members.forEach(function (member) {
+          var row = document.createElement('li');
+          row.className = 'people-row';
+          row.dataset.username = member.username;
+          var name = document.createElement('span');
+          name.className = 'people-name';
+          name.textContent = member.username;
+          row.appendChild(name);
+          row.appendChild(roleCell(member));
+          if (isOwner && member.role !== 'owner') {
+            var remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'btn people-remove';
+            remove.textContent = 'Remove';
+            remove.setAttribute('aria-label', 'Remove ' + member.username);
+            remove.addEventListener('click', function () {
+              send(api(base + '?username=' + encodeURIComponent(member.username), 'DELETE'));
+            });
+            row.appendChild(remove);
+          }
+          list.appendChild(row);
+        });
+      }
+
+      function reload() {
+        return fetchJson(base).then(render).catch(function () { fail('Could not load the members.'); });
+      }
+
+      form.onsubmit = function (e) {
+        e.preventDefault();
+        var field = document.getElementById('people-add-name');
+        send(api(base, 'PUT', {
+          username: field.value.trim(),
+          role: document.getElementById('people-add-role').value,
+        }).then(function (res) {
+          if (res.ok) field.value = '';
+          return res;
+        }));
+      };
+      leave.onclick = function () {
+        api(base + '?username=' + encodeURIComponent(account), 'DELETE').then(function (res) {
+          if (res.ok) { window.location.href = '/'; return; }
+          fail('Could not leave the board.');
+        }).catch(function () { fail('Network error.'); });
+      };
+      error.hidden = true;
+      list.textContent = '';
       dlg.hidden = false;
+      reload();
     },
 
     openBin: function () {
@@ -17157,16 +17531,6 @@
       }).catch(function () {
         note.textContent = 'Could not load the recycle bin.';
       });
-    },
-
-    ownerName: function () {
-      var av = document.querySelector('.owner-avatar');
-      if (av && av.title) {
-        var m = av.title.match(/Board owner:\s*(.*)/);
-        if (m) return m[1];
-      }
-      var u = document.querySelector('.topbar .user');
-      return u ? u.textContent.trim() : 'you';
     },
 
     toggleDark: function () {
@@ -18926,6 +19290,179 @@
       });
     }
 
+    var subtaskNames = [];
+    var subtaskTemplates = [];
+    var relationAdds = [];
+    var relationSeq = 0;
+    var RELATION_WORDS = {
+      related: 'Relates to',
+      blocked_by: 'Depends on',
+      blocks: 'Required by',
+      parent: 'Part of',
+      child: 'Umbrella of'
+    };
+
+    function cardName(id) {
+      var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
+      return card ? card.dataset.taskName || '' : '';
+    }
+
+    function renderChips(listId, items, label, onRemove) {
+      var list = byId(listId);
+      list.innerHTML = '';
+      items.forEach(function (item, index) {
+        var row = document.createElement('li');
+        var text = document.createElement('span');
+        text.textContent = label(item);
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btn btn-sm';
+        remove.textContent = 'Remove';
+        remove.setAttribute('aria-label', 'Remove ' + label(item));
+        remove.addEventListener('click', function () { onRemove(index); });
+        row.appendChild(text);
+        row.appendChild(remove);
+        list.appendChild(row);
+      });
+    }
+
+    function renderSubtaskRows() {
+      renderChips('mu-sub-rows', subtaskNames, function (name) { return name; }, function (index) {
+        subtaskNames.splice(index, 1);
+        renderSubtaskRows();
+      });
+    }
+
+    function addSubtaskName() {
+      var input = byId('mu-sub-name');
+      var name = input.value.trim();
+      if (!name) return;
+      subtaskNames.push(name);
+      input.value = '';
+      renderSubtaskRows();
+      input.focus();
+    }
+
+    function addSubtasksFromTemplate() {
+      var select = byId('mu-sub-template');
+      var template = subtaskTemplates.filter(function (item) { return item.id === select.value; })[0];
+      if (!template) return;
+      template.subtasks.forEach(function (name) { subtaskNames.push(name); });
+      renderSubtaskRows();
+    }
+
+    function fillSubtaskTemplates() {
+      var select = byId('mu-sub-template');
+      select.innerHTML = '';
+      subtaskTemplates = [];
+      fetchJson('/api/settings').catch(function () { return {}; }).then(function (settings) {
+        subtaskTemplates = settings.subtask_templates || [];
+        subtaskTemplates.forEach(function (template) { addOption(select, template.id, template.name); });
+        byId('mu-sub-from-template').disabled = !subtaskTemplates.length;
+      });
+    }
+
+    function showDueFields() {
+      var mode = byId('mu-dd-mode').value;
+      byId('mu-dd-fields').hidden = mode === 'delete';
+      byId('mu-dd-existing-field').hidden = mode !== 'add';
+    }
+
+    function fillDueForm() {
+      var target = byId('mu-dd-target');
+      target.innerHTML = '';
+      addOption(target, '', 'None');
+      boardColumns().forEach(function (column) { addOption(target, column.id, column.name); });
+      byId('mu-dd-mode').value = 'add';
+      byId('mu-dd-date').value = '';
+      byId('mu-dd-time').value = '';
+      byId('mu-dd-existing').value = 'skip';
+      showDueFields();
+    }
+
+    function relationLabel(link) {
+      return (RELATION_WORDS[link.kind] || link.kind) + ' ' + (link.name || cardName(link.target_id) || link.target_id);
+    }
+
+    function fillRemovableRelations() {
+      var seq = ++relationSeq;
+      var select = byId('mu-rel-remove');
+      var keep = chosen('mu-rel-remove');
+      select.innerHTML = '';
+      Promise.all(pickedIds().map(function (id) {
+        return fetchJson('/api/tasks/' + encodeURIComponent(id) + '/links').catch(function () { return []; });
+      })).then(function (lists) {
+        if (seq !== relationSeq) return null;
+        var held = {};
+        lists.forEach(function (links) {
+          links.forEach(function (link) {
+            var key = JSON.stringify([link.kind, link.target_id]);
+            if (!held[key]) held[key] = { kind: link.kind, target_id: link.target_id, count: 0 };
+            held[key].count += 1;
+          });
+        });
+        var entries = Object.keys(held).map(function (key) { return held[key]; });
+        return Promise.all(entries.map(function (entry) {
+          if (cardName(entry.target_id)) return Promise.resolve();
+          return fetchJson('/api/tasks/' + encodeURIComponent(entry.target_id)).then(function (task) {
+            entry.name = task.name;
+          }).catch(function () {});
+        })).then(function () { return entries; });
+      }).then(function (entries) {
+        if (!entries || seq !== relationSeq) return;
+        entries.forEach(function (entry) {
+          var key = JSON.stringify({ kind: entry.kind, target_id: entry.target_id });
+          addOption(select, key, relationLabel(entry) + ' (' + entry.count + (entry.count === 1 ? ' task)' : ' tasks)'));
+          select.lastChild.selected = keep.indexOf(key) !== -1;
+        });
+      });
+    }
+
+    function fillRelationTargets() {
+      var picked = pickedIds();
+      relationAdds = relationAdds.filter(function (link) { return picked.indexOf(link.target_id) === -1; });
+      renderRelationRows();
+      var select = byId('mu-rel-target');
+      var query = byId('mu-rel-search').value.trim().toLowerCase();
+      var chosenIds = pickedIds();
+      select.innerHTML = '';
+      document.querySelectorAll('.task-card').forEach(function (card) {
+        var name = card.dataset.taskName || '';
+        if (chosenIds.indexOf(card.dataset.taskId) !== -1) return;
+        if (query && name.toLowerCase().indexOf(query) === -1) return;
+        addOption(select, card.dataset.taskId, name);
+      });
+    }
+
+    function renderRelationRows() {
+      renderChips('mu-rel-rows', relationAdds, relationLabel, function (index) {
+        relationAdds.splice(index, 1);
+        renderRelationRows();
+      });
+    }
+
+    function addRelation() {
+      var target = byId('mu-rel-target');
+      if (!target.value) return;
+      var link = { kind: byId('mu-rel-kind').value, target_id: target.value, name: cardName(target.value) };
+      var duplicate = relationAdds.some(function (held) {
+        return held.kind === link.kind && held.target_id === link.target_id;
+      });
+      if (!duplicate) relationAdds.push(link);
+      renderRelationRows();
+    }
+
+    function resetListForms() {
+      subtaskNames = [];
+      relationAdds = [];
+      byId('mu-sub-name').value = '';
+      byId('mu-rel-search').value = '';
+      renderSubtaskRows();
+      renderRelationRows();
+      fillSubtaskTemplates();
+      fillDueForm();
+    }
+
     function fillActionForms() {
       var board = byId('mu-move-board');
       board.innerHTML = '';
@@ -18944,6 +19481,7 @@
       });
       byId('mu-labels-add').value = '';
       fillMembers();
+      resetListForms();
       byId('mu-action').value = 'move';
       showActionForm();
     }
@@ -18974,6 +19512,23 @@
         body.remove_member_ids = chosen('mu-members-remove');
         body.add_member_ids = chosen('mu-members-add');
         if (!body.remove_member_ids.length && !body.add_member_ids.length) return 'Choose members to remove or add.';
+      } else if (action === 'subtasks') {
+        body.add_subtasks = subtaskNames.slice();
+        if (!body.add_subtasks.length) return 'Add at least one subtask.';
+      } else if (action === 'due_dates') {
+        body.due_mode = byId('mu-dd-mode').value;
+        if (body.due_mode !== 'delete') {
+          var date = byId('mu-dd-date').value;
+          if (!date) return 'Choose a date.';
+          var time = byId('mu-dd-time').value;
+          body.due_at = time ? date + 'T' + time : date;
+          if (byId('mu-dd-target').value) body.due_target_column_id = byId('mu-dd-target').value;
+          if (body.due_mode === 'add') body.due_existing = byId('mu-dd-existing').value;
+        }
+      } else if (action === 'relations') {
+        body.remove_links = chosen('mu-rel-remove').map(function (key) { return JSON.parse(key); });
+        body.add_links = relationAdds.map(function (link) { return { kind: link.kind, target_id: link.target_id }; });
+        if (!body.remove_links.length && !body.add_links.length) return 'Choose relations to remove or add.';
       }
       return body;
     }
@@ -19000,8 +19555,14 @@
         });
         body.appendChild(row);
       });
-      var count = tasks.length;
-      byId('mu-preview-count').textContent = count + (count === 1 ? ' task will be updated' : ' tasks will be updated');
+      var deleting = !!request && request.action === 'delete';
+      var dueDates = !!request && request.action === 'due_dates';
+      var count = dueDates ? tasks.filter(function (task) { return task.before !== task.after; }).length : tasks.length;
+      var skipped = tasks.length - count;
+      var noun = count === 1 ? ' task' : ' tasks';
+      var text = count + noun + (deleting ? ' will be deleted' : ' will be updated');
+      if (skipped) text += ', ' + skipped + (skipped === 1 ? ' task is' : ' tasks are') + ' skipped';
+      byId('mu-preview-count').textContent = text;
     }
 
     function enterPreview() {
@@ -19036,8 +19597,10 @@
     function apply() {
       if (!request || applying) return;
       var count = request.task_ids.length;
-      var message = count + (count === 1 ? ' task' : ' tasks') + ' will be updated. Do you want to continue?';
-      showConfirmDialog('Apply updates', message, 'Apply updates', function () {
+      var deleting = request.action === 'delete';
+      var message = count + (count === 1 ? ' task' : ' tasks') + (deleting ? ' will be deleted. Do you want to continue?' : ' will be updated. Do you want to continue?');
+      var verb = deleting ? 'Delete tasks' : 'Apply updates';
+      showConfirmDialog(verb, message, verb, function () {
         applying = true;
         postBulkRequest(request).then(function (res) {
           applying = false;
@@ -19064,7 +19627,11 @@
       byId('mu-apply').hidden = name !== 'preview';
       byId('mu-next').disabled = false;
       if (name === 'select') enterSelect();
-      else if (name === 'action') fillRemovableLabels();
+      else if (name === 'action') {
+        fillRemovableLabels();
+        fillRemovableRelations();
+        fillRelationTargets();
+      }
       else if (name === 'preview') enterPreview();
     }
 
@@ -19076,6 +19643,14 @@
       byId('mu-prev').addEventListener('click', function () { show(step - 1); });
       byId('mu-apply').addEventListener('click', apply);
       byId('mu-action').addEventListener('change', showActionForm);
+      byId('mu-sub-add').addEventListener('click', addSubtaskName);
+      byId('mu-sub-name').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); addSubtaskName(); }
+      });
+      byId('mu-sub-from-template').addEventListener('click', addSubtasksFromTemplate);
+      byId('mu-dd-mode').addEventListener('change', showDueFields);
+      byId('mu-rel-search').addEventListener('input', fillRelationTargets);
+      byId('mu-rel-add').addEventListener('click', addRelation);
       byId('mu-move-board').addEventListener('change', function () {
         loadMoveColumns(byId('mu-move-board').value);
       });

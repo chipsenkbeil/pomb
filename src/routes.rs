@@ -61,18 +61,20 @@ use crate::db::{
     ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, ColumnWatch, CommentWrite, Commit,
     CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment, EventRead,
     FeedAdd, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LargestUse,
-    LinkAddOutcome, LinkDeleteOutcome, LinkReads, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT,
-    MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment,
-    NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedTask,
-    PaletteStrandsColor, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome,
-    QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked, SessionEndOutcome,
-    SessionListing, SessionRefused, SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
-    SwimlanePatch, SwimlaneUpdateOutcome, TaskContext, UmbrellaChange, UmbrellaPart, UmbrellaRef,
+    LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD,
+    MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME,
+    NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted,
+    OwnedBoard, OwnedTask, OwnerChange, PaletteStrandsColor, PasskeyAddOutcome,
+    PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuotaExceeded, RecoverOutcome, RegisterOutcome,
+    RestoreOutcome, Revoked, RoleDenied, SessionEndOutcome, SessionListing, SessionRefused,
+    SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
+    SwimlaneUpdateOutcome, TaskContext, UmbrellaChange, UmbrellaPart, UmbrellaRef,
     WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels, local_day, merge_metadata,
     push_change_event, push_column_event, push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
+use crate::layouts::{Category, YOUR_BOARDS, category_of, chip_labels};
 use crate::limit::ClientIp;
 use crate::models::*;
 use crate::passkey::{
@@ -187,6 +189,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/tasks/:id/comments/:comment_id",
             patch(edit_comment).delete(delete_comment),
+        )
+        .route(
+            "/api/tasks/:id/comments/:comment_id/reactions",
+            post(react_to_comment),
         );
 
     let router = router
@@ -269,6 +275,13 @@ pub fn router(state: AppState) -> Router {
             get(get_board_detail).delete(delete_board_api),
         )
         .route("/api/boards/:id/config", put(update_board_config))
+        .route("/api/boards/:id/owner", put(change_board_owner))
+        .route(
+            "/api/boards/:id/members",
+            get(list_board_members)
+                .put(set_board_member)
+                .delete(remove_board_member),
+        )
         .route(
             "/api/boards/:id/rules",
             get(get_board_rules).put(update_board_rules),
@@ -845,6 +858,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             Task,
             Exempt,
         ),
+        (
+            Method::POST,
+            "/api/tasks/:id/comments/:comment_id/reactions",
+            Task,
+            Grows,
+        ),
         (Method::GET, "/api/tasks/:id/attachments", Task, No),
         (Method::POST, "/api/tasks/:id/attachments", Task, Grows),
         (Method::POST, "/api/tasks/:id/attachments/link", Task, Grows),
@@ -946,6 +965,10 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/api/boards/:id", Board, No),
         (Method::DELETE, "/api/boards/:id", Board, Exempt),
         (Method::PUT, "/api/boards/:id/config", Board, Grows),
+        (Method::GET, "/api/boards/:id/members", Board, No),
+        (Method::PUT, "/api/boards/:id/members", Board, Grows),
+        (Method::DELETE, "/api/boards/:id/members", Board, Exempt),
+        (Method::PUT, "/api/boards/:id/owner", Board, Grows),
         (Method::GET, "/api/boards/:id/label-settings", Board, No),
         (Method::PUT, "/api/boards/:id/label-settings", Board, Grows),
         (Method::GET, "/b/:board_id/settings/labels", Board, No),
@@ -1400,6 +1423,9 @@ impl From<Box<dyn std::error::Error>> for AppError {
     fn from(error: Box<dyn std::error::Error>) -> Self {
         if let Some(refusal) = error.downcast_ref::<BoardDenied>() {
             return refusal.clone().into();
+        }
+        if let Some(refusal) = error.downcast_ref::<RoleDenied>() {
+            return Self::forbidden(refusal.to_string());
         }
         if let Some(refusal) = error.downcast_ref::<QuotaExceeded>() {
             return (*refusal).into();
@@ -2308,6 +2334,39 @@ fn field_views(
         )
 }
 
+/// One reaction pill under a comment: an emoji, how many accounts gave it and whether the
+/// viewer is one.
+#[derive(Clone, Debug)]
+struct ReactionPill {
+    /// The emoji the pill shows.
+    emoji: String,
+    /// How many accounts gave the emoji.
+    count: usize,
+    /// Whether the viewer gave the emoji.
+    mine: bool,
+}
+
+/// Groups `reactions` into one pill per emoji, in the order each emoji was first given.
+#[must_use]
+fn reaction_pills(reactions: &[CommentReaction], handle: &str) -> Vec<ReactionPill> {
+    let mut pills: Vec<ReactionPill> = Vec::new();
+    for reaction in reactions {
+        let mine = reaction.handle == handle;
+        match pills.iter_mut().find(|pill| pill.emoji == reaction.emoji) {
+            Some(pill) => {
+                pill.count += 1;
+                pill.mine |= mine;
+            }
+            None => pills.push(ReactionPill {
+                emoji: reaction.emoji.clone(),
+                count: 1,
+                mine,
+            }),
+        }
+    }
+    pills
+}
+
 /// One comment shaped for templates.
 #[derive(Clone, Debug)]
 struct CommentView {
@@ -2325,6 +2384,8 @@ struct CommentView {
     kind: Option<String>,
     /// Name of the API token that wrote the comment, shown as "via <name>".
     via_token: Option<String>,
+    /// The reaction pills under the comment.
+    reactions: Vec<ReactionPill>,
 }
 
 /// One attachment shaped for the modal's Attachments section.
@@ -2930,6 +2991,7 @@ impl TaskView {
                     .token_name
                     .clone()
                     .filter(|_| c.actor_kind == ActorKind::ApiToken),
+                reactions: reaction_pills(&c.reactions, handle),
             })
             .collect();
         self.attachments = row
@@ -3846,6 +3908,55 @@ struct BoardListItem {
     /// Whether the board is archived. Archived boards are excluded from default listings, and
     /// `?include_archived=true` includes them.
     archived: bool,
+    /// The role the caller holds on the board: `owner` for a board it owns, or the role the
+    /// board's owner gave it on a board it joined.
+    role: BoardRole,
+}
+
+/// One account on a board, in `GET /api/boards/{id}/members`.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct BoardMemberView {
+    /// The account's id.
+    id: String,
+    /// The account's handle.
+    username: String,
+    /// The account's role on the board.
+    role: BoardRole,
+}
+
+/// A role the owner of a board may give: the owner role stays with the board's owner.
+#[derive(Copy, Clone, Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+enum MemberRoleInput {
+    /// Adds, edits, moves, deletes and comments on tasks and logs time.
+    Member,
+    /// Reads only.
+    Viewer,
+}
+
+impl From<MemberRoleInput> for BoardRole {
+    fn from(role: MemberRoleInput) -> Self {
+        match role {
+            MemberRoleInput::Member => Self::Member,
+            MemberRoleInput::Viewer => Self::Viewer,
+        }
+    }
+}
+
+/// The body of `PUT /api/boards/{id}/owner`.
+#[derive(Deserialize, ToSchema)]
+struct BoardOwnerInput {
+    /// The handle of a member of the board, in any case.
+    username: String,
+}
+
+/// The body of `PUT /api/boards/{id}/members`.
+#[derive(Deserialize, ToSchema)]
+struct BoardMemberInput {
+    /// The handle of an active account on this instance, in any case.
+    username: String,
+    /// The role to give the account.
+    role: MemberRoleInput,
 }
 
 /// One board column in `GET /api/boards/:id/columns`: `{ "id", "name", "wip_limit", "is_done" }`
@@ -3862,13 +3973,44 @@ struct ColumnListItem {
     watched: bool,
 }
 
-/// One board template, shaped `{ "id", "name", "description", "built_in" }`.
+/// One board template, shaped `{ "id", "name", "description", "built_in", "category", "columns" }`.
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TemplateListItem {
     id: String,
     name: String,
     description: String,
     built_in: bool,
+    /// The layout category, or `"Your boards"` for a template the account saved.
+    category: String,
+    /// The column names from left to right of a built-in template, and none for a saved one.
+    columns: Vec<String>,
+}
+
+/// Lists the templates `account` sees, with their category and columns.
+fn template_items(account: &AccountDb) -> Result<Vec<TemplateListItem>, AppError> {
+    account
+        .list_templates()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|template| {
+            let (category, columns) = if template.built_in {
+                let columns = account
+                    .template_columns(&template)
+                    .map_err(AppError::from)?;
+                (category_of(&template.name), columns)
+            } else {
+                (YOUR_BOARDS, Vec::new())
+            };
+            Ok(TemplateListItem {
+                id: template.id,
+                name: template.name,
+                description: template.description,
+                built_in: template.built_in,
+                category: category.to_owned(),
+                columns,
+            })
+        })
+        .collect()
 }
 
 /// How the board grid lays out its swimlane rows.
@@ -3908,8 +4050,10 @@ struct BoardTemplate {
     due_time: String,
     /// The user ids a task added in the dialog starts with, comma separated.
     default_member_ids: String,
-    /// Registered users, one filter User option each.
+    /// The accounts on the board with their roles, one filter User option each.
     members: Vec<MemberDetail>,
+    /// The role the signed-in account holds on this board.
+    role: BoardRole,
     /// The style rules of the board's custom colors, enabled or not.
     custom_css: String,
     /// What the board estimates in.
@@ -3945,8 +4089,21 @@ impl BoardTemplate {
 struct NewBoardTemplate {
     /// Top bar data.
     chrome: ShellChrome,
-    templates: Vec<TemplateListItem>,
+    /// The layout categories in the order the filter chips list them.
+    panels: Vec<LayoutPanel>,
     board_id: String,
+}
+
+/// One category of the Create board page and the templates under it.
+struct LayoutPanel {
+    /// The chip label and the panel heading.
+    label: &'static str,
+    /// The templates listed under the heading.
+    templates: Vec<TemplateListItem>,
+    /// Whether the panel holds the board made without a template.
+    is_general: bool,
+    /// Whether the panel holds the templates the account saved.
+    is_yours: bool,
 }
 
 /// Archived boards list page.
@@ -4122,6 +4279,8 @@ struct ModalTemplate {
     subtask_chips: HashMap<String, Vec<MemberChip>>,
     /// The style rules of the board's custom colors, enabled or not.
     custom_css: String,
+    /// The role the signed-in account holds on the task's board.
+    role: BoardRole,
 }
 
 impl ModalTemplate {
@@ -4573,6 +4732,7 @@ fn board_template(
     let db = &account;
 
     let (board, notice) = found(db.visit_board(&board_id), "board not found")?;
+    let role = db.board_role(&board).map_err(AppError::from)?;
 
     let columns = db.list_columns(&board_id).map_err(AppError::from)?;
 
@@ -4830,19 +4990,27 @@ fn board_template(
             })
             .collect(),
         members: db
-            .list_users()
+            .board_members(&board)
             .map_err(AppError::from)?
             .into_iter()
-            .map(|user| {
-                let display_name = profile.display_name(&user.username);
+            .map(|member| {
+                let own = member.user.id == db.account_id().as_str();
+                let settings = if own {
+                    profile.clone()
+                } else {
+                    Settings::default()
+                };
+                let display_name = settings.display_name(&member.user.username);
                 MemberDetail {
-                    id: user.id,
-                    avatar: AvatarView::of(&profile, &display_name),
+                    id: member.user.id,
+                    avatar: AvatarView::of(&settings, &display_name),
                     display_name,
-                    username: user.username,
+                    username: member.user.username,
+                    role: Some(member.role),
                 }
             })
             .collect(),
+        role,
     })
 }
 
@@ -4878,9 +5046,10 @@ struct ChromeBoard {
 fn dropdown_boards(db: &AccountDb) -> Result<Vec<ChromeBoard>, AppError> {
     let notices = db.prune_notices().map_err(AppError::from)?;
     Ok(db
-        .list_boards()
+        .list_reachable_boards()
         .map_err(AppError::from)?
         .into_iter()
+        .map(|(board, _)| board)
         .filter(|b| !b.config_bool("archived"))
         .map(|b| ChromeBoard {
             deletes_on: notices.get(&b.id).map(|notice| fmt_ts(notice.deletes_at)),
@@ -4900,6 +5069,8 @@ struct ShellChrome {
     display_name: String,
     /// Ids of the first-visit hints the signed-in user dismissed.
     dismissed_hints: Vec<String>,
+    /// Whether first-visit tips show: the account has them on and the admin has not disabled them.
+    tips_on: bool,
     /// How the signed-in user's times of day are written.
     time_format: TimeFormat,
     /// The first day of the week for the signed-in user.
@@ -4920,7 +5091,7 @@ struct ShellChrome {
 impl ShellChrome {
     /// Returns whether the first-visit hint `id` still shows.
     fn hint_shown(&self, id: &str) -> bool {
-        !self.dismissed_hints.iter().any(|hint| hint == id)
+        self.tips_on && !self.dismissed_hints.iter().any(|hint| hint == id)
     }
 }
 
@@ -4970,6 +5141,7 @@ fn shell_chrome(state: &AppState, db: &AccountDb, username: &str) -> Result<Shel
     let display_name = settings.display_name(username);
     Ok(ShellChrome {
         dismissed_hints: settings.dismissed_hints.clone(),
+        tips_on: settings.show_tips && !db.tips_disabled()?,
         time_format: settings.time_format,
         week_start: settings.week_start,
         build: Build::current(),
@@ -6678,6 +6850,8 @@ struct AdminSettingsInput {
     disk: DiskLimits,
     /// When member boards nobody uses are deleted. Every field is required.
     prune: PruneSettings,
+    /// Whether first-visit tips are off for every account. The stored value stays when absent.
+    disable_tips: Option<bool>,
 }
 
 /// The instance settings the admin edits.
@@ -6695,6 +6869,8 @@ struct AdminSettingsView {
     disk: DiskLimits,
     /// When member boards nobody uses are deleted.
     prune: PruneSettings,
+    /// Whether first-visit tips are off for every account, whatever each account's own setting.
+    disable_tips: bool,
 }
 
 impl From<InstanceSettings> for AdminSettingsView {
@@ -6706,6 +6882,7 @@ impl From<InstanceSettings> for AdminSettingsView {
             limits: settings.limits,
             disk: settings.disk,
             prune: settings.prune,
+            disable_tips: settings.disable_tips,
         }
     }
 }
@@ -6776,6 +6953,9 @@ async fn update_admin_settings(
             settings.limits = input.limits;
             settings.disk = input.disk;
             settings.set_prune(input.prune, now);
+            if let Some(off) = input.disable_tips {
+                settings.disable_tips = off;
+            }
         })
         .map_err(AppError::from)?;
     Ok(Json(stored.into()))
@@ -6806,6 +6986,8 @@ struct AdminTemplate {
     prune: PruneSettings,
     /// When the unused-board cleanup last ran and what it deleted, or "never".
     prune_last_run: String,
+    /// Whether first-visit tips are off for every account.
+    disable_tips: bool,
     /// Every stored setting as `PUT /api/v1/admin/settings` takes it, so each form saves only its
     /// own section.
     settings_json: String,
@@ -6952,6 +7134,7 @@ async fn admin_page(
         disk: settings.disk,
         prune: settings.prune,
         prune_last_run: prune_last_run(&instance)?,
+        disable_tips: settings.disable_tips,
         settings_json: serde_json::to_string(&AdminSettingsView::from(settings))
             .map_err(|error| AppError::internal(error.to_string()))?,
         invites: invite_list(&instance)?,
@@ -7358,7 +7541,7 @@ async fn list_tasks(
     let boards: Vec<String> = match board_filter {
         Some(id) => vec![id.to_string()],
         None => db
-            .list_boards()
+            .list_accessible_boards()
             .map_err(AppError::from)?
             .into_iter()
             .map(|board| board.id)
@@ -7526,7 +7709,7 @@ fn run_search(
     let deadline = std::time::Instant::now() + budget;
     let mut truncated = false;
     let mut hits = Vec::new();
-    let boards = account.list_boards().map_err(AppError::from)?;
+    let boards = account.list_accessible_boards().map_err(AppError::from)?;
     'boards: for board in &boards {
         let Some(snapshot) = account.search_snapshot(&board.id).map_err(AppError::from)? else {
             continue;
@@ -9088,6 +9271,53 @@ enum BulkTasksAction {
     Members,
     /// Removes every member from the tasks.
     UnassignMembers,
+    /// Appends the subtasks named in `add_subtasks` to each task. A token needs `subtasks.write`.
+    Subtasks,
+    /// Adds, changes or deletes the due date as `due_mode` says. A task that already has a due
+    /// date is left as it is by `add` under `due_existing` `skip`, and `change` and `delete` leave
+    /// a task without one.
+    DueDates,
+    /// Removes the relations in `remove_links` where a task has them, then adds those in
+    /// `add_links`. A token needs `links.write`, and without `links.delete` may remove only a link
+    /// it created.
+    Relations,
+    /// Moves the tasks to the recycle bin, as `DELETE /api/tasks/{id}` does for one. A token needs
+    /// `tasks.bin`, even under `dry_run`.
+    Delete,
+}
+
+/// How `due_dates` changes the due date of each task.
+#[derive(Copy, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum BulkDueMode {
+    /// Gives a task without a due date `due_at`. A task with one is handled by `due_existing`.
+    Add,
+    /// Sets `due_at` on a task that has a due date and leaves one without.
+    Change,
+    /// Clears the due date, the target column and the repeat of a task that has a due date.
+    Delete,
+}
+
+/// What `due_dates` `add` does to a task that already has a due date.
+#[derive(Copy, Clone, Default, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum BulkDueExisting {
+    /// Leaves the task unchanged.
+    #[default]
+    Skip,
+    /// Gives the task `due_at`.
+    Replace,
+}
+
+/// One relation of a task, as the task shows it.
+#[derive(Deserialize, ToSchema)]
+struct BulkLink {
+    /// `blocked_by`, `blocks`, `related`, `parent` or `child`, as `POST /api/tasks/{id}/links`
+    /// names them.
+    #[schema(value_type = LinkKind)]
+    kind: String,
+    /// The other task.
+    target_id: String,
 }
 
 /// The body of a bulk task request.
@@ -9121,6 +9351,22 @@ struct BulkTasksInput {
     add_member_ids: Option<Vec<String>>,
     /// `members`: user ids to remove from each task.
     remove_member_ids: Option<Vec<String>>,
+    /// `subtasks`: names of the open subtasks to append to each task, in order. A saved subtask
+    /// template adds its names here.
+    add_subtasks: Option<Vec<String>>,
+    /// `due_dates`: whether to add, change or delete the due date.
+    due_mode: Option<BulkDueMode>,
+    /// `due_dates`: the due date for `add` and `change`, a date or a date and time, read as the
+    /// `due_at` of `PATCH /api/tasks/{id}` reads it.
+    due_at: Option<String>,
+    /// `due_dates`: the column on the board the due date targets, for `add` and `change`.
+    due_target_column_id: Option<String>,
+    /// `due_dates` `add`: what to do to a task that already has a due date. Skip when absent.
+    due_existing: Option<BulkDueExisting>,
+    /// `relations`: relations to remove from each task that has them.
+    remove_links: Option<Vec<BulkLink>>,
+    /// `relations`: relations to add to each task.
+    add_links: Option<Vec<BulkLink>>,
 }
 
 /// What a bulk request changes on one task.
@@ -9139,7 +9385,8 @@ struct BulkTaskPreview {
 /// The outcome of a bulk task request.
 #[derive(serde::Serialize, ToSchema)]
 struct BulkTasksResult {
-    /// How many tasks changed, or would change under `dry_run`.
+    /// How many tasks the request names and so changes, or would change under `dry_run`. A
+    /// `due_dates` request counts the tasks it skips.
     count: usize,
     /// The old and new value of each task in the order of `task_ids`, only under `dry_run`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -9147,12 +9394,16 @@ struct BulkTasksResult {
 }
 
 /// Changes several tasks of one board in one request. The change is all or nothing: when any task
-/// cannot change, none does. `color`, `labels`, `members` and `unassign_members` write one history
-/// event per changed field on every task. `move` keeps the order of `task_ids`, logs the same
-/// history event a single move does, stamps and clears the Done time like it, and ignores the
-/// target column's WIP limit. Every changed task queues the webhook events a single change
-/// queues. With `dry_run` the request runs every check and write of a real one, commits nothing
-/// and lists each task's old and new value. It needs `tasks.write` alone.
+/// cannot change, none does. `color`, `labels`, `members`, `unassign_members`, `subtasks` and
+/// `due_dates` write one history event per changed field on every task. `move` keeps the order of
+/// `task_ids`, logs the same history event a single move does, stamps and clears the Done time
+/// like it, and ignores the target column's WIP limit. `relations` removes and adds task links as
+/// the link endpoints do, and `delete` moves the tasks to the recycle bin as
+/// `DELETE /api/tasks/{id}` does. Every changed task queues the webhook events a single change
+/// queues.
+/// With `dry_run` the request runs every check and write of a real one, commits nothing and lists
+/// each task's old and new value. It needs `tasks.write`, plus `subtasks.write` for `subtasks`,
+/// `links.write` for `relations` and `tasks.bin` for `delete`, which a dry run needs too.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/tasks/bulk",
@@ -9162,8 +9413,8 @@ struct BulkTasksResult {
     request_body = BulkTasksInput,
     responses(
         (status = 200, description = "Every task changed, or would change under `dry_run`", body = BulkTasksResult),
-        (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, or a `members` change with no ids or an id that is not the account"),
-        (status = 403, description = "A task carries a locking label and the token is not the owner's"),
+        (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, or a `relations` change with no links, an unknown kind, a target among the tasks or a link the tasks cannot hold"),
+        (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task, or a task it links to, carries a locking label and the token is not the owner's"),
         (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -9178,6 +9429,17 @@ async fn bulk_tasks(
     let db = &account;
     let board = found(db.board(&id), "board not found")?;
     let input: BulkTasksInput = parse_body(&headers, body).await?;
+    let needed = match input.action {
+        BulkTasksAction::Subtasks => Some(Permission::SubtasksWrite),
+        BulkTasksAction::Relations => Some(Permission::LinksWrite),
+        BulkTasksAction::Delete => Some(Permission::TasksBin),
+        _ => None,
+    };
+    if let Some(permission) = needed
+        && !user.has(permission)
+    {
+        return Err(AppError::permission_denied(permission));
+    }
     if input.task_ids.is_empty() || input.task_ids.len() > MAX_BULK_TASKS {
         return Err(AppError::bad_request(format!(
             "task_ids needs 1 to {MAX_BULK_TASKS} ids"
@@ -9218,7 +9480,7 @@ async fn bulk_tasks(
             let show: BulkShow = |task, context, _| {
                 color_value(task.color_id.as_deref(), &context.colors).unwrap_or_else(none_text)
             };
-            bulk_change(db, &tasks, commit, actor, show, |task, _| {
+            bulk_change(db, &tasks, commit, actor, show, None, |task, _| {
                 task.color_id = Some(color.row().id.clone());
                 task.size = color_value_to_size(&color.row().value);
                 Ok(())
@@ -9234,7 +9496,7 @@ async fn bulk_tasks(
             }
             let show: BulkShow =
                 |task, _, _| event_value(&task.labels.join(", ")).unwrap_or_else(none_text);
-            bulk_change(db, &tasks, commit, actor, show, |task, _| {
+            bulk_change(db, &tasks, commit, actor, show, None, |task, _| {
                 task.labels = patched_labels(&task.labels, None, Some(&add), Some(&remove));
                 Ok(())
             })?
@@ -9254,16 +9516,163 @@ async fn bulk_tasks(
             {
                 return Err(AppError::bad_request("unknown member"));
             }
-            bulk_change(db, &tasks, commit, actor, show_members, |task, _| {
+            bulk_change(db, &tasks, commit, actor, show_members, None, |task, _| {
                 task.set_members(merged_members(&task.member_ids, &add, &remove));
                 Ok(())
             })?
         }
         BulkTasksAction::UnassignMembers => {
-            bulk_change(db, &tasks, commit, actor, show_members, |task, _| {
+            bulk_change(db, &tasks, commit, actor, show_members, None, |task, _| {
                 task.set_members(Vec::new());
                 Ok(())
             })?
+        }
+        BulkTasksAction::Subtasks => {
+            let names: Vec<String> = input
+                .add_subtasks
+                .unwrap_or_default()
+                .iter()
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect();
+            if names.is_empty() {
+                return Err(AppError::bad_request("subtasks needs add_subtasks"));
+            }
+            for name in &names {
+                TextCap::SUBTASK_NAME.check(name)?;
+            }
+            let mut rules = HashMap::new();
+            for task in &tasks {
+                let column_id = &task.row().column_id;
+                if !rules.contains_key(column_id) {
+                    let rule = entry_rule_of(db, task.board_id(), column_id)?;
+                    rules.insert(column_id.clone(), rule);
+                }
+            }
+            let token_id = user.token_id.clone();
+            bulk_change(db, &tasks, commit, actor, show_subtasks, None, |task, _| {
+                let before = task.clone();
+                for name in &names {
+                    task.subtasks.push(Subtask {
+                        id: Uuid::new_v4().to_string(),
+                        name: name.clone(),
+                        done: false,
+                        due_at: None,
+                        token_id: token_id.clone(),
+                        member_ids: Vec::new(),
+                    });
+                    let detail = format!("Added subtask \"{name}\"");
+                    push_event(task, "subtask_added", detail, actor);
+                }
+                if let Some(Some((column_name, rule))) = rules.get(&task.column_id) {
+                    ensure_not_worse(column_name, rule, &before, task)?;
+                }
+                Ok(())
+            })?
+        }
+        BulkTasksAction::DueDates => {
+            let change = BulkDueChange::read(db, &board, &input)?;
+            let (changing, skipped): (Vec<OwnedTask>, Vec<OwnedTask>) = tasks
+                .iter()
+                .cloned()
+                .partition(|task| change.applies(task.row()));
+            let mut changed = bulk_change(
+                db,
+                &changing,
+                commit,
+                actor,
+                show_due,
+                change.target_name.as_deref(),
+                |task, _| {
+                    change.apply(task);
+                    Ok(())
+                },
+            )?;
+            for task in &skipped {
+                let held = show_due(task.row(), &TaskContext::default(), &[]);
+                changed.push(BulkTaskPreview {
+                    id: task.row().id.clone(),
+                    name: task.row().name.clone(),
+                    before: held.clone(),
+                    after: held,
+                });
+            }
+            let order: HashMap<&String, usize> = input
+                .task_ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| (id, index))
+                .collect();
+            changed.sort_by_key(|preview| order.get(&preview.id).copied());
+            changed
+        }
+        BulkTasksAction::Relations => {
+            let remove = link_pairs(input.remove_links)?;
+            let add = link_pairs(input.add_links)?;
+            if remove.is_empty() && add.is_empty() {
+                return Err(AppError::bad_request(
+                    "relations needs add_links or remove_links",
+                ));
+            }
+            if add.iter().any(|(_, target)| distinct.contains(target)) {
+                return Err(AppError::bad_request(
+                    "a relation target is one of the tasks",
+                ));
+            }
+            for (_, target_id) in &add {
+                let target = found(db.task(target_id), "task or target not found")?;
+                ensure_unlocked(db, &user, target.board_id(), target.row())?;
+            }
+            for (_, target_id) in &remove {
+                ensure_task_id_unlocked(db, &user, target_id)?;
+            }
+            let edit = LinkEdit {
+                remove: &remove,
+                add: &add,
+                token_id: user.token_id.as_deref(),
+                owner: token_owner(&user, Permission::LinksDelete),
+            };
+            let previews = if dry_run {
+                relation_previews(db, &tasks, &remove, &add)?
+            } else {
+                Vec::new()
+            };
+            match db
+                .change_links_logged(&tasks, &edit, commit, actor)
+                .map_err(AppError::from)?
+            {
+                ChangeOutcome::Changed => {}
+                ChangeOutcome::NotFound => return Err(AppError::not_found("task not found")),
+                ChangeOutcome::Refused(refusal) => return Err(link_refusal(refusal)),
+            }
+            previews
+        }
+        BulkTasksAction::Delete => {
+            for task in &tasks {
+                let links = db.list_task_links(&task.row().id).map_err(AppError::from)?;
+                for link in links.unwrap_or_default() {
+                    ensure_task_id_unlocked(db, &user, &link.target_id)?;
+                }
+            }
+            let previews = if dry_run {
+                delete_previews(db, &tasks)?
+            } else {
+                Vec::new()
+            };
+            if !db
+                .delete_tasks_logged(&tasks, commit, actor)
+                .map_err(AppError::from)?
+            {
+                return Err(AppError::not_found("task not found"));
+            }
+            if !dry_run {
+                for task in &tasks {
+                    if let Err(error) = db.notify_task_deleted(task, actor) {
+                        eprintln!("pomb: could not record the task deletion notification: {error}");
+                    }
+                }
+            }
+            previews
         }
         BulkTasksAction::Move => {
             let column_id = input
@@ -9336,6 +9745,222 @@ fn show_members(task: &TaskRow, _: &TaskContext, users: &[UserRow]) -> String {
     member_names(&task.member_ids, users).unwrap_or_else(none_text)
 }
 
+/// Renders how many subtasks `task` holds.
+fn show_subtasks(task: &TaskRow, _: &TaskContext, _: &[UserRow]) -> String {
+    match task.subtasks.len() {
+        1 => "1 subtask".to_string(),
+        count => format!("{count} subtasks"),
+    }
+}
+
+/// Renders the due date of `task`.
+fn show_due(task: &TaskRow, _: &TaskContext, _: &[UserRow]) -> String {
+    due_value(task).unwrap_or_else(none_text)
+}
+
+/// What a `due_dates` request does to each task.
+struct BulkDueChange {
+    /// The requested change.
+    mode: BulkDueMode,
+    /// What to do to a task that already has a due date.
+    existing: BulkDueExisting,
+    /// The new due date, absent for `delete`.
+    due_at: Option<String>,
+    /// The id of the target column, if any.
+    target_id: Option<String>,
+    /// The name of the target column, for the history event.
+    target_name: Option<String>,
+}
+
+impl BulkDueChange {
+    /// Reads and checks the due date fields of `input` against `board`.
+    fn read(db: &AccountDb, board: &OwnedBoard, input: &BulkTasksInput) -> Result<Self, AppError> {
+        let mode = input
+            .due_mode
+            .ok_or_else(|| AppError::bad_request("due_dates needs due_mode"))?;
+        let due_at = match mode {
+            BulkDueMode::Delete => None,
+            BulkDueMode::Add | BulkDueMode::Change => {
+                let raw = input
+                    .due_at
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|raw| !raw.is_empty())
+                    .ok_or_else(|| AppError::bad_request("due_dates needs due_at"))?;
+                Some(
+                    normalize_due_input(raw, board.row().due_time())
+                        .map_err(AppError::bad_request)?,
+                )
+            }
+        };
+        let target = match (mode, input.due_target_column_id.as_deref().map(str::trim)) {
+            (BulkDueMode::Delete, _) | (_, None | Some("")) => None,
+            (_, Some(target)) => Some(
+                db.column(target)
+                    .map_err(AppError::from)?
+                    .filter(|column| column.row().board_id == board.row().id)
+                    .ok_or_else(|| AppError::bad_request("unknown target column"))?,
+            ),
+        };
+        Ok(Self {
+            mode,
+            existing: input.due_existing.unwrap_or_default(),
+            due_at,
+            target_id: target.as_ref().map(|column| column.row().id.clone()),
+            target_name: target.as_ref().map(|column| column.row().name.clone()),
+        })
+    }
+
+    /// Reports whether the request touches `task`: `add` a task without a due date, or with one
+    /// under `replace`, and `change` and `delete` a task with one.
+    fn applies(&self, task: &TaskRow) -> bool {
+        match self.mode {
+            BulkDueMode::Add => task.due_at.is_none() || self.existing == BulkDueExisting::Replace,
+            BulkDueMode::Change | BulkDueMode::Delete => task.due_at.is_some(),
+        }
+    }
+
+    /// Sets or clears the due date of `task` as `PATCH /api/tasks/{id}` does.
+    fn apply(&self, task: &mut TaskRow) {
+        if !self.applies(task) {
+            return;
+        }
+        let Some(due_at) = &self.due_at else {
+            task.due_at = None;
+            task.due_done = false;
+            task.due_target_column_id = None;
+            task.due_repeat = None;
+            return;
+        };
+        if !same_due_instant(Some(due_at), task.due_at.as_deref()) {
+            task.due_at = Some(due_at.clone());
+            task.due_done = false;
+        }
+        if let Some(target_id) = &self.target_id {
+            task.due_target_column_id = Some(target_id.clone());
+        }
+    }
+}
+
+/// Parses the relations of a bulk request into the kind a task shows and the other task.
+fn link_pairs(links: Option<Vec<BulkLink>>) -> Result<Vec<(LinkKind, String)>, AppError> {
+    links
+        .unwrap_or_default()
+        .into_iter()
+        .map(|link| {
+            LinkKind::parse(&link.kind)
+                .map(|kind| (kind, link.target_id))
+                .ok_or_else(|| AppError::bad_request("unknown link kind"))
+        })
+        .collect()
+}
+
+/// Returns the error for a relation change [`Db::change_links_logged`] refused.
+fn link_refusal(refusal: LinkRefusal) -> AppError {
+    match refusal {
+        LinkRefusal::Cycle => AppError::bad_request("link would create a cycle"),
+        LinkRefusal::Duplicate => {
+            AppError::bad_request("the tasks are already related; delete that relation first")
+        }
+        LinkRefusal::HasParent => AppError::bad_request("the child already has an umbrella"),
+        LinkRefusal::ParentCycle => {
+            AppError::bad_request("the link would put the umbrella under its own child")
+        }
+        LinkRefusal::NotOwner => AppError::permission_denied(Permission::LinksDelete),
+    }
+}
+
+/// Returns the words a task shows for a relation of `kind`.
+fn link_phrase(kind: LinkKind) -> &'static str {
+    match kind {
+        LinkKind::Related => "Relates to",
+        LinkKind::BlockedBy => "Depends on",
+        LinkKind::Blocks => "Required by",
+        LinkKind::Parent => "Part of",
+        LinkKind::Child => "Umbrella of",
+    }
+}
+
+/// Returns the relations of each of `tasks` before a change that removes `remove` and adds `add`,
+/// and after it.
+fn relation_previews(
+    db: &AccountDb,
+    tasks: &[OwnedTask],
+    remove: &[(LinkKind, String)],
+    add: &[(LinkKind, String)],
+) -> Result<Vec<BulkTaskPreview>, AppError> {
+    let mut names: HashMap<String, String> = HashMap::new();
+    let mut previews = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        let held = db
+            .list_task_links(&task.row().id)
+            .map_err(AppError::from)?
+            .unwrap_or_default();
+        let before: Vec<(LinkKind, String)> = held
+            .into_iter()
+            .map(|link| (link.kind, link.target_id))
+            .collect();
+        let mut after: Vec<(LinkKind, String)> = before
+            .iter()
+            .filter(|pair| !remove.contains(pair))
+            .cloned()
+            .collect();
+        for pair in add {
+            if !after.contains(pair) {
+                after.push(pair.clone());
+            }
+        }
+        previews.push(BulkTaskPreview {
+            id: task.row().id.clone(),
+            name: task.row().name.clone(),
+            before: show_relations(db, &before, &mut names)?,
+            after: show_relations(db, &after, &mut names)?,
+        });
+    }
+    Ok(previews)
+}
+
+/// Renders `links` by relation and task name, reading each name once into `names`.
+fn show_relations(
+    db: &AccountDb,
+    links: &[(LinkKind, String)],
+    names: &mut HashMap<String, String>,
+) -> Result<String, AppError> {
+    let mut parts = Vec::with_capacity(links.len());
+    for (kind, target_id) in links {
+        if !names.contains_key(target_id) {
+            let name = db
+                .task(target_id)
+                .map_err(AppError::from)?
+                .map(|target| target.row().name.clone())
+                .unwrap_or_default();
+            names.insert(target_id.clone(), name);
+        }
+        parts.push(format!("{} {}", link_phrase(*kind), names[target_id]));
+    }
+    Ok(if parts.is_empty() {
+        none_text()
+    } else {
+        parts.join(", ")
+    })
+}
+
+/// Returns the column of each of `tasks` and the recycle bin they would move to.
+fn delete_previews(db: &AccountDb, tasks: &[OwnedTask]) -> Result<Vec<BulkTaskPreview>, AppError> {
+    tasks
+        .iter()
+        .map(|task| {
+            let column = found(db.column(&task.row().column_id), "column not found")?;
+            Ok(BulkTaskPreview {
+                id: task.row().id.clone(),
+                name: task.row().name.clone(),
+                before: column.row().name.clone(),
+                after: "Recycle bin".to_string(),
+            })
+        })
+        .collect()
+}
+
 /// Returns the old and new column of each of `tasks` for a move into `column`, naming the board
 /// too when it is not the one in the path.
 fn move_previews(
@@ -9375,6 +10000,7 @@ fn bulk_change<F>(
     commit: Commit,
     actor: Actor<'_>,
     show: BulkShow,
+    target_name: Option<&str>,
     mut edit: F,
 ) -> Result<Vec<BulkTaskPreview>, AppError>
 where
@@ -9398,7 +10024,7 @@ where
                 task,
                 &users,
                 &context.colors,
-                None,
+                target_name,
                 size_from_color,
             );
             for (kind, detail, change) in events {
@@ -11296,6 +11922,9 @@ struct MemberDetail {
     id: String,
     /// The account's handle.
     username: String,
+    /// The role the account holds on the board, absent on the roster that names no board.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<BoardRole>,
     /// The name to show: the account's full name, or its handle without one.
     display_name: String,
     /// How the member's avatar renders.
@@ -11817,6 +12446,59 @@ async fn delete_comment(
         CommentWrite::Done(()) => Ok(StatusCode::OK),
         CommentWrite::NotFound => Err(AppError::not_found("task or comment not found")),
         CommentWrite::NotOwner => Err(AppError::permission_denied(Permission::CommentsDelete)),
+    }
+}
+
+/// Request body to toggle a reaction on a comment.
+#[derive(Deserialize, ToSchema)]
+struct ReactInput {
+    /// One of 👍, 👎, 😁, 🎉 or ❤️.
+    emoji: String,
+}
+
+/// Toggles your reaction to a comment and returns the comment: the first call adds the reaction
+/// of the account behind the request, and a second call with the same emoji takes it back. The
+/// five emoji are 👍, 👎, 😁, 🎉 and ❤️, and any other gets 400.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/comments/{comment_id}/reactions",
+    operation_id = "react_to_comment",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("comment_id" = String, Path, description = "Comment id"),
+    ),
+    request_body = ReactInput,
+    responses(
+        (status = 200, description = "The comment with its reactions", body = TaskComment),
+        (status = 400, description = "The emoji is not one of the five"),
+        (status = 404, description = "Task or comment not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn react_to_comment(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path((id, comment_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskComment>, AppError> {
+    let input: ReactInput = parse_body(&headers, body).await?;
+    if !CommentReaction::EMOJI.contains(&input.emoji.as_str()) {
+        return Err(AppError::bad_request(
+            "emoji must be one of the five comment reactions",
+        ));
+    }
+    let task = found(account.task(&id), "task or comment not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    match account
+        .toggle_comment_reaction(&task, &comment_id, &input.emoji, &user.handle, user.actor())
+        .map_err(AppError::from)?
+    {
+        CommentWrite::Done(comment) => Ok(Json(comment)),
+        CommentWrite::NotFound | CommentWrite::NotOwner => {
+            Err(AppError::not_found("task or comment not found"))
+        }
     }
 }
 
@@ -13044,6 +13726,7 @@ async fn list_members(
                 avatar: AvatarView::of(&settings, &display_name),
                 display_name,
                 username: user.username,
+                role: None,
             }
         })
         .collect();
@@ -13183,15 +13866,20 @@ async fn task_modal(
         .as_ref()
         .map(|c| c.row().board_id.clone())
         .unwrap_or_default();
-    let board_name = db
-        .board(&board_id)
-        .map_err(AppError::from)?
+    let board = db.board(&board_id).map_err(AppError::from)?;
+    let board_name = board
+        .as_ref()
         .map(|board| board.row().name.clone())
         .unwrap_or_default();
+    let role = match board.as_ref() {
+        Some(board) => db.board_role(board).map_err(AppError::from)?,
+        None => BoardRole::Viewer,
+    };
     let groups = relation_groups(db, &board_id, &id)?;
     let custom_css = board_custom_css(db, &board_id)?;
     Ok(ModalTemplate {
         custom_css,
+        role,
         board_id,
         board_name,
         relation_count: groups.iter().map(|group| group.rows.len()).sum(),
@@ -13463,7 +14151,7 @@ async fn timer_statistics_page(
     Extension(user): Extension<AuthUser>,
 ) -> Result<TimerStatisticsTemplate, AppError> {
     let filter_boards = account
-        .list_boards()
+        .list_accessible_boards()
         .map_err(AppError::from)?
         .into_iter()
         .map(|b| serde_json::json!({ "id": b.id, "name": b.name }))
@@ -13883,7 +14571,7 @@ async fn api_timer_log(
         .map_err(AppError::from)?;
     let colors = brief_colors(db, &tasks)?;
     let board_names: HashMap<String, String> = db
-        .list_boards()
+        .list_accessible_boards()
         .map_err(AppError::from)?
         .into_iter()
         .map(|board| (board.id, board.name))
@@ -14676,6 +15364,17 @@ async fn update_column(
     let db = &account;
 
     let column = found(db.column(&id), "column not found")?;
+    let reshapes = input.name.is_some()
+        || input.wip_limit.is_some()
+        || input.is_done.is_some()
+        || input.description.is_some()
+        || input.collapsed.is_some()
+        || input.config_json.is_some();
+    if reshapes {
+        let board = found(db.board(&column.row().board_id), "board not found")?;
+        db.require_role(&board, BoardRole::Owner)
+            .map_err(AppError::from)?;
+    }
 
     // Validate every field before writing any, then write once
     let name = input.name.as_deref().map(str::trim);
@@ -15073,17 +15772,195 @@ async fn list_boards(
         .get("include_archived")
         .is_some_and(|v| v == "true" || v == "1");
     let boards = account
-        .list_boards()
+        .list_reachable_boards()
         .map_err(AppError::from)?
         .into_iter()
-        .filter(|board| include_archived || !board.config_bool("archived"))
-        .map(|board| BoardListItem {
+        .filter(|(board, _)| include_archived || !board.config_bool("archived"))
+        .map(|(board, role)| BoardListItem {
             id: board.id.clone(),
             name: board.name.clone(),
             archived: board.config_bool("archived"),
+            role,
         })
         .collect();
     Ok(Json(boards))
+}
+
+/// Lists the accounts on a board with their roles, the owner first.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/members",
+    operation_id = "list_board_members",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "The accounts on the board, the owner first", body = Vec<BoardMemberView>),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_board_members(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<BoardMemberView>>, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    let members = account
+        .board_members(&board)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|member| BoardMemberView {
+            id: member.user.id,
+            username: member.user.username,
+            role: member.role,
+        })
+        .collect();
+    Ok(Json(members))
+}
+
+/// Adds an account to a board with a role, or changes the role it holds there.
+///
+/// Only the board's owner may. The account must be an active account on this instance, which
+/// joins through an invite. The owner's own role does not change.
+#[utoipa::path(
+    put,
+    path = "/api/boards/{id}/members",
+    operation_id = "set_board_member",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = BoardMemberInput,
+    responses(
+        (status = 200, description = "The account and its role on the board", body = BoardMemberView),
+        (status = 400, description = "The account owns the board"),
+        (status = 404, description = "Board or account not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn set_board_member(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<BoardMemberView>, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    let input: BoardMemberInput = parse_body(&headers, body).await?;
+    let outcome = account
+        .set_board_member(&board, &input.username, input.role.into())
+        .map_err(AppError::from)?;
+    match outcome {
+        MemberSet::Set(member) => Ok(Json(BoardMemberView {
+            id: member.user.id,
+            username: member.user.username,
+            role: member.role,
+        })),
+        MemberSet::NoBoard => Err(AppError::not_found("board not found")),
+        MemberSet::NoAccount => Err(AppError::not_found("no account has that username")),
+        MemberSet::IsOwner => Err(AppError::bad_request("the board's owner is its owner")),
+        MemberSet::OwnerRole => Err(AppError::bad_request("a board has one owner")),
+    }
+}
+
+/// Hands a board to one of its members.
+///
+/// Only the board's owner may. The chosen member becomes the owner and the previous owner stays on
+/// the board as a member. The board counts against the new owner's quotas from then on, and the
+/// change is refused when it would take them past one.
+#[utoipa::path(
+    put,
+    path = "/api/boards/{id}/owner",
+    operation_id = "change_board_owner",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = BoardOwnerInput,
+    responses(
+        (status = 200, description = "The new owner", body = BoardMemberView),
+        (status = 400, description = "The account owns the board"),
+        (status = 403, description = "The account does not own the board"),
+        (status = 404, description = "Board not found, or the account is not a member of it"),
+        (status = 409, description = "The board would take the new owner past a quota"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn change_board_owner(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<BoardMemberView>, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    let input: BoardOwnerInput = parse_body(&headers, body).await?;
+    let outcome = account
+        .change_board_owner(&board, &input.username)
+        .map_err(AppError::from)?;
+    match outcome {
+        OwnerChange::Changed(member) => Ok(Json(BoardMemberView {
+            id: member.user.id,
+            username: member.user.username,
+            role: member.role,
+        })),
+        OwnerChange::NoBoard => Err(AppError::not_found("board not found")),
+        OwnerChange::NoAccount => Err(AppError::not_found("no account has that username")),
+        OwnerChange::NotMember => Err(AppError::not_found("that account is not on the board")),
+        OwnerChange::IsOwner => Err(AppError::bad_request("that account owns the board")),
+    }
+}
+
+/// Removes an account from a board.
+///
+/// Only the board's owner may remove another account, and any account on the board may remove
+/// itself to leave. The owner is never removable. Pass the account's handle as `username`.
+#[utoipa::path(
+    delete,
+    path = "/api/boards/{id}/members",
+    operation_id = "remove_board_member",
+    tag = "Boards",
+    params(
+        ("id" = String, Path, description = "Board id"),
+        ("username" = String, Query, description = "Handle of the account to remove"),
+    ),
+    responses(
+        (status = 200, description = "The account no longer has a role on the board"),
+        (status = 400, description = "The account owns the board, or no username was given"),
+        (status = 403, description = "The account is not the owner and names another account"),
+        (status = 404, description = "Board or member not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn remove_board_member(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<StatusCode, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    let username = query
+        .get("username")
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| AppError::bad_request("name the account with ?username="))?;
+    let member = account
+        .board_members(&board)
+        .map_err(AppError::from)?
+        .into_iter()
+        .find(|member| member.user.username.eq_ignore_ascii_case(&username))
+        .ok_or_else(|| AppError::not_found("that account is not on the board"))?;
+    if member.user.account_id() != *account.account_id() {
+        account
+            .require_role(&board, BoardRole::Owner)
+            .map_err(AppError::from)?;
+    }
+    if member.role == BoardRole::Owner {
+        return Err(AppError::bad_request("the board's owner cannot be removed"));
+    }
+    let removed = account
+        .remove_board_member(&board, &member.user.account_id())
+        .map_err(AppError::from)?;
+    if !removed {
+        return Err(AppError::not_found("that account is not on the board"));
+    }
+    Ok(StatusCode::OK)
 }
 
 /// One board's full dataset for the report views: the task rows plus the lookup tables. This is the
@@ -18903,22 +19780,24 @@ async fn new_board_page(
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
 ) -> Result<NewBoardTemplate, AppError> {
-    let db = &account;
     let chrome = shell_chrome(&state, &account, &user.username)?;
-    let templates = db
-        .list_templates()
-        .map_err(AppError::from)?
+    let templates = template_items(&account)?;
+    let panels = chip_labels()
         .into_iter()
-        .map(|template| TemplateListItem {
-            id: template.id,
-            name: template.name,
-            description: template.description,
-            built_in: template.built_in,
+        .map(|label| LayoutPanel {
+            label,
+            templates: templates
+                .iter()
+                .filter(|template| template.category == label)
+                .cloned()
+                .collect(),
+            is_general: label == Category::General.label(),
+            is_yours: label == YOUR_BOARDS,
         })
         .collect();
     Ok(NewBoardTemplate {
         chrome,
-        templates,
+        panels,
         board_id: String::new(),
     })
 }
@@ -18939,6 +19818,7 @@ async fn archived_boards_page(
             id: board.id.clone(),
             name: board.name.clone(),
             archived: true,
+            role: BoardRole::Owner,
         })
         .collect();
     let chrome = shell_chrome(&state, &account, &user.username)?;
@@ -19010,18 +19890,7 @@ async fn list_templates(
     account: AccountDb,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<Vec<TemplateListItem>>, AppError> {
-    let templates = account
-        .list_templates()
-        .map_err(AppError::from)?
-        .into_iter()
-        .map(|template| TemplateListItem {
-            id: template.id,
-            name: template.name,
-            description: template.description,
-            built_in: template.built_in,
-        })
-        .collect();
-    Ok(Json(templates))
+    Ok(Json(template_items(&account)?))
 }
 
 /// Deletes a template. Built-in templates are protected (400).
@@ -19370,6 +20239,7 @@ fn board_settings_context(
             id: b.id.clone(),
             name: b.name.clone(),
             archived: false,
+            role: BoardRole::Owner,
         })
         .collect();
     let columns: Vec<SettingsColumnView> = db
@@ -19423,6 +20293,7 @@ fn board_settings_context(
                 avatar: AvatarView::of(&profile, &display_name),
                 display_name,
                 username: user.username,
+                role: None,
             }
         })
         .collect();
@@ -20397,6 +21268,7 @@ async fn settings_submit(
         subtask_templates: current.subtask_templates,
         full_name: current.full_name,
         dismissed_hints: current.dismissed_hints,
+        show_tips: current.show_tips,
         avatar: current.avatar,
         time_format: current.time_format,
         week_start: current.week_start,
@@ -20500,6 +21372,8 @@ struct SettingsUpdate {
     /// A first-visit hint to dismiss for good: `members` or `timer`. Any other id is refused with
     /// 400.
     dismiss_hint: Option<String>,
+    /// Whether the first-visit tips show for the account. The admin's switch overrides it.
+    show_tips: Option<bool>,
     /// Makes the avatar text on colours, and deletes an uploaded image.
     avatar: Option<TextAvatar>,
     /// Whether times of day show on a `12h` or a `24h` clock.
@@ -20688,6 +21562,9 @@ async fn api_update_settings(
     }
     if let Some(start) = patch.week_start {
         settings.week_start = start;
+    }
+    if let Some(show) = patch.show_tips {
+        settings.show_tips = show;
     }
     let patched_avatar = patch.avatar.is_some();
     if let Some(text) = patch.avatar {
@@ -21659,7 +22536,7 @@ impl GrantView {
             (BoardAccess::Only(_), None) => GrantedBoards::Only(Vec::new()),
             (BoardAccess::Only(_), Some(account)) => GrantedBoards::Only(
                 account
-                    .list_boards()
+                    .list_accessible_boards()
                     .map_err(AppError::from)?
                     .into_iter()
                     .filter(|board| boards.allows(&board.id))
@@ -23778,6 +24655,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         create_comment,
         list_comments,
         edit_comment,
+        react_to_comment,
         delete_comment,
         upload_attachment,
         attach_link,
@@ -23811,6 +24689,10 @@ them, which the Backups section of the settings page calls after a confirmation.
         upload_avatar,
         delete_board_api,
         update_board_config,
+        list_board_members,
+        set_board_member,
+        remove_board_member,
+        change_board_owner,
         get_label_settings,
         update_label_settings,
         get_board_rules,
@@ -23954,6 +24836,9 @@ them, which the Backups section of the settings page calls after a confirmation.
             MoveTaskInput,
             BulkTasksInput,
             BulkTasksAction,
+            BulkDueMode,
+            BulkDueExisting,
+            BulkLink,
             BulkTasksResult,
             WatchTaskInput,
             WatchTaskResponse,
@@ -23980,9 +24865,16 @@ them, which the Backups section of the settings page calls after a confirmation.
             UploadRefusal,
             RenameAttachmentInput,
             TaskComment,
+            CommentReaction,
+            ReactInput,
             ActorKind,
             TaskAttachment,
             MemberDetail,
+            BoardMemberView,
+            BoardMemberInput,
+            BoardOwnerInput,
+            MemberRoleInput,
+            BoardRole,
             TaskDetail,
             UmbrellaDetail,
             UmbrellaPartDetail,
@@ -24158,6 +25050,9 @@ mod openapi;
 mod limits_tests;
 
 #[cfg(test)]
+mod members_tests;
+
+#[cfg(test)]
 mod multi_tests;
 
 #[cfg(test)]
@@ -24168,6 +25063,9 @@ mod passkey_tests;
 
 #[cfg(test)]
 mod prune_tests;
+
+#[cfg(test)]
+mod roles_tests;
 
 #[cfg(test)]
 mod reauth_tests;
@@ -24199,21 +25097,22 @@ mod tests {
     use super::local_time::{LocalTime, Shape};
     use super::server::passkey_mode;
     use super::{
-        ApiDoc, AvatarView, Build, COMPLETION_GRACE_SECS, ColorView, CreatedWebhookView,
-        EstimateUnit, RepeatCadence, SubtaskDisplay, TaskCardDisplay, TimerSession,
-        UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed, csv_field,
-        entry_badge, estimate_hours_to_size, format_added, format_due, format_entry_duration,
-        format_estimate_hours, format_pomodori, format_relative_day, format_time_kf,
-        format_timeline, generate_feed_token, history_kind_label, ical_escape, ical_fold,
-        is_overdue, log_timer_session, normalize_due_input, normalize_estimate_hours,
-        parse_manual_range, parse_repeat_cadence, router, subtasks_on_face, timer_status_view,
-        version_info,
+        ApiDoc, AvatarView, Build, COMPLETION_GRACE_SECS, ColorView, CommentReaction,
+        CreatedWebhookView, EstimateUnit, RepeatCadence, SubtaskDisplay, TaskCardDisplay,
+        TimerSession, UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed,
+        csv_field, entry_badge, estimate_hours_to_size, format_added, format_due,
+        format_entry_duration, format_estimate_hours, format_pomodori, format_relative_day,
+        format_time_kf, format_timeline, generate_feed_token, history_kind_label, ical_escape,
+        ical_fold, is_overdue, log_timer_session, normalize_due_input, normalize_estimate_hours,
+        parse_manual_range, parse_repeat_cadence, reaction_pills, router, subtasks_on_face,
+        timer_status_view, version_info,
     };
     use crate::db::{BootstrapToken, Db, NewTimeEntry};
+    use crate::layouts::{LAYOUTS, chip_labels};
     use crate::models::{
-        AccountId, Actor, ActorKind, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, FeedTask,
-        FieldDefRow, FieldKind, FieldOwner, MAX_BOARD_FEEDS, MAX_REPORT_BOOKMARKS, SECONDS_PER_DAY,
-        TaskRow, TimeFormat, WebhookEvent, WebhookRow, WeekStart,
+        AccountId, Actor, ActorKind, ApiTokenRecord, AuthScope, BoardRole, ColumnRow, EntryKind,
+        FeedTask, FieldDefRow, FieldKind, FieldOwner, MAX_BOARD_FEEDS, MAX_REPORT_BOOKMARKS,
+        SECONDS_PER_DAY, TaskRow, TimeFormat, WebhookEvent, WebhookRow, WeekStart,
     };
     use crate::{AppState, auth, markdown};
 
@@ -24373,6 +25272,7 @@ mod tests {
                     avatar: AvatarView::default(),
                     display_name: "audit".into(),
                     dismissed_hints: Vec::new(),
+                    tips_on: true,
                     time_format: TimeFormat::default(),
                     week_start: WeekStart::default(),
                     sign_out: true,
@@ -24418,6 +25318,7 @@ mod tests {
                 avatar: AvatarView::default(),
                 display_name: "audit".into(),
                 dismissed_hints: Vec::new(),
+                tips_on: true,
                 time_format: TimeFormat::default(),
                 week_start: WeekStart::default(),
                 sign_out: true,
@@ -25012,6 +25913,7 @@ mod tests {
             "/api/boards/{id}/labels",
             "/api/tasks/{id}/comments",
             "/api/tasks/{id}/comments/{comment_id}",
+            "/api/tasks/{id}/comments/{comment_id}/reactions",
             "/api/tasks/{id}/attachments",
             "/api/tasks/{id}/attachments/{attachment_id}/file",
             "/api/tasks/{id}/attachments/{attachment_id}",
@@ -25259,6 +26161,30 @@ mod tests {
         assert!(
             html.contains("data-task-id"),
             "card fragment keeps data-task-id"
+        );
+    }
+
+    #[test]
+    fn reaction_pills_should_count_each_emoji_and_mark_the_viewers() {
+        let reaction = |emoji: &str, handle: &str| CommentReaction {
+            emoji: emoji.to_string(),
+            handle: handle.to_string(),
+        };
+        let reactions = [
+            reaction("\u{1F44D}", "ada"),
+            reaction("\u{2764}\u{FE0F}", "ada"),
+            reaction("\u{1F44D}", "bob"),
+        ];
+        let pills: Vec<_> = reaction_pills(&reactions, "bob")
+            .into_iter()
+            .map(|pill| (pill.emoji, pill.count, pill.mine))
+            .collect();
+        assert_eq!(
+            pills,
+            [
+                ("\u{1F44D}".to_string(), 2, true),
+                ("\u{2764}\u{FE0F}".to_string(), 1, false),
+            ]
         );
     }
 
@@ -26576,6 +27502,16 @@ mod tests {
         legend_visible: bool,
         tweak: impl FnOnce(&mut [super::BandView]),
     ) -> (usize, Vec<usize>, String) {
+        render_grid_as(lanes, collapsed, legend_visible, BoardRole::Owner, tweak)
+    }
+
+    fn render_grid_as(
+        lanes: &[(&str, usize)],
+        collapsed: &[usize],
+        legend_visible: bool,
+        role: BoardRole,
+        tweak: impl FnOnce(&mut [super::BandView]),
+    ) -> (usize, Vec<usize>, String) {
         use askama::Template;
 
         use super::{
@@ -26677,6 +27613,7 @@ mod tests {
                 avatar: AvatarView::default(),
                 display_name: "audit".into(),
                 dismissed_hints: Vec::new(),
+                tips_on: true,
                 time_format: TimeFormat::default(),
                 week_start: WeekStart::default(),
                 sign_out: true,
@@ -26689,6 +27626,7 @@ mod tests {
             },
             due_time: "17:00".into(),
             members: Vec::new(),
+            role,
             filter_fields: Vec::new(),
         }
         .render()
@@ -26809,6 +27747,30 @@ mod tests {
             "an empty cell shows nothing"
         );
         assert!(!cell(9, None).over_limit());
+    }
+
+    #[test]
+    fn board_should_offer_the_lane_fold_controls_to_the_owner_alone() {
+        for (role, offered) in [
+            (BoardRole::Owner, true),
+            (BoardRole::Member, false),
+            (BoardRole::Viewer, false),
+        ] {
+            let (_, _, html) = render_grid_as(
+                &[("Default", 2), ("Lane Two", 1)],
+                &[],
+                true,
+                role,
+                |bands| bands[1].collapsed = true,
+            );
+            for control in [
+                "data-lane-names-toggle",
+                "data-lane-fold-toggle",
+                "data-lane-resize",
+            ] {
+                assert_eq!(html.contains(control), offered, "{control} for {role:?}");
+            }
+        }
     }
 
     /// A folded lane renders one thin row of counts that keeps its hidden task lists.
@@ -27151,6 +28113,49 @@ mod tests {
         let script = include_str!("../static/pages.js");
         assert!(script.contains("Array.from(name).length > 100"));
         assert!(script.contains("Board name must be 1-100 characters."));
+    }
+
+    #[tokio::test]
+    async fn new_board_page_should_group_the_layouts_by_category_with_column_previews() {
+        let (_dir, fx) = kf221_fixture();
+        let (status, html) = send(&fx, "GET", "/boards/new", None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        for category in chip_labels() {
+            assert!(
+                html.contains(&format!("data-nb-chip=\"{category}\"")),
+                "{category}"
+            );
+            assert!(
+                html.contains(&format!("data-nb-panel=\"{category}\"")),
+                "{category}"
+            );
+        }
+        for layout in &LAYOUTS {
+            assert!(
+                html.contains(&format!("<strong>{}</strong>", layout.name)),
+                "{}",
+                layout.name
+            );
+        }
+        assert!(html.contains("<i>Proposal sent</i>"));
+        for layout in &LAYOUTS {
+            let panel = html
+                .split("data-nb-panel=\"")
+                .find(|part| part.starts_with(&format!("{}\"", layout.category.label())))
+                .expect("panel");
+            let panel = panel.split("data-nb-panel=\"").next().expect("panel");
+            assert!(
+                panel.contains(&format!("<strong>{}</strong>", layout.name)),
+                "{}",
+                layout.name
+            );
+        }
+        let yours = html
+            .split("data-nb-panel=\"")
+            .find(|part| part.starts_with("Your boards\""))
+            .expect("your boards panel");
+        assert!(yours.contains("nb-copy-radio"));
+        assert_eq!(html.matches("nb-copy-radio\"").count(), 1);
     }
 
     /// Every script marker and `data-call` in a template names something `static/pages.js` or

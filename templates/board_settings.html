@@ -32,8 +32,15 @@
           <button type="submit" class="kf-btn kf-btn-success">Save</button>
           <a href="/b/{{ board_id }}/settings" class="kf-btn kf-btn-link">Cancel</a>
         </form>
-        <div class="kf-setting-head"><span class="kf-setting-label">Board owner</span></div>
-        <p class="kf-setting-text">{{ chrome.display_name }}</p>
+        <div id="board-owner-view">
+          <div class="kf-setting-head"><span class="kf-setting-label">Board owner</span><button type="button" class="kf-btn kf-btn-link" id="board-owner-change">Change board owner</button></div>
+          <p class="kf-setting-text">{{ chrome.display_name }}</p>
+        </div>
+        <form class="settings-form kf-name-form" id="board-owner-form" hidden>
+          <select id="board-owner-select" aria-label="New board owner"></select>
+          <button type="submit" class="kf-btn kf-btn-success">Make owner</button>
+          <button type="button" class="kf-btn kf-btn-link" id="board-owner-cancel">Cancel</button>
+        </form>
         <hr class="kf-hr kf-general-rule">
         <h2 class="kf-actions-title">Actions</h2>
         <div class="kf-general-actions">

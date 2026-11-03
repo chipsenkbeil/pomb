@@ -7,7 +7,9 @@ use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{ChangeOutcome, Commit, Db, NewWebhook};
-use crate::models::{AccountId, Actor, AuthScope, WebhookEvent, color_value_to_size};
+use crate::models::{
+    AccountId, Actor, AuthScope, LinkKind, TaskRow, WebhookEvent, color_value_to_size,
+};
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -1010,4 +1012,588 @@ async fn bulk_should_queue_one_webhook_event_for_each_changed_task_and_none_for_
     let moved = json!({"task_ids": [a, b], "action": "move", "column_id": columns[1]});
     assert_eq!(fx.bulk(&board, moved).await.status, StatusCode::OK);
     assert_eq!(queued(), base + 4);
+}
+
+impl Fixture {
+    fn token_of(&self, scope: AuthScope) -> String {
+        let (record, token) = new_api_token_record(&self.admin, "scoped", scope, None);
+        self.db.create_api_token(&record).expect("token");
+        token
+    }
+
+    async fn bulk_as(&self, token: &str, board: &str, body: Value) -> Reply {
+        let bearer = format!("Bearer {token}");
+        let uri = format!("/api/boards/{board}/tasks/bulk");
+        call(
+            &self.app,
+            "POST",
+            &uri,
+            &[("authorization", &bearer)],
+            Some(body),
+        )
+        .await
+    }
+
+    fn row(&self, id: &str) -> TaskRow {
+        self.db.task(id).expect("read").expect("task")
+    }
+
+    async fn bin(&self, board: &str) -> Vec<String> {
+        let reply = self
+            .send("GET", &format!("/api/boards/{board}/bin"), None)
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        let mut ids: Vec<String> = reply.body["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .map(|task| task["id"].as_str().expect("id").to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+}
+
+fn events_of(task: &TaskRow, kind: &str) -> usize {
+    task.history.iter().filter(|e| e.kind == kind).count()
+}
+
+#[tokio::test]
+async fn bulk_subtasks_should_append_the_names_to_every_task_with_an_event_each() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    fx.db.add_subtask(&a, "old").expect("subtask");
+
+    let body =
+        json!({"task_ids": [a, b], "action": "subtasks", "add_subtasks": ["one", " two ", ""]});
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let names = |id: &str| -> Vec<String> {
+        fx.row(id)
+            .subtasks
+            .into_iter()
+            .map(|sub| sub.name)
+            .collect()
+    };
+    assert_eq!(names(&a), ["old", "one", "two"]);
+    assert_eq!(names(&b), ["one", "two"]);
+    assert_eq!(events_of(&fx.row(&a), "subtask_added"), 2);
+    assert_eq!(events_of(&fx.row(&b), "subtask_added"), 2);
+}
+
+#[tokio::test]
+async fn bulk_subtasks_should_list_the_counts_in_a_dry_run_and_change_nothing() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    fx.db.add_subtask(&a, "old").expect("subtask");
+
+    let body =
+        json!({"task_ids": [a], "action": "subtasks", "add_subtasks": ["x", "y"], "dry_run": true});
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(
+        reply.body["tasks"],
+        json!([{"id": a, "name": "a", "before": "1 subtask", "after": "3 subtasks"}])
+    );
+    assert_eq!(fx.row(&a).subtasks.len(), 1);
+}
+
+#[tokio::test]
+async fn bulk_subtasks_should_refuse_a_request_without_names() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+
+    let body = json!({"task_ids": [a], "action": "subtasks", "add_subtasks": [" "]});
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert!(fx.row(&a).subtasks.is_empty());
+}
+
+fn set_due(fx: &Fixture, id: &str, due: &str) {
+    assert!(fx.db.set_task_due(id, Some(due), None).expect("due"));
+}
+
+#[tokio::test]
+async fn bulk_due_add_should_skip_a_task_with_a_due_date_unless_told_to_replace() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    set_due(&fx, &b, "2030-01-01T09:00:00+00:00");
+    let held = fx.row(&b);
+
+    let body = json!({
+        "task_ids": [a, b],
+        "action": "due_dates",
+        "due_mode": "add",
+        "due_at": "2031-02-03T10:00:00+00:00",
+        "due_target_column_id": columns[1],
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let first = fx.row(&a);
+    assert_eq!(first.due_at.as_deref(), Some("2031-02-03T10:00:00+00:00"));
+    assert_eq!(
+        first.due_target_column_id.as_deref(),
+        Some(columns[1].as_str())
+    );
+    assert_eq!(events_of(&first, "due_updated"), 2);
+    let second = fx.row(&b);
+    assert_eq!(second.due_at, held.due_at);
+    assert_eq!(second.updated_at, held.updated_at);
+    assert_eq!(second.history.len(), held.history.len());
+
+    let body = json!({
+        "task_ids": [a, b],
+        "action": "due_dates",
+        "due_mode": "add",
+        "due_existing": "replace",
+        "due_at": "2032-04-05T11:00:00+00:00",
+    });
+    assert_eq!(fx.bulk(&board, body).await.status, StatusCode::OK);
+    for id in [&a, &b] {
+        assert_eq!(
+            fx.row(id).due_at.as_deref(),
+            Some("2032-04-05T11:00:00+00:00")
+        );
+    }
+}
+
+#[tokio::test]
+async fn bulk_due_change_should_leave_a_task_without_a_due_date() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    set_due(&fx, &a, "2030-01-01T09:00:00+00:00");
+
+    let body = json!({
+        "task_ids": [a, b],
+        "action": "due_dates",
+        "due_mode": "change",
+        "due_at": "2031-02-03T10:00:00+00:00",
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(
+        fx.row(&a).due_at.as_deref(),
+        Some("2031-02-03T10:00:00+00:00")
+    );
+    assert_eq!(fx.row(&b).due_at, None);
+    assert_eq!(reply.body["count"], 2);
+}
+
+#[tokio::test]
+async fn bulk_due_delete_should_clear_the_date_and_its_target_and_list_it_in_a_dry_run() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    set_due(&fx, &a, "2030-01-01T09:00:00+00:00");
+    let patch = json!({"due_target_column_id": columns[1]});
+    let reply = fx
+        .send("PATCH", &format!("/api/tasks/{a}"), Some(patch))
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+
+    let dry =
+        json!({"task_ids": [a, b], "action": "due_dates", "due_mode": "delete", "dry_run": true});
+    let reply = fx.bulk(&board, dry).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["tasks"][1]["before"], "(none)");
+    assert_eq!(reply.body["tasks"][1]["after"], "(none)");
+    assert_ne!(reply.body["tasks"][0]["before"], "(none)");
+    assert_eq!(reply.body["tasks"][0]["after"], "(none)");
+    assert!(fx.row(&a).due_at.is_some());
+
+    let body = json!({"task_ids": [a, b], "action": "due_dates", "due_mode": "delete"});
+    assert_eq!(fx.bulk(&board, body).await.status, StatusCode::OK);
+    let first = fx.row(&a);
+    assert_eq!(first.due_at, None);
+    assert_eq!(first.due_target_column_id, None);
+    assert_eq!(events_of(&first, "due_updated"), 2);
+}
+
+#[tokio::test]
+async fn bulk_due_should_refuse_a_missing_date_and_a_target_on_another_board() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (_, other) = fx.board("Other", &["Away"]);
+    let a = fx.task(&columns[0], "a").await;
+
+    for body in [
+        json!({"task_ids": [a], "action": "due_dates", "due_mode": "add"}),
+        json!({"task_ids": [a], "action": "due_dates", "due_at": "2031-02-03"}),
+        json!({
+            "task_ids": [a], "action": "due_dates", "due_mode": "add",
+            "due_at": "2031-02-03", "due_target_column_id": other[0],
+        }),
+        json!({"task_ids": [a], "action": "due_dates", "due_mode": "add", "due_at": "soon"}),
+    ] {
+        let reply = fx.bulk(&board, body.clone()).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{body}: {}",
+            reply.body
+        );
+    }
+    assert_eq!(fx.row(&a).due_at, None);
+}
+
+#[tokio::test]
+async fn bulk_relations_should_add_and_remove_links_on_every_task() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    let hub = fx.task(&columns[0], "hub").await;
+    let old = fx.task(&columns[0], "old").await;
+    for id in [&a, &b] {
+        fx.db
+            .add_task_link(id, LinkKind::Related, &old, None, Actor::SYSTEM)
+            .expect("link");
+    }
+
+    let body = json!({
+        "task_ids": [a, b],
+        "action": "relations",
+        "remove_links": [{"kind": "related", "target_id": old}],
+        "add_links": [{"kind": "blocked_by", "target_id": hub}],
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    for id in [&a, &b] {
+        let task = fx.row(id);
+        let links: Vec<_> = task
+            .links
+            .iter()
+            .map(|link| (link.kind.as_str(), link.target_id.as_str()))
+            .collect();
+        assert_eq!(links, [("blocked_by", hub.as_str())]);
+        assert_eq!(events_of(&task, "link_removed"), 1);
+        assert_eq!(events_of(&task, "link_added"), 2);
+    }
+}
+
+#[tokio::test]
+async fn bulk_relations_dry_run_should_list_the_relations_and_change_nothing() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let hub = fx.task(&columns[0], "hub").await;
+    let old = fx.task(&columns[0], "old").await;
+    fx.db
+        .add_task_link(&a, LinkKind::Related, &old, None, Actor::SYSTEM)
+        .expect("link");
+
+    let body = json!({
+        "task_ids": [a],
+        "action": "relations",
+        "dry_run": true,
+        "remove_links": [{"kind": "related", "target_id": old}],
+        "add_links": [{"kind": "parent", "target_id": hub}],
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(
+        reply.body["tasks"],
+        json!([{"id": a, "name": "a", "before": "Relates to old", "after": "Part of hub"}])
+    );
+    assert_eq!(fx.row(&a).links.len(), 1);
+    assert_eq!(fx.row(&a).links[0].target_id, old);
+}
+
+#[tokio::test]
+async fn bulk_relations_should_change_nothing_when_one_task_cannot_take_the_link() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    let hub = fx.task(&columns[0], "hub").await;
+    fx.db
+        .add_task_link(&b, LinkKind::Related, &hub, None, Actor::SYSTEM)
+        .expect("link");
+
+    let body = json!({
+        "task_ids": [a, b],
+        "action": "relations",
+        "add_links": [{"kind": "blocked_by", "target_id": hub}],
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert!(fx.row(&a).links.is_empty());
+    assert_eq!(fx.row(&b).links.len(), 1);
+}
+
+#[tokio::test]
+async fn bulk_relations_should_refuse_no_links_an_unknown_kind_and_a_target_among_the_tasks() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+
+    for body in [
+        json!({"task_ids": [a], "action": "relations"}),
+        json!({"task_ids": [a], "action": "relations", "add_links": [{"kind": "likes", "target_id": b}]}),
+        json!({"task_ids": [a, b], "action": "relations", "add_links": [{"kind": "related", "target_id": b}]}),
+    ] {
+        let reply = fx.bulk(&board, body.clone()).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{body}: {}",
+            reply.body
+        );
+    }
+    assert!(fx.row(&a).links.is_empty());
+}
+
+#[tokio::test]
+async fn bulk_relations_without_links_delete_should_remove_only_links_the_token_made() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let other = fx.task(&columns[0], "other").await;
+    fx.db
+        .add_task_link(&a, LinkKind::Related, &other, None, Actor::SYSTEM)
+        .expect("link");
+    let work = fx.token_of(AuthScope::Work);
+
+    let body = json!({
+        "task_ids": [a],
+        "action": "relations",
+        "remove_links": [{"kind": "related", "target_id": other}],
+    });
+    let reply = fx.bulk_as(&work, &board, body).await;
+
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+    assert_eq!(reply.body["code"], "permission_denied");
+    assert_eq!(fx.row(&a).links.len(), 1);
+}
+
+#[tokio::test]
+async fn bulk_delete_should_move_every_task_to_the_recycle_bin_with_a_lead_token() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    let keep = fx.task(&columns[0], "keep").await;
+    fx.db
+        .add_task_link(&a, LinkKind::Related, &keep, None, Actor::SYSTEM)
+        .expect("link");
+    let lead = fx.token_of(AuthScope::Provision);
+
+    let body = json!({"task_ids": [a, b], "action": "delete"});
+    let reply = fx.bulk_as(&lead, &board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["count"], 2);
+    assert!(fx.db.task(&a).expect("read").is_none());
+    assert!(fx.db.task(&b).expect("read").is_none());
+    let mut binned = vec![a.clone(), b.clone()];
+    binned.sort();
+    assert_eq!(fx.bin(&board).await, binned);
+    assert!(fx.row(&keep).links.is_empty());
+    assert_eq!(fx.cell(&board, &columns[0]), ["keep"]);
+
+    let restore = fx
+        .send("POST", &format!("/api/bin/{a}/restore"), None)
+        .await;
+    assert_eq!(restore.status, StatusCode::OK, "{}", restore.body);
+    assert_eq!(fx.cell(&board, &columns[0]), ["keep", "a"]);
+}
+
+#[tokio::test]
+async fn bulk_delete_should_refuse_a_work_token_even_for_a_dry_run() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    let work = fx.token_of(AuthScope::Work);
+
+    for dry_run in [false, true] {
+        let body = json!({"task_ids": [a, b], "action": "delete", "dry_run": dry_run});
+        let reply = fx.bulk_as(&work, &board, body).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+        assert_eq!(reply.body["code"], "permission_denied");
+        assert!(
+            reply.body["message"]
+                .as_str()
+                .expect("message")
+                .contains("tasks.bin")
+        );
+    }
+    assert!(fx.bin(&board).await.is_empty());
+    assert_eq!(fx.cell(&board, &columns[0]), ["a", "b"]);
+    let single = fx
+        .bulk_as(
+            &work,
+            &board,
+            json!({"task_ids": [a], "action": "labels", "add_labels": ["ok"]}),
+        )
+        .await;
+    assert_eq!(single.status, StatusCode::OK, "{}", single.body);
+}
+
+#[tokio::test]
+async fn bulk_delete_dry_run_should_list_the_column_and_delete_nothing() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let before = fx.row(&a);
+
+    let body = json!({"task_ids": [a], "action": "delete", "dry_run": true});
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(
+        reply.body["tasks"],
+        json!([{"id": a, "name": "a", "before": "Todo", "after": "Recycle bin"}])
+    );
+    assert_eq!(fx.row(&a).updated_at, before.updated_at);
+    assert!(fx.bin(&board).await.is_empty());
+}
+
+#[tokio::test]
+async fn bulk_delete_should_delete_nothing_when_a_task_is_locked() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = labelled(&fx, &columns[0], "b", &["needs:human"]).await;
+    let lead = fx.token_of(AuthScope::Provision);
+    let body = json!({"task_ids": [a, b], "action": "delete"});
+    let reply = fx.bulk_as(&lead, &board, body).await;
+
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+    assert_eq!(reply.body["code"], "card_locked");
+    assert!(fx.bin(&board).await.is_empty());
+}
+
+#[tokio::test]
+async fn bulk_relations_should_refuse_a_second_child_under_an_umbrella_and_change_nothing() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    let first = fx.task(&columns[0], "first").await;
+    let second = fx.task(&columns[0], "second").await;
+    fx.db
+        .add_task_link(&b, LinkKind::Parent, &first, None, Actor::SYSTEM)
+        .expect("link");
+
+    let body = json!({
+        "task_ids": [a, b],
+        "action": "relations",
+        "add_links": [{"kind": "parent", "target_id": second}],
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert!(fx.row(&a).links.is_empty());
+    assert_eq!(fx.row(&b).links.len(), 1);
+}
+
+#[tokio::test]
+async fn bulk_relations_should_change_a_relation_type_by_removing_then_adding_it() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let other = fx.task(&columns[0], "other").await;
+    fx.db
+        .add_task_link(&a, LinkKind::Related, &other, None, Actor::SYSTEM)
+        .expect("link");
+
+    let body = json!({
+        "task_ids": [a],
+        "action": "relations",
+        "remove_links": [{"kind": "related", "target_id": other}],
+        "add_links": [{"kind": "blocked_by", "target_id": other}],
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let links = fx.row(&a).links;
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].kind, LinkKind::BlockedBy);
+}
+
+#[tokio::test]
+async fn bulk_relations_should_refuse_a_locked_target() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let locked = labelled(&fx, &columns[0], "l", &["needs:human"]).await;
+    let work = fx.token_of(AuthScope::Work);
+
+    let body = json!({
+        "task_ids": [a],
+        "action": "relations",
+        "add_links": [{"kind": "related", "target_id": locked}],
+    });
+    let reply = fx.bulk_as(&work, &board, body).await;
+
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+    assert_eq!(reply.body["code"], "card_locked");
+    assert!(fx.row(&a).links.is_empty());
+}
+
+#[tokio::test]
+async fn bulk_delete_should_refuse_a_task_linked_to_a_locked_task() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let locked = labelled(&fx, &columns[0], "l", &["needs:human"]).await;
+    fx.db
+        .add_task_link(&a, LinkKind::Related, &locked, None, Actor::SYSTEM)
+        .expect("link");
+    let lead = fx.token_of(AuthScope::Provision);
+
+    let body = json!({"task_ids": [a], "action": "delete"});
+    let reply = fx.bulk_as(&lead, &board, body).await;
+
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+    assert_eq!(reply.body["code"], "card_locked");
+    assert!(fx.bin(&board).await.is_empty());
+}
+
+#[tokio::test]
+async fn bulk_delete_should_queue_webhook_events_and_none_for_a_dry_run() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let hook = fx
+        .db
+        .create_webhook(NewWebhook {
+            board_id: board.clone(),
+            name: "Hook".to_string(),
+            url: "https://example.com/hook".to_string(),
+            events: vec![WebhookEvent::TaskDeleted],
+            column_id: None,
+            enabled: true,
+        })
+        .expect("webhook");
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    let queued = || fx.db.webhook_outbox(&hook.id).expect("outbox").len();
+    let base = queued();
+
+    let dry = json!({"task_ids": [a, b], "action": "delete", "dry_run": true});
+    assert_eq!(fx.bulk(&board, dry).await.status, StatusCode::OK);
+    assert_eq!(queued(), base);
+
+    let real = json!({"task_ids": [a, b], "action": "delete"});
+    assert_eq!(fx.bulk(&board, real).await.status, StatusCode::OK);
+    assert_eq!(queued(), base + 2);
 }

@@ -1,4 +1,5 @@
 use pomb::db::{ColorDeleteOutcome, Db, TemplateDeleteOutcome};
+use pomb::layouts::{Category, LAYOUTS};
 use pomb::models::{AccountId, Actor};
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
@@ -300,7 +301,7 @@ fn template_should_round_trip_through_save_and_apply() {
         .list_templates(&AccountId::ownerless())
         .expect("list templates");
     let builtins: Vec<_> = templates.iter().filter(|t| t.built_in).collect();
-    assert_eq!(builtins.len(), 2);
+    assert_eq!(builtins.len(), 2 + LAYOUTS.len());
 
     // Apply the Pomodoro board template: exact Pomodoro shape — 10 colors,
     // 4 columns, the lone main lane.
@@ -427,14 +428,63 @@ fn board_colors_tasks_and_templates_should_persist_across_reconnect() {
     assert!(db.template(&template_id).expect("template").is_some());
 
     // Built-in template seeding is idempotent across reconnects:
-    // exactly the two built-ins, no duplicates.
+    // exactly the built-ins, no duplicates.
     let builtins = db
         .list_templates(&AccountId::ownerless())
         .expect("templates")
         .into_iter()
         .filter(|template| template.built_in)
         .count();
-    assert_eq!(builtins, 2);
+    assert_eq!(builtins, 2 + LAYOUTS.len());
+}
+
+#[test]
+fn every_category_should_have_a_built_in_layout() {
+    for category in Category::ALL {
+        assert!(
+            LAYOUTS.iter().any(|layout| layout.category == category),
+            "{category:?}"
+        );
+    }
+    for layout in &LAYOUTS {
+        assert!(!layout.name.is_empty());
+        assert!(!layout.columns.is_empty(), "{}", layout.name);
+    }
+}
+
+#[test]
+fn a_built_in_layout_should_create_its_columns_with_the_last_one_done() {
+    let (_dir, db) = test_db();
+    let owner = AccountId::ownerless();
+    let templates = db.list_templates(&owner).expect("list templates");
+    for layout in &LAYOUTS {
+        let template = templates
+            .iter()
+            .find(|template| template.built_in && template.name == layout.name)
+            .expect("layout seeded");
+        assert_eq!(
+            db.template_columns(&template.id).expect("columns"),
+            layout.columns
+        );
+        let board_id = db
+            .apply_template(&owner, &template.id, "From layout")
+            .expect("apply")
+            .expect("known template");
+        let columns = db.list_columns(&board_id).expect("columns");
+        let names: Vec<&str> = columns.iter().map(|column| column.name.as_str()).collect();
+        assert_eq!(names, layout.columns, "{}", layout.name);
+        let done: Vec<&str> = columns
+            .iter()
+            .filter(|column| column.is_done)
+            .map(|column| column.name.as_str())
+            .collect();
+        assert_eq!(
+            done,
+            [*layout.columns.last().expect("a column")],
+            "{}",
+            layout.name
+        );
+    }
 }
 
 #[test]

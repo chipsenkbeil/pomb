@@ -6,7 +6,7 @@ use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::db::{BOARD_COPY_TASK_CAP, ColumnPatch, ColumnWatch, Db};
-use crate::models::{AccountId, Actor, Responsible, TaskRow};
+use crate::models::{AccountId, Actor, BoardRole, Responsible, TaskRow};
 
 struct Fixture {
     app: axum::Router,
@@ -449,4 +449,40 @@ async fn repeated_members_given_on_create_should_be_stored_once() {
     let owner = fx.owner.as_str();
     let task = add_task(&fx, json!({"member_ids": [owner, owner]})).await;
     assert_eq!(task.member_ids, [owner]);
+}
+
+fn member_fixture(fx: &Fixture, handle: &str) -> Fixture {
+    let account = fx.db.create_user(handle).expect("member");
+    fx.db
+        .set_board_member(&fx.board_id, handle, BoardRole::Member)
+        .expect("join");
+    let session = fx.db.create_session(&account, "").expect("session");
+    Fixture {
+        app: fx.app.clone(),
+        db: fx.db.clone(),
+        owner: account,
+        cookie: format!("session={session}"),
+        board_id: fx.board_id.clone(),
+        todo: fx.todo.clone(),
+        doing: fx.doing.clone(),
+    }
+}
+
+#[tokio::test]
+async fn two_members_of_a_shared_board_should_watch_the_same_column_apart() {
+    let (_dir, fx) = fixture();
+    let bob = member_fixture(&fx, "bob");
+    let carol = member_fixture(&fx, "carol");
+
+    assert_eq!(watch(&bob, &fx.todo, true).await, StatusCode::OK);
+    assert_eq!(watch(&carol, &fx.todo, true).await, StatusCode::OK);
+    assert_eq!(watched_flags(&bob).await[0], ("Todo".to_string(), true));
+    assert_eq!(watched_flags(&carol).await[0], ("Todo".to_string(), true));
+    assert_eq!(watched_flags(&fx).await[0], ("Todo".to_string(), false));
+
+    assert_eq!(watch(&bob, &fx.todo, false).await, StatusCode::OK);
+    assert_eq!(watched_flags(&bob).await[0], ("Todo".to_string(), false));
+    assert_eq!(watched_flags(&carol).await[0], ("Todo".to_string(), true));
+    let column = fx.db.list_columns(&fx.board_id).expect("columns").remove(0);
+    assert_eq!(column.watchers, [carol.owner.as_str()]);
 }

@@ -1829,6 +1829,29 @@ pub struct TaskComment {
     /// RFC3339 time of the last edit of the body, or null when never edited.
     #[serde(default)]
     pub edited_at: Option<String>,
+    /// The reactions the comment holds, one entry per account and emoji, oldest first.
+    #[serde(default)]
+    pub reactions: Vec<CommentReaction>,
+}
+
+/// One account's reaction to a comment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CommentReaction {
+    /// One of the five emoji a comment accepts.
+    pub emoji: String,
+    /// Handle of the account that reacted.
+    pub handle: String,
+}
+
+impl CommentReaction {
+    /// The five emoji a comment accepts as a reaction.
+    pub const EMOJI: [&str; 5] = [
+        "\u{1F44D}",
+        "\u{1F44E}",
+        "\u{1F601}",
+        "\u{1F389}",
+        "\u{2764}\u{FE0F}",
+    ];
 }
 
 /// One file attachment on a task (KanbanFlow parity). The bytes are stored
@@ -2712,6 +2735,9 @@ pub struct InstanceSettings {
     /// No board is pruned before a full warning period has passed since.
     #[serde(default)]
     pub prune_changed_at: Option<i64>,
+    /// Whether first-visit tips are off for every account, whatever each account's own setting.
+    #[serde(default)]
+    pub disable_tips: bool,
 }
 
 impl InstanceSettings {
@@ -2764,6 +2790,7 @@ impl Default for InstanceSettings {
             disk: DiskLimits::default(),
             prune: PruneSettings::default(),
             prune_changed_at: None,
+            disable_tips: false,
         }
     }
 }
@@ -3482,6 +3509,10 @@ pub struct SubtaskTemplate {
 
 /// App settings, edited on the /settings page and stored as one JSON row.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one switch on the settings page"
+)]
 pub struct Settings {
     pub pomodoro_minutes: u32,
     pub short_break_minutes: u32,
@@ -3537,6 +3568,9 @@ pub struct Settings {
     /// Ids of the first-visit hints the account dismissed with "Got it!".
     #[serde(default)]
     pub dismissed_hints: Vec<String>,
+    /// Whether the first-visit tips show for the account.
+    #[serde(default = "default_true")]
+    pub show_tips: bool,
     /// What the account's avatar shows.
     #[serde(default)]
     pub avatar: Avatar,
@@ -3781,6 +3815,7 @@ impl Default for Settings {
             subtask_templates: Vec::new(),
             full_name: String::new(),
             dismissed_hints: Vec::new(),
+            show_tips: true,
             avatar: Avatar::default(),
             time_format: TimeFormat::default(),
             week_start: WeekStart::default(),
@@ -4120,6 +4155,59 @@ impl BoardAccess {
             Self::Only(ids) => ids.remove(board_id),
         }
     }
+}
+
+/// What an account may do on a board it reaches. The roles are ordered, and each may do everything
+/// the ones before it may.
+#[derive(
+    Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum BoardRole {
+    /// Reads the board and everything on it, and writes nothing.
+    Viewer,
+    /// Adds, edits, moves, deletes and comments on tasks and logs time, and leaves the board's
+    /// settings, members and layout alone.
+    Member,
+    /// Owns the board and does everything, including managing its members.
+    Owner,
+}
+
+impl BoardRole {
+    /// Returns the role as stored and as the API names it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Viewer => "viewer",
+            Self::Member => "member",
+            Self::Owner => "owner",
+        }
+    }
+
+    /// Returns whether the role may change the board's tasks, which a viewer may not.
+    #[must_use]
+    pub const fn writes(self) -> bool {
+        !matches!(self, Self::Viewer)
+    }
+
+    /// Returns whether the role is the board owner's.
+    #[must_use]
+    pub const fn is_owner(self) -> bool {
+        matches!(self, Self::Owner)
+    }
+}
+
+/// An account that joined a board it does not own, with the role the board's owner gave it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoardMemberRow {
+    /// The board the account joined.
+    pub board_id: String,
+    /// The account that joined.
+    pub account_id: String,
+    /// The account's role, never [`BoardRole::Owner`], which the board's `owner_id` holds.
+    pub role: BoardRole,
+    /// Unix seconds of the account's first role on the board.
+    pub added_at: i64,
 }
 
 /// Access a credential holds. The scopes are ordered, and each includes the ones before it.

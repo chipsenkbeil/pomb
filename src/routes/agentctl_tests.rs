@@ -11373,3 +11373,57 @@ async fn the_expiry_of_a_device_request_should_key_on_deletes() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_comment_reaction_should_toggle_per_account_and_show_as_a_pill() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Talk"})).await;
+    let (_, comment) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{id}/comments"),
+        Some(json!({"body": "Looks good"})),
+    )
+    .await;
+    let cid = comment["id"].as_str().expect("id").to_string();
+    let uri = format!("/api/tasks/{id}/comments/{cid}/reactions");
+    let modal = format!("/api/tasks/{id}/modal");
+
+    let (status, reacted) = call(&fx, "POST", &uri, Some(json!({"emoji": "\u{1F44D}"}))).await;
+    assert_eq!(status, StatusCode::OK, "{reacted}");
+    assert_eq!(
+        reacted["reactions"],
+        json!([{"emoji": "\u{1F44D}", "handle": "admin"}])
+    );
+    let (_, html) = request(&fx, As::Admin, "GET", &modal, None, false).await;
+    assert!(
+        html.contains("tm-reaction tm-reaction-mine\" data-comment-react=\"")
+            && html.contains("<span class=\"tm-reaction-count\">1</span>"),
+        "{html}"
+    );
+
+    let (_, listed) = call(&fx, "GET", &format!("/api/tasks/{id}/comments"), None).await;
+    assert_eq!(listed[0]["reactions"].as_array().map(Vec::len), Some(1));
+
+    fx.db
+        .toggle_comment_reaction(&id, &cid, "\u{1F44D}", "bob", Actor::SYSTEM)
+        .expect("second account");
+    let (_, html) = request(&fx, As::Admin, "GET", &modal, None, false).await;
+    assert!(
+        html.contains("<span class=\"tm-reaction-count\">2</span>"),
+        "{html}"
+    );
+
+    let (status, removed) = call(&fx, "POST", &uri, Some(json!({"emoji": "\u{1F44D}"}))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        removed["reactions"],
+        json!([{"emoji": "\u{1F44D}", "handle": "bob"}])
+    );
+
+    let (status, _) = call(&fx, "POST", &uri, Some(json!({"emoji": "\u{1F680}"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "only the five emoji");
+    let missing = format!("/api/tasks/{id}/comments/nope/reactions");
+    let (status, _) = call(&fx, "POST", &missing, Some(json!({"emoji": "\u{1F44D}"}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

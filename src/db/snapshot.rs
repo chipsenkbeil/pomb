@@ -6,11 +6,11 @@ use redb::{ReadOnlyDatabase, ReadTransaction, ReadableDatabase};
 
 use super::files::AttachmentFiles;
 use super::{
-    ACCOUNT_SETTINGS, BIN, BOARDS_BY_OWNER, COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, DbResult,
-    ENTRIES_BY_TASK, FIELD_DEFS, FIELDS_BY_BOARD, SCHEMA_VERSION, SWIMLANES, SWIMLANES_BY_BOARD,
-    TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, USERS, has_legacy_attachment_table,
-    index_in, link_event_target, named_in, owned_board_in, read_in, read_schema_version,
-    redacted_history, refuse_newer, rows_in,
+    ACCOUNT_SETTINGS, BIN, BOARDS, BOARDS_BY_OWNER, COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD,
+    DbResult, ENTRIES_BY_TASK, FIELD_DEFS, FIELDS_BY_BOARD, SCHEMA_VERSION, SWIMLANES,
+    SWIMLANES_BY_BOARD, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, USERS,
+    has_legacy_attachment_table, index_in, link_event_target, named_in, owned_board_in, read_in,
+    read_schema_version, redacted_history, refuse_newer, role_in, rows_in,
 };
 use crate::models::{
     AccountId, BoardAccess, BoardRow, BreakActivity, ColorRow, ColumnRow, FieldDefRow, Settings,
@@ -60,7 +60,10 @@ impl BoardSnapshot {
         boards: BoardAccess,
         board_id: &str,
     ) -> DbResult<Option<Self>> {
-        let Some(board) = owned_board_in(&txn, account, board_id)? else {
+        if role_in(&txn, account, board_id)?.is_none() {
+            return Ok(None);
+        }
+        let Some(board) = read_in::<BoardRow>(&txn, BOARDS, board_id)? else {
             return Ok(None);
         };
         Ok(Some(Self {
@@ -152,11 +155,14 @@ impl BoardSnapshot {
         read_in::<TaskRow>(&self.txn, TASKS, id)
     }
 
-    /// Returns the time entries logged on task `task_id`, oldest first.
+    /// Returns the time entries logged on task `task_id`, oldest first: every entry for the
+    /// board's owner, and the account's own for a member.
     pub fn time_entries(&self, task_id: &str) -> DbResult<Vec<TimeEntryRow>> {
+        let owns = self.board.owner_id == self.account.as_str();
         let mut entries = Vec::new();
         for id in index_in(&self.txn, ENTRIES_BY_TASK, task_id)? {
-            entries.extend(read_in::<TimeEntryRow>(&self.txn, TIME_ENTRIES, &id)?);
+            let entry = read_in::<TimeEntryRow>(&self.txn, TIME_ENTRIES, &id)?;
+            entries.extend(entry.filter(|entry| owns || entry.account_id == self.account.as_str()));
         }
         entries.sort_by(|a, b| {
             a.started_at
@@ -175,12 +181,14 @@ impl BoardSnapshot {
         let Some(column) = read_in::<ColumnRow>(&self.txn, COLUMNS, &head.column_id)? else {
             return Ok(None);
         };
-        let Some(board) = owned_board_in(&self.txn, &self.account, &column.board_id)? else {
-            return Ok(None);
-        };
-        if !self.boards.allows(&board.id) {
+        if role_in(&self.txn, &self.account, &column.board_id)?.is_none()
+            || !self.boards.allows(&column.board_id)
+        {
             return Ok(None);
         }
+        let Some(board) = read_in::<BoardRow>(&self.txn, BOARDS, &column.board_id)? else {
+            return Ok(None);
+        };
         Ok(Some(LinkTarget {
             task_name: head.name,
             board_name: board.name,

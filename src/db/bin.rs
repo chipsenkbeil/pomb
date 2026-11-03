@@ -5,11 +5,11 @@ use redb::{ReadableTable, WriteTransaction};
 use super::outbox::{txn_queue_task_deleted, txn_queue_task_restored};
 use super::usage::{OverQuota, txn_count_usage, txn_remove_entry, txn_store_entry, txn_write_task};
 use super::{
-    BIN, BIN_BY_BOARD, BOARDS, COLUMNS, COLUMNS_BY_BOARD, Db, DbResult, ENTRIES_BY_TASK, SETTINGS,
-    SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, index_in,
-    mmap_insert, mmap_remove, push_column_event, push_event, read_in, read_one, task_owner_in,
-    txn_clear_timer_if, txn_mmap_get, txn_read_one, txn_task_bytes, unlink_deleted_tasks,
-    write_one,
+    BIN, BIN_BY_BOARD, BOARDS, COLUMNS, COLUMNS_BY_BOARD, Commit, Db, DbResult, ENTRIES_BY_TASK,
+    SETTINGS, SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
+    index_in, mmap_insert, mmap_remove, push_column_event, push_event, read_in, read_one,
+    task_owner_in, txn_board_accounts, txn_clear_timer_if, txn_mmap_get, txn_read_one,
+    txn_task_bytes, unlink_deleted_tasks, write_one,
 };
 use crate::models::{
     Actor, BIN_PERMANENT_DELETE_KEY, BinRow, BoardRow, ColorRow, ColumnRow, SECONDS_PER_DAY,
@@ -169,7 +169,9 @@ fn bin_task_in(txn: &WriteTransaction, id: &str, actor: Actor<'_>) -> DbResult<O
             mmap_remove(txn, ENTRIES_BY_TASK, id, entry_id)?;
         }
     }
-    txn_clear_timer_if(txn, &owner, |task_id| task_id == id)?;
+    for account in txn_board_accounts(txn, &column.board_id)? {
+        txn_clear_timer_if(txn, &account, |task_id| task_id == id)?;
+    }
     task.links.clear();
     task.claim = None;
     let detail = format!("Task {} was deleted from column {}", task.name, column.name);
@@ -208,6 +210,25 @@ impl Db {
             return Ok(false);
         }
         txn.commit()?;
+        Ok(true)
+    }
+
+    /// Moves each of `ids` into the recycle bin in one write transaction, as [`Db::delete_task`]
+    /// does for one. A missing task leaves every task in place, and [`Commit::Discard`] ends the
+    /// run without a commit. Returns `false` when a task is unknown.
+    pub fn delete_tasks_logged(
+        &self,
+        ids: &[String],
+        commit: Commit,
+        actor: Actor<'_>,
+    ) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        for id in ids {
+            if bin_task_in(&txn, id, actor)?.is_none() {
+                return Ok(false);
+            }
+        }
+        commit.finish(txn)?;
         Ok(true)
     }
 

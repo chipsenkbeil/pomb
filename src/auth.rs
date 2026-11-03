@@ -30,7 +30,7 @@ use crate::db::PublicDb;
 use crate::limit::{CredentialKey, TrustProxy, rate_limited_response};
 use crate::models::{
     API_TOKEN_ACTOR, AccountId, AccountRole, AccountStatus, Actor, ActorKind, ApiTokenRecord,
-    AuthScope, BoardAccess, InstanceMode, RecoveryCodeRow, UserRow,
+    AuthScope, BoardAccess, BoardRole, InstanceMode, RecoveryCodeRow, UserRow,
 };
 use crate::passkey::RelyingParty;
 use crate::permissions::{Permission, Preset};
@@ -972,6 +972,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         Permission::CommentsWrite,
     ),
     (
+        Method::POST,
+        "/api/tasks/:id/comments/:comment_id/reactions",
+        Permission::CommentsWrite,
+    ),
+    (
         Method::GET,
         "/api/tasks/:id/attachments",
         Permission::AttachmentsRead,
@@ -1113,6 +1118,26 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         Method::GET,
         "/b/:board_id/settings/rules",
         Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/members",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::PUT,
+        "/api/boards/:id/members",
+        Permission::BoardsConfigure,
+    ),
+    (
+        Method::DELETE,
+        "/api/boards/:id/members",
+        Permission::BoardsConfigure,
+    ),
+    (
+        Method::PUT,
+        "/api/boards/:id/owner",
+        Permission::BoardsConfigure,
     ),
     (
         Method::POST,
@@ -1485,6 +1510,52 @@ pub fn required_permission(method: &Method, matched_path: &str) -> Option<Permis
         .iter()
         .find(|(listed, pattern, _)| listed == method && path_matches(pattern, matched_path))
         .map(|&(_, _, permission)| permission)
+}
+
+/// Returns the lowest role on a board that a route accepts, where HEAD counts as GET. A read
+/// takes a viewer, except the owner's settings pages and the secret calendar feed. A write to a
+/// task, a time entry or the timer takes a member, and a write to the board's own shape or its
+/// members takes the owner, and so does emptying the recycle bin. A member may remove itself, so leaving a board takes a viewer. A
+/// route [`ROUTE_PERMISSIONS`] does not list takes the owner.
+#[must_use]
+pub fn required_role(method: &Method, matched_path: &str) -> BoardRole {
+    let method = if *method == Method::HEAD {
+        &Method::GET
+    } else {
+        method
+    };
+    let Some(&(_, pattern, _)) = ROUTE_PERMISSIONS
+        .iter()
+        .find(|(listed, pattern, _)| listed == method && path_matches(pattern, matched_path))
+    else {
+        return BoardRole::Owner;
+    };
+    if (*method == Method::DELETE && pattern == "/api/boards/:id/members")
+        || (*method == Method::PATCH && pattern == "/api/columns/:id")
+    {
+        return BoardRole::Viewer;
+    }
+    if *method == Method::GET {
+        let owner_only = pattern.starts_with("/b/:board_id/settings")
+            || pattern == "/api/boards/:id/calendar-feeds"
+            || pattern == "/api/boards/:id/webhooks"
+            || pattern.starts_with("/api/webhooks/");
+        return if owner_only {
+            BoardRole::Owner
+        } else {
+            BoardRole::Viewer
+        };
+    }
+    let member_write = ["/api/tasks", "/api/time/", "/api/timer/"]
+        .iter()
+        .any(|prefix| pattern.starts_with(prefix))
+        || pattern == "/api/bin/:id/restore"
+        || pattern == "/api/boards/:id/tasks/bulk";
+    if member_write {
+        BoardRole::Member
+    } else {
+        BoardRole::Owner
+    }
 }
 
 /// Pull the `session` cookie value out of request headers, if present.
@@ -1982,6 +2053,11 @@ mod tests {
         (
             Method::DELETE,
             "/api/tasks/:id/comments/:comment_id",
+            AuthScope::Work,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/comments/:comment_id/reactions",
             AuthScope::Work,
         ),
         (Method::POST, "/api/tasks/:id/attachments", AuthScope::Work),

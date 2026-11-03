@@ -7,6 +7,7 @@
       <a href="#registration" class="bshell-nav-item" data-pane="registration">Registration</a>
       <a href="#limits" class="bshell-nav-item" data-pane="limits">Limits</a>
       <a href="#pruning" class="bshell-nav-item" data-pane="pruning">Unused boards</a>
+      <a href="#tips" class="bshell-nav-item" data-pane="tips">Tips</a>
       <a href="#invites" class="bshell-nav-item" data-pane="invites">Invites</a>
       <a href="/settings" class="bshell-nav-item">Account settings</a>
     </nav>
@@ -125,6 +126,18 @@
       <button type="submit" class="kf-btn kf-btn-success">Save</button>
     </form>
     <p class="settings-hint" id="pruning-error" role="alert" hidden></p>
+  </section>
+  </div>
+
+  <div id="tips" class="settings-pane">
+  <section class="settings-section">
+    <h2>Tips</h2>
+    <p class="settings-hint">First-visit tips show in the help menu until each is dismissed. Turning them off here hides them for every account, whatever each account chose.</p>
+    <form id="tips-form" class="settings-form">
+      <label class="check-label"><input type="checkbox" name="disable_tips"{% if disable_tips %} checked{% endif %}> Disable tips for everyone</label>
+      <button type="submit" class="kf-btn kf-btn-success">Save</button>
+    </form>
+    <p class="settings-hint" id="tips-error" role="alert" hidden></p>
   </section>
   </div>
 

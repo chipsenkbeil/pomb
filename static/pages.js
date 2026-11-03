@@ -210,6 +210,14 @@
         pending_cap: parseInt(document.getElementById('pending-cap').value, 10)
       }, 'registration', registrationError, 'Could not save registration: ');
     });
+    var tipsForm = document.getElementById('tips-form');
+    var tipsError = document.getElementById('tips-error');
+    tipsForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      saveSettings({
+        disable_tips: tipsForm.elements.disable_tips.checked
+      }, 'tips', tipsError, 'Could not save the tips setting: ');
+    });
     limitsForm.addEventListener('submit', function (e) {
       e.preventDefault();
       saveSettings(limitsSection(), 'limits', limitsError, 'Could not save limits: ');
@@ -302,6 +310,28 @@
         if (!copyTasks.checked) copyClear.checked = false;
       });
     }
+    var selected = document.getElementById('nb-selected');
+    function showSelected() {
+      var picked = document.querySelector('input[name="template_id"]:checked');
+      var title = picked && picked.closest('.nb-card').querySelector('strong');
+      selected.textContent = title ? 'Selected layout: ' + title.textContent : '';
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="template_id"]'), function (radio) {
+      radio.addEventListener('change', showSelected);
+    });
+    showSelected();
+    var chips = document.querySelectorAll('[data-nb-chip]');
+    Array.prototype.forEach.call(chips, function (chip) {
+      chip.addEventListener('click', function () {
+        var wanted = chip.getAttribute('data-nb-chip');
+        Array.prototype.forEach.call(chips, function (other) {
+          other.classList.toggle('nb-chip-on', other === chip);
+        });
+        Array.prototype.forEach.call(document.querySelectorAll('[data-nb-panel]'), function (panel) {
+          panel.hidden = wanted !== '' && panel.getAttribute('data-nb-panel') !== wanted;
+        });
+      });
+    });
     document.getElementById('nb-create').addEventListener('click', function () {
       var copying = !!copyRadio && copyRadio.checked;
       var name = (copying ? copyName : document.getElementById('nb-name')).value.trim();
@@ -493,6 +523,21 @@
       button.addEventListener('click', function () {
         dateTimeError.hidden = true;
         document.getElementById(button.dataset.openDialog).hidden = false;
+      });
+    });
+    var showTips = document.getElementById('show-tips');
+    showTips.addEventListener('change', function () {
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ show_tips: showTips.checked })
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+      }).catch(function (ex) {
+        showTips.checked = !showTips.checked;
+        profileError.textContent = 'Could not save the tips setting: ' + ex.message;
+        profileError.hidden = false;
       });
     });
     document.querySelectorAll('.date-time-form').forEach(function (form) {
