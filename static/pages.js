@@ -1739,7 +1739,157 @@
     };
   }
 
+  function tokenRequest(method, id, body) {
+    var send = method === 'GET' || method === 'DELETE' ? fetch : window.pombPasskey.fetch;
+    return send('/api/v1/auth/tokens/' + encodeURIComponent(id), {
+      method: method,
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    }).then(function (res) {
+      return res.text().then(function (text) {
+        var data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+        if (res.ok) return data;
+        throw new Error((data && data.message) || text || ('HTTP ' + res.status));
+      });
+    });
+  }
+
+  function wireTokenRows() {
+    if (!document.getElementById('token-table')) return;
+    var errorBox = document.getElementById('tk-error');
+    function fail(error) { errorBox.textContent = error.message; errorBox.hidden = false; }
+    function overlay(id) { return document.getElementById(id); }
+    var catalog = [];
+    var presetsBox = document.getElementById('tk-edit-presets');
+    var permsBox = document.getElementById('tk-edit-permissions');
+    var editError = document.getElementById('tk-edit-error');
+    var editId = null;
+    var deleteId = null;
+    function ticked() {
+      return Array.prototype.map.call(permsBox.querySelectorAll('input:checked'), function (input) {
+        return input.value;
+      });
+    }
+    function option(type, name, value, text, title) {
+      var label = document.createElement('label');
+      label.className = 'check-label';
+      var input = document.createElement('input');
+      input.type = type;
+      if (name) input.name = name;
+      input.value = value;
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(' ' + text));
+      if (title) label.title = title;
+      return label;
+    }
+    function renderCatalog(items) {
+      catalog = items;
+      presetsBox.textContent = '';
+      TokenForm.presets(items).forEach(function (preset) {
+        var label = option('radio', 'tk-preset', preset.name,
+          preset.name + ' (' + preset.permissions.length + ' permissions)');
+        label.querySelector('input').addEventListener('change', function () {
+          permsBox.querySelectorAll('input').forEach(function (input) {
+            input.checked = preset.permissions.indexOf(input.value) >= 0;
+          });
+        });
+        presetsBox.appendChild(label);
+      });
+      permsBox.textContent = '';
+      TokenForm.groups(items).forEach(function (group) {
+        var set = document.createElement('fieldset');
+        set.className = 'token-group';
+        var legend = document.createElement('legend');
+        legend.textContent = group.name;
+        set.appendChild(legend);
+        group.items.forEach(function (item) {
+          var box = option('checkbox', '', item.name, item.name, item.description);
+          box.querySelector('input').addEventListener('change', function () {
+            presetsBox.querySelectorAll('input').forEach(function (radio) { radio.checked = false; });
+          });
+          set.appendChild(box);
+        });
+        permsBox.appendChild(set);
+      });
+    }
+    var catalogLoaded = webhookRequest('GET', '/api/v1/auth/permissions').then(renderCatalog);
+    catalogLoaded.catch(fail);
+    function describe(data) {
+      document.getElementById('tk-show-expiry').textContent = data.expires_at
+        ? 'Expires ' + new Date(data.expires_at * 1000).toISOString().slice(0, 10)
+        : 'Never expires';
+      document.getElementById('tk-show-boards').textContent = data.boards === TokenForm.boardsAll
+        ? 'Boards: all'
+        : 'Boards: ' + data.boards.map(function (board) { return board.name; }).join(', ');
+      var list = document.getElementById('tk-show-permissions');
+      list.textContent = '';
+      data.permissions.forEach(function (name) {
+        var item = document.createElement('li');
+        item.textContent = name;
+        list.appendChild(item);
+      });
+    }
+    document.querySelectorAll('.token-row').forEach(function (row) {
+      var id = row.dataset.tokenId;
+      row.querySelector('.tk-show').addEventListener('click', function () {
+        errorBox.hidden = true;
+        tokenRequest('GET', id).then(function (data) {
+          document.getElementById('tk-show-name').textContent = data.name;
+          document.getElementById('tk-show-value').textContent = data.prefix + '…' + data.last4;
+          describe(data);
+          overlay('tk-show-overlay').hidden = false;
+        }).catch(fail);
+      });
+      row.querySelector('.tk-edit').addEventListener('click', function () {
+        errorBox.hidden = true;
+        Promise.all([tokenRequest('GET', id), catalogLoaded]).then(function (results) {
+          var data = results[0];
+          editId = id;
+          document.getElementById('tk-edit-name').value = data.name;
+          editError.hidden = true;
+          presetsBox.querySelectorAll('input').forEach(function (radio) { radio.checked = false; });
+          permsBox.querySelectorAll('input').forEach(function (input) {
+            input.checked = data.permissions.indexOf(input.value) >= 0;
+          });
+          overlay('tk-edit-overlay').hidden = false;
+          document.getElementById('tk-edit-name').focus();
+        }).catch(fail);
+      });
+      row.querySelector('.tk-delete').addEventListener('click', function () {
+        errorBox.hidden = true;
+        deleteId = id;
+        document.getElementById('tk-delete-name').textContent = row.dataset.name;
+        overlay('tk-delete-overlay').hidden = false;
+        document.getElementById('tk-delete-ok').focus();
+      });
+    });
+    document.getElementById('tk-edit-form').addEventListener('submit', function (event) {
+      event.preventDefault();
+      editError.hidden = true;
+      var request = TokenForm.body(catalog, {
+        name: document.getElementById('tk-edit-name').value.trim(),
+        ticked: ticked(),
+        boards: null,
+        expiryDays: null
+      });
+      if (!request.name) { editError.textContent = 'Give the token a name.'; editError.hidden = false; return; }
+      if (!request.permissions.length) { editError.textContent = 'Tick at least one permission.'; editError.hidden = false; return; }
+      tokenRequest('PATCH', editId, { name: request.name, permissions: request.permissions })
+        .then(function () { window.location.reload(); })
+        .catch(function (error) { editError.textContent = error.message; editError.hidden = false; });
+    });
+    document.getElementById('tk-delete-ok').addEventListener('click', function () {
+      overlay('tk-delete-overlay').hidden = true;
+      tokenRequest('DELETE', deleteId)
+        .then(function () { window.location.reload(); })
+        .catch(fail);
+    });
+  }
+
   pages['board-settings-webhooks'] = function () {
+    wireTokenRows();
     var errorBox = document.getElementById('wh-error');
     function fail(error) { errorBox.textContent = error.message; errorBox.hidden = false; }
     var showSecret = wireWebhookSecretDialog();

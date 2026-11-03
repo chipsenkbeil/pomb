@@ -63,6 +63,16 @@
 
 <div id="history-feed" class="history-feed"></div>
 <p id="history-status" class="settings-hint" role="status"></p>
+<div class="spent-bookmarks settings-form">
+  <button type="button" id="history-bookmarks-toggle" class="spent-bookmarks-head" aria-expanded="false">Bookmarks (<span id="history-bookmarks-count">0</span>)</button>
+  <div id="history-bookmarks-body" hidden>
+    <ul id="history-bookmarks-list" class="spent-bookmarks-list"></ul>
+    <div class="spent-bookmarks-add">
+      <input type="text" id="history-bookmark-name" placeholder="Bookmark name" maxlength="60" autocomplete="off">
+      <button type="button" id="history-bookmark-save" class="kf-btn">Bookmark filter</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 {% block shell_scripts %}
 <div hidden data-page-init="BoardHistoryPage" data-board-id="{{ board_id }}"></div>

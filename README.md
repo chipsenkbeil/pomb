@@ -145,7 +145,9 @@ A backup from a newer Pomb than the one you start is refused.
 
 **Board menu > Archive** downloads one board as `<board name>.tar.gz`: a
 `board.json` plus each attachment at `attachments/<attachment id>/<file
-name>`. The JSON holds the board and its settings, columns, swimlanes,
+name>`, and each saved version of a text document at `versions/<attachment
+id>/<version id>`. A task's cover and a document's edited time travel in the
+JSON. The JSON holds the board and its settings, columns, swimlanes,
 colors, custom fields and every task with its comments, history, links and
 time entries. It names people by handle, and every id in it points at a row
 inside the file. It holds no token, passkey, session or calendar-feed link.

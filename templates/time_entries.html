@@ -10,7 +10,7 @@
     <span class="entry-note">{{ e.note }}</span>
     {% if let Some(r) = e.role %}<span class="entry-role">{{ r }}</span>{% endif %}
     {% if let Some(t) = e.token_name %}<span class="entry-token">{{ t }}</span>{% endif %}
-    <span class="entry-date">{{ e.started_display }}</span>
+    <span class="entry-date">{{ e.started_display|safe }}</span>
     <button type="button" class="entry-edit" data-entry-id="{{ e.id }}" title="Edit entry">Edit</button>
   </li>
   {% endfor %}

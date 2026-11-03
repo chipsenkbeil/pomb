@@ -20,7 +20,7 @@
       <div class="tm-history-head">
         <span class="user-avatar history-avatar" aria-hidden="true">{{ e.initials }}</span>
         <span class="tm-history-kind">{{ e.label }}</span>
-        <span class="tm-history-meta">{{ e.actor }} &middot; {{ e.created_display }}</span>
+        <span class="tm-history-meta">{{ e.actor }} &middot; {{ e.created_display|safe }}</span>
       </div>
       <span class="tm-history-detail">{{ e.detail }}</span>
       {% if e.changed %}

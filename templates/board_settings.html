@@ -292,14 +292,44 @@
       {% else if tab == "api" %}
       <section class="settings-section">
         <h2>API &amp; Webhooks</h2>
-        <p class="settings-hint">Automate this board with API tokens. Tokens are created and revoked under
-          <a href="/settings#api-tokens">Settings &rarr; API tokens</a>.</p>
+        <p class="settings-hint">Automate this board over HTTP. An API token lets an agent or script
+          read and change your boards with <code>Authorization: Bearer pomb_&hellip;</code>, and a
+          webhook tells another service when something happens on this board.</p>
+        <div class="kf-btn-row"><a href="/docs/api.md" class="kf-btn" id="api-docs" target="_blank" rel="noopener">Show documentation</a></div>
         <h3>This board</h3>
         <ul class="bshell-list">
           <li><code>GET /api/boards/{{ board_id }}/colors</code> &mdash; palette</li>
           <li><code>PATCH /api/boards/{{ board_id }}/colors/&lt;color_id&gt;</code> &mdash; rename / reorder / set default</li>
           <li><code>POST /api/boards/{{ board_id }}/colors/copy-from</code> &mdash; copy another board's palette</li>
         </ul>
+        <h3>Personal tokens</h3>
+        <p class="settings-hint">These tokens act for your account on every board it holds. A token's
+          secret is shown once, when you add it.</p>
+        <div id="tk-error" class="form-error" role="alert" hidden></div>
+        <div class="bshell-scroll"><table class="kf-table token-table" id="token-table">
+          <thead><tr><th>Name</th><th>Token</th><th>Scope</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+          <tbody>
+            {% for token in tokens %}
+            <tr class="token-row" data-token-id="{{ token.id }}" data-name="{{ token.name }}">
+              <td class="tk-name">{{ token.name }}</td>
+              <td><code>{{ token.prefix }}&hellip;{{ token.last4 }}</code></td>
+              <td class="tk-scope">{{ token.scopes }}</td>
+              <td>{{ token.created }}</td>
+              <td>{{ token.last_used }}</td>
+              <td>{{ token.expires }}</td>
+              <td class="color-cell-actions">
+                <button type="button" class="kf-btn tk-show">Show token</button>
+                <button type="button" class="kf-btn tk-edit">Edit</button>
+                <button type="button" class="kf-btn kf-btn-danger tk-delete">Delete</button>
+              </td>
+            </tr>
+            {% endfor %}
+            {% if tokens.is_empty() %}
+            <tr><td colspan="7" class="settings-hint" id="tk-empty">No API tokens yet.</td></tr>
+            {% endif %}
+          </tbody>
+        </table></div>
+        <div class="kf-btn-row"><a href="/settings#api-tokens" class="kf-btn kf-btn-success" id="tk-add">Add token</a></div>
         <h3>Webhooks</h3>
         <p class="settings-hint">A webhook calls a URL with a signed <code>POST</code> when events
           happen on this board. Each delivery carries the <code>X-Pomb-Signature</code> header.</p>
@@ -547,7 +577,60 @@
     </div>
   </div>
 </div>
+<div id="tk-show-overlay" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light bf-dlg-wide" role="dialog" aria-label="Token">
+    <div class="dlg-title"><span id="tk-show-name"></span>
+      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
+    </div>
+    <p class="token-value"><code id="tk-show-value"></code></p>
+    <p class="settings-hint">Pomb keeps only a hash of the secret, so it cannot show the whole token
+      again. Add a new token if this one is lost.</p>
+    <p id="tk-show-expiry"></p>
+    <p id="tk-show-boards"></p>
+    <ul id="tk-show-permissions" class="token-inspect-permissions"></ul>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-primary" data-close-dialog>Done</button>
+    </div>
+  </div>
+</div>
+<div id="tk-edit-overlay" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light bf-dlg-wide" role="dialog" aria-label="Edit token">
+    <div class="dlg-title">Edit token
+      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
+    </div>
+    <form id="tk-edit-form" class="settings-form token-form" novalidate>
+      <label>Token name
+        <input type="text" id="tk-edit-name" maxlength="80" required>
+      </label>
+      <fieldset class="token-scopes">
+        <legend>Permissions</legend>
+        <div id="tk-edit-presets" class="token-presets"></div>
+        <div id="tk-edit-permissions" class="token-permissions"></div>
+      </fieldset>
+      <p class="settings-hint">The secret and the boards the token reaches stay as they are.</p>
+      <p id="tk-edit-error" class="form-error" hidden></p>
+      <div class="dlg-actions">
+        <button type="button" class="btn" data-close-dialog>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="tk-edit-save">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+<div id="tk-delete-overlay" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Delete token">
+    <div class="dlg-title">Delete token
+      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
+    </div>
+    <p class="settings-hint">Delete the token <strong id="tk-delete-name"></strong>? Anything using it
+      stops working. This cannot be undone.</p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-danger" id="tk-delete-ok">Delete</button>
+    </div>
+  </div>
+</div>
 <div hidden data-page="board-settings-webhooks"></div>
+<script src="/static/passkey.js"></script>
 {% endif %}
 {% if tab == "webhook" %}
 <div hidden data-page="board-settings-webhook-form"></div>

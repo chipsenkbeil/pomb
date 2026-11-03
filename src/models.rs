@@ -115,6 +115,16 @@ impl Numbering {
     }
 }
 
+/// Returns `minutes` as "2h 30m", "45m" or "3h".
+#[must_use]
+pub fn format_minutes(minutes: i64) -> String {
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("{m}m"),
+        (h, 0) => format!("{h}h"),
+        (h, m) => format!("{h}h {m}m"),
+    }
+}
+
 /// Seconds in a day, for expiry arithmetic.
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -182,6 +192,10 @@ impl TextCap {
     pub const ATTACHMENT_NAME: Self = Self::bytes("name", 255);
     /// An avatar's text, in the account settings.
     pub const AVATAR_TEXT: Self = Self::chars("avatar.text", 3);
+    /// A report bookmark's filter values, as JSON.
+    pub const BOOKMARK_FILTERS: Self = Self::bytes("filters", 4 * 1024);
+    /// A report bookmark's name.
+    pub const BOOKMARK_NAME: Self = Self::chars("name", 60);
     /// Most break activities, in the account settings.
     pub const BREAK_ACTIVITIES: Self = Self::items("break_activities", 50);
     /// A break activity's description, as long as the activity dialog allows.
@@ -378,6 +392,47 @@ pub struct BoardRow {
     /// (e.g. legend visibility). Defaults to "{}" for older rows.
     #[serde(default = "default_board_config")]
     pub config_json: String,
+    /// The report bookmarks of the board, oldest first.
+    #[serde(default)]
+    pub report_bookmarks: Vec<ReportBookmark>,
+}
+
+/// The chart reports that keep bookmarks, by the last segment of their page path.
+pub const BOOKMARK_REPORTS: [&str; 5] = [
+    "burndown",
+    "cumulative-flow",
+    "cycle-lead",
+    "throughput",
+    "monte-carlo",
+];
+
+/// Most report bookmarks one board holds.
+pub const MAX_REPORT_BOOKMARKS: usize = 50;
+
+/// A saved set of filter values for one chart report of a board.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportBookmark {
+    /// The bookmark's id.
+    pub id: String,
+    /// The account that saved it.
+    pub owner_id: String,
+    /// The report it belongs to, one of [`BOOKMARK_REPORTS`].
+    pub report: String,
+    /// The name the owner gave it.
+    pub name: String,
+    /// Whether every member of the board sees it, not only its owner.
+    pub shared: bool,
+    /// Whether the Reports menu lists it under its report.
+    pub shortcut: bool,
+    /// The filter values, a JSON object.
+    pub filters: String,
+}
+
+impl ReportBookmark {
+    /// Returns whether `account` may see the bookmark.
+    pub fn visible_to(&self, account: &str) -> bool {
+        self.shared || self.owner_id == account
+    }
 }
 
 impl BoardRow {

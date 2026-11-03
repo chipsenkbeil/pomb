@@ -15,14 +15,15 @@ use super::tar::{self, Cap, Data, ReadLimits};
 use super::{
     AttachmentInfo, BOARD_JSON, BoardDocument, ColorInfo, ColumnInfo, CommentInfo, EventInfo,
     FORMAT, FieldInfo, LaneInfo, LinkInfo, ResponsibleInfo, SubtaskInfo, TaskInfo, TimeInfo,
-    attachment_path,
+    VersionInfo, attachment_path, version_path,
 };
 use crate::db::{AccountDb, BoardImport, Db, FileImport, MAX_HISTORY_TEXT_CHARS, TaskImport};
 use crate::models::{
-    AccountId, BreakActivity, ColorRow, ColumnRow, EntryKind, FieldDefRow, FieldKind, LaneLimit,
-    LinkKind, MAIN_SWIMLANE_KEY, NUMBERING_KEY, Numbering, Quotas, Responsible, Subtask,
-    SwimlaneRow, TaskAttachment, TaskComment, TaskEvent, TaskLink, TaskRow, TextCap, TimeEntryRow,
-    custom_color_hexes, is_custom_color, parse_due_time, standard_color, valid_field_key,
+    AccountId, AttachmentVersion, BreakActivity, ColorRow, ColumnRow, EntryKind, FieldDefRow,
+    FieldKind, LaneLimit, LinkKind, MAIN_SWIMLANE_KEY, NUMBERING_KEY, Numbering, Quotas,
+    Responsible, Subtask, SwimlaneRow, TaskAttachment, TaskComment, TaskEvent, TaskLink, TaskRow,
+    TextCap, TimeEntryRow, custom_color_hexes, is_custom_color, parse_due_time, standard_color,
+    valid_field_key,
 };
 use crate::routes::{
     LANE_HEIGHT_MAX_PX, LANE_HEIGHT_MIN_PX, MAX_COMMENT_AUTHOR_CHARS, MAX_COMMENT_BYTES,
@@ -134,8 +135,11 @@ pub struct Importer<'a> {
     pub max_attachment_bytes: u64,
 }
 
-/// Returns the [`Cap`] of the file at `path`, an attachment holding at most `max_attachment_bytes`,
-/// or [`None`] for a path outside the format.
+/// The attachments of a task, the files of them and their versions, and the fresh id of the cover.
+type KeptAttachments = (Vec<TaskAttachment>, Vec<FileImport>, Option<String>);
+
+/// Returns the [`Cap`] of the file at `path`, an attachment or a version holding at most
+/// `max_attachment_bytes`, or [`None`] for a path outside the format.
 fn file_cap(path: &str, max_attachment_bytes: u64) -> Option<Cap> {
     if path == BOARD_JSON {
         return Some(Cap {
@@ -144,7 +148,7 @@ fn file_cap(path: &str, max_attachment_bytes: u64) -> Option<Cap> {
         });
     }
     let parts: Vec<&str> = path.split('/').collect();
-    matches!(parts.as_slice(), ["attachments", _, _]).then_some(Cap {
+    matches!(parts.as_slice(), ["attachments" | "versions", _, _]).then_some(Cap {
         bytes: max_attachment_bytes,
         spooled: true,
     })
@@ -869,7 +873,8 @@ impl Builder<'_> {
 
         let subtasks = self.subtasks(&label, task.subtasks)?;
         let comments = self.comments(&label, task.comments)?;
-        let (attachments, files) = self.attachments(&label, task.attachments)?;
+        let (attachments, files, cover_id) =
+            self.attachments(&label, task.attachments, task.cover_id.as_deref())?;
         let links = self.links(&label, &id, task.links, graph)?;
         let history = self.history(&label, task.history)?;
         let entries = self.entries(&label, &id, task.time_entries)?;
@@ -921,7 +926,7 @@ impl Builder<'_> {
             links,
             claim: None,
             claim_fence: 0,
-            cover_id: None,
+            cover_id,
             fields,
         };
         row.check_caps(None)
@@ -1033,12 +1038,22 @@ impl Builder<'_> {
             .collect()
     }
 
-    /// Returns the attachments of a task whose file the archive holds, with those files.
+    /// Returns the attachments of a task whose file the archive holds, with those files and the
+    /// fresh id of the attachment `cover` names.
     fn attachments(
         &mut self,
         label: &str,
         attachments: Vec<AttachmentInfo>,
-    ) -> Result<(Vec<TaskAttachment>, Vec<FileImport>), ImportError> {
+        cover: Option<&str>,
+    ) -> Result<KeptAttachments, ImportError> {
+        if let Some(cover) = cover
+            && !attachments.iter().any(|attachment| attachment.id == cover)
+        {
+            return Err(ImportError::invalid(format!(
+                "the cover of {label} names no attachment of it"
+            )));
+        }
+        let mut kept_cover = None;
         ceiling(
             attachments.len(),
             Quotas::MAX_ATTACHMENTS_PER_TASK,
@@ -1054,6 +1069,12 @@ impl Builder<'_> {
                 )));
             }
             let Some(path) = attachment.file else {
+                if !attachment.versions.is_empty() {
+                    return Err(ImportError::invalid(format!(
+                        "the attachment {} of {label} has versions and no file",
+                        attachment.name
+                    )));
+                }
                 self.counts.dropped_attachments += 1;
                 continue;
             };
@@ -1126,12 +1147,32 @@ impl Builder<'_> {
                     )));
                 }
             }
+            let document = attachment.mime == TaskAttachment::DOCUMENT_MIME;
+            if (attachment.edited_at.is_some() || !attachment.versions.is_empty()) && !document {
+                return Err(ImportError::invalid(format!(
+                    "the attachment {} of {label} is not a document and has versions",
+                    attachment.name
+                )));
+            }
+            instant_opt(
+                attachment.edited_at.as_deref(),
+                &format!("edited_at of an attachment of {label}"),
+            )?;
             let id = fresh_id();
+            if cover == Some(attachment.id.as_str()) {
+                if !attachment.mime.starts_with("image/") {
+                    return Err(ImportError::invalid(format!(
+                        "the cover of {label} is not an image"
+                    )));
+                }
+                kept_cover = Some(id.clone());
+            }
             files.push(FileImport {
                 id: id.clone(),
                 path: spooled,
                 size,
             });
+            let versions = self.versions(label, &attachment.id, attachment.versions, &mut files)?;
             kept.push(TaskAttachment {
                 id,
                 name: attachment.name,
@@ -1142,12 +1183,76 @@ impl Builder<'_> {
                 created_at: attachment.created_at,
                 sha256: None,
                 url: attachment.url,
-                edited_at: None,
-                versions: Vec::new(),
+                edited_at: attachment.edited_at,
+                versions,
             });
         }
         self.counts.attachments += kept.len();
-        Ok((kept, files))
+        Ok((kept, files, kept_cover))
+    }
+
+    /// Returns the earlier contents of the document `attachment`, whose files the archive holds,
+    /// and pushes those files onto `files`.
+    fn versions(
+        &mut self,
+        label: &str,
+        attachment: &str,
+        versions: Vec<VersionInfo>,
+        files: &mut Vec<FileImport>,
+    ) -> Result<Vec<AttachmentVersion>, ImportError> {
+        if versions.len() > TaskAttachment::MAX_VERSIONS {
+            return Err(ImportError::TooLarge(format!(
+                "an attachment of {label} holds {} versions, and at most {} are accepted",
+                versions.len(),
+                TaskAttachment::MAX_VERSIONS
+            )));
+        }
+        let mut kept = Vec::with_capacity(versions.len());
+        for version in versions {
+            if !self.attachments.insert(version.id.clone()) {
+                return Err(ImportError::invalid(format!(
+                    "two attachments or versions share the id {}",
+                    version.id
+                )));
+            }
+            if version.file != version_path(attachment, &version.id) {
+                return Err(ImportError::invalid(format!(
+                    "the file {} is not where the version {} of {label} belongs",
+                    version.file, version.id
+                )));
+            }
+            let spooled = self.files.remove(&version.file).ok_or_else(|| {
+                ImportError::invalid(format!(
+                    "the version {} of {label} names the file {}, which is not in the archive",
+                    version.id, version.file
+                ))
+            })?;
+            let size = fs::metadata(&spooled)
+                .map_err(|error| ImportError::Storage(error.to_string()))?
+                .len();
+            if size != version.size {
+                return Err(ImportError::invalid(format!(
+                    "the version {} of {label} says {} bytes, and its file holds {}",
+                    version.id, version.size, size
+                )));
+            }
+            instant(
+                &version.saved_at,
+                &format!("saved_at of a version of {label}"),
+            )?;
+            let id = fresh_id();
+            files.push(FileImport {
+                id: id.clone(),
+                path: spooled,
+                size,
+            });
+            kept.push(AttachmentVersion {
+                id,
+                size,
+                saved_at: version.saved_at,
+            });
+        }
+        Ok(kept)
     }
 
     /// Returns the links task `holder` holds to other tasks of the archive, and counts the ones it
@@ -2026,6 +2131,110 @@ mod tests {
             error.to_string().contains("does not match its file"),
             "{error}"
         );
+    }
+
+    fn versioned_document() -> Value {
+        let mut document = base();
+        document["tasks"][0]["attachments"] = json!([{
+            "id": "d1", "name": "notes.txt", "mime": "text/markdown", "size": 5,
+            "uploaded_by": "chip", "created_at": "2026-10-01T10:00:00Z",
+            "edited_at": "2026-10-02T10:00:00Z", "file": "attachments/d1/notes.txt",
+            "versions": [{
+                "id": "v1", "size": 3, "saved_at": "2026-10-01T11:00:00Z",
+                "file": "versions/d1/v1"
+            }]
+        }]);
+        document
+    }
+
+    #[test]
+    fn read_board_should_keep_a_documents_versions_and_edited_time() {
+        let files: [(&str, &[u8]); 2] = [
+            ("attachments/d1/notes.txt", b"newer"),
+            ("versions/d1/v1", b"old"),
+        ];
+        let base = tempfile::tempdir().expect("tempdir");
+        let spool = Spool::create(base.path()).expect("spool");
+        let (import, _) = read_in(&versioned_document(), &files, &[], &spool).expect("a board");
+        let task = &import.tasks[0];
+        let document = &task.row.attachments[0];
+        assert_eq!(document.edited_at.as_deref(), Some("2026-10-02T10:00:00Z"));
+        assert_eq!(document.versions.len(), 1);
+        assert_eq!(document.versions[0].saved_at, "2026-10-01T11:00:00Z");
+        assert_ne!(document.versions[0].id, "v1");
+        assert_eq!(task.files.len(), 2);
+        assert_eq!(task.files[1].id, document.versions[0].id);
+        assert_eq!(fs::read(&task.files[1].path).expect("file"), b"old");
+    }
+
+    #[test]
+    fn read_board_should_refuse_a_version_that_lies_or_sits_on_a_file() {
+        let files: [(&str, &[u8]); 2] = [
+            ("attachments/d1/notes.txt", b"newer"),
+            ("versions/d1/v1", b"old"),
+        ];
+        let mut sized = versioned_document();
+        sized["tasks"][0]["attachments"][0]["versions"][0]["size"] = json!(9);
+        let error = read_as(&sized, &files, &[]).expect_err("a size that lies");
+        assert!(error.to_string().contains("says 9 bytes"), "{error}");
+        let mut moved = versioned_document();
+        moved["tasks"][0]["attachments"][0]["versions"][0]["file"] = json!("versions/d1/other");
+        let error = read_as(&moved, &files, &[]).expect_err("another path");
+        assert!(
+            error.to_string().contains("is not where the version"),
+            "{error}"
+        );
+        let error = read_as(
+            &versioned_document(),
+            &[("attachments/d1/notes.txt", b"newer")],
+            &[],
+        )
+        .expect_err("a missing file");
+        assert!(
+            error.to_string().contains("is not in the archive"),
+            "{error}"
+        );
+        let mut plain = versioned_document();
+        plain["tasks"][0]["attachments"][0]["mime"] = json!("text/plain");
+        let error = read_as(&plain, &files, &[]).expect_err("a file with versions");
+        assert!(error.to_string().contains("is not a document"), "{error}");
+    }
+
+    fn covered_document(mime: &str, cover: &str) -> Value {
+        let mut document = base();
+        document["tasks"][0]["attachments"] = json!([{
+            "id": "i1", "name": "a.png", "mime": mime, "size": 3,
+            "uploaded_by": "chip", "created_at": "2026-10-01T10:00:00Z",
+            "file": "attachments/i1/a.png"
+        }]);
+        document["tasks"][0]["cover_id"] = json!(cover);
+        document
+    }
+
+    #[test]
+    fn read_board_should_keep_a_cover_under_the_fresh_id_of_its_attachment() {
+        let files: [(&str, &[u8]); 1] = [("attachments/i1/a.png", b"png")];
+        let base = tempfile::tempdir().expect("tempdir");
+        let spool = Spool::create(base.path()).expect("spool");
+        let document = covered_document("image/png", "i1");
+        let (import, _) = read_in(&document, &files, &[], &spool).expect("a board");
+        let row = &import.tasks[0].row;
+        assert_eq!(
+            row.cover_id.as_deref(),
+            Some(row.attachments[0].id.as_str())
+        );
+        assert_ne!(row.attachments[0].id, "i1");
+    }
+
+    #[test]
+    fn read_board_should_refuse_a_cover_that_is_no_image_or_no_attachment() {
+        let files: [(&str, &[u8]); 1] = [("attachments/i1/a.png", b"png")];
+        let error = read_as(&covered_document("text/plain", "i1"), &files, &[])
+            .expect_err("a cover that is no image");
+        assert!(error.to_string().contains("is not an image"), "{error}");
+        let error = read_as(&covered_document("image/png", "ghost"), &files, &[])
+            .expect_err("a cover that names nothing");
+        assert!(error.to_string().contains("names no attachment"), "{error}");
     }
 
     #[test]

@@ -10193,6 +10193,127 @@ async fn inspect_should_refuse_a_bearer_token_even_on_itself() {
 }
 
 #[tokio::test]
+async fn token_edit_should_rename_and_regrant_without_a_new_secret() {
+    let (_dir, fx) = fixture();
+    let (id, raw) = token_record(&fx, "before", AuthScope::Read);
+    let uri = format!("/api/v1/auth/tokens/{id}");
+    let body = json!({"name": "  after  ", "permissions": ["tasks.read", "tasks.write"]});
+    let (status, reply) = call(&fx, "PATCH", &uri, Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["name"], "after");
+    assert_eq!(reply["permissions"], json!(["tasks.read", "tasks.write"]));
+    assert!(reply.get("raw_token").is_none(), "{reply}");
+    assert!(!reply.to_string().contains(&raw), "{reply}");
+
+    let (status, text) = inspect(&fx, As::Admin, &raw).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let inspected: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(inspected["id"], json!(id));
+    assert_eq!(inspected["name"], "after");
+    assert_eq!(
+        inspected["permissions"],
+        json!(["tasks.read", "tasks.write"])
+    );
+
+    let (status, shown) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!(shown["name"], "after");
+    assert_eq!(shown["permissions"], reply["permissions"]);
+}
+
+#[tokio::test]
+async fn token_edit_should_keep_what_the_body_leaves_out() {
+    let (_dir, fx) = fixture();
+    let (id, _) = token_record(&fx, "keeper", AuthScope::Work);
+    let uri = format!("/api/v1/auth/tokens/{id}");
+    let (status, reply) = call(&fx, "PATCH", &uri, Some(json!({"name": "renamed"}))).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let expected: Vec<_> = AuthScope::Work
+        .permissions()
+        .iter()
+        .map(|held| held.name())
+        .collect();
+    assert_eq!(reply["name"], "renamed");
+    assert_eq!(reply["permissions"], json!(expected));
+
+    let (status, reply) = call(&fx, "PATCH", &uri, Some(json!({"preset": "read"}))).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["name"], "renamed");
+    assert_eq!(reply["scopes"], json!(["read"]));
+}
+
+#[tokio::test]
+async fn token_edit_should_keep_the_boards_and_the_expiry() {
+    let (_dir, fx) = fixture();
+    let (status, token) = mint(
+        &fx,
+        json!({"name": "scoped", "preset": "read", "boards": [fx.board_id], "expires_in_days": 30}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{token}");
+    let uri = format!("/api/v1/auth/tokens/{}", token["id"].as_str().expect("id"));
+    let (status, edited) = call(&fx, "PATCH", &uri, Some(json!({"preset": "work"}))).await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    assert_eq!(edited["boards"], token["boards"]);
+    assert_eq!(edited["expires_at"], token["expires_at"]);
+    assert!(edited["expires_at"].is_number(), "{edited}");
+}
+
+#[tokio::test]
+async fn token_edit_should_refuse_a_bad_name_or_grant_and_change_nothing() {
+    let (_dir, fx) = fixture();
+    let (id, _) = token_record(&fx, "steady", AuthScope::Read);
+    let uri = format!("/api/v1/auth/tokens/{id}");
+    for body in [
+        json!({"name": "   "}),
+        json!({"name": "x".repeat(81)}),
+        json!({"preset": "read", "permissions": ["tasks.read"]}),
+        json!({"permissions": []}),
+        json!({"permissions": ["tasks.everything"]}),
+        json!({"preset": "root"}),
+    ] {
+        let (status, reply) = call(&fx, "PATCH", &uri, Some(body.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {reply}");
+    }
+    let (status, shown) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!(shown["name"], "steady");
+}
+
+#[tokio::test]
+async fn token_edit_should_answer_an_unknown_id_with_404() {
+    let (_dir, fx) = fixture();
+    let (status, reply) = call(
+        &fx,
+        "PATCH",
+        "/api/v1/auth/tokens/no-such-token",
+        Some(json!({"name": "x"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{reply}");
+    let (status, reply) = call(&fx, "GET", "/api/v1/auth/tokens/no-such-token", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{reply}");
+}
+
+#[tokio::test]
+async fn token_edit_should_stay_session_only() {
+    let (_dir, fx) = fixture();
+    let admin = token_with(&fx, "admin", AuthScope::Admin);
+    let (id, _) = token_record(&fx, "target", AuthScope::Read);
+    let uri = format!("/api/v1/auth/tokens/{id}");
+    let body = json!({"name": "hijack", "preset": "admin"});
+    let (status, text) = bearer_json(&fx, &admin, "PATCH", &uri, body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let (status, text) = request(&fx, As::Bearer(&admin), "GET", &uri, None, true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let (status, _) = request(&fx, As::Anonymous, "GET", &uri, None, true).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, shown) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!(shown["name"], "target");
+}
+
+#[tokio::test]
 async fn inspect_should_answer_an_unknown_and_a_revoked_token_alike() {
     let (_dir, fx) = fixture();
     let (id, raw) = token_record(&fx, "gone", AuthScope::Read);

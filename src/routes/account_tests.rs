@@ -10,7 +10,7 @@ use super::{MAX_AVATAR_BYTES, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
-use crate::models::{AccountId, AuthScope, AvatarKind, InstanceMode, TimeFormat};
+use crate::models::{AccountId, Actor, AuthScope, AvatarKind, InstanceMode, TimeFormat};
 
 const MAX_BODY_BYTES: usize = 1 << 20;
 
@@ -549,4 +549,106 @@ async fn a_stale_settings_save_should_keep_the_uploaded_avatar() {
     let kept = fx.db.settings(&fx.admin).expect("settings");
     assert_eq!(kept.avatar.kind, AvatarKind::Image);
     assert_eq!(kept.avatar.image_version, 1);
+}
+
+#[tokio::test]
+async fn every_page_clock_time_should_carry_its_instant_for_the_browser() {
+    let fx = Fixture::new();
+    fx.send(
+        "PUT",
+        "/api/settings",
+        Some(json!({ "time_format": "24h" })),
+    )
+    .await;
+    let task = fx.assigned_task();
+    let due = "2026-10-01T20:30:00Z";
+    fx.db.set_task_due(&task, Some(due), None).expect("due");
+    let started = "2026-10-01T20:30:00Z";
+    let comment = fx
+        .send(
+            "POST",
+            &format!("/api/tasks/{task}/comments"),
+            Some(json!({ "body": "Seen" })),
+        )
+        .await;
+    assert!(comment.status.is_success());
+    let sub = fx
+        .db
+        .add_subtask(&task, "Step")
+        .expect("subtask")
+        .expect("task");
+    fx.send(
+        "PATCH",
+        &format!("/api/tasks/{task}/subtasks/{}", sub.id),
+        Some(json!({ "due_at": due })),
+    )
+    .await;
+    fx.db
+        .add_attachment(&task, "a.png", "image/png", b"png", Actor::SYSTEM)
+        .expect("attach")
+        .expect("task");
+    fx.send(
+        "POST",
+        &format!("/api/tasks/{task}/time"),
+        Some(json!({ "minutes": 25, "started_at": started })),
+    )
+    .await;
+
+    let card = fx.page(&format!("/api/tasks/{task}/card")).await;
+    let modal = fx.page(&format!("/api/tasks/{task}/modal")).await;
+    let history = fx.page(&format!("/api/tasks/{task}/history-view")).await;
+    let entries = fx.page(&format!("/api/tasks/{task}/time-log-view")).await;
+    let attr = |format: &str| {
+        format!("data-at=\"2026-10-01T20:30:00Z\" data-fmt=\"{format}\" data-clock=\"24h\"")
+    };
+    assert!(
+        card.contains(&format!(
+            "<time class=\"local-time\" datetime=\"{due}\" {}",
+            attr("due-card")
+        )),
+        "{card}"
+    );
+    assert!(
+        card.contains(&format!("{} data-attr=\"title\"", attr("datetime"))),
+        "{card}"
+    );
+    assert!(modal.contains(&attr("due-modal")), "{modal}");
+    assert!(
+        modal.matches("data-fmt=\"comment\"").count() >= 2,
+        "{modal}"
+    );
+    assert!(modal.contains("data-fmt=\"due-modal\""), "{modal}");
+    assert!(
+        history.contains("data-fmt=\"datetime\" data-clock=\"24h\""),
+        "{history}"
+    );
+    assert!(
+        entries.contains("data-fmt=\"range\" data-clock=\"24h\" data-end=\"2026-10-01T20:55:00Z\""),
+        "{entries}"
+    );
+    assert!(card.contains("UTC</time>"), "{card}");
+    let log = fx.send("GET", "/api/timer/log", None).await;
+    let first = &log.body["entries"][0];
+    assert!(
+        first["started_at"]
+            .as_str()
+            .expect("start")
+            .starts_with("2026-10-01T20:30:00")
+    );
+    assert_eq!(first["ended_at"], "2026-10-01T20:55:00Z");
+    fx.send(
+        "POST",
+        &format!("/api/tasks/{task}/time"),
+        Some(json!({ "minutes": 5 })),
+    )
+    .await;
+    let today = fx.send("GET", "/api/timer/today", None).await;
+    let session = &today.body[0];
+    for key in ["started_at", "ended_at"] {
+        let instant = session[key].as_str().expect("instant");
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(instant).is_ok(),
+            "{instant}"
+        );
+    }
 }

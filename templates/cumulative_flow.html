@@ -4,6 +4,7 @@
 {% block shell_title %}Cumulative flow{% endblock %}
 {% block shell_body %}
 <p class="settings-hint">How many tasks there are in different columns over time on <strong>{{ board_name }}</strong>: tasks per column per day over the chosen period. Use it to spot bottlenecks.</p>
+<div id="report-tools" class="report-tools"></div>
 <div class="chart-layout">
   {% include "_report_filter.html" %}
   <div class="chart-main">

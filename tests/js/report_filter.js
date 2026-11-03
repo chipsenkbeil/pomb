@@ -114,5 +114,23 @@ var opened = ReportFilter.open(null, controls, function () { throw new Error('bo
   function (err) { failed.push(err.message); });
 check('a render error is reported', failed, ['boom']);
 
+var applied = [];
+var bookmarked = ReportFilter.open(null, controls, function (values) { applied.push(values); }, function () {});
+bookmarked.apply({ user: 'u2', labels: ['x', 'gone'], labelMode: 'nope', color: 5, unknown: 'ignored' });
+check('apply reloads once', applied.length, 2);
+check('apply sets a known option', applied[1].user, 'u2');
+check('apply drops options the board no longer has', applied[1].labels, ['x']);
+check('apply keeps the value of an unknown option out', applied[1].labelMode, 'and');
+check('apply ignores a value of the wrong type', applied[1].color, '');
+check('apply ignores a key no control has', 'unknown' in applied[1], false);
+
+var redraws = 0;
+var host4 = { innerHTML: '', addEventListener: function () {}, querySelectorAll: function () { return []; } };
+var drawn = ReportFilter.create(controls, function () {});
+ReportFilter.mount(host4, drawn);
+var before = host4.innerHTML;
+drawn.apply({ user: 'u1' });
+check('apply redraws the panel with the new value', host4.innerHTML !== before && /value="u1" selected/.test(host4.innerHTML), true);
+
 if (failures) process.exit(1);
 console.log('report_filter: all checks passed');

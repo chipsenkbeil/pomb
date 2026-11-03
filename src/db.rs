@@ -108,11 +108,12 @@ use crate::models::{
     BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange, DeviceAuthRow, DeviceAuthStatus,
     EntryKind, EventChange, FieldDefRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind,
     MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS, MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER,
-    MAX_NUMBERING_PREFIX_CHARS, MIN_TEXT_CONTRAST, NUMBERING_KEY, Numbering, PasskeyRow, Quota,
-    Quotas, RecoveryCodeRow, Responsible, SessionRow, Settings, Subtask, SwimlaneRow,
-    TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TextCap,
-    TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes, custom_color_value,
-    is_custom_color, lighter_hex, normalize_hex, standard_color, text_contrast,
+    MAX_NUMBERING_PREFIX_CHARS, MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NUMBERING_KEY, Numbering,
+    PasskeyRow, Quota, Quotas, RecoveryCodeRow, ReportBookmark, Responsible, SessionRow, Settings,
+    Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink,
+    TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes,
+    custom_color_value, format_minutes, is_custom_color, lighter_hex, normalize_hex,
+    standard_color, text_contrast,
 };
 use crate::permissions::Permission;
 use crate::rules;
@@ -1230,8 +1231,17 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// no cover. The new stamp makes a version-52 binary refuse a file whose links, document versions
 /// and covers it would drop on its next task save.
 ///
+/// Version 54 adds, over version 53 (additive, read from older rows through a serde default):
+///
+/// 1. `BoardRow`: `report_bookmarks`, each a `ReportBookmark` holding a chart report's saved
+///    filter values with a name, a share flag and a shortcut flag.
+///
+/// The upgrade rewrites no row, so a board from before the upgrade reads with no bookmark. The
+/// new stamp makes a version-53 binary refuse a file whose bookmarks it would drop on its next
+/// board save.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 53;
+pub const SCHEMA_VERSION: u64 = 54;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1291,6 +1301,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "9de708db88e49ffbb1da2c7b25f39f73c69f5c1401dd7604e73699f6b03c87d3",
     "2cb1661e822c7d059b59e6018ad072dee1e5b03236574714b1aa1bbdf7289133",
     "41ef38f21ae22ac033cebb5bdefa2240fd783b10c642a8d1187bcb53962d7937",
+    "2e95a79f7700532bed2bf98ad082756690715b2aa950c21bf59c0e1f3520b8cd",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -2064,6 +2075,30 @@ pub enum FeedAdd {
     Full,
     /// No board has that id.
     NoBoard,
+}
+
+/// What saving a report bookmark on a board did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BookmarkAdd {
+    /// The board holds the bookmark now.
+    Added(ReportBookmark),
+    /// The board already holds [`MAX_REPORT_BOOKMARKS`].
+    Full,
+    /// No board has that id.
+    NoBoard,
+}
+
+/// The fields of a report bookmark a change replaces, where a field left `None` stays.
+#[derive(Clone, Debug, Default)]
+pub struct BookmarkPatch {
+    /// The new name.
+    pub name: Option<String>,
+    /// Whether every member of the board sees it.
+    pub shared: Option<bool>,
+    /// Whether the Reports menu lists it.
+    pub shortcut: Option<bool>,
+    /// The new filter values, a JSON object.
+    pub filters: Option<String>,
 }
 /// base64url credential id -> id of the passkey that holds it.
 const PASSKEYS_BY_CREDENTIAL: TableDefinition<'_, &str, &str> =
@@ -4764,6 +4799,7 @@ fn txn_insert_board(
         position: 0,
         owner_id: owner.as_str().to_string(),
         config_json: "{}".to_string(),
+        report_bookmarks: Vec::new(),
     };
     txn_store_owned(txn, BOARDS, &id, &row, over)?;
     mmap_insert(txn, BOARDS_BY_OWNER, owner.as_str(), &id)?;
@@ -5906,6 +5942,40 @@ impl Db {
         Ok(removed)
     }
 
+    /// Renames `account`'s token `id` and, when `grant` is set, replaces its scope and permissions,
+    /// keeping its secret, boards and expiry. Returns the stored token, or [`None`] when that account
+    /// holds no such token.
+    pub fn edit_api_token(
+        &self,
+        account: &AccountId,
+        id: &str,
+        name: Option<&str>,
+        grant: Option<(AuthScope, BTreeSet<Permission>)>,
+    ) -> DbResult<Option<ApiTokenRecord>> {
+        let txn = self.db.begin_write()?;
+        let held = txn_mmap_get(&txn, TOKENS_BY_ACCOUNT, account.as_str())?
+            .iter()
+            .any(|token| token == id);
+        let stored = if held {
+            row_in::<ApiTokenRecord, _>(&txn.open_table(API_TOKENS)?, id)?
+        } else {
+            None
+        };
+        let Some(mut record) = stored else {
+            return Ok(None);
+        };
+        if let Some(name) = name {
+            record.name = name.to_string();
+        }
+        if let Some((scope, permissions)) = grant {
+            record.scope = scope;
+            record.permissions = permissions;
+        }
+        write_one(&txn, API_TOKENS, id, &record)?;
+        txn.commit()?;
+        Ok(Some(record))
+    }
+
     pub fn touch_api_token(&self, id: &str, now: i64) -> DbResult<()> {
         let _ = mutate(&self.db, API_TOKENS, id, |record: &mut ApiTokenRecord| {
             record.last_used_at = Some(now);
@@ -6248,6 +6318,83 @@ impl Db {
             return Ok(false);
         }
         row.config_json = row.config_with_feeds(&feeds);
+        txn_store_board(&txn, &row, OverQuota::Allow)?;
+        txn.commit()?;
+        Ok(true)
+    }
+
+    /// Adds a report bookmark to a board in one transaction, unless the board already holds
+    /// [`MAX_REPORT_BOOKMARKS`].
+    pub fn add_report_bookmark(&self, id: &str, bookmark: ReportBookmark) -> DbResult<BookmarkAdd> {
+        let txn = self.db.begin_write()?;
+        let Some(mut row) = txn_read_one::<BoardRow>(&txn, BOARDS, id)? else {
+            return Ok(BookmarkAdd::NoBoard);
+        };
+        if row.report_bookmarks.len() >= MAX_REPORT_BOOKMARKS {
+            return Ok(BookmarkAdd::Full);
+        }
+        row.report_bookmarks.push(bookmark.clone());
+        txn_store_board(&txn, &row, OverQuota::Allow)?;
+        txn.commit()?;
+        Ok(BookmarkAdd::Added(bookmark))
+    }
+
+    /// Changes the bookmark `bookmark_id` of a board, which `account` saved, in one transaction.
+    /// Returns none when the board has no such bookmark of that account.
+    pub fn update_report_bookmark(
+        &self,
+        id: &str,
+        bookmark_id: &str,
+        account: &str,
+        patch: BookmarkPatch,
+    ) -> DbResult<Option<ReportBookmark>> {
+        let txn = self.db.begin_write()?;
+        let Some(mut row) = txn_read_one::<BoardRow>(&txn, BOARDS, id)? else {
+            return Ok(None);
+        };
+        let Some(held) = row
+            .report_bookmarks
+            .iter_mut()
+            .find(|held| held.id == bookmark_id && held.owner_id == account)
+        else {
+            return Ok(None);
+        };
+        if let Some(name) = patch.name {
+            held.name = name;
+        }
+        if let Some(shared) = patch.shared {
+            held.shared = shared;
+        }
+        if let Some(shortcut) = patch.shortcut {
+            held.shortcut = shortcut;
+        }
+        if let Some(filters) = patch.filters {
+            held.filters = filters;
+        }
+        let updated = held.clone();
+        txn_store_board(&txn, &row, OverQuota::Allow)?;
+        txn.commit()?;
+        Ok(Some(updated))
+    }
+
+    /// Removes the bookmark `bookmark_id` of a board, which `account` saved, in one transaction.
+    /// Returns false when the board has no such bookmark of that account.
+    pub fn remove_report_bookmark(
+        &self,
+        id: &str,
+        bookmark_id: &str,
+        account: &str,
+    ) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        let Some(mut row) = txn_read_one::<BoardRow>(&txn, BOARDS, id)? else {
+            return Ok(false);
+        };
+        let before = row.report_bookmarks.len();
+        row.report_bookmarks
+            .retain(|held| !(held.id == bookmark_id && held.owner_id == account));
+        if row.report_bookmarks.len() == before {
+            return Ok(false);
+        }
         txn_store_board(&txn, &row, OverQuota::Allow)?;
         txn.commit()?;
         Ok(true)
@@ -9469,6 +9616,20 @@ impl Db {
         })
     }
 
+    /// Appends an event that changed a value to a task, recording `change` on it.
+    pub fn log_change_event(
+        &self,
+        task_id: &str,
+        kind: &str,
+        detail: &str,
+        actor: Actor<'_>,
+        change: EventChange,
+    ) -> DbResult<bool> {
+        mutate_task(&self.db, task_id, |task| {
+            push_change_event(task, kind, detail.to_string(), actor, change);
+        })
+    }
+
     /// Append an activity-trail event to a task (KanbanFlow parity:
     /// History report). No-op (Ok(false)) when the task does not exist.
     pub fn log_event(
@@ -10059,6 +10220,40 @@ impl Db {
             };
             record_change(&mut moved, change);
         }
+        if crosses_boards {
+            let board_name = |board_id: Option<&str>| -> DbResult<Option<String>> {
+                let Some(board_id) = board_id else {
+                    return Ok(None);
+                };
+                Ok(txn_read_one::<BoardRow>(txn, BOARDS, board_id)?.map(|board| board.name))
+            };
+            let change = EventChange {
+                from: board_name(old_column.as_ref().map(|column| column.board_id.as_str()))?,
+                to: board_name(Some(target.board_id.as_str()))?,
+            };
+            let detail = format!(
+                "Moved to board {}",
+                change.to.as_deref().unwrap_or("(none)")
+            );
+            push_change_event(&mut moved, "board_updated", detail, actor, change);
+        }
+        if new_swimlane_id != old_swimlane_id {
+            let lane_name = |lane_id: Option<&str>| -> DbResult<Option<String>> {
+                let Some(lane_id) = lane_id else {
+                    return Ok(None);
+                };
+                Ok(txn_read_one::<SwimlaneRow>(txn, SWIMLANES, lane_id)?.map(|lane| lane.name))
+            };
+            let change = EventChange {
+                from: lane_name(old_swimlane_id.as_deref())?,
+                to: lane_name(new_swimlane_id.as_deref())?,
+            };
+            let detail = format!(
+                "Moved to swimlane {}",
+                change.to.as_deref().unwrap_or("(none)")
+            );
+            push_change_event(&mut moved, "swimlane_updated", detail, actor, change);
+        }
 
         if column_id != old_column_id {
             mmap_remove(txn, TASKS_BY_COLUMN, &old_column_id, id)?;
@@ -10231,12 +10426,21 @@ impl Db {
             return Ok(false);
         };
         let entry = entry.into_row(Uuid::new_v4().to_string(), task_id, account_id);
+        let mut before = 0;
+        for entry_id in txn_mmap_get(&txn, ENTRIES_BY_TASK, task_id)? {
+            before += txn_read_one::<TimeEntryRow>(&txn, TIME_ENTRIES, &entry_id)?
+                .map_or(0, |held| held.minutes);
+        }
         {
             let mut tasks = txn.open_table(TASKS)?;
             let Some(mut task) = task_in(&tasks, task_id)? else {
                 return Ok(false);
             };
-            push_event(&mut task, "time_logged", logged, actor);
+            let change = EventChange {
+                from: Some(format_minutes(before)),
+                to: Some(format_minutes(before + entry.minutes)),
+            };
+            push_change_event(&mut task, "time_logged", logged, actor, change);
             task.updated_at = Some(Utc::now().to_rfc3339());
             txn_store_task(&txn, &mut tasks, &task, OverQuota::Refuse, actor)?;
         }
@@ -11413,6 +11617,68 @@ mod feed_token_tests {
                 "{token}"
             );
         }
+    }
+
+    fn bookmark(owner: &str, name: &str, shared: bool) -> ReportBookmark {
+        ReportBookmark {
+            id: uuid::Uuid::new_v4().to_string(),
+            owner_id: owner.to_string(),
+            report: "burndown".to_string(),
+            name: name.to_string(),
+            shared,
+            shortcut: false,
+            filters: "{}".to_string(),
+        }
+    }
+
+    #[test]
+    fn report_bookmarks_should_change_only_for_the_account_that_saved_them() {
+        let (_dir, db) = test_db();
+        let board_id = db
+            .create_board(&AccountId::ownerless(), "Work")
+            .expect("create board");
+        let BookmarkAdd::Added(mine) = db
+            .add_report_bookmark(&board_id, bookmark("a", "Mine", true))
+            .expect("add")
+        else {
+            panic!("not added");
+        };
+        let patch = || BookmarkPatch {
+            name: Some("Taken".to_string()),
+            ..BookmarkPatch::default()
+        };
+        assert!(
+            db.update_report_bookmark(&board_id, &mine.id, "b", patch())
+                .expect("update")
+                .is_none()
+        );
+        assert!(
+            !db.remove_report_bookmark(&board_id, &mine.id, "b")
+                .expect("remove")
+        );
+        let row = db.board(&board_id).expect("board").expect("row");
+        assert_eq!(row.report_bookmarks, vec![mine.clone()]);
+
+        let renamed = db
+            .update_report_bookmark(&board_id, &mine.id, "a", patch())
+            .expect("update")
+            .expect("own bookmark");
+        assert_eq!(renamed.name, "Taken");
+        assert!(
+            db.remove_report_bookmark(&board_id, &mine.id, "a")
+                .expect("remove")
+        );
+        let row = db.board(&board_id).expect("board").expect("row");
+        assert!(row.report_bookmarks.is_empty());
+    }
+
+    #[test]
+    fn report_bookmarks_should_show_a_private_one_only_to_its_owner() {
+        let private = bookmark("a", "Private", false);
+        let shared = bookmark("a", "Shared", true);
+        assert!(private.visible_to("a"));
+        assert!(!private.visible_to("b"));
+        assert!(shared.visible_to("b"));
     }
 
     #[test]
@@ -13171,6 +13437,7 @@ mod schema_fingerprint_tests {
             shape::<Quotas>("Quotas"),
             shape::<RateLimits>("RateLimits"),
             shape::<RecoveryCodeRow>("RecoveryCodeRow"),
+            shape::<ReportBookmark>("ReportBookmark"),
             shape::<RegistrationMode>("RegistrationMode"),
             shape::<OutboxRow>("OutboxRow"),
             shape::<Responsible>("Responsible"),
@@ -13360,6 +13627,7 @@ mod first_board_tests {
                 position: *position,
                 owner_id: String::new(),
                 config_json: serde_json::json!({ "archived": archived }).to_string(),
+                report_bookmarks: Vec::new(),
             };
             write_one(&txn, BOARDS, id, &row).expect("write board");
             mmap_insert(&txn, BOARDS_BY_OWNER, "", id).expect("index board");

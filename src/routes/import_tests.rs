@@ -20,7 +20,9 @@ use crate::archive::{MAX_ARCHIVE_BYTES, SPOOL_PREFIX};
 use crate::auth::new_api_token_record;
 use crate::db::{Db, LinkAddOutcome};
 use crate::disk::{DiskGuard, DiskProbe, MIB};
-use crate::models::{AccountId, Actor, AuthScope, BoardAccess, DiskLimits, InstanceMode, LinkKind};
+use crate::models::{
+    AccountId, Actor, AuthScope, BoardAccess, CoverChange, DiskLimits, InstanceMode, LinkKind,
+};
 
 /// What the router answered.
 struct Answer {
@@ -722,4 +724,96 @@ async fn archive_should_round_trip_two_files_of_the_cap_byte_identical() {
             .expect("bytes");
         assert!(stored == bytes, "{name} differs");
     }
+}
+
+#[tokio::test]
+async fn archive_should_round_trip_a_documents_versions_and_edited_time() {
+    let fx = Fixture::new();
+    let task = fx.db.board_tasks(&fx.board).expect("tasks")[0].id.clone();
+    let made = fx
+        .db
+        .add_document(&task, "notes", "one", Actor::SYSTEM)
+        .expect("add")
+        .expect("task");
+    for text in ["two", "three"] {
+        fx.db
+            .save_document(&task, &made.id, None, text, Actor::SYSTEM)
+            .expect("save")
+            .expect("document");
+    }
+    let source = fx.db.board_tasks(&fx.board).expect("tasks")[0]
+        .attachments
+        .iter()
+        .find(|attachment| attachment.id == made.id)
+        .expect("document")
+        .clone();
+    assert_eq!(source.versions.len(), 2);
+    let archive = fx.archive().await;
+    let before = fx.member_state().1.unwrap_or_default();
+
+    let answer = fx.import(&fx.member_provision, archive).await;
+
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.message());
+    let held = fx.member_state().1.unwrap_or_default() - before;
+    assert!(held >= source.stored_bytes(), "{held} bytes counted");
+    let id = answer.json()["id"].as_str().expect("id").to_string();
+    let imported = fx.db.board_tasks(&id).expect("tasks");
+    let document = imported[0]
+        .attachments
+        .iter()
+        .find(|attachment| attachment.is_document())
+        .expect("document");
+    assert_eq!(document.edited_at, source.edited_at);
+    assert_eq!(document.versions.len(), 2);
+    let read = |file: &str| {
+        let bytes = fx
+            .db
+            .read_attachment_data(file)
+            .expect("read")
+            .expect("bytes");
+        String::from_utf8(bytes).expect("text")
+    };
+    assert_eq!(read(&document.id), "three");
+    for (kept, original) in document.versions.iter().zip(&source.versions) {
+        assert_ne!(kept.id, original.id);
+        assert_eq!(kept.saved_at, original.saved_at);
+        assert_eq!(kept.size, original.size);
+    }
+    assert_eq!(read(&document.versions[0].id), "one");
+    assert_eq!(read(&document.versions[1].id), "two");
+}
+
+#[tokio::test]
+async fn archive_should_round_trip_a_tasks_cover() {
+    let fx = Fixture::new();
+    let task = fx.db.board_tasks(&fx.board).expect("tasks")[0].id.clone();
+    let first = fx
+        .db
+        .add_attachment(&task, "a.png", "image/png", b"first", Actor::SYSTEM)
+        .expect("add")
+        .expect("task");
+    let second = fx
+        .db
+        .add_attachment(&task, "b.png", "image/png", b"second", Actor::SYSTEM)
+        .expect("add")
+        .expect("task");
+    fx.db
+        .set_cover(&task, &second.id, CoverChange::Set, Actor::SYSTEM)
+        .expect("cover")
+        .expect("image");
+    assert_ne!(first.id, second.id);
+    let archive = fx.archive().await;
+
+    let answer = fx.import(&fx.member_provision, archive).await;
+
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.message());
+    let id = answer.json()["id"].as_str().expect("id").to_string();
+    let imported = fx.db.board_tasks(&id).expect("tasks");
+    let cover = imported[0].cover_id.as_deref().expect("cover");
+    let covered = imported[0]
+        .attachments
+        .iter()
+        .find(|attachment| attachment.id == cover)
+        .expect("the cover is an attachment of the task");
+    assert_eq!(covered.name, "b.png");
 }

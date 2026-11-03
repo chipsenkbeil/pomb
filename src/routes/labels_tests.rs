@@ -352,3 +352,20 @@ async fn a_single_card_render_should_keep_its_stripe_and_flag() {
     assert!(html.contains("--hl-stripe: #b8461f"), "{html}");
     assert!(html.contains("data-flag-label=\"needs:human\""), "{html}");
 }
+
+#[test]
+fn a_selected_highlighted_card_should_keep_its_stripe_with_and_without_hover() {
+    let css = include_str!("../../static/style.css");
+    for selector in [
+        ".task-card.task-card--selected.task-card-hl,",
+        ".task-card.task-card--selected.task-card-hl:hover {",
+    ] {
+        let rest = &css[css.find(selector).expect(selector)..];
+        let rule = &rest[..rest.find('}').expect("end")];
+        assert!(rule.contains("inset 4px 0 0 var(--hl-stripe)"), "{rule}");
+        assert!(
+            rule.contains("inset 0 0 0 3px var(--taskColorBorder"),
+            "{rule}"
+        );
+    }
+}

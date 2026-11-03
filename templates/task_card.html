@@ -70,7 +70,7 @@
   {% if let Some(due) = task.due_card %}
   {% if task.due_state.in_window %}
   <div class="card-sec card-duesec" data-sec-body="duedates">
-    <div class="card-dueline{% if task.due_state.overdue %} card-due-overdue{% endif %}"{% if let Some(full) = task.due_full %} title="{{ full }}"{% endif %}>Due: <strong>{{ due }}</strong>{% if let Some(column) = task.due_suffix %} <span class="task-dueDateColumn">({{ column }})</span>{% endif %}</div>
+    <div class="card-dueline{% if task.due_state.overdue %} card-due-overdue{% endif %}"{% if let Some(full) = task.due_full %}{{ full.title_attrs()|safe }}{% endif %}>Due: <strong>{{ due|safe }}</strong>{% if let Some(column) = task.due_suffix %} <span class="task-dueDateColumn">({{ column }})</span>{% endif %}</div>
   </div>
   {% endif %}
   {% endif %}

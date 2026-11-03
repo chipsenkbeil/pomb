@@ -301,6 +301,9 @@ struct TaskInfo {
     comments: Vec<CommentInfo>,
     /// The task's attachments, with the archive path of each file.
     attachments: Vec<AttachmentInfo>,
+    /// The id of the image attachment shown as the task's cover, or null.
+    #[serde(default)]
+    cover_id: Option<String>,
     /// The links the task holds.
     links: Vec<LinkInfo>,
     /// The task's history, oldest first.
@@ -391,8 +394,28 @@ struct AttachmentInfo {
     /// The address of a link attachment, or null for a file.
     #[serde(default)]
     url: Option<String>,
+    /// When the current content of a text document was saved, as RFC 3339, or null.
+    #[serde(default)]
+    edited_at: Option<String>,
+    /// The earlier contents of a text document, oldest first.
+    #[serde(default)]
+    versions: Vec<VersionInfo>,
     /// The path of the file inside the archive, or null when the file's bytes are gone.
     file: Option<String>,
+}
+
+/// An earlier content of a text document as `board.json` describes it.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionInfo {
+    /// The version's id.
+    id: String,
+    /// The version's size in bytes.
+    size: u64,
+    /// When this content was saved, as RFC 3339.
+    saved_at: String,
+    /// The path of the version's file inside the archive.
+    file: String,
 }
 
 /// A link between tasks as `board.json` describes it.
@@ -656,6 +679,12 @@ fn attachment_path(id: &str, name: &str) -> String {
     )
 }
 
+/// Returns the path inside an archive of the file of version `version_id` of attachment `id`.
+#[must_use]
+fn version_path(id: &str, version_id: &str) -> String {
+    format!("versions/{id}/{version_id}")
+}
+
 /// Returns the document's description of `row`, with its time entries.
 fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbResult<TaskInfo> {
     let mut assignees: Vec<String> = Vec::new();
@@ -680,6 +709,19 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
         let file = lookup
             .has_file(snapshot, &attachment.id)?
             .then(|| attachment_path(&attachment.id, &attachment.name));
+        let mut versions = Vec::with_capacity(attachment.versions.len());
+        if file.is_some() {
+            for version in attachment.versions {
+                if lookup.has_file(snapshot, &version.id)? {
+                    versions.push(VersionInfo {
+                        file: version_path(&attachment.id, &version.id),
+                        id: version.id,
+                        size: version.size,
+                        saved_at: version.saved_at,
+                    });
+                }
+            }
+        }
         attachments.push(AttachmentInfo {
             id: attachment.id,
             name: attachment.name,
@@ -689,6 +731,8 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
             token_name: attachment.token_name,
             created_at: attachment.created_at,
             url: attachment.url,
+            edited_at: attachment.edited_at,
+            versions,
             file,
         });
     }
@@ -773,6 +817,7 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
         subtasks,
         comments,
         attachments,
+        cover_id: row.cover_id,
         links,
         history,
         claim: row.claim,
@@ -898,6 +943,12 @@ impl Archive {
                     files.push(AttachmentFile {
                         id: attachment.id.clone(),
                         path: path.clone(),
+                    });
+                }
+                for version in &attachment.versions {
+                    files.push(AttachmentFile {
+                        id: version.id.clone(),
+                        path: version.file.clone(),
                     });
                 }
             }

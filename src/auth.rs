@@ -1139,6 +1139,26 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/boards/:id/history",
         Permission::BoardsRead,
     ),
+    (
+        Method::GET,
+        "/api/boards/:id/report-bookmarks",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/report-bookmarks",
+        Permission::BoardsConfigure,
+    ),
+    (
+        Method::PATCH,
+        "/api/boards/:id/report-bookmarks/:bookmark_id",
+        Permission::BoardsConfigure,
+    ),
+    (
+        Method::DELETE,
+        "/api/boards/:id/report-bookmarks/:bookmark_id",
+        Permission::BoardsConfigure,
+    ),
     (Method::GET, "/api/calendar-export", Permission::BoardsRead),
     (
         Method::GET,
@@ -1281,6 +1301,16 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::POST,
         "/api/v1/auth/tokens",
+        Permission::SettingsWrite,
+    ),
+    (
+        Method::GET,
+        "/api/v1/auth/tokens/:id",
+        Permission::SettingsRead,
+    ),
+    (
+        Method::PATCH,
+        "/api/v1/auth/tokens/:id",
         Permission::SettingsWrite,
     ),
     (
@@ -2062,6 +2092,7 @@ mod tests {
         ),
         (Method::POST, "/api/v1/auth/tokens", AuthScope::Admin),
         (Method::POST, "/api/v1/auth/tokens/inspect", AuthScope::Read),
+        (Method::PATCH, "/api/v1/auth/tokens/:id", AuthScope::Admin),
         (Method::DELETE, "/api/v1/auth/tokens/:id", AuthScope::Admin),
         (Method::POST, "/api/v1/auth/passkeys", AuthScope::Admin),
         (

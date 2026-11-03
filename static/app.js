@@ -36,6 +36,117 @@
     return (h % 12 || 12) + ':' + minutes + ' ' + (h < 12 ? 'AM' : 'PM');
   }
 
+  var LocalTime = (function () {
+    var SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var LONG_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
+      'September', 'October', 'November', 'December'];
+
+    function parts(ms, zone) {
+      var found = {};
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric',
+        hour: 'numeric', minute: 'numeric', weekday: 'long'
+      }).formatToParts(new Date(ms)).forEach(function (part) { found[part.type] = part.value; });
+      var year = +found.year;
+      var month = +found.month;
+      var day = +found.day;
+      return {
+        year: year, month: month, day: day, hour: +found.hour % 24, minute: +found.minute,
+        weekday: found.weekday, dayNo: Math.floor(Date.UTC(year, month - 1, day) / 86400000)
+      };
+    }
+
+    function clock(p, hour12) {
+      var minutes = (p.minute < 10 ? '0' : '') + p.minute;
+      if (!hour12) return (p.hour < 10 ? '0' : '') + p.hour + ':' + minutes;
+      return (p.hour % 12 || 12) + ':' + minutes + ' ' + (p.hour < 12 ? 'AM' : 'PM');
+    }
+
+    function dueDay(p, diff, ms, now) {
+      if (diff === 0) return 'Today';
+      return ms > now && diff < 7 ? p.weekday : null;
+    }
+
+    function write(shape, ms, now, zone, hour12) {
+      var p = parts(ms, zone);
+      var diff = p.dayNo - parts(now, zone).dayNo;
+      var c = clock(p, hour12);
+      var label;
+      switch (shape) {
+        case 'datetime':
+          return SHORT_MONTHS[p.month - 1] + ' ' + (p.day < 10 ? '0' : '') + p.day + ', ' + p.year + ' ' + c;
+        case 'comment':
+          if (diff === 0) return 'Today ' + c;
+          if (diff === -1) return 'Yesterday ' + c;
+          return SHORT_MONTHS[p.month - 1] + ' ' + p.day + ' ' + c;
+        case 'due-card':
+          label = dueDay(p, diff, ms, now);
+          return label ? label + ' ' + c : p.day + ' ' + LONG_MONTHS[p.month - 1] + ' ' + c;
+        case 'due-modal':
+          label = dueDay(p, diff, ms, now);
+          return label ? label + ' ' + c : SHORT_MONTHS[p.month - 1] + ' ' + p.day + ' at ' + c;
+        default:
+          return c;
+      }
+    }
+
+    function writeSpan(startMs, endMs, now, zone, hour12) {
+      return write('clock', startMs, now, zone, hour12) + ' - ' + write('clock', endMs, now, zone, hour12);
+    }
+
+    function wrote(el) {
+      var at = Date.parse(el.getAttribute('data-at'));
+      if (isNaN(at)) return null;
+      var choice = el.getAttribute('data-clock');
+      var hour12 = choice ? choice !== '24h' : accountPrefs.hour12;
+      var now = Date.now();
+      if (el.getAttribute('data-fmt') === 'range') {
+        var end = Date.parse(el.getAttribute('data-end'));
+        return isNaN(end) ? null : writeSpan(at, end, now, undefined, hour12);
+      }
+      return write(el.getAttribute('data-fmt'), at, now, undefined, hour12);
+    }
+
+    function apply(root) {
+      var found = Array.prototype.slice.call(root.querySelectorAll('[data-at]:not([data-local])'));
+      if (root.matches && root.matches('[data-at]:not([data-local])')) found.push(root);
+      found.forEach(function (el) {
+        var text = wrote(el);
+        if (text != null) {
+          var attr = el.getAttribute('data-attr');
+          if (attr) el.setAttribute(attr, text); else el.textContent = text;
+        }
+        el.setAttribute('data-local', '');
+      });
+    }
+
+    function watch() {
+      apply(document);
+      new MutationObserver(function (records) {
+        records.forEach(function (record) {
+          Array.prototype.forEach.call(record.addedNodes, function (node) {
+            if (node.nodeType === 1) apply(node);
+          });
+        });
+      }).observe(document.documentElement, { childList: true, subtree: true });
+    }
+
+    function span(startIso, endIso, fallback) {
+      var start = Date.parse(startIso);
+      var end = Date.parse(endIso);
+      if (isNaN(start) || isNaN(end)) return fallback;
+      return writeSpan(start, end, Date.now(), undefined, accountPrefs.hour12);
+    }
+
+    function clockOf(iso, fallback) {
+      var at = Date.parse(iso);
+      return isNaN(at) ? fallback : write('clock', at, Date.now(), undefined, accountPrefs.hour12);
+    }
+
+    return { write: write, writeSpan: writeSpan, apply: apply, watch: watch, span: span, clockOf: clockOf };
+  })();
+  LocalTime.watch();
+
   var dragging = false;   // true while a Sortable drag is in flight (suppresses card clicks)
   var modalDirty = false; // set when the modal changed something; reloads the board on close
   // KF-334: the Move task dialog's task and target, held between
@@ -7009,7 +7120,8 @@
           id: e.id,
           name: e.task_name,
           color: e.task_color,
-          when: e.started_display + '\u00a0 \u2013 \u00a0' + e.ended_display,
+          when: LocalTime.clockOf(e.started_at, e.started_display) + '\u00a0 \u2013 \u00a0' +
+            LocalTime.clockOf(e.ended_at, e.ended_display),
         });
       });
       var completed = entries.filter(function (e) { return e.kind === 'pomodoro' && !e.interrupted; });
@@ -9971,6 +10083,7 @@
     // later one in the page on a tie), so Escape preserves the dialog
     // beneath an alert and the timer log beneath an entry dialog.
     var top = topmostOverlay();
+    if (top && top.id === 'calendar-dialog' && document.querySelector('#modal-root .task-modal')) top = null;
     if (top) {
       if (top.id === 'labels-dialog' && typeof LabelsDialog !== 'undefined') LabelsDialog.close();
       else if (top.id === 'timer-log-overlay' || top.id === 'log-custom-dialog-overlay') TimerLogPage.escape();
@@ -10390,7 +10503,7 @@
             (e.note ? '<div class="log-note">' + escapeHtml(e.note) + '</div>' : '') +
             (e.labels && e.labels.length > 0 ? '<div class="log-labels">' + e.labels.map(function(l) { return '<span class="tm-label-chip">' + escapeHtml(l) + '</span>'; }).join('') + '</div>' : '') +
             (e.role || e.token_name ? '<div class="log-author">' + escapeHtml([e.role, e.token_name].filter(Boolean).join(' · ')) + '</div>' : '') +
-            '</div><span class="log-when">' + escapeHtml(e.time_range) + '</span>' +
+            '</div><span class="log-when">' + escapeHtml(LocalTime.span(e.started_at, e.ended_at, e.time_range)) + '</span>' +
             '<span class="log-dur">' + escapeHtml(fmtDuration(e.minutes, e.duration_display)) + '</span>' +
             '<button type="button" class="log-more" data-edit-entry="' + escapeHtml(e.id) + '" title="Edit entry" aria-label="Edit entry">' +
             '<svg width="4" height="14" viewBox="0 0 4 14" aria-hidden="true" focusable="false"><circle cx="2" cy="2" r="1.7"/><circle cx="2" cy="7" r="1.7"/><circle cx="2" cy="12" r="1.7"/></svg>' +
@@ -10425,7 +10538,7 @@
             : e.kind === 'long_break' ? 'Long break' : 'Manually added time';
         rows.push([
           e.day_key, e.task_name, e.board_name || '', e.kind,
-          fmtDuration(e.minutes), e.time_range, status, e.note || '',
+          fmtDuration(e.minutes), LocalTime.span(e.started_at, e.ended_at, e.time_range), status, e.note || '',
         ]);
       });
       return rows;
@@ -11810,9 +11923,19 @@
       return svg;
     }
 
+    var lastBuckets = null;
+
     function renderChart(buckets) {
+      lastBuckets = buckets;
       var host = qs('throughput-chart');
       if (host) host.innerHTML = chartSvg(buckets);
+    }
+
+    function rows() {
+      if (!lastBuckets) return [];
+      return [['Week starting', 'Tasks completed']].concat(lastBuckets.starts.map(function (start, i) {
+        return [isoDate(start), lastBuckets.counts[i]];
+      }));
     }
 
     function init(boardId) {
@@ -11826,6 +11949,10 @@
       }).then(function (data) {
         var buckets = bucketByWeek(data.tasks || []);
         renderChart(buckets);
+        ReportTools.mount({
+          report: 'throughput', title: 'Throughput', boardId: boardId, chartId: 'throughput-chart',
+          getFilters: function () { return {}; }, applyFilters: function () {}, rows: rows
+        });
         var total = buckets.counts.reduce(function (a, b) { return a + b; }, 0);
         setStatus(total === 1
           ? '1 task completed in the last 12 weeks.'
@@ -11892,6 +12019,333 @@
     };
   })();
 
+  var ReportTools = (function () {
+    var SVG_NS = 'http://www.w3.org/2000/svg';
+    var PNG_SCALE = 2;
+    var NAME_MAX = 60;
+    var STYLE_PROPS = [
+      'fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-dasharray',
+      'stroke-linecap', 'stroke-linejoin', 'opacity', 'font-family', 'font-size', 'font-weight',
+      'text-anchor', 'dominant-baseline'
+    ];
+    var EXPORTS = [
+      { kind: 'png', label: 'PNG image' },
+      { kind: 'svg', label: 'SVG image' },
+      { kind: 'xlsx', label: 'Excel' }
+    ];
+
+    function endpoint(boardId, id) {
+      return '/api/boards/' + encodeURIComponent(boardId) + '/report-bookmarks' +
+        (id ? '/' + encodeURIComponent(id) : '');
+    }
+
+    function pagePath(boardId, report) {
+      return '/b/' + encodeURIComponent(boardId) + '/' + report;
+    }
+
+    function bookmarkPath(boardId, report, id) {
+      return pagePath(boardId, report) + '?bookmark=' + encodeURIComponent(id);
+    }
+
+    function bookmarkIdOf(search) {
+      var match = /[?&]bookmark=([^&]*)/.exec(search || '');
+      if (!match) return '';
+      try { return decodeURIComponent(match[1]); } catch (e) { return ''; }
+    }
+
+    function send(method, url, body) {
+      var init = { method: method, headers: { 'Accept': 'application/json' }, credentials: 'same-origin' };
+      if (body !== undefined) {
+        init.headers['Content-Type'] = 'application/json';
+        init.body = JSON.stringify(body);
+      }
+      return fetch(url, init).then(function (r) {
+        if (r.ok) return method === 'DELETE' ? null : r.json();
+        return r.text().then(function (text) {
+          var message = text;
+          try { message = JSON.parse(text).message || text; } catch (e) {}
+          throw new Error(message || ('HTTP ' + r.status));
+        });
+      });
+    }
+
+    function standaloneSvg(svg) {
+      var clone = svg.cloneNode(true);
+      var from = svg.querySelectorAll('*');
+      var to = clone.querySelectorAll('*');
+      Array.prototype.forEach.call(from, function (el, i) {
+        var computed = window.getComputedStyle(el);
+        STYLE_PROPS.forEach(function (prop) {
+          var value = computed.getPropertyValue(prop);
+          if (value) to[i].style.setProperty(prop, value);
+        });
+      });
+      Array.prototype.forEach.call(clone.querySelectorAll('.chart-crosshair'), function (el) {
+        el.parentNode.removeChild(el);
+      });
+      var box = svg.viewBox.baseVal;
+      var back = document.createElementNS(SVG_NS, 'rect');
+      back.setAttribute('width', String(box.width));
+      back.setAttribute('height', String(box.height));
+      back.setAttribute('fill', '#ffffff');
+      clone.insertBefore(back, clone.firstChild);
+      clone.setAttribute('xmlns', SVG_NS);
+      clone.setAttribute('width', String(box.width));
+      clone.setAttribute('height', String(box.height));
+      return { text: new XMLSerializer().serializeToString(clone), width: box.width, height: box.height };
+    }
+
+    function svgToPng(image) {
+      return new Promise(function (resolve, reject) {
+        var img = new Image();
+        img.onload = function () {
+          var canvas = document.createElement('canvas');
+          canvas.width = image.width * PNG_SCALE;
+          canvas.height = image.height * PNG_SCALE;
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(function (blob) {
+            if (blob) resolve(blob); else reject(new Error('The browser could not draw the image.'));
+          }, 'image/png');
+        };
+        img.onerror = function () { reject(new Error('The browser could not draw the image.')); };
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(image.text);
+      });
+    }
+
+    function exportChart(config, kind) {
+      var host = document.getElementById(config.chartId);
+      var svg = host ? host.querySelector('svg') : null;
+      if (!svg) return Promise.reject(new Error('There is no chart to export yet.'));
+      if (kind === 'xlsx') {
+        var rows = config.rows();
+        if (!rows || !rows.length) return Promise.reject(new Error('There is no data to export yet.'));
+        saveBlob(config.report + '.xlsx',
+          new Blob([ReportFile.xlsxBytes(rows, config.title)], { type: ReportFile.XLSX_MIME }));
+        return Promise.resolve();
+      }
+      var image = standaloneSvg(svg);
+      if (kind === 'svg') {
+        saveBlob(config.report + '.svg', new Blob([image.text], { type: 'image/svg+xml;charset=utf-8' }));
+        return Promise.resolve();
+      }
+      return svgToPng(image).then(function (blob) { saveBlob(config.report + '.png', blob); });
+    }
+
+    function tag(text) { return '<span class="rt-tag">' + text + '</span>'; }
+
+    function rowHtml(b) {
+      var html = '<li data-id="' + escapeHtml(b.id) + '"><button type="button" class="rt-apply">' +
+        escapeHtml(b.name) + '</button>';
+      if (b.shared) html += tag('Shared');
+      if (b.shortcut) html += tag('Shortcut');
+      html += '<button type="button" class="rt-more" aria-haspopup="menu" aria-expanded="false" ' +
+        'aria-label="Menu for ' + escapeHtml(b.name) + '">&hellip;</button>' +
+        '<div class="menu-pop rt-row-menu" role="menu" hidden>';
+      if (b.own) {
+        html += '<button type="button" role="menuitem" data-act="edit">Edit</button>' +
+          '<button type="button" role="menuitem" data-act="update">Update</button>';
+      }
+      html += '<button type="button" role="menuitem" data-act="url">Get URL</button>';
+      if (b.own) html += '<button type="button" role="menuitem" data-act="delete">Delete</button>';
+      return html + '</div></li>';
+    }
+
+    function mount(config) {
+      var host = document.getElementById('report-tools');
+      if (!host) return;
+      var list = [];
+      var editing = '';
+      host.innerHTML =
+        '<div class="rt-bar">' +
+        '<button type="button" class="kf-btn" data-rt="toggle" aria-expanded="false">Bookmarks (<span data-rt="count">0</span>)</button>' +
+        '<span class="rt-export"><button type="button" class="kf-btn" data-rt="export" aria-haspopup="menu" aria-expanded="false">Export</button>' +
+        '<div class="menu-pop rt-export-menu" role="menu" hidden>' +
+        EXPORTS.map(function (e) {
+          return '<button type="button" role="menuitem" data-export="' + e.kind + '">' + e.label + '</button>';
+        }).join('') + '</div></span></div>' +
+        '<div class="rt-drawer settings-form" data-rt="drawer" hidden>' +
+        '<ul class="rt-list" data-rt="list"></ul>' +
+        '<form class="rt-form" data-rt="form">' +
+        '<input type="text" data-rt="name" maxlength="' + NAME_MAX + '" placeholder="Bookmark name" aria-label="Bookmark name" autocomplete="off">' +
+        '<label class="check-label"><input type="checkbox" data-rt="shared"> Share with board members</label>' +
+        '<label class="check-label"><input type="checkbox" data-rt="shortcut"> Show shortcut in report list</label>' +
+        '<div class="rt-form-actions"><button type="submit" class="kf-btn kf-btn-primary" data-rt="submit">Add bookmark</button>' +
+        '<button type="button" class="kf-btn" data-rt="cancel" hidden>Cancel</button></div></form>' +
+        '<p class="rt-status settings-hint" data-rt="status" role="status"></p></div>';
+
+      function part(name) { return host.querySelector('[data-rt="' + name + '"]'); }
+      var drawer = part('drawer');
+      var status = part('status');
+      var exportMenu = host.querySelector('.rt-export-menu');
+
+      function say(message) { status.textContent = message; }
+      function fail(err) { say(err.message); }
+
+      function closeMenus() {
+        exportMenu.hidden = true;
+        part('export').setAttribute('aria-expanded', 'false');
+        Array.prototype.forEach.call(host.querySelectorAll('.rt-row-menu'), function (m) { m.hidden = true; });
+      }
+
+      function render() {
+        part('count').textContent = String(list.length);
+        part('list').innerHTML = list.length ? list.map(rowHtml).join('') : '<li class="rt-empty">No bookmarks yet.</li>';
+      }
+
+      function find(id) {
+        return list.filter(function (b) { return b.id === id; })[0];
+      }
+
+      function resetForm() {
+        editing = '';
+        part('name').value = '';
+        part('shared').checked = false;
+        part('shortcut').checked = false;
+        part('submit').textContent = 'Add bookmark';
+        part('cancel').hidden = true;
+      }
+
+      function applyBookmark(b) {
+        config.applyFilters(b.filters || {});
+        say('Applied "' + b.name + '".');
+      }
+
+      function replace(saved) {
+        list = list.map(function (b) { return b.id === saved.id ? saved : b; });
+        render();
+      }
+
+      function submit() {
+        var name = part('name').value.trim();
+        if (!name) { say('Give the bookmark a name.'); return; }
+        var flags = { name: name, shared: part('shared').checked, shortcut: part('shortcut').checked };
+        if (editing) {
+          send('PATCH', endpoint(config.boardId, editing), flags).then(function (saved) {
+            replace(saved);
+            resetForm();
+            say('Saved "' + saved.name + '".');
+          }).catch(fail);
+          return;
+        }
+        flags.report = config.report;
+        flags.filters = config.getFilters();
+        send('POST', endpoint(config.boardId), flags).then(function (saved) {
+          list.push(saved);
+          render();
+          resetForm();
+          say('Added "' + saved.name + '".');
+        }).catch(fail);
+      }
+
+      function showUrl(b) {
+        var url = window.location.origin + bookmarkPath(config.boardId, config.report, b.id);
+        Array.prototype.forEach.call(host.querySelectorAll('.rt-url'), function (old) { old.remove(); });
+        part('list').insertAdjacentHTML('afterend',
+          '<input type="text" class="rt-url" readonly aria-label="Bookmark URL" value="' + escapeHtml(url) + '">');
+        var field = host.querySelector('.rt-url');
+        field.select();
+        var copied = window.navigator.clipboard && window.navigator.clipboard.writeText
+          ? window.navigator.clipboard.writeText(url) : Promise.reject(new Error('no clipboard'));
+        copied.then(function () { say('Copied the URL of "' + b.name + '".'); },
+          function () { say('Copy the URL of "' + b.name + '" from the box.'); });
+        field.addEventListener('blur', function () { if (field.parentNode) field.parentNode.removeChild(field); });
+      }
+
+      function rowAction(act, b, li) {
+        if (act === 'edit') {
+          editing = b.id;
+          part('name').value = b.name;
+          part('shared').checked = b.shared;
+          part('shortcut').checked = b.shortcut;
+          part('submit').textContent = 'Save changes';
+          part('cancel').hidden = false;
+          part('name').focus();
+        } else if (act === 'update') {
+          send('PATCH', endpoint(config.boardId, b.id), { filters: config.getFilters() }).then(function (saved) {
+            replace(saved);
+            say('Updated "' + saved.name + '" with the current filters.');
+          }).catch(fail);
+        } else if (act === 'url') {
+          showUrl(b);
+        } else if (act === 'delete') {
+          rowAction('keep', b, li);
+          li.insertAdjacentHTML('beforeend',
+            '<span class="rt-confirm">Delete "' + escapeHtml(b.name) + '"? ' +
+            '<button type="button" class="kf-btn kf-btn-danger" data-act="confirm-delete">Delete</button>' +
+            '<button type="button" class="kf-btn" data-act="keep">Keep</button></span>');
+        } else if (act === 'confirm-delete') {
+          send('DELETE', endpoint(config.boardId, b.id)).then(function () {
+            list = list.filter(function (x) { return x.id !== b.id; });
+            if (editing === b.id) resetForm();
+            render();
+            say('Deleted "' + b.name + '".');
+          }).catch(fail);
+        } else if (act === 'keep') {
+          var box = li.querySelector('.rt-confirm');
+          if (box) box.parentNode.removeChild(box);
+        }
+      }
+
+      host.addEventListener('click', function (e) {
+        var t = e.target.closest ? e.target.closest('button') : null;
+        if (!t) return;
+        var kind = t.getAttribute('data-export');
+        var li = t.closest ? t.closest('li[data-id]') : null;
+        if (t.getAttribute('data-rt') === 'toggle') {
+          drawer.hidden = !drawer.hidden;
+          t.setAttribute('aria-expanded', String(!drawer.hidden));
+        } else if (t.getAttribute('data-rt') === 'export') {
+          var open = exportMenu.hidden;
+          closeMenus();
+          exportMenu.hidden = !open;
+          t.setAttribute('aria-expanded', String(open));
+        } else if (kind) {
+          closeMenus();
+          exportChart(config, kind).catch(function (err) { toast(err.message); });
+        } else if (t.getAttribute('data-rt') === 'cancel') {
+          resetForm();
+        } else if (li && t.classList.contains('rt-apply')) {
+          applyBookmark(find(li.getAttribute('data-id')));
+        } else if (li && t.classList.contains('rt-more')) {
+          var menu = li.querySelector('.rt-row-menu');
+          var show = menu.hidden;
+          closeMenus();
+          menu.hidden = !show;
+          t.setAttribute('aria-expanded', String(show));
+        } else if (li && t.getAttribute('data-act')) {
+          closeMenus();
+          rowAction(t.getAttribute('data-act'), find(li.getAttribute('data-id')), li);
+        }
+      });
+      host.addEventListener('submit', function (e) {
+        e.preventDefault();
+        submit();
+      });
+      document.addEventListener('click', function (e) {
+        if (!host.contains(e.target)) closeMenus();
+      });
+
+      send('GET', endpoint(config.boardId)).then(function (data) {
+        list = (data.bookmarks || []).filter(function (b) { return b.report === config.report; });
+        render();
+        var wanted = bookmarkIdOf(window.location.search);
+        var found = wanted ? find(wanted) : null;
+        if (found) {
+          drawer.hidden = false;
+          part('toggle').setAttribute('aria-expanded', 'true');
+          applyBookmark(found);
+        } else if (wanted) {
+          say('That bookmark is gone or is not shared with you.');
+        }
+      }).catch(fail);
+    }
+
+    return {
+      mount: mount, bookmarkPath: bookmarkPath, bookmarkIdOf: bookmarkIdOf,
+      endpoint: endpoint, send: send
+    };
+  })();
+
   var ReportFilter = (function () {
     var UNASSIGNED = 'unassigned';
     var MODE_ALL = 'and';
@@ -11913,7 +12367,7 @@
         applied[c.id] = c.multi ? (c.value || []).slice() : c.value;
       });
       var draft = copyValues(applied);
-      return {
+      var state = {
         controls: controls,
         draft: function () { return copyValues(draft); },
         applied: function () { return copyValues(applied); },
@@ -11925,8 +12379,22 @@
         reload: function () {
           applied = copyValues(draft);
           onReload(copyValues(applied));
+        },
+        apply: function (values) {
+          controls.forEach(function (c) {
+            var next = values[c.id];
+            var known = (c.options || []).map(function (o) { return o.value; });
+            if (c.multi) {
+              if (Array.isArray(next)) draft[c.id] = next.filter(function (v) { return known.indexOf(v) !== -1; });
+            } else if (typeof next === 'string' && (!c.options || known.indexOf(next) !== -1)) {
+              draft[c.id] = next;
+            }
+          });
+          if (state.redraw) state.redraw();
+          state.reload();
         }
       };
+      return state;
     }
 
     function userControl(data) {
@@ -12038,10 +12506,14 @@
     }
 
     function mount(host, state) {
-      var values = state.draft();
-      var html = '<h2>Filter</h2>';
-      state.controls.forEach(function (c) { html += controlHtml(c, values); });
-      host.innerHTML = html + '<button type="button" class="kf-btn kf-btn-primary" data-reload>Reload</button>';
+      function draw() {
+        var values = state.draft();
+        var html = '<h2>Filter</h2>';
+        state.controls.forEach(function (c) { html += controlHtml(c, values); });
+        host.innerHTML = html + '<button type="button" class="kf-btn kf-btn-primary" data-reload>Reload</button>';
+      }
+      state.redraw = draw;
+      draw();
       host.addEventListener('change', function (e) {
         var id = e.target.getAttribute('data-control');
         if (!id) return;
@@ -12079,6 +12551,7 @@
       });
       if (host) mount(host, state);
       state.reload();
+      return state;
     }
 
     return {
@@ -12371,7 +12844,22 @@
       };
     }
 
+    var lastSeries = null;
+
+    function rows() {
+      if (!lastSeries) return [];
+      var series = lastSeries;
+      var actual = series.counts.length;
+      var out = [['Date', typeOf(series).axis, 'Projection']];
+      series.ends.forEach(function (end, i) {
+        out.push([isoDate(end), i < actual ? roundTenth(series.counts[i]) : '',
+          i >= actual && series.projection ? roundTenth(series.projection[i - actual]) : '']);
+      });
+      return out;
+    }
+
     function renderChart(series) {
+      lastSeries = series;
       var host = qs('burndown-chart');
       if (host) {
         host.innerHTML = chartSvg(series);
@@ -12380,6 +12868,7 @@
     }
 
     function clearChart() {
+      lastSeries = null;
       var host = qs('burndown-chart');
       if (host) host.innerHTML = '';
     }
@@ -12453,10 +12942,14 @@
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (data) {
-        ReportFilter.open(qs('report-filter'), controls(data), function (values) {
+        var state = ReportFilter.open(qs('report-filter'), controls(data), function (values) {
           render(data, values);
         }, function (err) {
           setStatus('Could not draw the chart: ' + err.message);
+        });
+        ReportTools.mount({
+          report: 'burndown', title: 'Burndown', boardId: boardId, chartId: 'burndown-chart',
+          getFilters: state.applied, applyFilters: state.apply, rows: rows
         });
       }).catch(function (err) {
         setStatus('Could not load task data: ' + err.message);
@@ -12703,6 +13196,19 @@
         var buckets = bucketize(times);
         lastData = buckets;
         renderChart(buckets);
+        ReportTools.mount({
+          report: 'cycle-lead', title: 'Cycle and lead time', boardId: boardId, chartId: 'cycle-lead-chart',
+          getFilters: function () { return { metric: metric }; },
+          applyFilters: function (values) {
+            if (values.metric === 'cycle' || values.metric === 'lead') setMetric(values.metric);
+          },
+          rows: function () {
+            return [['Week starting', 'Average cycle time (days)', 'Average lead time (days)', 'Tasks completed']]
+              .concat(buckets.starts.map(function (start, i) {
+                return [isoDate(start), buckets.avg[i].cycle, buckets.avg[i].lead, buckets.avg[i].n];
+              }));
+          }
+        });
         var total = times.length;
         setStatus(total === 0
           ? 'No completed tasks in the last 12 weeks.'
@@ -12902,6 +13408,13 @@
 
     var current = null;
 
+    function rows() {
+      if (!current) return [];
+      return [['Date'].concat(current.order)].concat(current.ends.map(function (end, i) {
+        return [isoDate(end)].concat(current.counts.map(function (band) { return roundTenth(band[i]); }));
+      }));
+    }
+
     function renderChart(s) {
       current = s;
       s.hidden = hiddenBands;
@@ -13006,10 +13519,14 @@
             if (button) toggleBand(parseInt(button.getAttribute('data-band'), 10));
           });
         }
-        ReportFilter.open(qs('report-filter'), controls(data), function (values) {
+        var state = ReportFilter.open(qs('report-filter'), controls(data), function (values) {
           render(data, values);
         }, function (err) {
           setStatus('Could not draw the chart: ' + err.message);
+        });
+        ReportTools.mount({
+          report: 'cumulative-flow', title: 'Cumulative flow', boardId: boardId,
+          chartId: 'cumulative-flow-chart', getFilters: state.applied, applyFilters: state.apply, rows: rows
         });
       }).catch(function (err) {
         setStatus('Could not load task data: ' + err.message);
@@ -13315,10 +13832,84 @@
       document.querySelectorAll('.history-custom').forEach(function (el) { el.hidden = !custom; });
     }
 
+    var FILTER_FIELDS = ['history-event-filter', 'history-property-filter', 'history-user-filter',
+      'history-period-filter', 'history-from', 'history-to', 'history-order-filter'];
+
+    var Bookmarks = {
+      key: function () { return 'pomb-history-bookmarks-' + boardId; },
+      read: function () {
+        try { return JSON.parse(window.localStorage.getItem(this.key()) || '[]') || []; } catch (e) { return []; }
+      },
+      write: function (list) {
+        try { window.localStorage.setItem(this.key(), JSON.stringify(list)); } catch (e) { toast('Could not save the bookmark.'); }
+        this.render();
+      },
+      render: function () {
+        var self = this;
+        var list = this.read();
+        qs('history-bookmarks-count').textContent = String(list.length);
+        var ul = qs('history-bookmarks-list');
+        ul.innerHTML = '';
+        list.forEach(function (b, i) {
+          var li = document.createElement('li');
+          var apply = document.createElement('button');
+          apply.type = 'button';
+          apply.className = 'spent-bookmark-apply';
+          apply.textContent = b.name;
+          apply.addEventListener('click', function () { self.apply(b); });
+          var del = document.createElement('button');
+          del.type = 'button';
+          del.className = 'spent-bookmark-delete';
+          del.setAttribute('aria-label', 'Delete bookmark ' + b.name);
+          del.textContent = '×';
+          del.addEventListener('click', function () {
+            var next = self.read();
+            next.splice(i, 1);
+            self.write(next);
+          });
+          li.appendChild(apply);
+          li.appendChild(del);
+          ul.appendChild(li);
+        });
+      },
+      save: function () {
+        var input = qs('history-bookmark-name');
+        var name = input.value.trim();
+        if (!name) { input.focus(); return; }
+        var filters = {};
+        FILTER_FIELDS.forEach(function (id) { filters[id] = qs(id).value; });
+        var list = this.read();
+        list.push({ name: name, filters: filters });
+        input.value = '';
+        this.write(list);
+      },
+      apply: function (bookmark) {
+        FILTER_FIELDS.forEach(function (id) {
+          if (bookmark.filters && id in bookmark.filters) qs(id).value = bookmark.filters[id];
+        });
+        syncVisibility();
+        reload();
+      },
+      init: function () {
+        var self = this;
+        qs('history-bookmarks-toggle').addEventListener('click', function () {
+          var body = qs('history-bookmarks-body');
+          body.hidden = !body.hidden;
+          qs('history-bookmarks-toggle').setAttribute('aria-expanded', String(!body.hidden));
+        });
+        qs('history-bookmark-save').addEventListener('click', function () { self.save(); });
+        qs('history-bookmark-name').addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); self.save(); }
+        });
+        this.render();
+      }
+    };
+
     function init(id) {
       if (initialized) return;
       initialized = true;
       boardId = id;
+      Bookmarks.init();
       qs('history-event-filter').addEventListener('change', syncVisibility);
       qs('history-period-filter').addEventListener('change', syncVisibility);
       qs('history-reload').addEventListener('click', reload);
@@ -13830,7 +14421,8 @@
       var fg = chipText(bg);
       var sub = moveLine(t, colNameById(t.column_id));
       if (selectedBoards.length > 1 && t.board_name) sub = t.board_name + ' · ' + sub;
-      return '<div class="cal-chip" style="background:' + escapeHtml(bg) +
+      return '<div class="cal-chip" role="button" tabindex="0" data-task-id="' + escapeHtml(t.id) +
+        '" style="background:' + escapeHtml(bg) +
         ';color:' + fg + '" title="' + escapeHtml(t.name) + '">' +
         '<div class="cal-chip-name">' + escapeHtml(t.name) + '</div>' +
         '<div class="cal-chip-sub">' + escapeHtml(sub) + '</div></div>';
@@ -14138,6 +14730,17 @@
       initExport();
       initSettings();
       initBoardPicker();
+      qs('calendar-grid').addEventListener('click', function (e) {
+        var chip = e.target.closest('.cal-chip');
+        if (chip) openModal(chip.dataset.taskId);
+      });
+      qs('calendar-grid').addEventListener('keydown', function (e) {
+        var chip = e.target.closest('.cal-chip');
+        if (chip && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault();
+          openModal(chip.dataset.taskId);
+        }
+      });
       qs('calendar-prev').addEventListener('click', function () {
         viewMonth--;
         if (viewMonth < 0) { viewMonth = 11; viewYear--; }
@@ -14215,6 +14818,7 @@
       taskPasses: taskPasses,
       bucketTasks: bucketTasks,
       gridHtml: gridHtml,
+      renderChip: renderChip,
       mergeBoards: mergeBoards,
       exportUrl: exportUrl,
       feedRowHtml: feedRowHtml
@@ -14719,6 +15323,11 @@
       });
       qs('mc-export-pdf').addEventListener('click', exportPdf);
       qs('mc-export-xlsx').addEventListener('click', exportXlsx);
+      ReportTools.mount({
+        report: 'monte-carlo', title: 'Forecast', boardId: boardId, chartId: 'mc-chart',
+        getFilters: function () { return {}; }, applyFilters: function () {},
+        rows: function () { return lastForecast ? forecastRows(lastForecast) : []; }
+      });
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
       }).then(function (r) {
@@ -15486,6 +16095,7 @@
           menu.hidden = true;
           sub.hidden = false;
           reportsBtn.setAttribute('aria-expanded', 'true');
+          self.loadReportShortcuts();
         });
       }
 
@@ -15504,8 +16114,10 @@
         e.stopPropagation();
         var key = item.getAttribute('data-report');
         var label = item.textContent.trim();
+        var link = item.getAttribute('data-bookmark-url');
         closeMenu();
-        self.reportAction(key, label);
+        if (link) window.location.href = link;
+        else self.reportAction(key, label);
       });
 
       document.addEventListener('click', function (e) {
@@ -15556,6 +16168,34 @@
           this.openHelp();
           break;
       }
+    },
+
+    loadReportShortcuts: function () {
+      var sub = document.getElementById('reports-submenu');
+      var slugs = {
+        burndown: 'burndown', flow: 'cumulative-flow', cycle: 'cycle-lead',
+        throughput: 'throughput', montecarlo: 'monte-carlo'
+      };
+      ReportTools.send('GET', ReportTools.endpoint(boardId())).then(function (data) {
+        Array.prototype.forEach.call(sub.querySelectorAll('.report-shortcut'), function (el) { el.remove(); });
+        Object.keys(slugs).forEach(function (key) {
+          var item = sub.querySelector('[data-report="' + key + '"]:not(.report-shortcut)');
+          var after = item;
+          (data.bookmarks || []).filter(function (b) {
+            return b.shortcut && b.report === slugs[key];
+          }).forEach(function (b) {
+            var link = document.createElement('button');
+            link.type = 'button';
+            link.className = 'report-shortcut';
+            link.setAttribute('role', 'menuitem');
+            link.setAttribute('data-report', key);
+            link.setAttribute('data-bookmark-url', ReportTools.bookmarkPath(boardId(), slugs[key], b.id));
+            link.textContent = b.name;
+            after.insertAdjacentElement('afterend', link);
+            after = link;
+          });
+        });
+      }).catch(function () {});
     },
 
     reportAction: function (key, label) {

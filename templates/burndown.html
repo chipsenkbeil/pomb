@@ -4,6 +4,7 @@
 {% block shell_title %}Burndown{% endblock %}
 {% block shell_body %}
 <p class="settings-hint">How many tasks remain to be done on <strong>{{ board_name }}</strong>: the work still to do each day since the start date.</p>
+<div id="report-tools" class="report-tools"></div>
 <div class="chart-layout">
   {% include "_report_filter.html" %}
   <div class="chart-main">

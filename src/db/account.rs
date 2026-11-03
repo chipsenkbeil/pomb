@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::path::PathBuf;
@@ -14,26 +14,27 @@ use tokio::sync::watch;
 
 use super::{
     AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardSnapshot,
-    COLUMNS, Change, ChangeOutcome, ClaimOutcome, ClaimRequest, ColorDeleteOutcome,
-    ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Commit, CopyTasks, Db, DbResult,
-    DeviceGrant, EventRead, FIELD_DEFS, FeedAdd, FencedWrite, FieldCreateOutcome, Incoming,
-    LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, MoveGuards, MoveOutcome, NewComment,
-    NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, PurgeOutcome, Reads, RestoreOutcome, Rows, SWIMLANES, SessionEndOutcome,
-    SessionListing, SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
-    SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome,
-    UmbrellaChange, WEBHOOKS, WebhookPatch, first_board, index_in, link_event_target,
-    links_blocked_in, no_signed_in_account, owns_board_in, read_in, redacted_history,
+    BookmarkAdd, BookmarkPatch, COLUMNS, Change, ChangeOutcome, ClaimOutcome, ClaimRequest,
+    ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Commit,
+    CopyTasks, Db, DbResult, DeviceGrant, EventRead, FIELD_DEFS, FeedAdd, FencedWrite,
+    FieldCreateOutcome, Incoming, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, MoveGuards,
+    MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage,
+    PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome, Reads, RestoreOutcome, Rows, SWIMLANES,
+    SessionEndOutcome, SessionListing, SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
+    SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext,
+    TemplateDeleteOutcome, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board, index_in,
+    link_event_target, links_blocked_in, no_signed_in_account, owns_board_in, read_in,
+    redacted_history,
 };
 use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission,
 };
 use crate::models::{
-    AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, Avatar, BinRow, BoardAccess,
-    BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange, DeviceAuthRow, EventKind,
-    FieldDefRow, LinkKind, Numbering, PasskeyRow, PruneNotice, RecoveryCodeRow, Settings,
-    SwimlaneRow, TaskAttachment, TaskBrief, TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink,
-    TaskRow, TimeEntryRow, UserRow, WebhookRow,
+    AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, AuthScope, Avatar, BinRow,
+    BoardAccess, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange, DeviceAuthRow,
+    EventChange, EventKind, FieldDefRow, LinkKind, Numbering, PasskeyRow, PruneNotice,
+    RecoveryCodeRow, ReportBookmark, Settings, SwimlaneRow, TaskAttachment, TaskBrief, TaskCard,
+    TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow, WebhookRow,
 };
 use crate::permissions::Permission;
 
@@ -920,6 +921,34 @@ impl AccountDb {
     /// the board has no such feed.
     pub fn remove_board_feed(&self, board: &OwnedBoard, feed_id: &str) -> DbResult<bool> {
         self.db.remove_board_feed(&board.row().id, feed_id)
+    }
+
+    /// Saves a report bookmark on a board for this account.
+    pub fn add_report_bookmark(
+        &self,
+        board: &OwnedBoard,
+        bookmark: ReportBookmark,
+    ) -> DbResult<BookmarkAdd> {
+        self.db.add_report_bookmark(&board.row().id, bookmark)
+    }
+
+    /// Changes a report bookmark this account saved. Returns none when it saved no such bookmark
+    /// on the board.
+    pub fn update_report_bookmark(
+        &self,
+        board: &OwnedBoard,
+        bookmark_id: &str,
+        patch: BookmarkPatch,
+    ) -> DbResult<Option<ReportBookmark>> {
+        self.db
+            .update_report_bookmark(&board.row().id, bookmark_id, self.account.as_str(), patch)
+    }
+
+    /// Deletes a report bookmark this account saved. Returns false when it saved no such bookmark
+    /// on the board.
+    pub fn remove_report_bookmark(&self, board: &OwnedBoard, bookmark_id: &str) -> DbResult<bool> {
+        self.db
+            .remove_report_bookmark(&board.row().id, bookmark_id, self.account.as_str())
     }
 
     /// Deletes a board and everything in it, refusing the account's only or last unarchived board.
@@ -1956,6 +1985,24 @@ impl AccountDb {
         self.db.log_event(&task.row().id, kind, detail, actor)
     }
 
+    /// Appends a history event to a task that changed a value, recording `change` on it.
+    pub fn log_change_event(
+        &self,
+        task: &OwnedTask,
+        kind: &str,
+        detail: &str,
+        actor: Actor<'_>,
+        change: EventChange,
+    ) -> DbResult<bool> {
+        self.db
+            .log_change_event(&task.row().id, kind, detail, actor, change)
+    }
+
+    /// Returns the minutes logged on a task.
+    pub fn task_minutes(&self, task: &OwnedTask) -> DbResult<i64> {
+        self.db.task_total_minutes(&task.row().id)
+    }
+
     /// Bumps a task's completed-pomodori counter.
     pub fn record_pomodoro_complete(&self, task: &OwnedTask) -> DbResult<()> {
         self.db.record_pomodoro_complete(&task.row().id)
@@ -2271,6 +2318,17 @@ impl AccountDb {
     /// Revokes one of the account's tokens. Returns false when it holds no such token.
     pub fn delete_api_token(&self, id: &str) -> DbResult<bool> {
         self.db.delete_api_token(&self.account, id)
+    }
+
+    /// Renames one of the account's tokens and, when `grant` is set, changes its scope and
+    /// permissions, without a new secret. Returns [`None`] when it holds no such token.
+    pub fn edit_api_token(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        grant: Option<(AuthScope, BTreeSet<Permission>)>,
+    ) -> DbResult<Option<ApiTokenRecord>> {
+        self.db.edit_api_token(&self.account, id, name, grant)
     }
 
     /// Returns the account's passkeys, oldest first.

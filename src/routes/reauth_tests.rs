@@ -240,6 +240,37 @@ async fn creating_an_api_token_should_need_a_fresh_passkey_check() {
 }
 
 #[tokio::test]
+async fn editing_an_api_token_should_need_a_fresh_passkey_check() {
+    let mut fx = pair(None).await;
+    let t = tiers(fx.instance, &mut fx.member_key).await;
+    let minted = call(
+        &t.instance.app,
+        "POST",
+        "/api/v1/auth/tokens",
+        &[("cookie", &t.fresh)],
+        Some(json!({"name": "agent", "scopes": ["read"]})),
+    )
+    .await;
+    assert_eq!(minted.status, StatusCode::OK, "{}", minted.body);
+    let uri = format!(
+        "/api/v1/auth/tokens/{}",
+        minted.body["id"].as_str().expect("id")
+    );
+    let body = json!({"name": "renamed", "preset": "admin"});
+    assert_unchecked_refused(&t, "PATCH", &uri, Some(body.clone())).await;
+    let edited = call(
+        &t.instance.app,
+        "PATCH",
+        &uri,
+        &[("cookie", &t.fresh)],
+        Some(body),
+    )
+    .await;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.body);
+    assert_eq!(edited.body["name"], "renamed");
+}
+
+#[tokio::test]
 async fn approving_a_device_should_need_a_fresh_passkey_check() {
     let mut fx = pair(None).await;
     let t = tiers(fx.instance, &mut fx.member_key).await;

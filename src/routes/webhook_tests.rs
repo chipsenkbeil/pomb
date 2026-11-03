@@ -878,6 +878,25 @@ async fn settings_page_should_list_each_webhook_with_its_column_events_and_state
 }
 
 #[tokio::test]
+async fn settings_page_should_show_the_docs_button_and_the_token_list_above_the_webhooks() {
+    let fx = Browser::new(None);
+    let page = fx.get(&fx.page("")).await;
+    assert_eq!(page.status, StatusCode::OK);
+    let html = html_of(&page);
+    assert!(html.contains("id=\"api-docs\""));
+    assert!(html.contains("href=\"/docs/api.md\""));
+    assert!(html.contains("id=\"tk-add\""));
+    for class in ["tk-show", "tk-edit", "tk-delete"] {
+        assert!(html.contains(class), "{class}");
+    }
+    let tokens = html.find("Personal tokens").expect("tokens heading");
+    let webhooks = html.find("<h3>Webhooks</h3>").expect("webhooks heading");
+    assert!(tokens < webhooks);
+    assert!(html.contains("data-name=\"admin\""));
+    assert!(!html.contains(&fx.token), "the secret is never rendered");
+}
+
+#[tokio::test]
 async fn settings_page_should_say_so_when_the_board_has_no_webhook() {
     let fx = Browser::new(None);
     let page = fx.get(&fx.page("")).await;

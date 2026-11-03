@@ -131,4 +131,8 @@ check('a feed row shows its label, URL and a delete button',
   [row.indexOf('Phone') > -1, row.indexOf('https://x.test/api/calendar-feed/t.ics') > -1,
     row.indexOf('data-feed-delete') > -1, row.indexOf('data-feed-id="f1"') > -1], [true, true, true, true]);
 
+var chip = CalendarPage.renderChip({ id: 't9', name: 'Pay', color_id: '', column_id: '' }, null);
+check('a chip carries its task id so a click can open the task',
+  [chip.indexOf('data-task-id="t9"') > -1, chip.indexOf('role="button"') > -1], [true, true]);
+
 process.exit(failures ? 1 : 0);

@@ -13,12 +13,12 @@ use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
 use crate::auth::{PENDING_ROUTES, new_api_token_record, required_permission};
 use crate::db::{
-    AccountDb, BootstrapToken, Change, Db, FeedAdd, FencedWrite, FieldCreateOutcome,
+    AccountDb, BookmarkAdd, BootstrapToken, Change, Db, FeedAdd, FencedWrite, FieldCreateOutcome,
     LinkAddOutcome, NewComment, NewWebhook,
 };
 use crate::models::{
     AccountId, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind, FieldOwner,
-    InstanceMode, LinkKind, SubtaskTemplate, WebhookEvent,
+    InstanceMode, LinkKind, ReportBookmark, SubtaskTemplate, WebhookEvent,
 };
 
 /// Largest response body a test reads.
@@ -39,6 +39,7 @@ const SUB_ID_PARAMS: &[&str] = &[
     "version_id",
     "color_id",
     "feed_id",
+    "bookmark_id",
     "webhook_id",
 ];
 
@@ -75,6 +76,8 @@ pub(super) struct Ids {
     color: String,
     /// A calendar feed of [`Ids::board`].
     feed: String,
+    /// A shared report bookmark of [`Ids::board`].
+    bookmark: String,
     /// A custom field on [`Ids::board`].
     field: String,
     /// A webhook on [`Ids::board`].
@@ -93,7 +96,7 @@ pub(super) struct Ids {
 
 impl Ids {
     /// Returns every id, for blanking them out of an answer.
-    fn all(&self) -> [&str; 22] {
+    fn all(&self) -> [&str; 23] {
         [
             &self.account,
             &self.board,
@@ -110,6 +113,7 @@ impl Ids {
             &self.version,
             &self.color,
             &self.feed,
+            &self.bookmark,
             &self.field,
             &self.webhook,
             &self.entry,
@@ -243,6 +247,23 @@ fn seed_field(db: &Db, board: &str) -> String {
     }
 }
 
+/// Adds a shared report bookmark of `account` to `board` and returns its id.
+fn seed_bookmark(db: &Db, board: &str, account: &str) -> String {
+    let bookmark = ReportBookmark {
+        id: uuid::Uuid::new_v4().to_string(),
+        owner_id: account.to_string(),
+        report: "burndown".to_string(),
+        name: "Shared view".to_string(),
+        shared: true,
+        shortcut: true,
+        filters: "{}".to_string(),
+    };
+    match db.add_report_bookmark(board, bookmark).expect("bookmark") {
+        BookmarkAdd::Added(bookmark) => bookmark.id,
+        other => panic!("bookmark not added: {other:?}"),
+    }
+}
+
 /// Adds a calendar feed to `board` and returns its id.
 fn seed_feed(db: &Db, board: &str, name: &str) -> String {
     match db
@@ -329,6 +350,7 @@ pub(super) fn seed(
         version,
         color: db.list_colors(&board).expect("colors")[1].id.clone(),
         feed: seed_feed(db, &board, name),
+        bookmark: seed_bookmark(db, &board, account.as_str()),
         field: seed_field(db, &board),
         webhook: seed_webhook(db, &board),
         entry: db.create_entry(&task, 5, "secret note").expect("entry"),
@@ -684,6 +706,7 @@ fn param<'a>(class: RouteClass, path: &str, name: &str, main: &'a Ids, sub: &'a 
         "version_id" => &sub.version,
         "color_id" => &sub.color,
         "feed_id" => &sub.feed,
+        "bookmark_id" => &sub.bookmark,
         "webhook_id" => &sub.webhook,
         "index" => "0",
         "id" => match class {
@@ -731,6 +754,12 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
         (&Method::POST, "/api/boards/:id/save-as-template") => json!({"name": "Saved"}),
         (&Method::POST, "/api/boards/:id/colors") => json!({"value": "yellow"}),
         (&Method::POST, "/api/boards/:id/calendar-feeds") => json!({"label": "Sneak"}),
+        (&Method::POST, "/api/boards/:id/report-bookmarks") => {
+            json!({"report": "burndown", "name": "Sneak"})
+        }
+        (&Method::PATCH, "/api/boards/:id/report-bookmarks/:bookmark_id") => {
+            json!({"name": "Renamed"})
+        }
         (&Method::PATCH, "/api/boards/:id/colors/:color_id") => json!({"label": "Renamed"}),
         (&Method::POST, "/api/boards/:id/colors/copy-from") => {
             json!({"source_board_id": body_ids.board2})
@@ -818,6 +847,7 @@ fn missing() -> Ids {
         version: fresh(),
         color: fresh(),
         feed: fresh(),
+        bookmark: fresh(),
         field: fresh(),
         webhook: fresh(),
         entry: fresh(),

@@ -91,7 +91,7 @@
               <div class="tm-comment-top">
                 <div class="tm-comment-idwrap">
                   <span class="tm-comment-who"><strong class="tm-comment-author">{{ c.author }}</strong>{% if let Some(token) = c.via_token %}<small class="tm-comment-via">via {{ token }}</small>{% endif %}</span>
-                  <span class="tm-comment-date">{{ c.created_display }}</span>
+                  <span class="tm-comment-date">{{ c.created_display|safe }}</span>
                   {% if let Some(kind) = c.kind %}<span class="tm-comment-kind" title="{{ kind }}">{{ kind }}</span>{% endif %}
                 </div>
                 <div class="tm-comment-tools">
@@ -130,7 +130,7 @@
           <div class="tm-subtask{% if sub.done %} tm-subtask-done{% endif %}" data-subtask-id="{{ sub.id }}" data-member-ids="{{ sub.member_ids|join(",") }}">
             <input type="checkbox" class="tm-subtask-check" {% if sub.done %}checked{% endif %} aria-label="Mark subtask done">
             <span class="tm-subtask-name" tabindex="0" title="Click to edit">{{ sub.name }}</span>
-            {% if let Some(label) = sub.due_label() %}<span class="tm-subtask-due{% if sub.due_overdue(task.completed_at.is_some()) %} tm-due-overdue{% endif %}">{{ label }}</span>{% endif %}
+            {% if let Some(label) = sub.due_label() %}<span class="tm-subtask-due{% if sub.due_overdue(task.completed_at.is_some()) %} tm-due-overdue{% endif %}">{{ label|safe }}</span>{% endif %}
             <span class="tm-subtask-members">{% for chip in self.chips_of(sub.id.as_str()) %}<span class="tm-member-disc tm-subtask-member" title="{{ chip.username }}" style="{{ chip.avatar.style }}">{% if let Some(url) = chip.avatar.image %}<img src="{{ url }}" alt="">{% else %}{{ chip.avatar.text }}{% endif %}</span>{% endfor %}</span>
             <button type="button" class="tm-subtask-handle" aria-label="Subtask options" aria-haspopup="menu"><svg width="6" height="16" viewBox="0 0 6 16" aria-hidden="true" focusable="false"><ellipse cx="3" cy="2.5" rx="2.0" ry="2.25" fill="currentColor"/><ellipse cx="3" cy="8" rx="2.0" ry="2.25" fill="currentColor"/><ellipse cx="3" cy="13.5" rx="2.0" ry="2.25" fill="currentColor"/></svg></button>
           </div>
@@ -196,7 +196,7 @@
                 <a class="tm-attachment-name" href="{{ a.url }}" target="_blank" rel="noopener noreferrer" title="{{ a.url }}">{{ a.name }}</a>
                 {% endif %}
                 {% if a.is_cover %}<span class="tm-attachment-cover">(Cover)</span>{% endif %}
-                <span class="tm-attachment-details">{{ a.details }}</span>
+                <span class="tm-attachment-details">{{ a.uploaded_by }}, {{ a.uploaded_at|safe }}, {{ a.kind }}</span>
               </div>
               <button type="button" class="tm-attachment-more" data-tm-menu="tm-amenu-{{ a.id }}" title="Attachment options" aria-label="Attachment options" aria-haspopup="menu"><svg width="4" height="12" viewBox="0 0 4 12" aria-hidden="true" focusable="false"><circle cx="2" cy="1.8" r="1.6" fill="currentColor"/><circle cx="2" cy="6" r="1.6" fill="currentColor"/><circle cx="2" cy="10.2" r="1.6" fill="currentColor"/></svg></button>
               <div id="tm-amenu-{{ a.id }}" class="tm-menu tm-cmenu" hidden role="menu">
@@ -269,7 +269,7 @@
               <dd class="tm-prop-extra" data-cell="due" id="modal-due-row">
                 {% if let Some(due) = task.due_modal %}
                 <button type="button" class="tm-due-chip{% if task.due_state.overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
-                  <strong>{{ due }}</strong>{% if let Some(column) = task.due_suffix %} <span class="tm-due-column">({{ column }})</span>{% endif %}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
+                  <strong>{{ due|safe }}</strong>{% if let Some(column) = task.due_suffix %} <span class="tm-due-column">({{ column }})</span>{% endif %}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
                 </button>
                 <button type="button" class="tm-add-link tm-due-done-toggle" data-tm-act="due-done-toggle" data-done="{{ task.due_state.done }}">{% if task.due_state.done %}Undo done{% else %}Mark done{% endif %}</button>
                 {% else %}

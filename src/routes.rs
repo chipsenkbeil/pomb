@@ -2,6 +2,7 @@ mod board_history;
 mod calendar_export;
 mod docs;
 mod export;
+mod local_time;
 mod multipart;
 mod slot;
 
@@ -45,6 +46,7 @@ use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCreden
 
 use self::calendar_export::{Format, Level, Range};
 use self::export::{ArchiveStream, TaskStream};
+use self::local_time::{LocalTime, Shape};
 use self::slot::{Slot, SlotBody, SlotGuard, WaitGuard};
 use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
 use crate::archive::{
@@ -55,17 +57,17 @@ use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn, TokenGrant};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
-    AdminActionOutcome, BoardDenied, Bound, ChangeOutcome, ChildRef, ClaimOutcome, ClaimRequest,
-    ColumnDeleteOutcome, ColumnKind, ColumnWatch, CommentWrite, Commit, CopyTasks,
-    DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment, EventRead, FeedAdd,
-    FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LargestUse, LinkAddOutcome,
-    LinkDeleteOutcome, LinkReads, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards,
-    MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement,
-    NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedTask, PaletteStrandsColor,
-    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuotaExceeded, RecoverOutcome,
-    RegisterOutcome, RestoreOutcome, Revoked, SessionEndOutcome, SessionListing, SessionRefused,
-    SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
-    SwimlaneUpdateOutcome, TaskContext, UmbrellaChange, UmbrellaPart, UmbrellaRef,
+    AdminActionOutcome, BoardDenied, BookmarkAdd, BookmarkPatch, Bound, ChangeOutcome, ChildRef,
+    ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, ColumnWatch, CommentWrite, Commit,
+    CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment, EventRead,
+    FeedAdd, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LargestUse,
+    LinkAddOutcome, LinkDeleteOutcome, LinkReads, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT,
+    MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment,
+    NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedTask,
+    PaletteStrandsColor, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome,
+    QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked, SessionEndOutcome,
+    SessionListing, SessionRefused, SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
+    SwimlanePatch, SwimlaneUpdateOutcome, TaskContext, UmbrellaChange, UmbrellaPart, UmbrellaRef,
     WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels, local_day, merge_metadata,
     push_change_event, push_column_event, push_event, round_estimate,
 };
@@ -326,6 +328,14 @@ pub fn router(state: AppState) -> Router {
             "/api/boards/:id/calendar-feeds/:feed_id",
             delete(delete_calendar_feed),
         )
+        .route(
+            "/api/boards/:id/report-bookmarks",
+            get(list_report_bookmarks).post(create_report_bookmark),
+        )
+        .route(
+            "/api/boards/:id/report-bookmarks/:bookmark_id",
+            patch(update_report_bookmark).delete(delete_report_bookmark),
+        )
         .route("/api/calendar-export", get(export_calendar))
         .route("/b/:board_id/settings/delete", get(board_delete_page))
         .route("/boards/new", get(new_board_page))
@@ -404,7 +414,12 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/auth/tokens",
             post(create_api_token).get(list_api_tokens),
         )
-        .route("/api/v1/auth/tokens/:id", delete(revoke_api_token))
+        .route(
+            "/api/v1/auth/tokens/:id",
+            get(get_api_token)
+                .patch(update_api_token)
+                .delete(revoke_api_token),
+        )
         .route("/api/v1/auth/tokens/inspect", post(inspect_api_token))
         .route("/api/v1/auth/whoami", get(whoami))
         .route("/api/v1/auth/permissions", get(list_permissions));
@@ -974,6 +989,25 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             Board,
             Exempt,
         ),
+        (Method::GET, "/api/boards/:id/report-bookmarks", Board, No),
+        (
+            Method::POST,
+            "/api/boards/:id/report-bookmarks",
+            Board,
+            Grows,
+        ),
+        (
+            Method::PATCH,
+            "/api/boards/:id/report-bookmarks/:bookmark_id",
+            Board,
+            Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/boards/:id/report-bookmarks/:bookmark_id",
+            Board,
+            Exempt,
+        ),
         (Method::GET, "/api/calendar-export", Account, No),
         (Method::GET, "/b/:board_id/settings/delete", Board, No),
         (Method::GET, "/boards/new", Account, No),
@@ -1045,6 +1079,13 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             Exempt,
         ),
         (Method::GET, "/api/v1/auth/tokens", AccountSession, No),
+        (Method::GET, "/api/v1/auth/tokens/:id", AccountSession, No),
+        (
+            Method::PATCH,
+            "/api/v1/auth/tokens/:id",
+            AccountSession,
+            Exempt,
+        ),
         (
             Method::DELETE,
             "/api/v1/auth/tokens/:id",
@@ -1809,6 +1850,10 @@ struct TimerLogEntry {
     date: String,
     time_range: String,
     end: String,
+    /// When the entry started, as RFC 3339 in UTC, for the client to write in its own zone.
+    started_at: String,
+    /// When the entry ended, as RFC 3339 in UTC.
+    ended_at: String,
     /// Labels attached in the manual-time / edit-entry dialogs.
     labels: Vec<String>,
     /// Username that created the entry (avatar in the time log).
@@ -2024,10 +2069,10 @@ struct TaskView {
     /// Due date rendered for the modal and the card's full-date tooltip,
     /// e.g. "Sep 28, 2026 5:00 PM". Distinct from `due_display`, the
     /// short mode-honoring card rendering.
-    due_full: Option<String>,
+    due_full: Option<LocalTime>,
     /// KanbanFlow-style modal due-date text, e.g. "Friday 5:00 PM" or "Oct 2 at 11:00 PM", and the
     /// template appends `due_suffix`. None when unset or unparseable.
-    due_modal: Option<String>,
+    due_modal: Option<LocalTime>,
     /// Overdue and card-window state of the due date.
     due_state: DueState,
     /// Due-date repeat text, e.g. "every week".
@@ -2035,7 +2080,7 @@ struct TaskView {
     /// KanbanFlow-style card due-date rendering, e.g. "Friday 5:00 PM"
     /// (near-term) or "30 October 5:00 PM" (farther out). None when unset
     /// or unparseable.
-    due_card: Option<String>,
+    due_card: Option<LocalTime>,
     /// The due date's parenthetical, the target column name (or "Done" for a due date marked done
     /// without a target column).
     due_suffix: Option<String>,
@@ -2272,7 +2317,7 @@ struct CommentView {
     /// `body` rendered as sanitized markdown, filled in for the modal only.
     body_html: String,
     /// "Today 3:03 PM" relative rendering of `created_at`.
-    created_display: String,
+    created_display: LocalTime,
     /// Two-letter uppercase initials for the comment avatar circle. KanbanFlow renders comment
     /// avatars uppercase ("CS").
     author_initials: String,
@@ -2289,8 +2334,12 @@ struct AttachmentView {
     id: String,
     /// The attachment's file name.
     name: String,
-    /// "Ada, Today 6:37 PM, Text document": who attached it, when, and its type.
-    details: String,
+    /// Who attached it.
+    uploaded_by: String,
+    /// When it was attached.
+    uploaded_at: LocalTime,
+    /// Its type, such as "Text document".
+    kind: String,
     /// The fixed file extension with its dot (`.txt`), or empty if the name has none.
     suffix: String,
     /// The address a link attachment opens, or empty for a file.
@@ -2874,7 +2923,7 @@ impl TaskView {
                 author: c.author.clone(),
                 body: c.body.clone(),
                 body_html: String::new(),
-                created_display: format_comment_datetime(&c.created_at),
+                created_display: LocalTime::of(Shape::Comment, &c.created_at),
                 author_initials: user_initials(&c.author),
                 kind: c.kind.clone(),
                 via_token: c
@@ -2892,12 +2941,9 @@ impl TaskView {
                 AttachmentView {
                     id: shown.id.clone(),
                     name: shown.name.clone(),
-                    details: format!(
-                        "{}, {}, {}",
-                        shown.uploaded_by,
-                        format_comment_datetime(&shown.created_at),
-                        attachment_kind(&shown.mime)
-                    ),
+                    uploaded_by: shown.uploaded_by.clone(),
+                    uploaded_at: LocalTime::of(Shape::Comment, &shown.created_at),
+                    kind: attachment_kind(&shown.mime).to_string(),
                     suffix: if shown.url.is_some() {
                         String::new()
                     } else {
@@ -2964,11 +3010,14 @@ impl TaskView {
             archive: ArchivePlacement::Shown,
             readiness: Readiness::Ready,
             watched: row.watched,
-            due_full: row.due_at.as_deref().map(format_datetime),
+            due_full: row
+                .due_at
+                .as_deref()
+                .map(|due| LocalTime::of(Shape::DateTime, due)),
             due_modal: row
                 .due_at
                 .as_deref()
-                .and_then(|d| format_due_modal(d, None)),
+                .and_then(|d| LocalTime::due(Shape::DueModal, d)),
             due_suffix: row.due_done.then(|| "Done".to_string()),
             due_state: DueState {
                 overdue: is_overdue(row.due_at.as_deref(), done || row.due_done),
@@ -2976,7 +3025,10 @@ impl TaskView {
                 done: row.due_done,
             },
             due_repeat: row.due_repeat.clone(),
-            due_card: row.due_at.as_deref().and_then(format_due_card),
+            due_card: row
+                .due_at
+                .as_deref()
+                .and_then(|due| LocalTime::due(Shape::DueCard, due)),
             time_kf: format_time_kf(row.total_minutes, row.estimate_hours),
             due_at: row.due_at.clone(),
             timeline_display: format_timeline(
@@ -3169,22 +3221,6 @@ fn format_datetime(rfc3339: &str) -> String {
         .unwrap_or_else(|_| rfc3339.to_string())
 }
 
-/// "Today 3:03 PM" rendering of a stored RFC3339 timestamp for comment timestamps (KanbanFlow
-/// parity): relative day label (Today / Yesterday / "Sep 27") plus 12-hour time.
-fn format_comment_datetime(rfc3339: &str) -> String {
-    match DateTime::parse_from_rfc3339(rfc3339) {
-        Ok(dt) => {
-            let local = dt.with_timezone(&Local);
-            format!(
-                "{} {}",
-                day_label(local.date_naive()),
-                local.format(TimeFormat::current().clock())
-            )
-        }
-        Err(_) => rfc3339.to_string(),
-    }
-}
-
 /// "Sep 28" rendering of a stored RFC3339 timestamp.
 fn format_day(rfc3339: &str) -> String {
     DateTime::parse_from_rfc3339(rfc3339)
@@ -3207,6 +3243,19 @@ fn format_relative_day(rfc3339: &str) -> String {
         }
         Err(_) => rfc3339.to_string(),
     }
+}
+
+/// Returns when an entry that started at `started_at` and lasted `seconds` ended, as RFC 3339 in
+/// UTC.
+#[must_use]
+fn entry_end(started_at: &str, seconds: i64) -> String {
+    DateTime::parse_from_rfc3339(started_at).map_or_else(
+        |_| started_at.to_string(),
+        |start| {
+            (start.with_timezone(&Utc) + Duration::seconds(seconds))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        },
+    )
 }
 
 /// "31s" for sub-minute durations, "Nm" under an hour, "2h 30m" from an hour up. `seconds` is the
@@ -3280,75 +3329,6 @@ fn format_due(rfc3339: &str, within_days: Option<i64>) -> Option<String> {
         return None;
     }
     Some(dt.format("%b %d").to_string())
-}
-
-/// Where a due date falls relative to now, for KanbanFlow's due text.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum DueDay {
-    /// The same local day, earlier or later.
-    Today,
-    /// A later instant within the next six local days.
-    ThisWeek,
-    /// Any other past or future date.
-    Other,
-}
-
-/// Parses `rfc3339` into local time and classifies it against `now`.
-fn due_day(rfc3339: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, DueDay)> {
-    let due = DateTime::parse_from_rfc3339(rfc3339)
-        .ok()?
-        .with_timezone(&Local);
-    let (day, today) = (due.date_naive(), now.date_naive());
-    let kind = if day == today {
-        DueDay::Today
-    } else if due > now && day < today + Duration::days(7) {
-        DueDay::ThisWeek
-    } else {
-        DueDay::Other
-    };
-    Some((due, kind))
-}
-
-/// KanbanFlow's card due text: "Today 5:00 PM", a weekday for a later date this week ("Friday 5:00
-/// PM"), else "25 September 5:00 PM". None when unparseable.
-fn format_due_card(rfc3339: &str) -> Option<String> {
-    format_due_card_at(rfc3339, Local::now())
-}
-
-fn format_due_card_at(rfc3339: &str, now: DateTime<Local>) -> Option<String> {
-    let (due, kind) = due_day(rfc3339, now)?;
-    let clock = TimeFormat::current().clock();
-    let format = match kind {
-        DueDay::Today => format!("Today {clock}"),
-        DueDay::ThisWeek => format!("%A {clock}"),
-        DueDay::Other => format!("%-d %B {clock}"),
-    };
-    Some(due.format(&format).to_string())
-}
-
-/// KanbanFlow's modal due text: like the card, except other dates read "Oct 2 at 11:00 PM".
-/// `suffix` (the target column name) follows in parentheses. None when unparseable.
-fn format_due_modal(rfc3339: &str, suffix: Option<&str>) -> Option<String> {
-    format_due_modal_at(rfc3339, suffix, Local::now())
-}
-
-fn format_due_modal_at(
-    rfc3339: &str,
-    suffix: Option<&str>,
-    now: DateTime<Local>,
-) -> Option<String> {
-    let (due, kind) = due_day(rfc3339, now)?;
-    let clock = TimeFormat::current().clock();
-    let format = match kind {
-        DueDay::Today => format!("Today {clock}"),
-        DueDay::ThisWeek => format!("%A {clock}"),
-        DueDay::Other => format!("%b %-d at {clock}"),
-    };
-    let mut text = due.format(&format).to_string();
-    if let Some(suffix) = suffix {
-        text.push_str(&format!(" ({suffix})"));
-    }
-    Some(text)
 }
 
 /// KanbanFlow-style card time readout: "{spent} / {estimate}" (e.g. "2h 30m / 8h", "0h / 4h"), or
@@ -3999,7 +3979,7 @@ struct TimeEntryView {
     /// "31s" for sub-minute durations, "Nm" otherwise.
     duration_display: String,
     note: String,
-    started_display: String,
+    started_display: LocalTime,
     /// "P" | "M" | "S" | "B" badge.
     badge_code: String,
     /// Tooltip: "Pomodoro" / `Stopped with reason "X"` / "Manually added" / "Stopwatch" /
@@ -4007,8 +3987,8 @@ struct TimeEntryView {
     badge_title: String,
     interrupted: bool,
     interrupt_reason: Option<String>,
-    /// "1:25 PM - 1:55 PM" From-To range in 12h (KanbanFlow parity).
-    range_display: String,
+    /// The entry's From-To range on the account's clock (KanbanFlow parity).
+    range_display: LocalTime,
     /// Handle of the account that logged the entry (avatar + name in the log view).
     member_name: String,
     /// First letter of `member_name`, for the avatar dot.
@@ -4234,9 +4214,11 @@ const MINOR_HISTORY_KINDS: &[&str] = &[
 const HISTORY_KIND_LABELS: &[(&str, &str)] = &[
     ("created", "Created"),
     ("moved", "Column"),
+    ("board_updated", "Board"),
+    ("swimlane_updated", "Swimlane"),
     ("deleted", "Task deleted"),
     ("restored", "Task restored"),
-    ("renamed", "Renamed"),
+    ("renamed", "Name"),
     ("description_updated", "Description"),
     ("estimate_updated", "Time estimate"),
     ("points_updated", "Points estimate"),
@@ -4246,7 +4228,7 @@ const HISTORY_KIND_LABELS: &[(&str, &str)] = &[
     ("due_done_updated", "Due date done"),
     ("members_updated", "Members"),
     ("responsible_updated", "Responsible"),
-    ("grouping_date_updated", "Grouping date"),
+    ("grouping_date_updated", "Date group"),
     ("timeline_updated", "Timeline"),
     ("subtask_added", "Subtask added"),
     ("subtask_deleted", "Subtask deleted"),
@@ -4257,7 +4239,7 @@ const HISTORY_KIND_LABELS: &[(&str, &str)] = &[
     ("subtask_due_cleared", "Subtask due date"),
     ("subtask_members_updated", "Subtask members"),
     ("subtask_converted", "Subtask converted"),
-    ("time_logged", "Time logged"),
+    ("time_logged", "Time spent"),
     ("time_edited", "Time edited"),
     ("time_deleted", "Time deleted"),
     ("comment", "Comment"),
@@ -4307,7 +4289,7 @@ struct HistoryEventView {
     /// The initials the actor's avatar shows.
     initials: String,
     /// "Sep 28, 2026 1:25 PM" rendering of `created_at`.
-    created_display: String,
+    created_display: LocalTime,
     /// Whether the view hides the event until "Show all events" is ticked.
     minor: bool,
     /// Whether the event changed a value, so the view offers its From and To.
@@ -4331,7 +4313,7 @@ impl HistoryEventView {
             } else {
                 initials
             },
-            created_display: format_datetime(&event.created_at),
+            created_display: LocalTime::of(Shape::DateTime, &event.created_at),
             minor: MINOR_HISTORY_KINDS.contains(&event.kind.as_str()),
             changed: event.from.is_some() || event.to.is_some(),
             from: event.from.clone().unwrap_or_else(|| NO_VALUE.to_string()),
@@ -4472,22 +4454,8 @@ fn fetch_entries(
         .map(|row| {
             let (badge_code, badge_title) =
                 entry_badge(&row.kind, row.interrupted, row.interrupt_reason.as_deref());
-            let local_start =
-                DateTime::parse_from_rfc3339(&row.started_at).map(|dt| dt.with_timezone(&Local));
-            let clock = TimeFormat::current().clock();
-            let started_display = local_start
-                .as_ref()
-                .map(|dt| dt.format(&format!("%b %d, %Y {clock}")).to_string())
-                .unwrap_or_else(|_| row.started_at.clone());
-
-            // The From-To range, derived server-side from started_at + minutes
-            let range_display = local_start
-                .as_ref()
-                .map(|start| {
-                    let end = *start + chrono::Duration::seconds(row.duration_seconds());
-                    format!("{} - {}", start.format(clock), end.format(clock))
-                })
-                .unwrap_or_default();
+            let started_display = LocalTime::of(Shape::DateTime, &row.started_at);
+            let range_display = LocalTime::range(&row.started_at, row.duration_seconds());
             let member_name = if row.created_by.is_empty() {
                 fallback_user.to_string()
             } else {
@@ -4538,10 +4506,15 @@ fn fallback_username(db: &AccountDb) -> String {
         .unwrap_or_else(|| "admin".to_string())
 }
 
-/// Appends an activity-trail event (KanbanFlow parity: History). History must never break the
-/// operation it annotates, so failures are swallowed here.
-fn log_history(db: &AccountDb, task: &OwnedTask, kind: &str, detail: &str, actor: Actor<'_>) {
-    let _ = db.log_event(task, kind, detail, actor);
+/// Logs a `time_logged` event on `task` whose entry of `minutes` is already stored, with the time
+/// spent before and after it.
+fn log_time_spent(db: &AccountDb, task: &OwnedTask, detail: &str, minutes: i64, actor: Actor<'_>) {
+    let after = db.task_minutes(task).unwrap_or(minutes);
+    let change = EventChange {
+        from: Some(format_minutes((after - minutes).max(0))),
+        to: Some(format_minutes(after)),
+    };
+    let _ = db.log_change_event(task, "time_logged", detail, actor, change);
 }
 
 // ---- Page handlers ----
@@ -8070,6 +8043,20 @@ fn patched_labels(
     labels
 }
 
+/// Returns how many of `subtasks` are done, as an event value, or none without subtasks.
+fn subtask_summary(subtasks: &[Subtask]) -> Option<String> {
+    let done = subtasks.iter().filter(|sub| sub.done).count();
+    (!subtasks.is_empty()).then(|| format!("{done} of {} done", subtasks.len()))
+}
+
+/// Returns the change in the subtask count and progress from `before` to `after`.
+fn subtask_change(before: &[Subtask], after: &[Subtask]) -> EventChange {
+    EventChange {
+        from: subtask_summary(before),
+        to: subtask_summary(after),
+    }
+}
+
 /// One history event of a task update, with the values it replaced and set.
 type UpdateEvent = (&'static str, String, EventChange);
 
@@ -8897,12 +8884,7 @@ fn format_column_hours(minutes: i64) -> String {
 }
 
 fn format_estimate_hours(hours: f64) -> String {
-    let minutes = (hours * 60.0).round() as i64;
-    match (minutes / 60, minutes % 60) {
-        (0, m) => format!("{m}m"),
-        (h, 0) => format!("{h}h"),
-        (h, m) => format!("{h}h {m}m"),
-    }
+    format_minutes((hours * 60.0).round() as i64)
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -10535,10 +10517,10 @@ impl From<&Subtask> for SubtaskDetail {
 
 impl Subtask {
     /// The due date as the modal shows it ("Oct 14, 9:00 AM"), if set.
-    fn due_label(&self) -> Option<String> {
+    fn due_label(&self) -> Option<LocalTime> {
         self.due_at
             .as_deref()
-            .and_then(|due| format_due_modal(due, None))
+            .and_then(|due| LocalTime::due(Shape::DueModal, due))
     }
 
     /// Whether the subtask is open and past its due date on a task that is
@@ -10661,7 +10643,8 @@ async fn create_subtask(
                 return (Err(error), false);
             }
             let detail = format!("Added subtask \"{}\"", sub.name);
-            push_event(task, "subtask_added", detail, user.actor());
+            let change = subtask_change(&before.subtasks, &task.subtasks);
+            push_change_event(task, "subtask_added", detail, user.actor(), change);
             if let Some(at) = sub.due_at.as_deref() {
                 let (kind, detail) = subtask_due_event(&sub.name, Some(at));
                 push_event(task, kind, detail, user.actor());
@@ -10764,6 +10747,7 @@ async fn update_subtask(
     // The edit and its history event are one write, and an unknown subtask writes nothing
     let updated = account
         .apply_task_change(&owned, user.actor(), |task| {
+            let before = task.subtasks.clone();
             let Some(sub) = task.subtasks.iter_mut().find(|s| s.id == sub_id) else {
                 return (None, false);
             };
@@ -10804,7 +10788,21 @@ async fn update_subtask(
                 )),
                 None => None,
             };
-            for (kind, detail) in event.into_iter().chain(due_event).chain(members_event) {
+            if let Some((kind, detail)) = event {
+                let change = if kind == "subtask_renamed" {
+                    EventChange {
+                        from: before
+                            .iter()
+                            .find(|held| held.id == sub.id)
+                            .map(|held| held.name.clone()),
+                        to: Some(sub.name.clone()),
+                    }
+                } else {
+                    subtask_change(&before, &task.subtasks)
+                };
+                push_change_event(task, kind, detail, user.actor(), change);
+            }
+            for (kind, detail) in due_event.into_iter().chain(members_event) {
                 push_event(task, kind, detail, user.actor());
             }
             (Some(sub), true)
@@ -10984,7 +10982,8 @@ async fn convert_subtask(
             return (ConvertRemoval::Refused(error), false);
         }
         let detail = format!("Converted subtask \"{}\" to a task", gone.name);
-        push_event(task, "subtask_converted", detail, actor);
+        let change = subtask_change(&before.subtasks, &task.subtasks);
+        push_change_event(task, "subtask_converted", detail, actor, change);
         (ConvertRemoval::Removed, true)
     });
     let failure = match removal {
@@ -11086,7 +11085,8 @@ async fn delete_subtask(
                 return (Err(error), false);
             }
             let detail = format!("Deleted subtask \"{}\"", sub.name);
-            push_event(task, "subtask_deleted", detail, user.actor());
+            let change = subtask_change(&before.subtasks, &task.subtasks);
+            push_change_event(task, "subtask_deleted", detail, user.actor(), change);
             (Ok(SubtaskDelete::Deleted), true)
         })
         .map_err(AppError::from)?
@@ -11135,7 +11135,8 @@ async fn delete_all_subtasks(
                 return (Err(error), false);
             }
             let detail = format!("Deleted all {count} subtasks");
-            push_event(task, "subtask_deleted", detail, user.actor());
+            let change = subtask_change(&before.subtasks, &task.subtasks);
+            push_change_event(task, "subtask_deleted", detail, user.actor(), change);
             (Ok(()), true)
         })
         .map_err(AppError::from)?
@@ -11277,9 +11278,11 @@ async fn add_subtasks_from_template(
             {
                 return (Err(error), false);
             }
-            for sub in &created {
+            for (index, sub) in created.iter().enumerate() {
                 let detail = format!("Added subtask \"{}\"", sub.name);
-                push_event(task, "subtask_added", detail, user.actor());
+                let kept = before.subtasks.len() + index;
+                let change = subtask_change(&task.subtasks[..kept], &task.subtasks[..=kept]);
+                push_change_event(task, "subtask_added", detail, user.actor(), change);
             }
             (Ok(()), !created.is_empty())
         })
@@ -12989,16 +12992,25 @@ async fn delete_time_entry(
     let db = &account;
     let entry = found(db.entry(&id), "entry not found")?;
     ensure_task_id_unlocked(db, &user, &entry.row().task_id)?;
+    let task = db.task(&entry.row().task_id).ok().flatten();
+    let before = task
+        .as_ref()
+        .and_then(|task| db.task_minutes(task).ok())
+        .unwrap_or(0);
     if !db.delete_entry(&entry).map_err(AppError::from)? {
         return Err(AppError::not_found("entry not found"));
     }
-    if let Ok(Some(task)) = db.task(&entry.row().task_id) {
-        log_history(
-            db,
+    if let Some(task) = task {
+        let change = EventChange {
+            from: Some(format_minutes(before)),
+            to: Some(format_minutes((before - entry.row().minutes).max(0))),
+        };
+        let _ = db.log_change_event(
             &task,
             "time_deleted",
             &format!("Deleted a {}m time entry", entry.row().minutes),
             user.actor(),
+            change,
         );
     }
     Ok(StatusCode::OK)
@@ -13920,6 +13932,7 @@ async fn api_timer_log(
                 entry_badge(&e.kind, e.interrupted, e.interrupt_reason.as_deref());
             let seconds = e.duration_seconds();
             let task_color = dot_color(task, &colors);
+            let ended_at = entry_end(&e.started_at, seconds);
             TimerLogEntry {
                 id: e.id,
                 task_id: e.task_id,
@@ -13939,6 +13952,8 @@ async fn api_timer_log(
                 date: start_display,
                 time_range: range,
                 end: end_display,
+                ended_at,
+                started_at: e.started_at,
                 labels: e.labels,
                 task_color,
                 created_by: e.created_by,
@@ -14403,11 +14418,11 @@ async fn create_manual_time(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
 
-    log_history(
+    log_time_spent(
         db,
         &task,
-        "time_logged",
         &format!("Manually logged {minutes}m"),
+        minutes,
         user.actor(),
     );
 
@@ -14503,6 +14518,10 @@ async fn update_time_entry(
         None => return Err(AppError::bad_request("task_id is required")),
     };
 
+    let before = task
+        .as_ref()
+        .and_then(|task| db.task_minutes(task).ok())
+        .unwrap_or(0);
     let updated = db
         .update_entry(
             &existing,
@@ -14518,12 +14537,17 @@ async fn update_time_entry(
     }
 
     if let Some(task) = &task {
-        log_history(
-            db,
+        let after = db.task_minutes(task).unwrap_or(before);
+        let change = EventChange {
+            from: Some(format_minutes(before)),
+            to: Some(format_minutes(after)),
+        };
+        let _ = db.log_change_event(
             task,
             "time_edited",
             &format!("Edited a time entry ({minutes}m)"),
             user.actor(),
+            change,
         );
     }
 
@@ -15810,6 +15834,291 @@ async fn delete_calendar_feed(
         Ok(StatusCode::OK)
     } else {
         Err(AppError::not_found("feed not found"))
+    }
+}
+
+/// A saved set of filter values for one chart report of a board.
+#[derive(Serialize, ToSchema)]
+struct ReportBookmarkView {
+    /// The bookmark's id.
+    id: String,
+    /// The report it belongs to: `burndown`, `cumulative-flow`, `cycle-lead`, `throughput` or
+    /// `monte-carlo`.
+    report: String,
+    /// The name the owner gave it.
+    name: String,
+    /// Whether every member of the board sees it, not only its owner.
+    shared: bool,
+    /// Whether the Reports menu lists it under its report.
+    shortcut: bool,
+    /// Whether the calling account saved it, and so may change or delete it.
+    own: bool,
+    /// The filter values, an object of strings and lists of strings.
+    #[schema(value_type = Object)]
+    filters: serde_json::Value,
+}
+
+impl ReportBookmarkView {
+    /// Builds the view of `bookmark` as `account` sees it.
+    fn new(bookmark: &ReportBookmark, account: &str) -> Self {
+        Self {
+            id: bookmark.id.clone(),
+            report: bookmark.report.clone(),
+            name: bookmark.name.clone(),
+            shared: bookmark.shared,
+            shortcut: bookmark.shortcut,
+            own: bookmark.owner_id == account,
+            filters: serde_json::from_str(&bookmark.filters).unwrap_or_default(),
+        }
+    }
+}
+
+/// The report bookmarks of a board that the caller may see, oldest first.
+#[derive(Serialize, ToSchema)]
+struct ReportBookmarkList {
+    /// Each bookmark the caller saved or that another member shared.
+    bookmarks: Vec<ReportBookmarkView>,
+}
+
+/// Request body of `POST /api/boards/{id}/report-bookmarks`.
+#[derive(Deserialize, ToSchema)]
+struct ReportBookmarkInput {
+    /// The report the filters belong to: `burndown`, `cumulative-flow`, `cycle-lead`,
+    /// `throughput` or `monte-carlo`.
+    report: String,
+    /// The name of the bookmark, 1 to 60 characters.
+    name: String,
+    /// Whether every member of the board sees it. Defaults to false.
+    #[serde(default)]
+    shared: bool,
+    /// Whether the Reports menu lists it under its report. Defaults to false.
+    #[serde(default)]
+    shortcut: bool,
+    /// The filter values, an object of strings and lists of strings, at most 4 KiB as JSON.
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    filters: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Request body of `PATCH /api/boards/{id}/report-bookmarks/{bookmark_id}`, where a field left
+/// out stays as it is.
+#[derive(Deserialize, ToSchema)]
+struct ReportBookmarkChange {
+    /// The new name, 1 to 60 characters.
+    name: Option<String>,
+    /// Whether every member of the board sees it.
+    shared: Option<bool>,
+    /// Whether the Reports menu lists it under its report.
+    shortcut: Option<bool>,
+    /// The new filter values, replacing the saved ones.
+    #[schema(value_type = Option<Object>)]
+    filters: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Most keys a bookmark's filter object holds.
+const MAX_BOOKMARK_FILTER_KEYS: usize = 30;
+/// Most characters in a filter key.
+const MAX_BOOKMARK_FILTER_KEY_CHARS: usize = 50;
+/// Most characters in one filter value.
+const MAX_BOOKMARK_FILTER_VALUE_CHARS: usize = 200;
+/// Most values in a list filter.
+const MAX_BOOKMARK_FILTER_LIST: usize = 200;
+
+/// Trims a bookmark name and checks its length.
+fn bookmark_name(raw: &str) -> Result<String, AppError> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(AppError::bad_request("bookmark name is required"));
+    }
+    TextCap::BOOKMARK_NAME
+        .check(name)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    Ok(name.to_string())
+}
+
+/// Checks a bookmark's filter values and returns them as JSON text.
+fn bookmark_filters(
+    filters: &serde_json::Map<String, serde_json::Value>,
+) -> Result<String, AppError> {
+    let short = |text: &str| text.chars().count() <= MAX_BOOKMARK_FILTER_VALUE_CHARS;
+    let valid = filters.len() <= MAX_BOOKMARK_FILTER_KEYS
+        && filters.iter().all(|(key, value)| {
+            key.chars().count() <= MAX_BOOKMARK_FILTER_KEY_CHARS
+                && match value {
+                    serde_json::Value::String(text) => short(text),
+                    serde_json::Value::Array(list) => {
+                        list.len() <= MAX_BOOKMARK_FILTER_LIST
+                            && list.iter().all(|item| item.as_str().is_some_and(short))
+                    }
+                    _ => false,
+                }
+        });
+    if !valid {
+        return Err(AppError::bad_request(
+            "filters must be an object of strings and lists of strings",
+        ));
+    }
+    let text = serde_json::Value::Object(filters.clone()).to_string();
+    TextCap::BOOKMARK_FILTERS
+        .check(&text)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    Ok(text)
+}
+
+/// Lists the report bookmarks of a board that the caller saved or another member shared, oldest
+/// first. Read-only.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/report-bookmarks",
+    operation_id = "list_report_bookmarks",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "The visible report bookmarks", body = ReportBookmarkList),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
+    ),
+)]
+async fn list_report_bookmarks(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ReportBookmarkList>, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    let me = account.account_id().as_str();
+    Ok(Json(ReportBookmarkList {
+        bookmarks: board
+            .row()
+            .report_bookmarks
+            .iter()
+            .filter(|bookmark| bookmark.visible_to(me))
+            .map(|bookmark| ReportBookmarkView::new(bookmark, me))
+            .collect(),
+    }))
+}
+
+/// Saves the filter values of a chart report as a bookmark of the board. A board holds at most 50
+/// bookmarks.
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/report-bookmarks",
+    operation_id = "create_report_bookmark",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = ReportBookmarkInput,
+    responses(
+        (status = 200, description = "The new bookmark", body = ReportBookmarkView),
+        (status = 400, description = "Invalid input: an unknown report, an empty or over-long name, filters that are not strings or lists of strings, or the board holds 50 bookmarks already"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
+    ),
+)]
+async fn create_report_bookmark(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ReportBookmarkView>, AppError> {
+    let input: ReportBookmarkInput = parse_body(&headers, body).await?;
+    let board = found(account.board(&id), "board not found")?;
+    if !BOOKMARK_REPORTS.contains(&input.report.as_str()) {
+        return Err(AppError::bad_request("unknown report"));
+    }
+    let me = account.account_id().as_str();
+    let bookmark = ReportBookmark {
+        id: Uuid::new_v4().to_string(),
+        owner_id: me.to_string(),
+        report: input.report,
+        name: bookmark_name(&input.name)?,
+        shared: input.shared,
+        shortcut: input.shortcut,
+        filters: bookmark_filters(&input.filters)?,
+    };
+    match account
+        .add_report_bookmark(&board, bookmark)
+        .map_err(AppError::from)?
+    {
+        BookmarkAdd::Added(saved) => Ok(Json(ReportBookmarkView::new(&saved, me))),
+        BookmarkAdd::Full => Err(AppError::bad_request(format!(
+            "a board holds at most {MAX_REPORT_BOOKMARKS} report bookmarks"
+        ))),
+        BookmarkAdd::NoBoard => Err(AppError::not_found("board not found")),
+    }
+}
+
+/// Changes a report bookmark the caller saved: its name, its flags, or its filter values.
+#[utoipa::path(
+    patch,
+    path = "/api/boards/{id}/report-bookmarks/{bookmark_id}",
+    operation_id = "update_report_bookmark",
+    tag = "Boards",
+    params(
+        ("id" = String, Path, description = "Board id"),
+        ("bookmark_id" = String, Path, description = "Report bookmark id"),
+    ),
+    request_body = ReportBookmarkChange,
+    responses(
+        (status = 200, description = "The changed bookmark", body = ReportBookmarkView),
+        (status = 400, description = "Invalid input: an empty or over-long name, or filters that are not strings or lists of strings"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found, or the caller saved no such bookmark"),
+    ),
+)]
+async fn update_report_bookmark(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path((id, bookmark_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ReportBookmarkView>, AppError> {
+    let input: ReportBookmarkChange = parse_body(&headers, body).await?;
+    let board = found(account.board(&id), "board not found")?;
+    let patch = BookmarkPatch {
+        name: input.name.as_deref().map(bookmark_name).transpose()?,
+        shared: input.shared,
+        shortcut: input.shortcut,
+        filters: input.filters.as_ref().map(bookmark_filters).transpose()?,
+    };
+    let me = account.account_id().as_str();
+    match account
+        .update_report_bookmark(&board, &bookmark_id, patch)
+        .map_err(AppError::from)?
+    {
+        Some(saved) => Ok(Json(ReportBookmarkView::new(&saved, me))),
+        None => Err(AppError::not_found("bookmark not found")),
+    }
+}
+
+/// Deletes a report bookmark the caller saved.
+#[utoipa::path(
+    delete,
+    path = "/api/boards/{id}/report-bookmarks/{bookmark_id}",
+    operation_id = "delete_report_bookmark",
+    tag = "Boards",
+    params(
+        ("id" = String, Path, description = "Board id"),
+        ("bookmark_id" = String, Path, description = "Report bookmark id"),
+    ),
+    responses(
+        (status = 200, description = "Bookmark deleted"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found, or the caller saved no such bookmark"),
+    ),
+)]
+async fn delete_report_bookmark(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path((id, bookmark_id)): Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    if account
+        .remove_report_bookmark(&board, &bookmark_id)
+        .map_err(AppError::from)?
+    {
+        Ok(StatusCode::OK)
+    } else {
+        Err(AppError::not_found("bookmark not found"))
     }
 }
 
@@ -18790,6 +19099,8 @@ struct BoardSettingsTemplate {
     webhooks: Vec<WebhookListItem>,
     /// The webhook the Add and Edit page shows.
     webhook_form: WebhookFormView,
+    /// The account's API tokens, for the API & Webhooks tab.
+    tokens: Vec<ApiTokenListItem>,
     /// The member new tasks start with: `none`, `creator` or a user id.
     default_member: String,
     /// What the Default member row shows.
@@ -19124,9 +19435,19 @@ fn board_settings_context(
             .find(|member| member.id == id)
             .map_or_else(|| "None".to_string(), |member| member.display_name.clone()),
     };
+    let tokens = if tab == "api" {
+        db.list_api_tokens()
+            .map_err(AppError::from)?
+            .iter()
+            .map(ApiTokenListItem::from)
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(BoardSettingsTemplate {
         webhooks,
         webhook_form: WebhookFormView::default(),
+        tokens,
         default_member_responsible: board.default_member_responsible(),
         default_member,
         default_member_label,
@@ -19731,6 +20052,27 @@ struct ApiTokenListItem {
     expires: String,
 }
 
+impl From<&ApiTokenRecord> for ApiTokenListItem {
+    fn from(token: &ApiTokenRecord) -> Self {
+        Self {
+            id: token.id.clone(),
+            name: token.name.clone(),
+            prefix: token.prefix.clone(),
+            last4: token.last4.clone(),
+            scopes: token.scope.as_str().to_string(),
+            created: fmt_ts(token.created_at),
+            last_used: token
+                .last_used_at
+                .map(fmt_ts)
+                .unwrap_or_else(|| "never".to_string()),
+            expires: token
+                .expires_at
+                .map(fmt_ts)
+                .unwrap_or_else(|| "never".to_string()),
+        }
+    }
+}
+
 /// An unused invite on the admin page, with human-readable dates.
 struct InviteListItem {
     /// The stored invite id.
@@ -19903,22 +20245,7 @@ async fn settings_page(
         .list_api_tokens()
         .map_err(AppError::from)?
         .iter()
-        .map(|t| ApiTokenListItem {
-            id: t.id.clone(),
-            name: t.name.clone(),
-            prefix: t.prefix.clone(),
-            last4: t.last4.clone(),
-            scopes: t.scope.as_str().to_string(),
-            created: fmt_ts(t.created_at),
-            last_used: t
-                .last_used_at
-                .map(fmt_ts)
-                .unwrap_or_else(|| "never".to_string()),
-            expires: t
-                .expires_at
-                .map(fmt_ts)
-                .unwrap_or_else(|| "never".to_string()),
-        })
+        .map(ApiTokenListItem::from)
         .collect();
     let passkeys = account
         .passkeys()
@@ -21528,10 +21855,7 @@ async fn create_api_token(
     body: Bytes,
 ) -> Result<Json<CreateTokenResponse>, AppError> {
     let input: CreateTokenInput = parse_body(&headers, body).await?;
-    let name = input.name.trim().to_string();
-    if name.is_empty() || name.len() > 80 {
-        return Err(AppError::bad_request("token name must be 1-80 characters"));
-    }
+    let name = submitted_token_name(&input.name)?;
     let (scope, permissions) = submitted_permissions(
         &input.scopes,
         input.preset.as_deref(),
@@ -21624,6 +21948,117 @@ async fn list_api_tokens(
     require_cookie_auth(&user)?;
     let tokens = account.list_api_tokens().map_err(AppError::from)?;
     Ok(Json(tokens.iter().map(ApiTokenView::from).collect()))
+}
+
+/// Reads a token name: 1 to 80 characters once trimmed.
+fn submitted_token_name(name: &str) -> Result<String, AppError> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 80 {
+        return Err(AppError::bad_request("token name must be 1-80 characters"));
+    }
+    Ok(name.to_string())
+}
+
+/// The body of a token edit: an optional new name and an optional new grant.
+#[derive(Deserialize, ToSchema)]
+struct EditTokenInput {
+    /// The new name, 1-80 characters. Absent keeps the name.
+    name: Option<String>,
+    /// Non-empty subset of ["read", "work", "provision", "admin"]. The highest one sets the
+    /// token's permissions. Send at most one of `scopes`, `preset` and `permissions`; none keeps
+    /// the permissions.
+    #[serde(default)]
+    scopes: Vec<String>,
+    /// A preset from `GET /api/v1/auth/permissions`: "read", "work", "lead" or "admin".
+    preset: Option<String>,
+    /// A custom, non-empty set of permission wire names from `GET /api/v1/auth/permissions`.
+    permissions: Option<Vec<String>>,
+}
+
+/// Describes `record` without its secret.
+fn token_reply(
+    account: &AccountDb,
+    record: &ApiTokenRecord,
+) -> Result<Json<InspectTokenResponse>, AppError> {
+    Ok(Json(InspectTokenResponse {
+        token: ApiTokenView::from(record),
+        grant: GrantView::new(Some(account), &record.permissions, &record.boards)?,
+    }))
+}
+
+/// Shows one API token of the account: its permissions and boards, without its secret.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/tokens/{id}",
+    operation_id = "get_api_token",
+    tag = "Tokens",
+    params(("id" = String, Path, description = "Token id")),
+    responses(
+        (status = 200, description = "The token, without its secret", body = InspectTokenResponse),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "No such token on this account"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn get_api_token(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<InspectTokenResponse>, AppError> {
+    require_cookie_auth(&user)?;
+    let tokens = account.list_api_tokens().map_err(AppError::from)?;
+    let record = tokens
+        .iter()
+        .find(|token| token.id == id)
+        .ok_or_else(|| AppError::not_found("no such token"))?;
+    token_reply(&account, record)
+}
+
+/// Renames an API token and changes its permissions, keeping its secret, boards and expiry. The
+/// reply never holds the secret, which was shown once at creation.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/auth/tokens/{id}",
+    operation_id = "update_api_token",
+    tag = "Tokens",
+    params(("id" = String, Path, description = "Token id")),
+    request_body = EditTokenInput,
+    responses(
+        (status = 200, description = "The token, without its secret", body = InspectTokenResponse),
+        (status = 400, description = "Invalid name, more than one of `scopes`, `preset` and `permissions`, or an unknown preset or permission"),
+        (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot change tokens, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
+        (status = 404, description = "No such token on this account"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn update_api_token(
+    account: AccountDb,
+    _: FreshSession,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<InspectTokenResponse>, AppError> {
+    let input: EditTokenInput = parse_body(&headers, body).await?;
+    let name = input
+        .name
+        .as_deref()
+        .map(submitted_token_name)
+        .transpose()?;
+    let grant = if input.scopes.is_empty() && input.preset.is_none() && input.permissions.is_none()
+    {
+        None
+    } else {
+        Some(submitted_permissions(
+            &input.scopes,
+            input.preset.as_deref(),
+            input.permissions.as_deref(),
+        )?)
+    };
+    let record = found(
+        account.edit_api_token(&id, name.as_deref(), grant),
+        "no such token",
+    )?;
+    token_reply(&account, &record)
 }
 
 /// Revokes an API token.
@@ -22298,11 +22733,11 @@ fn log_task_session(
         TimerMode::ShortBreak => "Short break",
         TimerMode::LongBreak => "Long break",
     };
-    log_history(
+    log_time_spent(
         db,
         task,
-        "time_logged",
         &format!("{kind_label} session logged ({minutes}m)"),
+        minutes,
         actor,
     );
     match mode {
@@ -22378,6 +22813,10 @@ struct TodayEntryView {
     kind_label: String,
     started_display: String,
     ended_display: String,
+    /// When the session started, as RFC 3339 in UTC, for the client to write in its own zone.
+    started_at: String,
+    /// When the session ended, as RFC 3339 in UTC.
+    ended_at: String,
     interrupted: bool,
     interrupt_reason: Option<String>,
 }
@@ -22410,6 +22849,7 @@ async fn timer_today(
             let task_name = entry_task_name(&entry.task_id, task);
             let task_color = dot_color(task, &colors);
             let seconds = entry.duration_seconds();
+            let ended_at = entry_end(&entry.started_at, seconds);
             let kind_label = match EntryKind::parse(&entry.kind) {
                 Some(EntryKind::Pomodoro) => "Pomodoro",
                 Some(EntryKind::Stopwatch) => "Stopwatch",
@@ -22440,6 +22880,8 @@ async fn timer_today(
                 kind_label,
                 started_display,
                 ended_display,
+                ended_at,
+                started_at: entry.started_at,
                 interrupted: entry.interrupted,
                 interrupt_reason: entry.interrupt_reason,
             }
@@ -23186,8 +23628,8 @@ built-in templates, as a saved one can hold any board's structure.
 
 A scope list sent to create a token or start a device request keeps only its highest entry. An
 unknown or revoked token gets 401 `token_invalid`, and a token past its expiry 401
-`token_expired`. Creating, listing, inspecting and revoking tokens needs the browser session (403
-`session_required` for a Bearer token), so a token never mints tokens.
+`token_expired`. Creating, listing, inspecting, editing and revoking tokens needs the browser
+session (403 `session_required` for a Bearer token), so a token never mints tokens.
 
 Device pairing (RFC 8628) gives a client its own token without pasting one:
 
@@ -23407,6 +23849,10 @@ them, which the Backups section of the settings page calls after a confirmation.
         list_calendar_feeds,
         create_calendar_feed,
         delete_calendar_feed,
+        list_report_bookmarks,
+        create_report_bookmark,
+        update_report_bookmark,
+        delete_report_bookmark,
         export_calendar,
         serve_calendar_feed,
         create_board,
@@ -23424,6 +23870,8 @@ them, which the Backups section of the settings page calls after a confirmation.
         list_permissions,
         list_api_tokens,
         revoke_api_token,
+        get_api_token,
+        update_api_token,
         start_device_auth,
         poll_device_token,
         start_sign_in,
@@ -23698,6 +24146,9 @@ mod bulk_tests;
 mod events_tests;
 
 #[cfg(test)]
+mod history_values_tests;
+
+#[cfg(test)]
 mod import_tests;
 
 #[cfg(test)]
@@ -23745,23 +24196,24 @@ mod tests {
     use utoipa::OpenApi;
 
     use super::docs::SKILL_VERSION;
+    use super::local_time::{LocalTime, Shape};
     use super::server::passkey_mode;
     use super::{
         ApiDoc, AvatarView, Build, COMPLETION_GRACE_SECS, ColorView, CreatedWebhookView,
         EstimateUnit, RepeatCadence, SubtaskDisplay, TaskCardDisplay, TimerSession,
         UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed, csv_field,
-        entry_badge, estimate_hours_to_size, format_added, format_due, format_due_card,
-        format_entry_duration, format_estimate_hours, format_pomodori, format_relative_day,
-        format_time_kf, format_timeline, generate_feed_token, history_kind_label, ical_escape,
-        ical_fold, is_overdue, log_timer_session, normalize_due_input, normalize_estimate_hours,
+        entry_badge, estimate_hours_to_size, format_added, format_due, format_entry_duration,
+        format_estimate_hours, format_pomodori, format_relative_day, format_time_kf,
+        format_timeline, generate_feed_token, history_kind_label, ical_escape, ical_fold,
+        is_overdue, log_timer_session, normalize_due_input, normalize_estimate_hours,
         parse_manual_range, parse_repeat_cadence, router, subtasks_on_face, timer_status_view,
         version_info,
     };
     use crate::db::{BootstrapToken, Db, NewTimeEntry};
     use crate::models::{
         AccountId, Actor, ActorKind, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, FeedTask,
-        FieldDefRow, FieldKind, FieldOwner, MAX_BOARD_FEEDS, SECONDS_PER_DAY, TaskRow, TimeFormat,
-        WebhookEvent, WebhookRow, WeekStart,
+        FieldDefRow, FieldKind, FieldOwner, MAX_BOARD_FEEDS, MAX_REPORT_BOOKMARKS, SECONDS_PER_DAY,
+        TaskRow, TimeFormat, WebhookEvent, WebhookRow, WeekStart,
     };
     use crate::{AppState, auth, markdown};
 
@@ -24161,73 +24613,6 @@ mod tests {
             .earliest()
             .expect("the hour exists locally")
             .to_rfc3339()
-    }
-
-    /// A fixed local "now" for due-text tests: Wednesday 2026-09-30 15:22.
-    fn due_test_now() -> DateTime<Local> {
-        let naive = chrono::NaiveDate::from_ymd_opt(2026, 9, 30)
-            .and_then(|d| d.and_hms_opt(15, 22, 0))
-            .expect("now");
-        naive
-            .and_local_timezone(Local)
-            .earliest()
-            .expect("local now")
-    }
-
-    /// A local wall time `days` from `due_test_now()`'s date, as RFC3339.
-    fn due_test_at(days: i64, hour: u32, minute: u32) -> String {
-        let day = due_test_now().date_naive() + Duration::days(days);
-        let naive = day.and_hms_opt(hour, minute, 0).expect("time");
-        naive
-            .and_local_timezone(Local)
-            .earliest()
-            .expect("local time")
-            .to_rfc3339()
-    }
-
-    /// Card due text is "Today", a weekday only for later dates this week, and "D Month" otherwise
-    /// (past dates included), matching KanbanFlow's 2026-09-30 captures.
-    #[test]
-    fn format_due_card_should_render_today_weekday_and_absolute() {
-        use super::format_due_card_at;
-
-        let now = due_test_now();
-        let card = |days, hour, minute| format_due_card_at(&due_test_at(days, hour, minute), now);
-        assert_eq!(card(0, 17, 0).as_deref(), Some("Today 5:00 PM"));
-        assert_eq!(card(0, 9, 0).as_deref(), Some("Today 9:00 AM"));
-        assert_eq!(card(2, 17, 0).as_deref(), Some("Friday 5:00 PM"));
-        assert_eq!(card(6, 17, 0).as_deref(), Some("Tuesday 5:00 PM"));
-        assert_eq!(card(7, 17, 0).as_deref(), Some("7 October 5:00 PM"));
-        assert_eq!(card(-5, 17, 0).as_deref(), Some("25 September 5:00 PM"));
-        assert_eq!(card(-1, 23, 0).as_deref(), Some("29 September 11:00 PM"));
-        assert_eq!(card(30, 17, 0).as_deref(), Some("30 October 5:00 PM"));
-        assert_eq!(format_due_card_at("not-a-date", now), None);
-    }
-
-    /// Modal due text matches the card for today and this week, reads "Oct 2 at 11:00 PM"
-    /// otherwise, and ends with the target column name in parentheses.
-    #[test]
-    fn format_due_modal_should_render_relative_and_target_column() {
-        use super::format_due_modal_at;
-
-        let now = due_test_now();
-        let modal =
-            |days, hour, suffix| format_due_modal_at(&due_test_at(days, hour, 0), suffix, now);
-        assert_eq!(modal(0, 17, None).as_deref(), Some("Today 5:00 PM"));
-        assert_eq!(
-            modal(2, 17, Some("Done")).as_deref(),
-            Some("Friday 5:00 PM (Done)")
-        );
-        assert_eq!(
-            modal(2, 23, Some("Done")).as_deref(),
-            Some("Friday 11:00 PM (Done)")
-        );
-        assert_eq!(modal(-16, 9, None).as_deref(), Some("Sep 14 at 9:00 AM"));
-        assert_eq!(
-            modal(14, 9, Some("Review")).as_deref(),
-            Some("Oct 14 at 9:00 AM (Review)")
-        );
-        assert_eq!(format_due_modal_at("not-a-date", Some("Done"), now), None);
     }
 
     /// A pomodoro retired after reaching its duration counts as completed, task-less work sessions
@@ -25118,9 +25503,13 @@ mod tests {
         }
 
         async fn post_json(&self, uri: &str, body: &str) -> axum::response::Response {
+            self.send_json("POST", uri, body).await
+        }
+
+        async fn send_json(&self, method: &str, uri: &str, body: &str) -> axum::response::Response {
             use tower::ServiceExt;
             let request = axum::http::Request::builder()
-                .method("POST")
+                .method(method)
                 .uri(uri)
                 .header("host", "127.0.0.1:3357")
                 .header("cookie", &self.cookie)
@@ -25360,6 +25749,106 @@ mod tests {
             .send("GET", "/api/calendar-feed/old-token.ics", "cross-site")
             .await;
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    /// A report bookmark stores its filter values with a name and two flags.
+    #[tokio::test]
+    async fn report_bookmark_should_store_filters_and_change_and_delete() {
+        let fx = kf420_fixture();
+        let uri = format!("/api/boards/{}/report-bookmarks", fx.board_id);
+        let body = serde_json::json!({
+            "report": "burndown",
+            "name": "  Sprint  ",
+            "shared": true,
+            "shortcut": true,
+            "filters": {"user": "unassigned", "labels": ["a", "b"]},
+        });
+        let response = fx.post_json(&uri, &body.to_string()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let saved = json_body(response).await;
+        assert_eq!(saved["name"], "Sprint");
+        assert_eq!(saved["shared"], true);
+        assert_eq!(saved["shortcut"], true);
+        assert_eq!(saved["own"], true);
+        assert_eq!(
+            saved["filters"],
+            serde_json::json!({"user": "unassigned", "labels": ["a", "b"]})
+        );
+        let response = fx.send("GET", &uri, "same-origin").await;
+        assert_eq!(
+            json_body(response).await["bookmarks"],
+            serde_json::json!([saved])
+        );
+
+        let one = format!("{uri}/{}", saved["id"].as_str().expect("id"));
+        let response = fx
+            .send_json("PATCH", &one, r#"{"name":"Renamed","shortcut":false}"#)
+            .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let edited = json_body(response).await;
+        assert_eq!(edited["name"], "Renamed");
+        assert_eq!(edited["shortcut"], false);
+        assert_eq!(edited["shared"], true);
+        assert_eq!(edited["filters"], saved["filters"]);
+
+        let response = fx
+            .send_json("PATCH", &one, r#"{"filters":{"color":"red"}}"#)
+            .await;
+        assert_eq!(
+            json_body(response).await["filters"],
+            serde_json::json!({"color": "red"})
+        );
+
+        let response = fx.send("DELETE", &one, "same-origin").await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let response = fx.send("DELETE", &one, "same-origin").await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let response = fx.send_json("PATCH", &one, r#"{"name":"Late"}"#).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let response = fx.send("GET", &uri, "same-origin").await;
+        assert_eq!(
+            json_body(response).await["bookmarks"],
+            serde_json::json!([])
+        );
+    }
+
+    /// A bookmark needs a known report, a name of 1 to 60 characters and filters of strings, and
+    /// a board holds at most 50.
+    #[tokio::test]
+    async fn report_bookmark_should_refuse_bad_input_and_a_full_board() {
+        let fx = kf420_fixture();
+        let uri = format!("/api/boards/{}/report-bookmarks", fx.board_id);
+        let long = "x".repeat(61);
+        let long_value = "y".repeat(201);
+        let bad = [
+            serde_json::json!({"report": "nope", "name": "A"}),
+            serde_json::json!({"report": "burndown", "name": "   "}),
+            serde_json::json!({"report": "burndown", "name": long}),
+            serde_json::json!({"report": "burndown", "name": "A", "filters": {"n": 1}}),
+            serde_json::json!({"report": "burndown", "name": "A", "filters": {"l": [1]}}),
+            serde_json::json!({"report": "burndown", "name": "A", "filters": {"s": long_value}}),
+        ];
+        for body in bad {
+            let response = fx.post_json(&uri, &body.to_string()).await;
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::BAD_REQUEST,
+                "{body}"
+            );
+        }
+        for n in 0..MAX_REPORT_BOOKMARKS {
+            let body = serde_json::json!({"report": "throughput", "name": format!("B{n}")});
+            let response = fx.post_json(&uri, &body.to_string()).await;
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::OK,
+                "bookmark {n}"
+            );
+        }
+        let response = fx
+            .post_json(&uri, r#"{"report":"throughput","name":"More"}"#)
+            .await;
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
     }
 
     /// Deleting a task (or its board) stops a timer running on it, and a status read never writes,
@@ -25653,7 +26142,7 @@ mod tests {
     }
 
     /// A bare local datetime (no UTC offset), with or without seconds, normalizes to RFC3339
-    /// server-local time instead of being stored verbatim (which `format_due_card` cannot parse).
+    /// server-local time instead of being stored verbatim (which the due renderer cannot parse).
     #[test]
     fn normalize_due_input_should_accept_bare_local_datetime_with_seconds() {
         for raw in ["2026-09-30T17:00:00", "2026-09-30 17:00:00"] {
@@ -25664,7 +26153,7 @@ mod tests {
             assert_eq!(dt.format("%Y-%m-%d").to_string(), "2026-09-30");
             assert_eq!((dt.hour(), dt.minute(), dt.second()), (17, 0, 0));
             assert!(
-                format_due_card(&norm).is_some(),
+                LocalTime::due(Shape::DueCard, &norm).is_some(),
                 "due renderer parses {raw}"
             );
         }
@@ -25794,6 +26283,7 @@ mod tests {
             position: 0,
             owner_id: "u1".into(),
             config_json: "{}".into(),
+            report_bookmarks: Vec::new(),
         };
         let columns = vec![ColumnRow {
             id: "c1".into(),
@@ -28674,7 +29164,9 @@ mod tests {
         let chip = &modal[start..start + modal[start..].find("</button>").expect("end")];
         assert!(chip.contains("<strong>"), "{chip}");
         assert!(
-            chip.contains("5:00 PM</strong> <span class=\"tm-due-column\">(Done)</span>"),
+            chip.contains(
+                "5:00 PM UTC</time></strong> <span class=\"tm-due-column\">(Done)</span>"
+            ),
             "{chip}"
         );
         assert!(!chip.contains("&#128197;"), "no calendar icon");
