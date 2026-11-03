@@ -5550,10 +5550,10 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn convert_subtask_should_refuse_a_token_without_subtasks_write() {
+async fn convert_subtask_should_refuse_a_token_without_subtasks_edit() {
     let fx = Fixture::multi();
     let setup = fx.convertible().await;
-    let token = fx.token_lacking(&[Permission::SubtasksWrite]);
+    let token = fx.token_lacking(&[Permission::SubtasksEdit]);
 
     let refused = fx.convert_as(&token, &setup, json!({})).await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);

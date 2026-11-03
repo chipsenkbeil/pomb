@@ -59,8 +59,8 @@ use crate::backup::{BackupFile, RunError};
 use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
     AdminActionOutcome, BoardDenied, BookmarkAdd, BookmarkPatch, Bound, ChangeOutcome, ChildLinks,
-    ChildRef, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, ColumnWatch,
-    CommentWrite, Commit, CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll,
+    ChildRef, ChildTokenRefusal, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind,
+    ColumnWatch, CommentWrite, Commit, CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll,
     DuplicateAttachment, EntryEdit, EpicCloseOutcome, EventRead, FeedAdd, FencedWrite,
     FieldCreateOutcome, FirstPasskeyOutcome, InboundColumnMissing, InstanceDb, LargestUse,
     LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD,
@@ -442,8 +442,8 @@ pub fn router(state: AppState) -> Router {
     // Copy another board's whole palette onto this board
     let router = router.route("/api/boards/:id/colors/copy-from", post(copy_board_colors));
 
-    // Agent API tokens. Creation/listing/revocation require the
-    // browser session cookie — a Bearer token can never mint tokens.
+    // Agent API tokens. Creation/listing/revocation require the browser session cookie, and only a
+    // lead token makes narrower children
     let router = router
         .route(
             "/api/v1/auth/tokens",
@@ -456,6 +456,20 @@ pub fn router(state: AppState) -> Router {
                 .delete(revoke_api_token),
         )
         .route("/api/v1/auth/tokens/inspect", post(inspect_api_token))
+        .route(
+            "/api/v1/auth/tokens/children",
+            post(create_child_token)
+                .get(list_child_tokens)
+                .delete(revoke_child_tokens),
+        )
+        .route(
+            "/api/v1/auth/tokens/children/:id",
+            delete(revoke_child_token),
+        )
+        .route(
+            "/api/v1/auth/tokens/:id/children",
+            delete(revoke_children_of_token),
+        )
         .route("/api/v1/auth/whoami", get(whoami))
         .route("/api/v1/auth/permissions", get(list_permissions));
 
@@ -1166,6 +1180,26 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (
             Method::DELETE,
             "/api/v1/auth/tokens/:id",
+            AccountSession,
+            Exempt,
+        ),
+        (Method::POST, "/api/v1/auth/tokens/children", Account, Grows),
+        (Method::GET, "/api/v1/auth/tokens/children", Account, No),
+        (
+            Method::DELETE,
+            "/api/v1/auth/tokens/children",
+            Account,
+            Exempt,
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/auth/tokens/children/:id",
+            Account,
+            Exempt,
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/auth/tokens/:id/children",
             AccountSession,
             Exempt,
         ),
@@ -3049,8 +3083,9 @@ impl TaskView {
                 kind: c.kind.clone(),
                 via_token: c
                     .token_name
-                    .clone()
-                    .filter(|_| c.actor_kind == ActorKind::ApiToken),
+                    .as_deref()
+                    .filter(|_| c.actor_kind == ActorKind::ApiToken)
+                    .map(|name| delegation_label(name, c.parent_token.as_ref())),
                 reactions: reaction_pills(&c.reactions, handle),
             })
             .collect();
@@ -4507,7 +4542,11 @@ impl HistoryEventView {
 /// the change.
 fn history_actor(event: &TaskEvent) -> String {
     match &event.token_name {
-        Some(name) => format!("{} ({name})", event.actor),
+        Some(name) => format!(
+            "{} ({})",
+            event.actor,
+            delegation_label(name, event.parent_token.as_ref())
+        ),
         None => event.actor.clone(),
     }
 }
@@ -8211,7 +8250,7 @@ struct UpdateTaskInput {
     #[serde(default, deserialize_with = "de_opt_opt")]
     #[schema(value_type = Object, required = false)]
     fields: Option<Option<serde_json::Value>>,
-    /// `epic` turns a task into an epic and needs only `tasks.write`. `task` turns an epic back
+    /// `epic` turns a task into an epic and needs only `tasks.edit`. `task` turns an epic back
     /// into a plain task, needs `epics.manage`, and is a 409 `epic_has_children` while the epic
     /// has children unless `unlink_children` is true. `epic` is a 409 `claim_held` while the task
     /// holds a live claim. Naming the kind the task already has is a 400. Absent leaves it
@@ -9205,7 +9244,7 @@ struct MoveTaskInput {
 /// Moves a task to a new column/swimlane/position. Crossing into the Done column stamps
 /// `completed_at` and crossing out clears it. Without a swimlane the task keeps its lane, or takes
 /// the target board's first lane when the column is on another board. A move to another board also
-/// gives the task that board's color of the same value, else its default. It needs `tasks.write`
+/// gives the task that board's color of the same value, else its default. It needs `tasks.move`
 /// alone and no delete permission: the task and everything on it survive.
 #[utoipa::path(
     post,
@@ -9394,7 +9433,7 @@ enum BulkTasksAction {
     Members,
     /// Removes every member from the tasks.
     UnassignMembers,
-    /// Appends the subtasks named in `add_subtasks` to each task. A token needs `subtasks.write`.
+    /// Appends the subtasks named in `add_subtasks` to each task. A token needs `subtasks.edit`.
     Subtasks,
     /// Adds, changes or deletes the due date as `due_mode` says. A task that already has a due
     /// date is left as it is by `add` under `due_existing` `skip`, and `change` and `delete` leave
@@ -9525,8 +9564,9 @@ struct BulkTasksResult {
 /// `DELETE /api/tasks/{id}` does. Every changed task queues the webhook events a single change
 /// queues.
 /// With `dry_run` the request runs every check and write of a real one, commits nothing and lists
-/// each task's old and new value. It needs `tasks.write`, plus `subtasks.write` for `subtasks`,
-/// `links.write` for `relations` and `tasks.bin` for `delete`, which a dry run needs too.
+/// each task's old and new value. It needs `tasks.edit` (`tasks.move` for `move`), plus
+/// `subtasks.edit` for `subtasks`, `links.write` for `relations` and `tasks.bin` for `delete`,
+/// which a dry run needs too.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/tasks/bulk",
@@ -9552,8 +9592,15 @@ async fn bulk_tasks(
     let db = &account;
     let board = found(db.board(&id), "board not found")?;
     let input: BulkTasksInput = parse_body(&headers, body).await?;
+    let base = match input.action {
+        BulkTasksAction::Move => Permission::TasksMove,
+        _ => Permission::TasksEdit,
+    };
+    if !user.has(base) {
+        return Err(AppError::permission_denied(base));
+    }
     let needed = match input.action {
-        BulkTasksAction::Subtasks => Some(Permission::SubtasksWrite),
+        BulkTasksAction::Subtasks => Some(Permission::SubtasksEdit),
         BulkTasksAction::Relations => Some(Permission::LinksWrite),
         BulkTasksAction::Delete => Some(Permission::TasksBin),
         _ => None,
@@ -11556,7 +11603,8 @@ async fn reorder_subtasks(
 }
 
 /// Renames a subtask, toggles its done flag, sets its due date or replaces its members. A field left
-/// out of the body stays unchanged.
+/// out of the body stays unchanged. A token needs `subtasks.check` to set `done` and
+/// `subtasks.edit` for any other field.
 #[utoipa::path(
     patch,
     path = "/api/tasks/{id}/subtasks/{sub_id}",
@@ -11570,6 +11618,7 @@ async fn reorder_subtasks(
     responses(
         (status = 200, description = "The updated subtask", body = SubtaskDetail),
         (status = 400, description = "An unknown member id"),
+        (status = 403, description = "`permission_denied`: the token lacks `subtasks.check` for `done` or `subtasks.edit` for another field"),
         (status = 404, description = "Task or subtask not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -11582,6 +11631,15 @@ async fn update_subtask(
     body: Bytes,
 ) -> Result<Json<SubtaskDetail>, AppError> {
     let input: UpdateSubtaskInput = parse_body(&headers, body).await?;
+    let edits = input.name.is_some() || input.due_at.is_some() || input.member_ids.is_some();
+    for (needed, applies) in [
+        (Permission::SubtasksEdit, edits),
+        (Permission::SubtasksCheck, input.done.is_some()),
+    ] {
+        if applies && !user.has(needed) {
+            return Err(AppError::permission_denied(needed));
+        }
+    }
     let owned = found(account.task(&id), "task or subtask not found")?;
     ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
     if let Some(name) = input.name.as_deref()
@@ -11704,8 +11762,8 @@ struct ConvertSubtaskInput {
 
 /// Turns a subtask into a task of its own. The new task takes the subtask's name and due date and
 /// goes in the parent's swimlane, in the chosen column of the parent's board. The subtask leaves
-/// the parent, and the two tasks are linked as `relation` says. A token needs `tasks.write` and
-/// `subtasks.write`, `links.write` for any relation but `none`, and without `subtasks.delete` may
+/// the parent, and the two tasks are linked as `relation` says. A token needs `tasks.create` and
+/// `subtasks.edit`, `links.write` for any relation but `none`, and without `subtasks.delete` may
 /// convert only a subtask it created.
 #[utoipa::path(
     post,
@@ -11720,7 +11778,7 @@ struct ConvertSubtaskInput {
     responses(
         (status = 201, description = "The new task", body = TaskDetail),
         (status = 400, description = "Unknown color or member, or a column on another board"),
-        (status = 403, description = "`permission_denied`: the token lacks `subtasks.write` or, for a relation, `links.write`, or lacks `subtasks.delete` and did not create the subtask. `card_locked`: the parent carries a locking label"),
+        (status = 403, description = "`permission_denied`: the token lacks `subtasks.edit` or, for a relation, `links.write`, or lacks `subtasks.delete` and did not create the subtask. `card_locked`: the parent carries a locking label"),
         (status = 404, description = "Task, subtask or column not found"),
         (status = 422, description = "`column_rule`: the target column refuses the new task, or the parent's column refuses the parent without the subtask"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -11745,8 +11803,8 @@ async fn convert_subtask(
         .find(|sub| sub.id == sub_id)
         .cloned()
         .ok_or_else(|| AppError::not_found(missing))?;
-    if !user.has(Permission::SubtasksWrite) {
-        return Err(AppError::permission_denied(Permission::SubtasksWrite));
+    if !user.has(Permission::SubtasksEdit) {
+        return Err(AppError::permission_denied(Permission::SubtasksEdit));
     }
     if !matches!(input.relation, ConvertRelation::None) && !user.has(Permission::LinksWrite) {
         return Err(AppError::permission_denied(Permission::LinksWrite));
@@ -11913,7 +11971,7 @@ enum SubtaskDelete {
     ),
     responses(
         (status = 200, description = "Subtask removed"),
-        (status = 403, description = "`permission_denied`: the token lacks `subtasks.write`, or lacks `subtasks.delete` and did not create the subtask"),
+        (status = 403, description = "`permission_denied`: the token lacks `subtasks.edit`, or lacks `subtasks.delete` and did not create the subtask"),
         (status = 404, description = "Task or subtask not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -14250,7 +14308,7 @@ async fn task_modal(
     for comment in &mut task.comments {
         comment.body_html = markdown::render_in(&comment.body, scope);
     }
-    let description_html = if user.has(Permission::TasksWrite) {
+    let description_html = if user.has(Permission::TasksEdit) {
         markdown::render_tickable_in(&task.description, scope)
     } else {
         markdown::render_in(&task.description, scope)
@@ -20891,11 +20949,7 @@ fn board_settings_context(
             .map_or_else(|| "None".to_string(), |member| member.display_name.clone()),
     };
     let tokens = if tab == "api" {
-        db.list_api_tokens()
-            .map_err(AppError::from)?
-            .iter()
-            .map(ApiTokenListItem::from)
-            .collect()
+        token_list_items(&db.list_api_tokens().map_err(AppError::from)?)
     } else {
         Vec::new()
     };
@@ -21506,11 +21560,35 @@ struct ApiTokenListItem {
     created: String,
     last_used: String,
     expires: String,
+    /// Whether another token issued this one.
+    child: bool,
+    /// How many live tokens this one issued.
+    children: usize,
+}
+
+/// Returns the settings rows of `records`, each token followed by the children it issued.
+#[must_use]
+fn token_list_items(records: &[ApiTokenRecord]) -> Vec<ApiTokenListItem> {
+    records
+        .iter()
+        .filter(|record| record.parent_id.is_none())
+        .flat_map(|parent| {
+            let children: Vec<_> = records
+                .iter()
+                .filter(|record| record.parent_id.as_deref() == Some(parent.id.as_str()))
+                .collect();
+            let mut parent_row = ApiTokenListItem::from(parent);
+            parent_row.children = children.len();
+            std::iter::once(parent_row).chain(children.into_iter().map(ApiTokenListItem::from))
+        })
+        .collect()
 }
 
 impl From<&ApiTokenRecord> for ApiTokenListItem {
     fn from(token: &ApiTokenRecord) -> Self {
         Self {
+            child: token.parent_id.is_some(),
+            children: 0,
             id: token.id.clone(),
             name: token.name.clone(),
             prefix: token.prefix.clone(),
@@ -21697,12 +21775,8 @@ async fn settings_page(
     headers: HeaderMap,
 ) -> Result<SettingsTemplate, AppError> {
     let settings = account.settings().map_err(AppError::from)?;
-    let tokens = account
-        .list_api_tokens()
-        .map_err(AppError::from)?
-        .iter()
-        .map(ApiTokenListItem::from)
-        .collect();
+    let records = account.list_api_tokens().map_err(AppError::from)?;
+    let tokens = token_list_items(&records);
     let passkeys = account
         .passkeys()
         .map_err(AppError::from)?
@@ -22290,6 +22364,8 @@ struct ApiTokenView {
     created_at: i64,
     last_used_at: Option<i64>,
     expires_at: Option<i64>,
+    /// The id of the token that issued this one, absent for a token made in the browser.
+    parent_id: Option<String>,
 }
 
 impl From<&ApiTokenRecord> for ApiTokenView {
@@ -22303,6 +22379,7 @@ impl From<&ApiTokenRecord> for ApiTokenView {
             created_at: record.created_at,
             last_used_at: record.last_used_at,
             expires_at: record.expires_at,
+            parent_id: record.parent_id.clone(),
         }
     }
 }
@@ -22364,12 +22441,25 @@ fn submitted_permissions(
             let scope = submitted_scope(scopes)?;
             Ok((scope, scope.permissions()))
         }
-        (Some(name), None, true) => {
+        (_, _, true) => named_grant(preset, permissions),
+        _ => Err(AppError::bad_request(
+            "send exactly one of scopes, preset and permissions",
+        )),
+    }
+}
+
+/// Reads the one grant named by exactly one of a `preset` and a custom set of `permissions`.
+fn named_grant(
+    preset: Option<&str>,
+    permissions: Option<&[String]>,
+) -> Result<(AuthScope, BTreeSet<Permission>), AppError> {
+    match (preset, permissions) {
+        (Some(name), None) => {
             let preset = Preset::named(name)
                 .ok_or_else(|| AppError::bad_request("preset must be read, work, lead or admin"))?;
             Ok((AuthScope::of_preset(preset), preset.permissions()))
         }
-        (None, Some(names), true) => {
+        (None, Some(names)) => {
             let permissions = names
                 .iter()
                 .map(|name| {
@@ -22383,7 +22473,7 @@ fn submitted_permissions(
             Ok((AuthScope::label_of(&permissions), permissions))
         }
         _ => Err(AppError::bad_request(
-            "send exactly one of scopes, preset and permissions",
+            "send exactly one of preset and permissions",
         )),
     }
 }
@@ -23343,6 +23433,238 @@ async fn create_api_token(
         grant: GrantView::new(Some(&account), &record.permissions, &record.boards)?,
         raw_token: raw,
     }))
+}
+
+/// Seconds in an hour.
+const SECONDS_PER_HOUR: i64 = 3_600;
+/// Hours a child token lives when the request names none.
+const DEFAULT_CHILD_TOKEN_HOURS: i64 = 1;
+/// Fewest hours a child token may live.
+const MIN_CHILD_TOKEN_HOURS: i64 = 1;
+/// Most hours a child token may live.
+const MAX_CHILD_TOKEN_HOURS: i64 = 8;
+
+/// Body of the child token request: a name, one grant, the boards and the lifetime.
+#[derive(Deserialize, ToSchema)]
+struct CreateChildTokenInput {
+    /// Display name, 1 to 80 characters.
+    name: String,
+    /// A preset from `GET /api/v1/auth/permissions`. Send exactly one of `preset` and
+    /// `permissions`.
+    preset: Option<String>,
+    /// A custom, non-empty set of permission wire names.
+    permissions: Option<Vec<String>>,
+    /// The boards the child reaches: "all", the default, only when the caller reaches all of them,
+    /// or a non-empty array of ids of boards the caller reaches.
+    #[serde(default)]
+    boards: BoardsInput,
+    /// Hours until expiry, from 1 to 8. Defaults to 1. The child never outlives the caller.
+    expires_in_hours: Option<i64>,
+}
+
+/// Creates a child token that holds no more than the calling token. The caller needs
+/// `tokens.issue`, and the child gets only permissions and boards the caller holds, never
+/// `tokens.issue`, and an expiry of 1 hour by default and at most 8 hours that does not pass the
+/// caller's own. A child's name must differ from every
+/// other token's name on the account, whatever the letter case. Revoking the caller revokes its
+/// children. Send one of `preset` and `permissions`, plus `boards`, which defaults to `all`. The
+/// child's history entries and comments name the caller beside the child.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/tokens/children",
+    operation_id = "create_child_token",
+    tag = "Tokens",
+    request_body = CreateChildTokenInput,
+    responses(
+        (status = 200, description = "Created child token (raw_token shown once)", body = CreateTokenResponse),
+        (status = 400, description = "Invalid name, both or neither of `preset` and `permissions`, an unknown preset, permission or board, empty `boards`, or `expires_in_hours` outside 1 to 8"),
+        (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`, or `forbidden`: the child asks for a permission or board the caller lacks, or for `tokens.issue`, or the caller is not an API token"),
+        (status = 409, description = "`quota_exceeded`: the account holds 50 tokens already. Without a code: another token of the account has the name, whatever its letter case"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn create_child_token(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<CreateTokenResponse>, AppError> {
+    let parent_id = calling_token_id(&user)?;
+    let input: CreateChildTokenInput = parse_body(&headers, body).await?;
+    let name = submitted_token_name(&input.name)?;
+    let (scope, permissions) = named_grant(input.preset.as_deref(), input.permissions.as_deref())?;
+    if permissions.contains(&Permission::TokensIssue) {
+        return Err(AppError::forbidden("a child token cannot issue tokens"));
+    }
+    if let Some(extra) = permissions.difference(user.permissions()).next() {
+        return Err(AppError::forbidden(format!(
+            "the calling token does not hold {}",
+            extra.name()
+        )));
+    }
+    let boards = submitted_boards(&account, input.boards)?;
+    if !boards.within(user.boards()) {
+        return Err(AppError::forbidden(
+            "the child asks for a board the calling token does not reach",
+        ));
+    }
+    let hours = input.expires_in_hours.unwrap_or(DEFAULT_CHILD_TOKEN_HOURS);
+    if !(MIN_CHILD_TOKEN_HOURS..=MAX_CHILD_TOKEN_HOURS).contains(&hours) {
+        return Err(AppError::bad_request(format!(
+            "expires_in_hours must be from 1 to {MAX_CHILD_TOKEN_HOURS}"
+        )));
+    }
+    let expires_at = (chrono::Utc::now().timestamp() + hours * SECONDS_PER_HOUR)
+        .min(user.expires_at.unwrap_or(i64::MAX));
+    let grant = TokenGrant {
+        scope,
+        permissions,
+        boards,
+    };
+    let parent = ParentToken {
+        id: parent_id.to_string(),
+        name: user.token_name.clone().unwrap_or_default(),
+    };
+    let (record, raw) = account
+        .create_child_api_token(&parent, &name, grant, expires_at)
+        .map_err(AppError::from)?
+        .map_err(|refusal| match refusal {
+            ChildTokenRefusal::ParentGone => {
+                AppError::with_status(StatusCode::UNAUTHORIZED, "the calling token was revoked")
+                    .with_code(ErrorCode::TokenInvalid)
+            }
+            ChildTokenRefusal::NameTaken => {
+                AppError::conflict("another token of the account has that name")
+            }
+        })?;
+    Ok(Json(CreateTokenResponse {
+        token: ApiTokenView::from(&record),
+        grant: GrantView::new(Some(&account), &record.permissions, &record.boards)?,
+        raw_token: raw,
+    }))
+}
+
+/// Returns the id of the API token that made the request, which only an API token has.
+fn calling_token_id(user: &AuthUser) -> Result<&str, AppError> {
+    user.token_id
+        .as_deref()
+        .filter(|_| user.kind == CredentialKind::Token)
+        .ok_or_else(|| AppError::forbidden("only an API token issues child tokens"))
+}
+
+/// Result of revoking child tokens.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct RevokedChildren {
+    /// How many child tokens were revoked.
+    revoked: u64,
+}
+
+/// Lists the live child tokens the calling token issued, oldest first, and no other token. The
+/// caller needs `tokens.issue`, and the reply never holds a token's secret.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/tokens/children",
+    operation_id = "list_child_tokens",
+    tag = "Tokens",
+    responses(
+        (status = 200, description = "The caller's child tokens, without their secrets", body = Vec<ApiTokenView>),
+        (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`, or `forbidden`: the caller is not an API token"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_child_tokens(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<Vec<ApiTokenView>>, AppError> {
+    let parent = calling_token_id(&user)?;
+    let children = account
+        .list_child_api_tokens(parent)
+        .map_err(AppError::from)?;
+    Ok(Json(children.iter().map(ApiTokenView::from).collect()))
+}
+
+/// Revokes every child token the calling token issued, and no other token. The caller needs
+/// `tokens.issue`.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/auth/tokens/children",
+    operation_id = "revoke_child_tokens",
+    tag = "Tokens",
+    responses(
+        (status = 200, description = "How many child tokens were revoked", body = RevokedChildren),
+        (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`, or `forbidden`: the caller is not an API token"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn revoke_child_tokens(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<RevokedChildren>, AppError> {
+    let parent = calling_token_id(&user)?;
+    let revoked = account
+        .delete_child_api_tokens(parent, None)
+        .map_err(AppError::from)?;
+    Ok(Json(RevokedChildren { revoked }))
+}
+
+/// Revokes one child token the calling token issued. A token that is not the caller's child gets
+/// the same 404 as an unknown one. The caller needs `tokens.issue`.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/auth/tokens/children/{id}",
+    operation_id = "revoke_child_token",
+    tag = "Tokens",
+    params(("id" = String, Path, description = "Child token id")),
+    responses(
+        (status = 200, description = "Revoked token id", body = RevokeResult),
+        (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`, or `forbidden`: the caller is not an API token"),
+        (status = 404, description = "No such child token of the caller"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn revoke_child_token(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<RevokeResult>, AppError> {
+    let parent = calling_token_id(&user)?;
+    let revoked = account
+        .delete_child_api_tokens(parent, Some(&id))
+        .map_err(AppError::from)?;
+    if revoked == 0 {
+        return Err(AppError::not_found("no such child token"));
+    }
+    Ok(Json(RevokeResult { revoked: id }))
+}
+
+/// Revokes every child token of one token of the account, for the browser session.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/auth/tokens/{id}/children",
+    operation_id = "revoke_children_of_token",
+    tag = "Tokens",
+    params(("id" = String, Path, description = "Parent token id")),
+    responses(
+        (status = 200, description = "How many child tokens were revoked", body = RevokedChildren),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "No such token"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn revoke_children_of_token(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<RevokedChildren>, AppError> {
+    require_cookie_auth(&user)?;
+    let tokens = account.list_api_tokens().map_err(AppError::from)?;
+    if !tokens.iter().any(|token| token.id == id) {
+        return Err(AppError::not_found("no such token"));
+    }
+    let revoked = account
+        .delete_child_api_tokens(&id, None)
+        .map_err(AppError::from)?;
+    Ok(Json(RevokedChildren { revoked }))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -25133,7 +25455,18 @@ built-in templates, as a saved one can hold any board's structure.
 A scope list sent to create a token or start a device request keeps only its highest entry. An
 unknown or revoked token gets 401 `token_invalid`, and a token past its expiry 401
 `token_expired`. Creating, listing, inspecting, editing and revoking tokens needs the browser
-session (403 `session_required` for a Bearer token), so a token never mints tokens.
+session (403 `session_required` for a Bearer token), so a token never mints tokens except one
+narrower child: a token with `tokens.issue`, which the `lead` and `admin` presets hold, calls
+`POST /api/v1/auth/tokens/children` for a child that holds a subset of the caller's permissions and
+boards, never `tokens.issue`, and expires in 1 hour unless asked for up to 8 hours, and no later than
+the caller. The child cannot create tokens or add passkeys, and revoking the caller revokes its
+children. A child's name must differ from every other token's name on the account,
+whatever the letter case (409). A child's `parent_id` names the token that issued it, and its
+history entries and comments carry a `parent_token` with the caller's `id` and `name`. The same
+caller lists its children with
+`GET /api/v1/auth/tokens/children` and revokes one or all of them with
+`DELETE /api/v1/auth/tokens/children/{id}` and `DELETE /api/v1/auth/tokens/children`, and no other
+token.
 
 Device pairing (RFC 8628) gives a client its own token without pasting one:
 
@@ -25384,6 +25717,11 @@ them, which the Backups section of the settings page calls after a confirmation.
         copy_board_colors,
         create_api_token,
         inspect_api_token,
+        create_child_token,
+        list_child_tokens,
+        revoke_child_tokens,
+        revoke_child_token,
+        revoke_children_of_token,
         whoami,
         list_permissions,
         list_api_tokens,
@@ -25564,6 +25902,7 @@ them, which the Backups section of the settings page calls after a confirmation.
             TimerLogQuery,
             TimeSpentQuery,
             CreateTokenInput,
+            CreateChildTokenInput,
             BoardsInput,
             InspectTokenInput,
             DeviceAuthInput,
@@ -25809,6 +26148,7 @@ mod tests {
             name: "a",
             token_name: None,
             kind: ActorKind::User,
+            parent_token: None,
         }
     }
 
@@ -33396,7 +33736,7 @@ mod tests {
             &fx,
             &reader,
             ("POST", "/api/tasks", Some("{}")),
-            "tasks.write",
+            "tasks.create",
         )
         .await;
         assert_error(

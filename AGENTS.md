@@ -64,8 +64,11 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
   invited or approved members, needs `--auth passkey`, and puts its routes (invites,
   registration, recovery, account deletion, the admin page and `/pending`) behind multi mode, so
   single mode answers them 404. A pending account reaches only `/pending` and sign-out.
-  Token and passkey management endpoints require the browser, and a token
-  must never mint new tokens or add a passkey.
+  Token and passkey management endpoints require the browser. A token never mints a token, with
+  one exception: a token holding `tokens.issue` (the lead preset) creates child tokens that hold a
+  subset of its permissions and boards, never `tokens.issue`, expire in 1 hour by default and 8
+  at most, and are revoked with it (the owner approved this on 28 October). That token also lists
+  and revokes its own children over Bearer, and no other token. A token never adds a passkey.
   Browser writes (every non-Bearer write, with or without a cookie) must be
   same-origin (`src/csrf.rs`, the router's outermost layer); Bearer requests
   skip that check.

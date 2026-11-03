@@ -428,12 +428,14 @@ mod tests {
         name: "owner",
         token_name: None,
         kind: ActorKind::User,
+        parent_token: None,
     };
 
     const TOKEN: Actor<'static> = Actor {
         name: "api-token",
         token_name: Some("ci"),
         kind: ActorKind::ApiToken,
+        parent_token: None,
     };
 
     const EVERY_EVENT: [WebhookEvent; 6] = [

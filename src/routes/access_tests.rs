@@ -2576,6 +2576,7 @@ async fn notifications_should_belong_to_their_account_and_the_browser_session() 
         name: "api-token",
         token_name: Some("ci"),
         kind: ActorKind::ApiToken,
+        parent_token: None,
     };
     fx.db
         .notify(Change::BoardDeleted(&board), actor)

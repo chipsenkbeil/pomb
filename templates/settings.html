@@ -191,14 +191,14 @@
         <thead><tr><th>Name</th><th>Token</th><th>Scope</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
         <tbody>
           {% for token in tokens %}
-          <tr>
+          <tr{% if token.child %} class="token-child"{% endif %}>
             <td>{{ token.name }}</td>
             <td><code>{{ token.prefix }}&hellip;{{ token.last4 }}</code></td>
             <td>{{ token.scopes }}</td>
             <td>{{ token.created }}</td>
             <td>{{ token.last_used }}</td>
             <td>{{ token.expires }}</td>
-            <td><button type="button" class="kf-btn token-revoke" data-id="{{ token.id }}" data-name="{{ token.name }}">Revoke</button></td>
+            <td><button type="button" class="kf-btn token-revoke" data-id="{{ token.id }}" data-name="{{ token.name }}">Revoke</button>{% if token.children > 0 %} <button type="button" class="kf-btn token-revoke-children" data-id="{{ token.id }}" data-name="{{ token.name }}">Revoke all children</button>{% endif %}</td>
           </tr>
           {% endfor %}
         </tbody>

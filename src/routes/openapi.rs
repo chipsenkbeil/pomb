@@ -228,6 +228,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "remove_passkey",
             "remove_unnamed_attachment_files",
             "revoke_api_token",
+            "revoke_children_of_token",
             "revoke_invite",
             "run_backup",
             "sign_out_other_sessions",
@@ -271,7 +272,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        36
+        37
     );
 }
 
@@ -592,8 +593,8 @@ fn spec_should_name_the_permission_each_operation_needs() {
     for (method, path, permission) in [
         ("get", "/api/boards", "boards.read"),
         ("get", "/api/boards/{id}/calendar-feeds", "feeds.manage"),
-        ("post", "/api/tasks", "tasks.write"),
-        ("post", "/api/tasks/{id}/claim", "tasks.write"),
+        ("post", "/api/tasks", "tasks.create"),
+        ("post", "/api/tasks/{id}/claim", "tasks.claim"),
         ("post", "/api/timer/stop", "time.write"),
         ("delete", "/api/boards/{id}", "boards.delete"),
         ("post", "/api/boards", "boards.create"),
@@ -602,17 +603,25 @@ fn spec_should_name_the_permission_each_operation_needs() {
         ("post", "/api/boards/{id}/fields", "fields.create"),
         ("patch", "/api/columns/{id}", "columns.edit"),
         ("delete", "/api/tasks/{id}", "tasks.bin"),
-        ("put", "/api/tasks/{id}/subtasks/order", "subtasks.write"),
+        ("put", "/api/tasks/{id}/subtasks/order", "subtasks.edit"),
         ("delete", "/api/tasks/{id}/subtasks", "subtasks.delete"),
         (
             "post",
             "/api/tasks/{id}/subtasks/{sub_id}/convert",
-            "tasks.write",
+            "tasks.create",
         ),
         (
             "post",
             "/api/tasks/{id}/subtasks/template",
             "settings.write",
+        ),
+        ("post", "/api/v1/auth/tokens/children", "tokens.issue"),
+        ("get", "/api/v1/auth/tokens/children", "tokens.issue"),
+        ("delete", "/api/v1/auth/tokens/children", "tokens.issue"),
+        (
+            "delete",
+            "/api/v1/auth/tokens/children/{id}",
+            "tokens.issue",
         ),
     ] {
         assert_eq!(
@@ -634,7 +643,7 @@ fn reference_should_show_each_operations_permission() {
         let rest = &reference[at + heading.len()..];
         rest[..rest.find("\n### ").unwrap_or(rest.len())].to_string()
     };
-    assert!(section("\n### POST /api/tasks\n").contains("Permission: `tasks.write`."));
+    assert!(section("\n### POST /api/tasks\n").contains("Permission: `tasks.create`."));
     assert!(section("\n### DELETE /api/boards/{id}\n").contains("Permission: `boards.delete`."));
     assert!(section("\n### GET /api/boards\n").contains("Permission: `boards.read`."));
     assert!(section("\n### GET /skill.md\n").contains("Auth: none."));

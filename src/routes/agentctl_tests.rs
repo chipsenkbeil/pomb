@@ -7,12 +7,12 @@ use tower::ServiceExt;
 use super::router;
 use super::server::passkey_mode;
 use crate::auth::new_api_token_record;
-use crate::db::{BootstrapToken, FencedWrite, NewComment};
+use crate::db::{BootstrapToken, ChildTokenRefusal, FencedWrite, NewComment};
 use crate::models::{
     AccountId, ActiveTimer, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind,
     FieldOwner, HistoryKind, SECONDS_PER_DAY, TimeEntryRow, TimerMode,
 };
-use crate::permissions::Permission;
+use crate::permissions::{Permission, STANDARD_ROLES};
 use crate::{AppState, markdown};
 
 struct Fixture {
@@ -5253,7 +5253,7 @@ async fn a_work_token_should_be_refused_every_route_that_needs_a_delete_permissi
 }
 
 #[tokio::test]
-async fn a_cross_board_move_should_need_only_tasks_write_and_keep_the_task() {
+async fn a_cross_board_move_should_need_only_tasks_move_and_keep_the_task() {
     let (_dir, fx) = fixture();
     let work = token_with(&fx, "worker", AuthScope::Work);
     let reader = token_with(&fx, "reader", AuthScope::Read);
@@ -5269,7 +5269,7 @@ async fn a_cross_board_move_should_need_only_tasks_write_and_keep_the_task() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
     assert_eq!(
         serde_json::from_str::<Value>(&text).expect("json"),
-        permission_denied("tasks.write")
+        permission_denied("tasks.move")
     );
 
     let (status, text) = bearer_json(&fx, &work, "POST", &uri, body).await;
@@ -5320,10 +5320,10 @@ async fn a_read_token_should_be_refused_every_write_and_an_admin_token_none() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
     for (method, uri, needs) in [
-        ("POST", "/api/tasks".to_string(), "tasks.write"),
-        ("PATCH", format!("/api/tasks/{id}"), "tasks.write"),
-        ("POST", format!("/api/tasks/{id}/move"), "tasks.write"),
-        ("POST", format!("/api/tasks/{id}/claim"), "tasks.write"),
+        ("POST", "/api/tasks".to_string(), "tasks.create"),
+        ("PATCH", format!("/api/tasks/{id}"), "tasks.edit"),
+        ("POST", format!("/api/tasks/{id}/move"), "tasks.move"),
+        ("POST", format!("/api/tasks/{id}/claim"), "tasks.claim"),
         ("POST", "/api/timer/start".to_string(), "time.write"),
         ("DELETE", format!("/api/tasks/{id}"), "tasks.bin"),
         ("POST", "/api/boards".to_string(), "boards.create"),
@@ -7356,7 +7356,7 @@ async fn a_cross_board_move_should_need_both_boards_in_the_set() {
         json!({"column_id": far_column, "position": 0}),
     )
     .await;
-    assert_board_denied(answer, "tasks.write", &far).await;
+    assert_board_denied(answer, "tasks.move", &far).await;
 
     let answer = bearer_json(
         &fx,
@@ -7366,7 +7366,7 @@ async fn a_cross_board_move_should_need_both_boards_in_the_set() {
         json!({"column_id": fx.col_todo, "position": 0}),
     )
     .await;
-    assert_board_denied(answer, "tasks.write", &far).await;
+    assert_board_denied(answer, "tasks.move", &far).await;
 
     let (_, both) = assigned_token(&fx, AuthScope::Work, &[&fx.board_id, &far]);
     let (status, text) = bearer_json(
@@ -10100,7 +10100,7 @@ async fn a_token_should_be_created_from_a_custom_set_and_hold_only_it() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
     assert_eq!(
         serde_json::from_str::<Value>(&text).expect("json"),
-        permission_denied("tasks.write")
+        permission_denied("tasks.create")
     );
 }
 
@@ -10123,7 +10123,7 @@ async fn a_custom_set_should_grant_only_its_own_permissions_at_any_label() {
         .expect("token");
     assert_eq!(stored.scope, AuthScope::Read);
     assert!(stored.permissions.contains(&Permission::BoardsDelete));
-    assert!(!stored.permissions.contains(&Permission::TasksWrite));
+    assert!(!stored.permissions.contains(&Permission::TasksCreate));
 }
 
 #[tokio::test]
@@ -10207,11 +10207,11 @@ async fn token_edit_should_rename_and_regrant_without_a_new_secret() {
     let (_dir, fx) = fixture();
     let (id, raw) = token_record(&fx, "before", AuthScope::Read);
     let uri = format!("/api/v1/auth/tokens/{id}");
-    let body = json!({"name": "  after  ", "permissions": ["tasks.read", "tasks.write"]});
+    let body = json!({"name": "  after  ", "permissions": ["tasks.read", "tasks.create"]});
     let (status, reply) = call(&fx, "PATCH", &uri, Some(body)).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert_eq!(reply["name"], "after");
-    assert_eq!(reply["permissions"], json!(["tasks.read", "tasks.write"]));
+    assert_eq!(reply["permissions"], json!(["tasks.read", "tasks.create"]));
     assert!(reply.get("raw_token").is_none(), "{reply}");
     assert!(!reply.to_string().contains(&raw), "{reply}");
 
@@ -10222,7 +10222,7 @@ async fn token_edit_should_rename_and_regrant_without_a_new_secret() {
     assert_eq!(inspected["name"], "after");
     assert_eq!(
         inspected["permissions"],
-        json!(["tasks.read", "tasks.write"])
+        json!(["tasks.read", "tasks.create"])
     );
 
     let (status, shown) = call(&fx, "GET", &uri, None).await;
@@ -11278,7 +11278,7 @@ async fn issued_grant(fx: &Fixture, device_code: &str) -> (Value, Value) {
 #[tokio::test]
 async fn a_device_request_should_be_refused_when_the_approver_raises_its_permissions() {
     let (_dir, fx) = fixture();
-    let request = json!({"permissions": ["tasks.read", "tasks.write"]});
+    let request = json!({"permissions": ["tasks.read", "tasks.create"]});
 
     let (status, page, _) = approve_request(
         &fx,
@@ -11299,7 +11299,7 @@ async fn lowering_the_permissions_of_a_device_request_should_persist_in_the_toke
     let (_dir, fx) = fixture();
     let (status, _, device_code) = approve_request(
         &fx,
-        json!({"permissions": ["tasks.read", "tasks.write", "boards.read"]}),
+        json!({"permissions": ["tasks.read", "tasks.create", "boards.read"]}),
         "&permissions_listed=1&permissions=tasks.read&permissions=boards.read",
     )
     .await;
@@ -11361,7 +11361,7 @@ async fn the_expiry_of_a_device_request_should_key_on_deletes() {
     let (_dir, fx) = fixture();
     for (request, default) in [
         (json!({"permissions": ["tasks.read", "tasks.delete"]}), "1"),
-        (json!({"permissions": ["tasks.read", "tasks.write"]}), "90"),
+        (json!({"permissions": ["tasks.read", "tasks.create"]}), "90"),
     ] {
         let (_, started) = {
             let mut body = json!({"client_name": "agentctl"});
@@ -12222,4 +12222,729 @@ async fn an_epic_sent_to_a_done_column_by_a_deletion_should_keep_its_completion_
     let row = stored(&fx, &epic);
     assert_eq!(row["column_id"], fx.col_todo.as_str());
     assert!(row["completed_at"].is_null(), "{row}");
+}
+
+const CHILDREN: &str = "/api/v1/auth/tokens/children";
+
+/// Posts `body` to the child token route as `parent`, and returns the status and parsed reply.
+async fn issue(fx: &Fixture, parent: &str, body: Value) -> (StatusCode, Value) {
+    let (status, text) = bearer_json(fx, parent, "POST", CHILDREN, body).await;
+    let reply = serde_json::from_str(&text).unwrap_or(Value::String(text));
+    (status, reply)
+}
+
+fn raw_of(reply: &Value) -> String {
+    reply["raw_token"].as_str().expect("raw token").to_string()
+}
+
+fn token_count(fx: &Fixture) -> usize {
+    fx.db
+        .list_account_api_tokens(&fx.user_id)
+        .expect("tokens")
+        .len()
+}
+
+#[tokio::test]
+async fn a_lead_token_should_issue_a_reviewer_child_that_ticks_and_an_implementer_that_cannot() {
+    let (_dir, fx) = fixture();
+    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let task = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let sub = subtask_as(&fx, As::Admin, &task, "box").await;
+
+    let (status, reviewer) = issue(
+        &fx,
+        &lead,
+        json!({"name": "reviewer", "permissions": ["tasks.read", "subtasks.check"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reviewer}");
+    assert_eq!(reviewer["parent_id"], lead_id.as_str());
+    assert_eq!(
+        reviewer["permissions"],
+        json!(["tasks.read", "subtasks.check"])
+    );
+    let (status, implementer) = issue(
+        &fx,
+        &lead,
+        json!({"name": "implementer", "permissions": ["tasks.read", "tasks.edit"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{implementer}");
+
+    let tick = format!("/api/tasks/{task}/subtasks/{sub}");
+    let done = json!({"done": true});
+    let (status, text) =
+        bearer_json(&fx, &raw_of(&implementer), "PATCH", &tick, done.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json"),
+        permission_denied("subtasks.edit")
+    );
+    let (status, text) = bearer_json(&fx, &raw_of(&reviewer), "PATCH", &tick, done).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+}
+
+#[tokio::test]
+async fn a_child_should_be_refused_a_permission_or_board_its_parent_lacks() {
+    let (_dir, fx) = fixture();
+    let (other, _, _) = other_board(&fx);
+    let (_, parent) = assigned_token(&fx, AuthScope::Provision, &[&fx.board_id]);
+    let (_, worker) = token_record(&fx, "worker", AuthScope::Work);
+    let held = token_count(&fx);
+
+    for body in [
+        json!({"name": "x", "permissions": ["boards.delete"]}),
+        json!({"name": "x", "preset": "read", "boards": [other]}),
+        json!({"name": "x", "preset": "read"}),
+        json!({"name": "x", "preset": "read", "boards": "all"}),
+    ] {
+        let (status, reply) = issue(&fx, &parent, body.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {reply}");
+    }
+    let (status, reply) = issue(&fx, &worker, json!({"name": "x", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert_eq!(reply, permission_denied("tokens.issue"));
+    assert_eq!(token_count(&fx), held);
+
+    let allowed = json!({"name": "ok", "preset": "work", "boards": [fx.board_id]});
+    let (status, reply) = issue(&fx, &parent, allowed).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(
+        reply["boards"],
+        json!([{"id": fx.board_id, "name": "Agentctl"}])
+    );
+    assert_eq!(token_count(&fx), held + 1);
+}
+
+#[tokio::test]
+async fn revoking_a_parent_should_make_every_child_answer_token_invalid() {
+    let (_dir, fx) = fixture();
+    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (_, bystander) = token_record(&fx, "bystander", AuthScope::Read);
+    let mut children = Vec::new();
+    for name in ["one", "two"] {
+        let (status, reply) = issue(&fx, &lead, json!({"name": name, "preset": "read"})).await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        children.push(raw_of(&reply));
+    }
+    let boards = "/api/boards";
+    for child in &children {
+        let (status, text) = request(&fx, As::Bearer(child), "GET", boards, None, true).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    let uri = format!("/api/v1/auth/tokens/{lead_id}");
+    let (status, text) = request(&fx, As::Admin, "DELETE", &uri, None, true).await;
+    assert!(status.is_success(), "{text}");
+
+    for child in &children {
+        let (status, text) = request(&fx, As::Bearer(child), "GET", boards, None, true).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json")["code"],
+            "token_invalid"
+        );
+    }
+    let (status, text) = request(&fx, As::Bearer(&bystander), "GET", boards, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let left = fx.db.list_account_api_tokens(&fx.user_id).expect("tokens");
+    assert!(
+        left.iter().all(|token| token.parent_id.is_none()),
+        "{left:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_child_should_not_create_tokens_or_hold_the_right_to() {
+    let (_dir, fx) = fixture();
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (_, admin) = token_record(&fx, "admin", AuthScope::Admin);
+
+    for (who, body) in [
+        (&lead, json!({"name": "x", "permissions": ["tokens.issue"]})),
+        (&lead, json!({"name": "x", "preset": "lead"})),
+        (&admin, json!({"name": "x", "preset": "admin"})),
+    ] {
+        let (status, reply) = issue(&fx, who, body.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {reply}");
+    }
+
+    let (status, child) = issue(&fx, &lead, json!({"name": "kid", "preset": "work"})).await;
+    assert_eq!(status, StatusCode::OK, "{child}");
+    let kid = raw_of(&child);
+    let (status, reply) = issue(&fx, &kid, json!({"name": "grandkid", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert_eq!(reply, permission_denied("tokens.issue"));
+    let body = json!({"name": "kid2", "preset": "read"});
+    let (status, text) = bearer_json(&fx, &admin, "POST", "/api/v1/auth/tokens", body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json")["code"],
+        "session_required"
+    );
+}
+
+#[tokio::test]
+async fn a_child_should_expire_within_hours_and_never_after_its_parent() {
+    let (_dir, fx) = fixture();
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let now = chrono::Utc::now().timestamp();
+
+    let (status, child) = issue(&fx, &lead, json!({"name": "default", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::OK, "{child}");
+    let expires = child["expires_at"].as_i64().expect("expires_at");
+    assert!((expires - now - 3600).abs() < 60, "{child}");
+    let eight = json!({"name": "eight", "preset": "read", "expires_in_hours": 8});
+    let (status, child) = issue(&fx, &lead, eight).await;
+    assert_eq!(status, StatusCode::OK, "{child}");
+    for hours in [0, 9, -1] {
+        let body = json!({"name": "bad", "preset": "read", "expires_in_hours": hours});
+        let (status, reply) = issue(&fx, &lead, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{hours}: {reply}");
+    }
+
+    let soon = now + 3600;
+    let (record, short) =
+        new_api_token_record(&fx.user_id, "short", AuthScope::Provision, Some(soon));
+    fx.db.create_api_token(&record).expect("token");
+    let capped = json!({"name": "capped", "preset": "read", "expires_in_hours": 8});
+    let (status, child) = issue(&fx, &short, capped).await;
+    assert_eq!(status, StatusCode::OK, "{child}");
+    assert_eq!(child["expires_at"], soon);
+}
+
+#[tokio::test]
+async fn the_token_list_should_name_the_parent_of_each_child() {
+    let (_dir, fx) = fixture();
+    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (status, child) = issue(&fx, &lead, json!({"name": "kid", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::OK, "{child}");
+
+    let (status, list) = call(&fx, "GET", "/api/v1/auth/tokens", None).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let list = list.as_array().expect("tokens");
+    let find = |name: &str| {
+        list.iter()
+            .find(|token| token["name"] == name)
+            .expect("token")
+    };
+    assert_eq!(find("kid")["parent_id"], lead_id.as_str());
+    assert_eq!(find("lead")["parent_id"], Value::Null);
+
+    let (status, page) = request(&fx, As::Admin, "GET", "/settings", None, false).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("class=\"token-child\""), "{page}");
+}
+
+#[tokio::test]
+async fn only_a_token_should_issue_children() {
+    let (_dir, fx) = fixture();
+    let before = token_count(&fx);
+    let body = json!({"name": "x", "preset": "read"});
+    let (status, text) = request(&fx, As::Admin, "POST", CHILDREN, Some(body.clone()), true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let (status, _) = request(&fx, As::Anonymous, "POST", CHILDREN, Some(body), true).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(token_count(&fx), before);
+}
+
+#[tokio::test]
+async fn a_child_should_not_be_stored_once_its_parent_is_gone() {
+    let (_dir, fx) = fixture();
+    let (mut record, _) = new_api_token_record(&fx.user_id, "orphan", AuthScope::Read, None);
+    record.parent_id = Some("revoked-parent".to_string());
+    let before = token_count(&fx);
+    let now = chrono::Utc::now().timestamp();
+    let refusal = fx.db.create_child_api_token(&record, now).expect("create");
+    assert_eq!(refusal, Err(ChildTokenRefusal::ParentGone));
+    assert_eq!(token_count(&fx), before);
+}
+
+/// Returns the names in a list of tokens, sorted.
+fn names_of(list: &Value) -> Vec<String> {
+    let mut names: Vec<String> = list
+        .as_array()
+        .expect("tokens")
+        .iter()
+        .map(|token| token["name"].as_str().expect("name").to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn a_lead_should_list_and_revoke_its_own_children_over_bearer() {
+    let (_dir, fx) = fixture();
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let mut raws = Vec::new();
+    for name in ["one", "two", "three"] {
+        let (status, reply) = issue(&fx, &lead, json!({"name": name, "preset": "read"})).await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        raws.push((
+            reply["id"].as_str().expect("id").to_string(),
+            raw_of(&reply),
+        ));
+    }
+
+    let (status, text) = bare(&fx, &lead, "GET", CHILDREN).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let list: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(names_of(&list), ["one", "three", "two"]);
+    for raw in raws.iter().map(|(_, raw)| raw) {
+        assert!(!text.contains(raw.as_str()), "{text}");
+    }
+
+    let one = format!("{CHILDREN}/{}", raws[0].0);
+    let (status, text) = bare(&fx, &lead, "DELETE", &one).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&raws[0].1),
+        "GET",
+        "/api/boards",
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{text}");
+    let (status, text) = bare(&fx, &lead, "DELETE", &one).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+
+    let (status, text) = bare(&fx, &lead, "DELETE", CHILDREN).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json"),
+        json!({"revoked": 2})
+    );
+    for (_, raw) in &raws {
+        let (status, text) = request(&fx, As::Bearer(raw), "GET", "/api/boards", None, true).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{text}");
+    }
+    let (status, text) = request(&fx, As::Bearer(&lead), "GET", "/api/boards", None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, text) = bare(&fx, &lead, "GET", CHILDREN).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(text, "[]");
+}
+
+#[tokio::test]
+async fn a_lead_should_not_list_or_revoke_a_token_that_is_not_its_child() {
+    let (_dir, fx) = fixture();
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (rival_id, rival) = token_record(&fx, "rival", AuthScope::Provision);
+    let (bystander_id, bystander) = token_record(&fx, "bystander", AuthScope::Read);
+    let (status, child) = issue(&fx, &rival, json!({"name": "theirs", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::OK, "{child}");
+    let theirs = child["id"].as_str().expect("id").to_string();
+    let theirs_raw = raw_of(&child);
+    let (status, mine) = issue(&fx, &lead, json!({"name": "mine", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::OK, "{mine}");
+    let before = token_count(&fx);
+
+    let (status, text) = bare(&fx, &lead, "GET", CHILDREN).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        names_of(&serde_json::from_str(&text).expect("json")),
+        ["mine"]
+    );
+    for victim in [&theirs, &rival_id, &bystander_id, "no-such-token"] {
+        let uri = format!("{CHILDREN}/{victim}");
+        let (status, text) = bare(&fx, &lead, "DELETE", &uri).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{victim}: {text}");
+    }
+    assert_eq!(token_count(&fx), before);
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&theirs_raw),
+        "GET",
+        "/api/boards",
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    let (status, text) = bare(&fx, &lead, "DELETE", CHILDREN).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(token_count(&fx), before - 1);
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&theirs_raw),
+        "GET",
+        "/api/boards",
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    for who in [&bystander, &theirs_raw] {
+        for (method, uri) in [
+            ("GET", CHILDREN.to_string()),
+            ("DELETE", CHILDREN.to_string()),
+            ("DELETE", format!("{CHILDREN}/{theirs}")),
+        ] {
+            let (status, text) = bare(&fx, who, method, &uri).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&text).expect("json"),
+                permission_denied("tokens.issue")
+            );
+        }
+    }
+    let (status, text) = request(&fx, As::Admin, "GET", CHILDREN, None, true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+}
+
+#[tokio::test]
+async fn revoke_all_children_in_the_browser_should_revoke_every_child_of_that_parent() {
+    let (_dir, fx) = fixture();
+    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (_, rival) = token_record(&fx, "rival", AuthScope::Provision);
+    let mut kids = Vec::new();
+    for name in ["one", "two"] {
+        let (status, reply) = issue(&fx, &lead, json!({"name": name, "preset": "read"})).await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        kids.push(raw_of(&reply));
+    }
+    let (status, rival_child) =
+        issue(&fx, &rival, json!({"name": "other", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::OK, "{rival_child}");
+
+    let (status, page) = request(&fx, As::Admin, "GET", "/settings", None, false).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("token-revoke-children"), "{page}");
+
+    let uri = format!("/api/v1/auth/tokens/{lead_id}/children");
+    let (status, text) = request(&fx, As::Bearer(&lead), "DELETE", &uri, None, true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let (status, text) = request(&fx, As::Admin, "DELETE", &uri, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json"),
+        json!({"revoked": 2})
+    );
+    for kid in &kids {
+        let (status, text) = request(&fx, As::Bearer(kid), "GET", "/api/boards", None, true).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{text}");
+    }
+    let (status, text) = request(&fx, As::Bearer(&lead), "GET", "/api/boards", None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&raw_of(&rival_child)),
+        "GET",
+        "/api/boards",
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    let missing = "/api/v1/auth/tokens/no-such-token/children";
+    let (status, text) = request(&fx, As::Admin, "DELETE", missing, None, true).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+}
+
+/// Sends a request with no body as `token`.
+async fn bare(fx: &Fixture, token: &str, method: &str, uri: &str) -> (StatusCode, String) {
+    request(fx, As::Bearer(token), method, uri, None, true).await
+}
+
+#[tokio::test]
+async fn a_change_by_a_child_should_show_the_child_and_its_parent_in_history() {
+    let (_dir, fx) = fixture();
+    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let task = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let body =
+        json!({"name": "kid", "permissions": ["tasks.read", "tasks.edit", "comments.write"]});
+    let (status, child) = issue(&fx, &lead, body).await;
+    assert_eq!(status, StatusCode::OK, "{child}");
+    let kid = raw_of(&child);
+    let parent = json!({"id": lead_id, "name": "lead"});
+
+    let uri = format!("/api/tasks/{task}/comments");
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&kid),
+        "POST",
+        &uri,
+        Some(json!({"body": "hi"})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let comment: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(comment["token_name"], "kid");
+    assert_eq!(comment["parent_token"], parent);
+    let uri = format!("/api/tasks/{task}");
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&kid),
+        "PATCH",
+        &uri,
+        Some(json!({"name": "Renamed"})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    let uri = format!("/api/tasks/{task}/comments");
+    let (_, text) = request(
+        &fx,
+        As::Bearer(&lead),
+        "POST",
+        &uri,
+        Some(json!({"body": "ok"})),
+        true,
+    )
+    .await;
+    let own: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(own["parent_token"], Value::Null);
+
+    let (status, page) = request(
+        &fx,
+        As::Admin,
+        "GET",
+        &format!("/api/tasks/{task}/history-view"),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("api-token (kid &lt;- lead)"), "{page}");
+    let uri = format!("/api/boards/{}/export-data", fx.board_id);
+    let (_, data) = call(&fx, "GET", &uri, None).await;
+    let exported = data["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .find(|row| row["id"] == task.as_str())
+        .expect("task");
+    let renamed = exported["history"]
+        .as_array()
+        .expect("history")
+        .iter()
+        .find(|event| event["kind"] == "renamed")
+        .expect("renamed event");
+    assert_eq!(renamed["token_name"], "kid");
+    assert_eq!(renamed["parent_token"], parent);
+}
+
+#[tokio::test]
+async fn a_child_named_like_an_existing_token_should_be_refused() {
+    let (_dir, fx) = fixture();
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    token_record(&fx, "deploy-bot", AuthScope::Read);
+    let before = token_count(&fx);
+
+    for name in ["deploy-bot", "Deploy-Bot", "lead", " LEAD "] {
+        let (status, reply) = issue(&fx, &lead, json!({"name": name, "preset": "read"})).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{name}: {reply}");
+    }
+    assert_eq!(token_count(&fx), before);
+
+    let (status, reply) = issue(&fx, &lead, json!({"name": "kid", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let (status, reply) = issue(&fx, &lead, json!({"name": "KID", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{reply}");
+    assert_eq!(token_count(&fx), before + 1);
+}
+
+#[tokio::test]
+async fn a_token_should_read_its_own_permissions_boards_and_expiry_over_bearer() {
+    let (_dir, fx) = fixture();
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let body = json!({"name": "kid", "permissions": ["tasks.read", "subtasks.edit"], "boards": [fx.board_id], "expires_in_hours": 2});
+    let (status, child) = issue(&fx, &lead, body).await;
+    assert_eq!(status, StatusCode::OK, "{child}");
+
+    let (status, text) = bare(&fx, &raw_of(&child), "GET", "/api/v1/auth/whoami").await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let me: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(me["name"], "kid");
+    assert_eq!(me["permissions"], json!(["tasks.read", "subtasks.edit"]));
+    assert_eq!(
+        me["boards"],
+        json!([{"id": fx.board_id, "name": "Agentctl"}])
+    );
+    assert_eq!(me["expires_at"], child["expires_at"]);
+}
+
+#[tokio::test]
+async fn an_expired_child_should_free_its_name_and_leave_the_child_list() {
+    let (_dir, fx) = fixture();
+    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let now = chrono::Utc::now().timestamp();
+    let (mut record, _) =
+        new_api_token_record(&fx.user_id, "worker", AuthScope::Read, Some(now - 60));
+    record.parent_id = Some(lead_id);
+    record.parent_name = Some("lead".to_string());
+    assert!(
+        fx.db
+            .create_child_api_token(&record, now - 120)
+            .expect("create")
+            .is_ok()
+    );
+
+    let (status, reply) = issue(&fx, &lead, json!({"name": "worker", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let (status, text) = bare(&fx, &lead, "GET", CHILDREN).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        names_of(&serde_json::from_str(&text).expect("json")),
+        ["worker"]
+    );
+}
+
+struct PartProbe {
+    needs: &'static str,
+    method: &'static str,
+    uri: String,
+    body: Value,
+}
+
+async fn part_probes(fx: &Fixture) -> Vec<PartProbe> {
+    let task = create(fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let sub = subtask_as(fx, As::Admin, &task, "box").await;
+    let tasks = format!("/api/tasks/{task}");
+    let probe = |needs, method, uri: String, body| PartProbe {
+        needs,
+        method,
+        uri,
+        body,
+    };
+    vec![
+        probe(
+            "tasks.create",
+            "POST",
+            "/api/tasks".to_string(),
+            json!({"column_id": fx.col_todo, "name": "New"}),
+        ),
+        probe(
+            "tasks.edit",
+            "PATCH",
+            tasks.clone(),
+            json!({"name": "Renamed"}),
+        ),
+        probe(
+            "tasks.move",
+            "POST",
+            format!("{tasks}/move"),
+            json!({"column_id": fx.col_done, "position": 0}),
+        ),
+        probe(
+            "tasks.claim",
+            "POST",
+            format!("{tasks}/claim"),
+            json!({"claimant": "agent", "ttl_seconds": 600}),
+        ),
+        probe(
+            "subtasks.edit",
+            "PATCH",
+            format!("{tasks}/subtasks/{sub}"),
+            json!({"name": "Renamed box"}),
+        ),
+        probe(
+            "subtasks.check",
+            "PATCH",
+            format!("{tasks}/subtasks/{sub}"),
+            json!({"done": true}),
+        ),
+    ]
+}
+
+async fn token_holding(fx: &Fixture, permissions: &[&str]) -> String {
+    let body = json!({"name": "holder", "permissions": permissions});
+    let (status, token) = mint(fx, body).await;
+    assert_eq!(status, StatusCode::OK, "{token}");
+    token["raw_token"].as_str().expect("raw").to_string()
+}
+
+async fn assert_probes_follow(fx: &Fixture, token: &str, held: &[&str]) {
+    for probe in part_probes(fx).await {
+        let (status, text) =
+            bearer_json(fx, token, probe.method, &probe.uri, probe.body.clone()).await;
+        let label = format!(
+            "{} {} needing {}: {text}",
+            probe.method, probe.uri, probe.needs
+        );
+        if held.contains(&probe.needs) {
+            assert!(status.is_success(), "{label}");
+            continue;
+        }
+        assert_eq!(status, StatusCode::FORBIDDEN, "{label}");
+        let refusal: Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(refusal["code"], "permission_denied", "{label}");
+        if probe.needs != "subtasks.check" {
+            assert_eq!(refusal["permission"], probe.needs, "{label}");
+        }
+    }
+}
+
+async fn assert_part_needed_only_for(permission: &str) {
+    let (_dir, fx) = fixture();
+    let held = ["tasks.read", permission];
+    let token = token_holding(&fx, &held).await;
+    assert_probes_follow(&fx, &token, &held).await;
+}
+
+#[tokio::test]
+async fn tasks_create_should_be_needed_only_for_creating() {
+    assert_part_needed_only_for("tasks.create").await;
+}
+
+#[tokio::test]
+async fn tasks_edit_should_be_needed_only_for_editing() {
+    assert_part_needed_only_for("tasks.edit").await;
+}
+
+#[tokio::test]
+async fn tasks_move_should_be_needed_only_for_moving() {
+    assert_part_needed_only_for("tasks.move").await;
+}
+
+#[tokio::test]
+async fn tasks_claim_should_be_needed_only_for_claiming() {
+    assert_part_needed_only_for("tasks.claim").await;
+}
+
+#[tokio::test]
+async fn subtasks_edit_should_be_needed_only_for_editing_outcomes() {
+    assert_part_needed_only_for("subtasks.edit").await;
+}
+
+#[tokio::test]
+async fn subtasks_check_should_be_needed_only_for_ticking() {
+    assert_part_needed_only_for("subtasks.check").await;
+}
+
+async fn assert_standard_role_follows(name: &str) {
+    let (_dir, fx) = fixture();
+    let role = STANDARD_ROLES
+        .iter()
+        .find(|role| role.name == name)
+        .expect("standard role");
+    let permissions = role.permissions();
+    let held: Vec<&str> = permissions
+        .iter()
+        .map(|permission| permission.name())
+        .collect();
+    let token = token_holding(&fx, &held).await;
+    assert_probes_follow(&fx, &token, &held).await;
+}
+
+#[tokio::test]
+async fn verifier_set_should_tick_but_not_edit() {
+    assert_standard_role_follows("verifier").await;
+}
+
+#[tokio::test]
+async fn planner_set_should_edit_but_not_tick() {
+    assert_standard_role_follows("planner").await;
+}
+
+#[tokio::test]
+async fn implementer_set_should_claim_and_move_but_neither_edit_nor_tick() {
+    assert_standard_role_follows("implementer").await;
 }

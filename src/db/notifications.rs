@@ -187,6 +187,7 @@ pub(super) fn txn_record_task_notifications(
                 name: &comment.author,
                 token_name: comment.token_name.as_deref(),
                 kind: comment.actor_kind,
+                parent_token: comment.parent_token.as_ref(),
             };
             rows.push(notification(
                 NotificationKind::CommentAdded,
@@ -369,12 +370,14 @@ mod tests {
         name: API_TOKEN_ACTOR,
         token_name: Some("ci"),
         kind: ActorKind::ApiToken,
+        parent_token: None,
     };
 
     const PERSON: Actor<'static> = Actor {
         name: "owner",
         token_name: None,
         kind: ActorKind::User,
+        parent_token: None,
     };
 
     /// An account with a board of a Todo and a Done column, and a second account.

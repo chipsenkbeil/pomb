@@ -84,6 +84,7 @@ fn event(kind: HistoryKind, detail: &str, actor: &str, at: &str) -> TaskEvent {
         token_name: None,
         from: None,
         to: None,
+        parent_token: None,
     }
 }
 
@@ -270,6 +271,7 @@ async fn history_should_hold_comments_and_deleted_tasks() {
                 kind: None,
                 edited_at: None,
                 reactions: Vec::new(),
+                parent_token: None,
             });
             ((), true)
         })

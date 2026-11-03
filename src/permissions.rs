@@ -90,10 +90,14 @@ catalog! {
     LabelsManage, "labels.manage", "labels", Lead, "Highlight labels on a board, color them and add labels no task carries yet.";
     EpicsManage, "epics.manage", "epics", Lead, "Close, reopen or turn an epic back into a plain task.";
     TasksRead, "tasks.read", "tasks", Read, "Read tasks, subtasks and links.";
-    TasksWrite, "tasks.write", "tasks", Work, "Create, update, move, watch, claim, heartbeat, release and restore tasks.";
+    TasksCreate, "tasks.create", "tasks", Work, "Create a task or an epic, and turn a subtask into a task.";
+    TasksEdit, "tasks.edit", "tasks", Work, "Update a task, tick the boxes in its description, close and reopen an epic, bulk update and restore tasks.";
+    TasksMove, "tasks.move", "tasks", Work, "Move a task to another column or position.";
+    TasksClaim, "tasks.claim", "tasks", Work, "Claim a task, renew or release the claim, and watch the task.";
     TasksBin, "tasks.bin", "tasks", Lead, "Move a task to the recycle bin.";
     TasksDelete, "tasks.delete", "tasks", Admin, "Delete a task from the recycle bin for good.";
-    SubtasksWrite, "subtasks.write", "subtasks", Work, "Create, update and reorder subtasks, and delete the ones you created.";
+    SubtasksEdit, "subtasks.edit", "subtasks", Work, "Create, rename, assign, reorder and set the due date of subtasks, and delete the ones you created.";
+    SubtasksCheck, "subtasks.check", "subtasks", Work, "Tick and untick subtasks.";
     SubtasksDelete, "subtasks.delete", "subtasks", Admin, "Delete any subtask, whoever created it.";
     LinksWrite, "links.write", "links", Work, "Create task links, and delete the ones you created.";
     LinksDelete, "links.delete", "links", Admin, "Delete any task link, whoever created it, and change a task's umbrella.";
@@ -113,6 +117,7 @@ catalog! {
     FeedsManage, "feeds.manage", "feeds", Admin, "List, create and delete a board's calendar feeds.";
     WebhooksManage, "webhooks.manage", "webhooks", Admin, "List, create, change and delete a board's webhooks, which send its events to other servers.";
     InboundManage, "inbound.manage", "inbound", Admin, "List, create, rotate and delete a board's inbound addresses, which turn forwarded mail into tasks.";
+    TokensIssue, "tokens.issue", "tokens", Lead, "Create child tokens that hold no more than this token and expire within hours.";
 }
 
 /// A named set of permissions, each holding everything the one before it holds.
@@ -169,13 +174,98 @@ impl Preset {
     }
 }
 
+/// One of the six agent roles every account starts from.
+#[derive(Copy, Clone, Debug)]
+#[cfg(test)]
+pub struct StandardRole {
+    /// The role's name, its key.
+    pub name: &'static str,
+    /// The permissions the role holds beyond [`STANDARD_BASE`].
+    pub extra: &'static [Permission],
+}
+
+#[cfg(test)]
+impl StandardRole {
+    /// Returns [`STANDARD_BASE`] plus the role's `extra` permissions.
+    #[must_use]
+    pub fn permissions(&self) -> BTreeSet<Permission> {
+        STANDARD_BASE.iter().chain(self.extra).copied().collect()
+    }
+}
+
+/// The permissions every standard role holds: reading tasks, comments and attachments, and
+/// commenting.
+#[cfg(test)]
+pub const STANDARD_BASE: &[Permission] = &[
+    Permission::TasksRead,
+    Permission::CommentsRead,
+    Permission::AttachmentsRead,
+    Permission::CommentsWrite,
+];
+
+/// The six standard roles, from the planner who shapes a card to the lead who holds every part.
+#[cfg(test)]
+pub const STANDARD_ROLES: &[StandardRole] = &[
+    StandardRole {
+        name: "planner",
+        extra: &[
+            Permission::TasksCreate,
+            Permission::TasksEdit,
+            Permission::TasksMove,
+            Permission::SubtasksEdit,
+            Permission::LinksWrite,
+            Permission::LabelsManage,
+        ],
+    },
+    StandardRole {
+        name: "implementer",
+        extra: &[
+            Permission::TasksClaim,
+            Permission::TasksMove,
+            Permission::AttachmentsWrite,
+            Permission::TimeWrite,
+        ],
+    },
+    StandardRole {
+        name: "reviewer",
+        extra: &[Permission::TasksClaim, Permission::TasksMove],
+    },
+    StandardRole {
+        name: "verifier",
+        extra: &[
+            Permission::TasksClaim,
+            Permission::TasksMove,
+            Permission::SubtasksCheck,
+        ],
+    },
+    StandardRole {
+        name: "release",
+        extra: &[Permission::TasksClaim, Permission::TasksMove],
+    },
+    StandardRole {
+        name: "lead",
+        extra: &[
+            Permission::TasksCreate,
+            Permission::TasksEdit,
+            Permission::TasksMove,
+            Permission::TasksClaim,
+            Permission::SubtasksEdit,
+            Permission::SubtasksCheck,
+            Permission::LinksWrite,
+            Permission::LabelsManage,
+            Permission::AttachmentsWrite,
+            Permission::TimeWrite,
+        ],
+    },
+];
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
 
     use super::*;
 
-    const NAMES: [&str; 47] = [
+    const NAMES: [&str; 52] = [
         "boards.read",
         "boards.create",
         "boards.configure",
@@ -200,10 +290,14 @@ mod tests {
         "labels.manage",
         "epics.manage",
         "tasks.read",
-        "tasks.write",
+        "tasks.create",
+        "tasks.edit",
+        "tasks.move",
+        "tasks.claim",
         "tasks.bin",
         "tasks.delete",
-        "subtasks.write",
+        "subtasks.edit",
+        "subtasks.check",
         "subtasks.delete",
         "links.write",
         "links.delete",
@@ -223,6 +317,7 @@ mod tests {
         "feeds.manage",
         "webhooks.manage",
         "inbound.manage",
+        "tokens.issue",
     ];
 
     fn held(preset: Preset) -> HashSet<&'static str> {
@@ -235,13 +330,19 @@ mod tests {
 
     #[test]
     fn catalog_should_match_the_name_snapshot() {
-        let names: Vec<_> = Permission::ALL.iter().map(|p| p.name()).collect();
+        let names: Vec<_> = Permission::ALL
+            .iter()
+            .map(|permission| permission.name())
+            .collect();
         assert_eq!(names, NAMES);
     }
 
     #[test]
     fn names_should_be_unique_and_prefixed_by_their_group() {
-        let unique: HashSet<_> = Permission::ALL.iter().map(|p| p.name()).collect();
+        let unique: HashSet<_> = Permission::ALL
+            .iter()
+            .map(|permission| permission.name())
+            .collect();
         assert_eq!(unique.len(), Permission::ALL.len());
         for permission in Permission::ALL {
             let (group, action) = permission.name().split_once('.').expect("group.action");
@@ -283,8 +384,12 @@ mod tests {
             .copied()
             .collect();
         let expected = HashSet::from([
-            "tasks.write",
-            "subtasks.write",
+            "tasks.create",
+            "tasks.edit",
+            "tasks.move",
+            "tasks.claim",
+            "subtasks.edit",
+            "subtasks.check",
             "links.write",
             "comments.write",
             "attachments.write",
@@ -314,6 +419,7 @@ mod tests {
             "templates.save",
             "labels.manage",
             "epics.manage",
+            "tokens.issue",
         ]);
         assert_eq!(added, expected);
     }
@@ -379,5 +485,66 @@ mod tests {
     fn preset_names_should_be_stable() {
         let names: Vec<_> = Preset::ALL.iter().map(|preset| preset.name()).collect();
         assert_eq!(names, ["read", "work", "lead", "admin"]);
+    }
+
+    #[test]
+    fn each_standard_role_should_hold_exactly_its_listed_permissions_in_the_table() {
+        let base = [
+            "tasks.read",
+            "comments.read",
+            "attachments.read",
+            "comments.write",
+        ];
+        let listed: [(&str, &[&str]); 6] = [
+            (
+                "planner",
+                &[
+                    "tasks.create",
+                    "tasks.edit",
+                    "tasks.move",
+                    "subtasks.edit",
+                    "links.write",
+                    "labels.manage",
+                ],
+            ),
+            (
+                "implementer",
+                &[
+                    "tasks.claim",
+                    "tasks.move",
+                    "attachments.write",
+                    "time.write",
+                ],
+            ),
+            ("reviewer", &["tasks.claim", "tasks.move"]),
+            ("verifier", &["tasks.claim", "tasks.move", "subtasks.check"]),
+            ("release", &["tasks.claim", "tasks.move"]),
+            (
+                "lead",
+                &[
+                    "tasks.create",
+                    "tasks.edit",
+                    "tasks.move",
+                    "tasks.claim",
+                    "subtasks.edit",
+                    "subtasks.check",
+                    "links.write",
+                    "labels.manage",
+                    "attachments.write",
+                    "time.write",
+                ],
+            ),
+        ];
+        let names: Vec<_> = STANDARD_ROLES.iter().map(|role| role.name).collect();
+        assert_eq!(names, listed.map(|(name, _)| name));
+        for (role, (name, extra)) in STANDARD_ROLES.iter().zip(listed) {
+            let expected: HashSet<_> = base.iter().chain(extra).copied().collect();
+            let held: HashSet<_> = role
+                .permissions()
+                .iter()
+                .map(|permission| permission.name())
+                .collect();
+            assert_eq!(held, expected, "{name}");
+        }
     }
 }

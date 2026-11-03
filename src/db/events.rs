@@ -355,12 +355,14 @@ mod tests {
         name: API_TOKEN_ACTOR,
         token_name: Some("ci"),
         kind: ActorKind::ApiToken,
+        parent_token: None,
     };
 
     const USER: Actor<'static> = Actor {
         name: "owner",
         token_name: None,
         kind: ActorKind::User,
+        parent_token: None,
     };
 
     #[test]

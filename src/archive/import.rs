@@ -1042,6 +1042,7 @@ impl Builder<'_> {
                     kind: comment.kind,
                     edited_at: comment.edited_at,
                     reactions: Vec::new(),
+                    parent_token: None,
                 })
             })
             .collect()
@@ -1379,6 +1380,7 @@ impl Builder<'_> {
                     token_name: event.token_name,
                     from: event.from,
                     to: event.to,
+                    parent_token: None,
                 })
             })
             .collect()
@@ -2692,6 +2694,7 @@ mod tests {
                 name: API_TOKEN_ACTOR,
                 token_name: (name == "notes.txt").then_some("worker"),
                 kind: ActorKind::ApiToken,
+                parent_token: None,
             };
             db.add_attachment(&task, name, "text/plain", bytes, uploader)
                 .expect("attachment")

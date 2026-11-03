@@ -507,6 +507,7 @@ pub(super) async fn receive_inbound_mail(
         name: "email",
         token_name: None,
         kind: ActorKind::System,
+        parent_token: None,
     };
     push_column_event(
         &mut row,

@@ -15,18 +15,18 @@ use tokio::sync::watch;
 use super::{
     AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardMember,
     BoardSnapshot, BookmarkAdd, BookmarkPatch, COLUMNS, COLUMNS_BY_BOARD, Change, ChangeOutcome,
-    ChildLinks, ClaimOutcome, ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind,
-    ColumnPatch, CommentWrite, Commit, CopyTasks, Db, DbResult, DeviceGrant, EntryEdit,
-    EpicCloseOutcome, EventRead, FIELD_DEFS, FeedAdd, FencedWrite, FieldCreateOutcome,
-    INBOUND_ADDRESSES, Incoming, IssuedInbound, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome,
-    LinkEdit, LinkRefusal, MemberSet, MoveGuards, MoveOutcome, NewComment, NewInbound,
-    NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage, OwnerChange, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, PurgeOutcome, Reads, RestoreOutcome, Rows, SWIMLANES, SessionEndOutcome,
-    SessionListing, SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
-    SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, TaskContext,
-    TemplateDeleteOutcome, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board, index_in,
-    link_event_target, links_blocked_in, no_signed_in_account, read_in, redacted_history, role_in,
-    task_role_in,
+    ChildLinks, ChildTokenRefusal, ClaimOutcome, ClaimRequest, ColorDeleteOutcome,
+    ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Commit, CopyTasks, Db, DbResult,
+    DeviceGrant, EntryEdit, EpicCloseOutcome, EventRead, FIELD_DEFS, FeedAdd, FencedWrite,
+    FieldCreateOutcome, INBOUND_ADDRESSES, Incoming, IssuedInbound, LINKS_BY_TARGET,
+    LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkRefusal, MemberSet, MoveGuards, MoveOutcome,
+    NewComment, NewInbound, NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage,
+    OwnerChange, PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome, Reads, RestoreOutcome,
+    Rows, SWIMLANES, SessionEndOutcome, SessionListing, SessionToken, SwimlaneDeleteOutcome,
+    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS,
+    TASKS_BY_COLUMN, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome, UmbrellaChange, WEBHOOKS,
+    WebhookPatch, first_board, index_in, link_event_target, links_blocked_in, no_signed_in_account,
+    read_in, redacted_history, role_in, task_role_in,
 };
 use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission, required_role,
@@ -34,10 +34,10 @@ use crate::auth::{
 use crate::models::{
     AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, AuthScope, Avatar, BinRow,
     BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange,
-    DeviceAuthRow, EventKind, FieldDefRow, InboundAddressRow, LinkKind, Numbering, PasskeyRow,
-    PruneNotice, RecoveryCodeRow, ReportBookmark, Settings, SwimlaneRow, TaskAttachment, TaskBrief,
-    TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
-    WebhookRow,
+    DeviceAuthRow, EventKind, FieldDefRow, InboundAddressRow, LinkKind, Numbering, ParentToken,
+    PasskeyRow, PruneNotice, RecoveryCodeRow, ReportBookmark, Settings, SwimlaneRow,
+    TaskAttachment, TaskBrief, TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow,
+    TimeEntryRow, UserRow, WebhookRow,
 };
 use crate::permissions::Permission;
 
@@ -2584,6 +2584,26 @@ impl AccountDb {
         Ok((record, raw))
     }
 
+    /// Mints and stores a child API token issued by token `parent`, returning its record and the
+    /// raw token, or the refusal when the parent was revoked meanwhile or the name is taken.
+    pub fn create_child_api_token(
+        &self,
+        parent: &ParentToken,
+        name: &str,
+        grant: TokenGrant,
+        expires_at: i64,
+    ) -> DbResult<Result<(ApiTokenRecord, String), ChildTokenRefusal>> {
+        let (mut record, raw) =
+            new_api_token_record(&self.account, name, grant.scope, Some(expires_at));
+        record.permissions = grant.permissions;
+        record.boards = grant.boards;
+        record.parent_id = Some(parent.id.clone());
+        record.parent_name = Some(parent.name.clone());
+        let now = Utc::now().timestamp();
+        let stored = self.db.create_child_api_token(&record, now)?;
+        Ok(stored.map(|()| (record, raw)))
+    }
+
     /// Returns the live token `raw` when the account holds it. The bootstrap token has no record,
     /// so it is never found.
     pub fn find_own_token(&self, raw: &str) -> DbResult<Option<ApiTokenRecord>> {
@@ -2594,6 +2614,22 @@ impl AccountDb {
     /// Revokes one of the account's tokens. Returns false when it holds no such token.
     pub fn delete_api_token(&self, id: &str) -> DbResult<bool> {
         self.db.delete_api_token(&self.account, id)
+    }
+
+    /// Lists the live tokens that token `parent` issued, oldest first.
+    pub fn list_child_api_tokens(&self, parent: &str) -> DbResult<Vec<ApiTokenRecord>> {
+        let tokens = self.db.list_account_api_tokens(&self.account)?;
+        let now = Utc::now().timestamp();
+        Ok(tokens
+            .into_iter()
+            .filter(|token| token.parent_id.as_deref() == Some(parent) && !token.is_expired(now))
+            .collect())
+    }
+
+    /// Revokes the tokens that token `parent` issued, or only the one named by `only`, and returns
+    /// how many it revoked.
+    pub fn delete_child_api_tokens(&self, parent: &str, only: Option<&str>) -> DbResult<u64> {
+        self.db.delete_child_api_tokens(&self.account, parent, only)
     }
 
     /// Renames one of the account's tokens and, when `grant` is set, changes its scope and

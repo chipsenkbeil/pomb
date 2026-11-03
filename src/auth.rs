@@ -30,7 +30,7 @@ use crate::db::PublicDb;
 use crate::limit::{CredentialKey, TrustProxy, rate_limited_response};
 use crate::models::{
     API_TOKEN_ACTOR, AccountId, AccountRole, AccountStatus, Actor, ActorKind, ApiTokenRecord,
-    AuthScope, BoardAccess, BoardRole, InstanceMode, RecoveryCodeRow, UserRow,
+    AuthScope, BoardAccess, BoardRole, InstanceMode, ParentToken, RecoveryCodeRow, UserRow,
 };
 use crate::passkey::RelyingParty;
 use crate::permissions::{Permission, Preset};
@@ -260,7 +260,7 @@ pub struct AuthUser {
     /// The name history events record: the handle for the browser, `api-token` for a token.
     pub username: String,
     /// Credential the request authenticated with. Token management endpoints
-    /// require the browser session, so a token can never mint new tokens.
+    /// require the browser session, so only a lead token mints tokens, and only narrower ones.
     pub kind: CredentialKind,
     /// Name of the API token behind the request, absent for the browser
     /// session and for the `POMB_BOOTSTRAP_TOKEN` bootstrap token.
@@ -268,6 +268,8 @@ pub struct AuthUser {
     /// Id of the API token behind the request, absent for the browser session and for the
     /// `POMB_BOOTSTRAP_TOKEN` bootstrap token.
     pub token_id: Option<String>,
+    /// The lead token that issued the token behind the request, absent for any other credential.
+    pub parent_token: Option<ParentToken>,
     /// Highest scope the credential holds.
     pub scope: AuthScope,
     /// Every permission the credential holds.
@@ -315,6 +317,7 @@ impl AuthUser {
             } else {
                 ActorKind::ApiToken
             },
+            parent_token: self.parent_token.as_ref(),
         }
     }
 }
@@ -593,6 +596,8 @@ pub fn new_api_token_record(
         last_used_at: None,
         expires_at,
         account_id: account_id.as_str().to_string(),
+        parent_id: None,
+        parent_name: None,
     };
     (record, raw)
 }
@@ -871,27 +876,27 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/notifications/:id/read",
         Permission::SettingsWrite,
     ),
-    (Method::POST, "/api/tasks", Permission::TasksWrite),
+    (Method::POST, "/api/tasks", Permission::TasksCreate),
     (Method::GET, "/api/tasks/:id", Permission::TasksRead),
-    (Method::PATCH, "/api/tasks/:id", Permission::TasksWrite),
+    (Method::PATCH, "/api/tasks/:id", Permission::TasksEdit),
     (Method::DELETE, "/api/tasks/:id", Permission::TasksBin),
     (Method::GET, "/api/boards/:id/bin", Permission::TasksRead),
     (Method::DELETE, "/api/bin/:id", Permission::TasksDelete),
-    (Method::POST, "/api/bin/:id/restore", Permission::TasksWrite),
+    (Method::POST, "/api/bin/:id/restore", Permission::TasksEdit),
     (Method::GET, "/api/tasks/:id/card", Permission::TasksRead),
     (Method::GET, "/api/tasks/:id/modal", Permission::TasksRead),
     (Method::GET, "/t/:id", Permission::TasksRead),
-    (Method::POST, "/api/tasks/:id/move", Permission::TasksWrite),
+    (Method::POST, "/api/tasks/:id/move", Permission::TasksMove),
     (
         Method::POST,
         "/api/boards/:id/tasks/bulk",
-        Permission::TasksWrite,
+        Permission::TasksEdit,
     ),
-    (Method::POST, "/api/tasks/:id/watch", Permission::TasksWrite),
+    (Method::POST, "/api/tasks/:id/watch", Permission::TasksClaim),
     (
         Method::POST,
         "/api/tasks/:id/checklist/:index",
-        Permission::TasksWrite,
+        Permission::TasksEdit,
     ),
     (Method::POST, "/api/markdown/preview", Permission::TasksRead),
     (Method::GET, "/api/tasks/:id/time", Permission::TimeRead),
@@ -899,7 +904,7 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::POST,
         "/api/tasks/:id/subtasks",
-        Permission::SubtasksWrite,
+        Permission::SubtasksEdit,
     ),
     (
         Method::DELETE,
@@ -914,27 +919,27 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::POST,
         "/api/tasks/:id/subtasks/from-template",
-        Permission::SubtasksWrite,
+        Permission::SubtasksEdit,
     ),
     (
         Method::PUT,
         "/api/tasks/:id/subtasks/order",
-        Permission::SubtasksWrite,
+        Permission::SubtasksEdit,
     ),
     (
         Method::PATCH,
         "/api/tasks/:id/subtasks/:sub_id",
-        Permission::SubtasksWrite,
+        Permission::SubtasksEdit,
     ),
     (
         Method::DELETE,
         "/api/tasks/:id/subtasks/:sub_id",
-        Permission::SubtasksWrite,
+        Permission::SubtasksEdit,
     ),
     (
         Method::POST,
         "/api/tasks/:id/subtasks/:sub_id/convert",
-        Permission::TasksWrite,
+        Permission::TasksCreate,
     ),
     (Method::GET, "/api/tasks/:id/links", Permission::TasksRead),
     (Method::POST, "/api/tasks/:id/links", Permission::LinksWrite),
@@ -948,22 +953,18 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/tasks/:id/umbrella",
         Permission::LinksDelete,
     ),
-    (Method::POST, "/api/tasks/:id/close", Permission::TasksWrite),
-    (
-        Method::POST,
-        "/api/tasks/:id/reopen",
-        Permission::TasksWrite,
-    ),
-    (Method::POST, "/api/tasks/:id/claim", Permission::TasksWrite),
+    (Method::POST, "/api/tasks/:id/close", Permission::TasksEdit),
+    (Method::POST, "/api/tasks/:id/reopen", Permission::TasksEdit),
+    (Method::POST, "/api/tasks/:id/claim", Permission::TasksClaim),
     (
         Method::POST,
         "/api/tasks/:id/claim/heartbeat",
-        Permission::TasksWrite,
+        Permission::TasksClaim,
     ),
     (
         Method::POST,
         "/api/tasks/:id/claim/release",
-        Permission::TasksWrite,
+        Permission::TasksClaim,
     ),
     (
         Method::GET,
@@ -1388,6 +1389,31 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/v1/auth/tokens/inspect",
         Permission::SettingsRead,
     ),
+    (
+        Method::POST,
+        "/api/v1/auth/tokens/children",
+        Permission::TokensIssue,
+    ),
+    (
+        Method::GET,
+        "/api/v1/auth/tokens/children",
+        Permission::TokensIssue,
+    ),
+    (
+        Method::DELETE,
+        "/api/v1/auth/tokens/children",
+        Permission::TokensIssue,
+    ),
+    (
+        Method::DELETE,
+        "/api/v1/auth/tokens/children/:id",
+        Permission::TokensIssue,
+    ),
+    (
+        Method::DELETE,
+        "/api/v1/auth/tokens/:id/children",
+        Permission::SettingsWrite,
+    ),
     (Method::GET, "/api/v1/auth/whoami", Permission::SettingsRead),
     (
         Method::GET,
@@ -1552,6 +1578,42 @@ pub fn required_permission(method: &Method, matched_path: &str) -> Option<Permis
         .map(|&(_, _, permission)| permission)
 }
 
+/// Routes that a second permission also opens, because their handler checks the part of the
+/// request each permission covers.
+const ROUTE_ALTERNATES: &[(Method, &str, Permission)] = &[
+    (
+        Method::POST,
+        "/api/boards/:id/tasks/bulk",
+        Permission::TasksMove,
+    ),
+    (
+        Method::PATCH,
+        "/api/tasks/:id/subtasks/:sub_id",
+        Permission::SubtasksCheck,
+    ),
+];
+
+/// Returns the permissions [`ROUTE_ALTERNATES`] lists for the route.
+fn route_alternates(method: &Method, matched_path: &str) -> impl Iterator<Item = Permission> {
+    ROUTE_ALTERNATES
+        .iter()
+        .filter(move |(listed, pattern, _)| listed == method && path_matches(pattern, matched_path))
+        .map(|&(_, _, alternate)| alternate)
+}
+
+/// Returns whether `held` opens the route that needs `needed`: it holds `needed`, or a permission
+/// [`ROUTE_ALTERNATES`] lists for the route.
+#[must_use]
+fn opens_route(
+    method: &Method,
+    matched_path: &str,
+    needed: Permission,
+    held: &BTreeSet<Permission>,
+) -> bool {
+    held.contains(&needed)
+        || route_alternates(method, matched_path).any(|alternate| held.contains(&alternate))
+}
+
 /// Returns the lowest role on a board that a route accepts, where HEAD counts as GET. A read
 /// takes a viewer, except the owner's settings pages and the secret calendar feed. A write to a
 /// task, a time entry or the timer takes a member, and a write to the board's own shape or its
@@ -1620,11 +1682,21 @@ fn browser_user(account: UserRow) -> AuthUser {
         kind: CredentialKind::Session,
         token_name: None,
         token_id: None,
+        parent_token: None,
         scope: AuthScope::Admin,
         permissions: Preset::Admin.permissions(),
         boards: BoardAccess::All,
         expires_at: None,
     }
+}
+
+/// Returns the lead token that issued `record`, when it is a child token.
+#[must_use]
+fn parent_token_of(record: &ApiTokenRecord) -> Option<ParentToken> {
+    Some(ParentToken {
+        id: record.parent_id.clone()?,
+        name: record.parent_name.clone()?,
+    })
 }
 
 /// Looks up the user behind a session token.
@@ -1697,7 +1769,7 @@ pub fn is_event_wait(method: &Method, path: &str) -> bool {
 /// - `Authorization: Bearer` API token (named tokens in the DB, or the
 ///   `POMB_BOOTSTRAP_TOKEN` env var). A token needs the permission [`ROUTE_PERMISSIONS`] lists
 ///   for the route, and gets 403 `permission_denied` without it. Token management
-///   endpoints additionally require the browser, so a token can never mint new tokens.
+///   endpoints additionally require the browser, except the narrower children a lead token issues.
 ///
 /// Under `--auth passkey` a browser without a session gets a plain 401 on API routes (`/api/*`), so
 /// htmx/fetch can detect it, and a redirect on page routes: to `/setup` until the first passkey is
@@ -1738,7 +1810,7 @@ pub async fn auth_middleware(
                 }
                 if let Some(record) = &maybe_record
                     && let Some(needed) = needed
-                    && !record.permissions.contains(&needed)
+                    && !opens_route(req.method(), route, needed, &record.permissions)
                     && !open_to_every_token(route)
                 {
                     return permission_denied(needed);
@@ -1786,6 +1858,7 @@ pub async fn auth_middleware(
                     username: API_TOKEN_ACTOR.to_string(),
                     kind,
                     token_name: maybe_record.as_ref().map(|record| record.name.clone()),
+                    parent_token: maybe_record.as_ref().and_then(parent_token_of),
                     token_id: maybe_record.map(|record| record.id),
                     scope,
                     permissions,
@@ -1974,6 +2047,8 @@ mod tests {
             last_used_at: None,
             expires_at: None,
             account_id: String::new(),
+            parent_id: None,
+            parent_name: None,
         };
         assert!(!raw.starts_with(API_TOKEN_PREFIX));
         assert!(verify_api_token(&record, raw));
@@ -2222,6 +2297,31 @@ mod tests {
         (Method::POST, "/api/v1/auth/tokens", AuthScope::Admin),
         (Method::POST, "/api/v1/auth/tokens/inspect", AuthScope::Read),
         (Method::PATCH, "/api/v1/auth/tokens/:id", AuthScope::Admin),
+        (
+            Method::POST,
+            "/api/v1/auth/tokens/children",
+            AuthScope::Provision,
+        ),
+        (
+            Method::GET,
+            "/api/v1/auth/tokens/children",
+            AuthScope::Provision,
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/auth/tokens/children",
+            AuthScope::Provision,
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/auth/tokens/children/:id",
+            AuthScope::Provision,
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/auth/tokens/:id/children",
+            AuthScope::Admin,
+        ),
         (Method::DELETE, "/api/v1/auth/tokens/:id", AuthScope::Admin),
         (Method::POST, "/api/v1/auth/passkeys", AuthScope::Admin),
         (
@@ -2325,7 +2425,7 @@ mod tests {
         );
         assert_eq!(
             permission(Method::POST, "/api/tasks"),
-            Some(Permission::TasksWrite)
+            Some(Permission::TasksCreate)
         );
         assert_eq!(
             permission(Method::POST, "/api/markdown/preview"),
@@ -2395,6 +2495,18 @@ mod tests {
     }
 
     #[test]
+    fn route_alternates_should_name_a_listed_route_and_another_permission() {
+        for (method, pattern, alternate) in ROUTE_ALTERNATES {
+            let primary = required_permission(method, pattern);
+            assert!(
+                primary.is_some(),
+                "{method} {pattern} is not in ROUTE_PERMISSIONS"
+            );
+            assert_ne!(primary, Some(*alternate), "{method} {pattern}");
+        }
+    }
+
+    #[test]
     fn route_permissions_should_list_each_route_once() {
         let mut seen = HashSet::new();
         for (method, pattern, _) in ROUTE_PERMISSIONS {
@@ -2442,6 +2554,8 @@ mod tests {
             last_used_at: None,
             expires_at: None,
             account_id: String::new(),
+            parent_id: None,
+            parent_name: None,
         };
         assert!(!record.is_expired(now));
         record.expires_at = Some(now + 60);

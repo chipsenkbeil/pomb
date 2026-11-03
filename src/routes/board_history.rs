@@ -3,7 +3,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use super::{NO_VALUE, history_actor};
-use crate::models::{BinRow, HistoryKind, TaskComment, TaskEvent, TaskRow};
+use crate::models::{BinRow, HistoryKind, TaskComment, TaskEvent, TaskRow, delegation_label};
 
 /// The titles of the columns of a history export.
 const HEADER: [&str; 8] = [
@@ -258,7 +258,11 @@ fn task_rows(rows: &mut Vec<HistoryRow>, task: &TaskRow, events: &[TaskEvent]) {
 /// Shapes a `comment` on the task `task`.
 fn comment_row(task: &str, comment: &TaskComment) -> HistoryRow {
     let user = match &comment.token_name {
-        Some(name) => format!("{} ({name})", comment.author),
+        Some(name) => format!(
+            "{} ({})",
+            comment.author,
+            delegation_label(name, comment.parent_token.as_ref())
+        ),
         None => comment.author.clone(),
     };
     HistoryRow {

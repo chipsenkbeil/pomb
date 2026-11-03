@@ -1285,6 +1285,7 @@ mod tests {
                     name: API_TOKEN_ACTOR,
                     token_name: Some("worker"),
                     kind: ActorKind::ApiToken,
+                    parent_token: None,
                 },
             )
             .expect("attachment")

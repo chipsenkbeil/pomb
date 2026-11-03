@@ -7560,6 +7560,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .token-table th,
 .token-table td { padding-inline: 5px; font-size: 14px; }
 .token-table td:first-child { min-width: 7rem; overflow-wrap: anywhere; }
+.token-table .token-child td:first-child { padding-inline-start: 1.5rem; }
 
 @media (max-width: 767px) {
   .board-settings-page { padding: 16px 0; }

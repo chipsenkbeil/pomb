@@ -819,32 +819,44 @@
         })
         .catch(function (ex) { showError('Could not refresh token list: ' + ex.message); });
     }
-    function bindTokenRevokeButtons(root) {
-      root.querySelectorAll('.token-revoke').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          // Styled in-page confirmation instead of native confirm().
-          var tokenId = btn.dataset.id;
-          var tokenName = btn.dataset.name;
-          document.getElementById('confirm-title').textContent = 'Revoke token';
-          document.getElementById('confirm-message').textContent =
-            'Revoke token "' + tokenName + '"? Anything using it will stop working.';
-          var okBtn = document.getElementById('confirm-ok');
-          okBtn.textContent = 'Revoke';
+    const confirmTokenRevoke = (title, message, url, failure) => {
+      document.getElementById('confirm-title').textContent = title;
+      document.getElementById('confirm-message').textContent = message;
+      const okBtn = document.getElementById('confirm-ok');
+      okBtn.textContent = 'Revoke';
 
-          // Replace the button to drop any previously attached listeners.
-          var fresh = okBtn.cloneNode(true);
-          okBtn.parentNode.replaceChild(fresh, okBtn);
-          fresh.addEventListener('click', function () {
-            document.getElementById('confirm-dialog').hidden = true;
-            fetch('/api/v1/auth/tokens/' + encodeURIComponent(tokenId), { method: 'DELETE' })
-              .then(function (r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                location.reload();
-              })
-              .catch(function (ex) { showError('Could not revoke token: ' + ex.message); });
-          });
-          document.getElementById('confirm-dialog').hidden = false;
-          fresh.focus();
+      // Replace the button to drop any previously attached listeners.
+      const fresh = okBtn.cloneNode(true);
+      okBtn.parentNode.replaceChild(fresh, okBtn);
+      fresh.addEventListener('click', () => {
+        document.getElementById('confirm-dialog').hidden = true;
+        fetch(url, { method: 'DELETE' })
+          .then((r) => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            location.reload();
+          })
+          .catch((ex) => showError(failure + ex.message));
+      });
+      document.getElementById('confirm-dialog').hidden = false;
+      fresh.focus();
+    };
+    function bindTokenRevokeButtons(root) {
+      root.querySelectorAll('.token-revoke').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          confirmTokenRevoke(
+            'Revoke token',
+            `Revoke token "${btn.dataset.name}"? Anything using it will stop working.`,
+            `/api/v1/auth/tokens/${encodeURIComponent(btn.dataset.id)}`,
+            'Could not revoke token: ');
+        });
+      });
+      root.querySelectorAll('.token-revoke-children').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          confirmTokenRevoke(
+            'Revoke all children',
+            `Revoke every child token of "${btn.dataset.name}"? Anything using them will stop working.`,
+            `/api/v1/auth/tokens/${encodeURIComponent(btn.dataset.id)}/children`,
+            'Could not revoke the children: ');
         });
       });
     }

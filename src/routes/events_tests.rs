@@ -116,6 +116,7 @@ impl Fixture {
             name: "admin",
             token_name: None,
             kind: ActorKind::User,
+            parent_token: None,
         };
         let row = Db::new_task_row(&self.todo, None, name, 0, None);
         self.db

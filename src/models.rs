@@ -1920,6 +1920,9 @@ pub struct TaskComment {
     /// RFC3339 time of the last edit of the body, or null when never edited.
     #[serde(default)]
     pub edited_at: Option<String>,
+    /// The lead token that issued the child token that wrote it, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_token: Option<ParentToken>,
     /// The reactions the comment holds, one entry per account and emoji, oldest first.
     #[serde(default)]
     pub reactions: Vec<CommentReaction>,
@@ -2082,6 +2085,8 @@ pub struct Actor<'a> {
     pub token_name: Option<&'a str>,
     /// How the actor authenticated.
     pub kind: ActorKind,
+    /// The token that issued the child token behind the change, absent for any other actor.
+    pub parent_token: Option<&'a ParentToken>,
 }
 
 impl Actor<'static> {
@@ -2090,7 +2095,26 @@ impl Actor<'static> {
         name: "system",
         token_name: None,
         kind: ActorKind::System,
+        parent_token: None,
     };
+}
+
+/// The lead token that issued the child token behind a change, as it was named at the time.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ParentToken {
+    /// The parent token's id.
+    pub id: String,
+    /// The parent token's name.
+    pub name: String,
+}
+
+/// Returns `token_name` for a token that acted alone, and `token_name <- parent` for a child token.
+#[must_use]
+pub fn delegation_label(token_name: &str, parent: Option<&ParentToken>) -> String {
+    match parent {
+        Some(parent) => format!("{token_name} <- {}", parent.name),
+        None => token_name.to_string(),
+    }
 }
 
 /// Days a deleted task waits in the recycle bin before the daily cleanup deletes it for good.
@@ -2439,6 +2463,10 @@ pub struct TaskEvent {
     /// and for older events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
+    /// The lead token that issued the child token that made the change. Null for any other actor
+    /// and for older events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_token: Option<ParentToken>,
 }
 
 /// The values a history event replaced and set, before they are cut for storage.
@@ -4503,6 +4531,12 @@ pub struct ApiTokenRecord {
     /// The account the token acts for.
     #[serde(default)]
     pub account_id: String,
+    /// The id of the lead token that issued this one, absent for a token made in the browser.
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// The name of the lead token that issued this one, as it was named when it did.
+    #[serde(default)]
+    pub parent_name: Option<String>,
 }
 
 /// The boards a token may reach.
@@ -4523,6 +4557,16 @@ impl BoardAccess {
         match self {
             Self::All => true,
             Self::Only(ids) => ids.contains(board_id),
+        }
+    }
+
+    /// Returns whether every board of this access lies within `outer`.
+    #[must_use]
+    pub fn within(&self, outer: &Self) -> bool {
+        match (self, outer) {
+            (_, Self::All) => true,
+            (Self::All, Self::Only(_)) => false,
+            (Self::Only(own), Self::Only(held)) => own.is_subset(held),
         }
     }
 
