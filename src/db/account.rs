@@ -200,6 +200,8 @@ pub struct ChildRef {
     pub column_name: String,
     /// Whether that column is a done column.
     pub done: bool,
+    /// The child's legacy size in pomodori.
+    pub size: i64,
 }
 
 /// A task another task is related to, as the Relations section lists it.
@@ -444,6 +446,7 @@ impl LinkReads {
                 board_name,
                 column_name: column.name,
                 done: column.is_done,
+                size: head.size,
             });
         }
         Ok(children)

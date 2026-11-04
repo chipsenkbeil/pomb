@@ -9,6 +9,8 @@ function card(column, labels) {
     column: column,
     dataset: { labels: JSON.stringify(labels), colorValue: 'yellow', memberIds: '', taskId: 't' },
     style: { display: '' },
+    classList: { toggle: function () {} },
+    querySelector: function () { return null; },
     closest: function () { return list; }
   };
 }

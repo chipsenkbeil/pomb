@@ -41,6 +41,7 @@ function card(id, epicId) {
   return {
     dataset: { taskId: id, labels: '[]', filterFields: '{}', memberIds: '', dueAt: '' },
     style: {},
+    classList: classes(),
     closest: function () { return null; },
     querySelector: function (sel) { return sel === '.card-epic-tag' ? tag : null; }
   };
@@ -144,6 +145,13 @@ check('the active funnel is lit', page.funnels.map(function (f) { return f.class
 check('the active row is lit', page.rows.map(function (r) { return r.classList.contains('is-lit'); }), [true, false]);
 check('the Epics panel stays open', page.epicsPanel.hidden, false);
 check('the filter panel stays closed', page.panel.hidden, true);
+const marks = (p) => p.cards.map((c) => c.classList.contains('is-epic-child'));
+check('the highlight marks the epic cards', marks(page), [true, false, false, true]);
+page.chrome.filterOnEpic('e2');
+check('another epic moves the marks', marks(page), [false, true, false, false]);
+page.chrome.filterOnEpic('');
+check('turning the highlight off clears the marks', marks(page), [false, false, false, false]);
+page.chrome.filterOnEpic('e1');
 
 page = load(session, local);
 page.chrome.restoreFilter();

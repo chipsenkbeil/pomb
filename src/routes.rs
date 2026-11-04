@@ -2342,6 +2342,12 @@ struct TaskView {
     children_done: usize,
     /// Children of an umbrella, which is zero for a task that is not one.
     children_total: usize,
+    /// Whether the task is a plain task or an epic, which a card draws as an epic card.
+    kind: TaskKind,
+    /// The pomodori the children's sizes add up to.
+    children_size: i64,
+    /// The size of an epic's own final-check list, or none while the list is empty.
+    final_check: Option<Size>,
     /// The umbrella's children with their columns, filled in only where the full task is loaded.
     children: Vec<ChildRef>,
     /// Card link-chip tooltip: one "Blocked by: …" / "Blocks: …" /
@@ -3178,6 +3184,51 @@ impl TaskView {
         (self.children_total > 0).then_some((self.children_done, self.children_total))
     }
 
+    /// Returns whether the task is an epic.
+    #[must_use]
+    fn is_epic(&self) -> bool {
+        self.kind == TaskKind::Epic
+    }
+
+    /// Returns whether an epic's children are all done.
+    #[must_use]
+    fn epic_ready(&self) -> bool {
+        self.children_total > 0 && self.children_done == self.children_total
+    }
+
+    /// Returns the line under an epic card's bar: the children done, and either that the epic is
+    /// ready to be moved or what its children add up to.
+    #[must_use]
+    fn epic_line(&self) -> String {
+        if self.children_total == 0 {
+            return "No cards yet".to_string();
+        }
+        let done = format!("{} of {} done", self.children_done, self.children_total);
+        if self.epic_ready() {
+            format!("{done} \u{b7} ready to be moved")
+        } else if self.children_size > 0 {
+            format!(
+                "{done} \u{b7} about {} Pomodori in its cards",
+                self.children_size
+            )
+        } else {
+            done
+        }
+    }
+
+    /// Returns the pomodori of the epic's final-check list as its card's chip counts them, or
+    /// nothing while the list is empty.
+    #[must_use]
+    fn chip_count(&self) -> &'static str {
+        match self.final_check {
+            None => "",
+            Some(Size::One) => "1",
+            Some(Size::Two) => "2",
+            Some(Size::Three) => "3",
+            Some(Size::Many) => "3+",
+        }
+    }
+
     /// Fills in what a card leaves out: the whole description, the comments and the metadata of
     /// `row`.
     #[must_use]
@@ -3334,6 +3385,10 @@ impl TaskView {
             umbrella: None,
             children_done: 0,
             children_total: 0,
+            kind: row.kind,
+            children_size: 0,
+            final_check: (row.kind == TaskKind::Epic && !row.subtasks.is_empty())
+                .then(|| Size::from_i64(row.size)),
             children: Vec::new(),
             links_title: String::new(),
             claimant: row.live_claim().map(|claim| claim.claimant.clone()),
@@ -3443,6 +3498,10 @@ impl TaskView {
             let children = reads.children(&links).map_err(AppError::from)?;
             view.children_total = children.len();
             view.children_done = done_children(&children);
+            view.children_size = children
+                .iter()
+                .map(|child| Size::from_i64(child.size) as i64)
+                .sum();
             if reads.blocked(&row.links).map_err(AppError::from)? {
                 view.readiness = Readiness::Blocked;
             }
@@ -4922,9 +4981,6 @@ fn board_template(
     let mut incomplete: HashSet<String> = HashSet::new();
     let mut tasks: Vec<TaskCard> = Vec::new();
     db.visit_board_cards(&board_id, |mut card| {
-        if !card.is_work() {
-            return Ok(());
-        }
         if fields_incomplete(&required, &card.fields) {
             incomplete.insert(card.id.clone());
         }
@@ -4944,7 +5000,10 @@ fn board_template(
     let column_heads: Vec<ColumnHead> = columns
         .iter()
         .map(|col| {
-            let count = tasks.iter().filter(|t| t.column_id == col.id).count();
+            let count = tasks
+                .iter()
+                .filter(|t| t.is_work() && t.column_id == col.id)
+                .count();
 
             // Overdue means the due time has passed and the task is not completed, and the count
             // feeds the collapsed-strip indicator
@@ -4952,7 +5011,8 @@ fn board_template(
             let overdue_count = tasks
                 .iter()
                 .filter(|t| {
-                    t.column_id == col.id
+                    t.is_work()
+                        && t.column_id == col.id
                         && t.completed_at.is_none()
                         && !t.due_done
                         && t.due_at
@@ -4964,7 +5024,7 @@ fn board_template(
                 .count();
             let estimate_total: i64 = tasks
                 .iter()
-                .filter(|t| t.column_id == col.id)
+                .filter(|t| t.is_work() && t.column_id == col.id)
                 .map(|t| estimate_minutes(t.estimate_hours))
                 .sum();
 
@@ -5049,7 +5109,7 @@ fn board_template(
                 })
                 .collect();
             sort_cell_tasks(&mut rows, settings.sorting, &color_rank);
-            let cell_count = rows.len();
+            let cell_count = rows.iter().filter(|task| task.is_work()).count();
             let cell_tasks: Vec<TaskView> = rows
                 .into_iter()
                 .map(|task| {
@@ -5103,7 +5163,7 @@ fn board_template(
         }
         let lane_task_count = tasks
             .iter()
-            .filter(|t| t.swimlane_id.as_deref() == Some(lane.id.as_str()))
+            .filter(|t| t.is_work() && t.swimlane_id.as_deref() == Some(lane.id.as_str()))
             .count();
         bands.push(BandView {
             id: lane.id.clone(),
@@ -18538,6 +18598,10 @@ struct EpicProgress {
     closed: bool,
     /// The id of the epic this epic is a child of, or null.
     parent_id: Option<String>,
+    /// The id of the column the epic sits in.
+    column_id: String,
+    /// The name of the column the epic sits in.
+    column_name: String,
     /// How many direct children the epic has, on any board.
     children_total: usize,
     /// How many of those children sit in a done column right now.
@@ -18584,11 +18648,18 @@ async fn list_board_epics(
                 .map(|above| above.id.clone()),
             None => None,
         };
+        let column_name = account
+            .column(&head.column_id)
+            .map_err(AppError::from)?
+            .map(|column| column.row().name.clone())
+            .unwrap_or_default();
         epics.push(EpicProgress {
             id: head.id,
             name: head.name,
             closed: head.closed,
             parent_id,
+            column_id: head.column_id,
+            column_name,
             children_total: children.len(),
             children_done: children.iter().filter(|child| child.done).count(),
         });

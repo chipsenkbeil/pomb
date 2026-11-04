@@ -114,7 +114,7 @@ Each entry:
 ```
 
 `golden` is the path of a `*.styles.json` under the goldens folder.
-`{gm}` and `{vt}` are the Golden Master and Visual Test board ids.
+`{gm}`, `{vt}` and `{ep}` are the Golden Master, Visual Test and Epic Test board ids.
 
 Setup and teardown steps (one key each): `goto`, `click` (with `nth`,
 `button`), `dblclick`, `hover`, `contextmenu`, `clickAt` ([x,y], `button`),

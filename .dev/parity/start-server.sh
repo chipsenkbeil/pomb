@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start a Pomb binary without sign-in (--auth none) under a frozen server
-# clock, seed the two parity boards, and write WORKDIR/state.json for run.mjs
+# clock, seed the three parity boards, and write WORKDIR/state.json for run.mjs
 # and regress.mjs. The first request creates the owner, named "owner", and
 # every cookie-less request acts as that owner, who dismisses the first-visit hints through
 # the settings API so the screenshots show the board a returning user sees.
@@ -84,11 +84,12 @@ for hint in members timer; do
   api PUT /api/settings "{\"dismiss_hint\":\"$hint\"}" >/dev/null
 done
 vt=$(bash "$here/seed-visual-test.sh" "$base" "$jar" 2>"$work/seed-vt.err" | tail -1)
+ep=$(bash "$here/seed-epic.sh" "$base" "$jar" 2>"$work/seed-ep.err" | tail -1)
 
 date_header=$(curl -sI "$base/login" | rg -i '^date:' | tr -d '\r')
-jq -n --arg base "$base" --arg jar "$jar" --arg gm "$gm" --arg vt "$vt" \
+jq -n --arg base "$base" --arg jar "$jar" --arg gm "$gm" --arg vt "$vt" --arg ep "$ep" \
   --arg ft "$serve_time" --arg tz "$tz" --argjson pid "$pid" --arg date "$date_header" \
   --arg ftfile "$ftfile" \
-  '{base: $base, jar: $jar, boards: {gm: $gm, vt: $vt}, faketime: $ft, ftfile: $ftfile,
+  '{base: $base, jar: $jar, boards: {gm: $gm, vt: $vt, ep: $ep}, faketime: $ft, ftfile: $ftfile,
     tz: $tz, pid: $pid, serverDate: $date}' >"$work/state.json"
 cat "$work/state.json"

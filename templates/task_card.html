@@ -5,22 +5,31 @@
    inline section bodies below). Each icon toggles its card section
    (persisted per-task in localStorage); the comments icon opens the task
    modal. #}
-<article class="task-card taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }} taskColorVars-{{ task.color_value }}{% if task.children_total > 0 %} task-card-umbrella{% endif %}{% if task.stripe.is_some() %} task-card-hl{% endif %}"{% if let Some(color) = task.stripe %} style="--hl-stripe: {{ color }}"{% endif %}
-         data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
+<article class="task-card{% if task.is_epic() %} task-card-epic{% else %} taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }} taskColorVars-{{ task.color_value }}{% endif %}{% if task.children_total > 0 && !task.is_epic() %} task-card-umbrella{% endif %}{% if task.stripe.is_some() %} task-card-hl{% endif %}"{% if let Some(color) = task.stripe %} style="--hl-stripe: {{ color }}"{% endif %}
+         data-task-id="{{ task.id }}"{% if task.is_epic() %} data-kind="epic"{% endif %} data-color-value="{{ task.color_value }}"
          data-task-name="{{ task.name }}" data-grouping-date="{{ task.grouping_date.as_deref().unwrap_or("") }}" data-group-day="{{ task.group_day() }}"
          data-total-minutes="{{ task.total_minutes }}" data-due-at="{{ task.due_at.as_deref().unwrap_or("") }}"
          data-labels="{{ task.labels_json }}" data-filter-fields="{{ task.filter_fields_json }}" data-member-ids="{{ task.member_ids.join(",") }}"
          data-subtasks-total="{{ task.subtasks.len() }}" data-subtasks-done="{{ task.subtasks_done }}"
          data-estimate-minutes="{{ task.estimate_minutes }}"{% if task.due_state.overdue %} data-overdue="1"{% endif %}{% if task.due_state.done %} data-due-done="1"{% endif %}
-         tabindex="0" title="{{ task.color_label }}"{% if task.archive_hidden() %} hidden{% endif %}>
+         tabindex="0" title="{% if task.is_epic() %}Epic{% else %}{{ task.color_label }}{% endif %}"{% if task.archive_hidden() %} hidden{% endif %}>
   {% if !task.cover_id.is_empty() %}
   <img class="card-cover" src="/api/tasks/{{ task.id }}/attachments/{{ task.cover_id }}/file" alt="" loading="lazy" draggable="false">
+  {% endif %}
+  {% if task.is_epic() %}
+  <div class="epic-card-head">
+    <span class="epic-card-label">Epic</span>
+    <span class="epic-card-tools">
+      {% if let Some(size) = task.final_check %}<span class="epic-card-chip" style="background: {{ task.color_bg }}; border-color: {{ task.color_border }}" title="Its own final check: {{ size.label() }}">Final check &middot; {{ task.chip_count() }}</span>{% endif %}
+      <button type="button" class="card-epic-toggle" data-epic-id="{{ task.id }}" aria-pressed="false" title="Highlight this epic's cards" aria-label="Highlight this epic's cards"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="7" y="3" width="14" height="10" rx="1.5"></rect><path d="M4 7v11a2 2 0 0 0 2 2h11"></path></svg></button>
+    </span>
+  </div>
   {% endif %}
   {# KF-243: avatar lives in the icon row when the card has icon content,
      otherwise in the title row (golden GM-069: avatar top-right, 27px white
      disc; on icon cards it sits at the icon row's height, on title-only
      cards it stretches the title row). #}
-  {% let has_icon_content = !task.description.is_empty() || task.due_card.is_some() || !task.subtasks.is_empty() || task.comment_count > 0 || task.attachment_count > 0 || task.link_count > 0 || task.children_total > 0 || task.claimant.is_some() || task.time_kf.is_some() %}
+  {% let has_icon_content = !task.description.is_empty() || task.due_card.is_some() || !task.subtasks.is_empty() || task.comment_count > 0 || task.attachment_count > 0 || task.link_count > 0 || (task.children_total > 0 && !task.is_epic()) || task.claimant.is_some() || task.time_kf.is_some() %}
   {% let title_has_avatar = !has_icon_content && !task.member_chips.is_empty() %}
   <div class="card-title{% if title_has_avatar %} card-title-has-avatar{% endif %}">{% if let Some(number) = task.number %}<span class="card-number">{{ number }}:</span>{% endif %}<span class="card-title-text">{{ task.name }}</span>{% for flag in task.flags %}{% if let Some(color) = flag.color %}<svg class="card-flag" data-flag-label="{{ flag.label }}" width="13" height="13" viewBox="0 0 12 12" role="img" aria-label="{{ flag.label }}"><title>{{ flag.label }}</title><path d="M2 1v10M2 1h7l-2 2.5L9 6H2" fill="{{ color }}" stroke="{{ color }}" stroke-width="1.4" stroke-linejoin="round"/></svg>{% endif %}{% endfor %}{% if task.unit.is_points() %}{% if let Some(points) = task.points_label %}<span class="card-points" title="Points estimate">{{ points }}</span>{% endif %}{% endif %}{% if title_has_avatar %}{% for chip in task.member_chips %}<span class="card-avatar" title="{{ chip.username }}" style="{{ chip.avatar.style }}">{% if let Some(url) = chip.avatar.image %}<img src="{{ url }}" alt="">{% else %}{{ chip.avatar.text }}{% endif %}</span>{% endfor %}{% endif %}</div>
   {% if let Some(umbrella) = task.umbrella %}
@@ -32,6 +41,12 @@
   <div class="card-desc tm-md">{{ face|safe }}</div>
   {%- endif %}
   {%- endif %}
+  {% if task.is_epic() %}
+  <div class="epic-card-progress">
+    <span class="epic-card-bar" role="progressbar" aria-label="Children done" aria-valuemin="0" aria-valuemax="{{ task.children_total }}" aria-valuenow="{{ task.children_done }}"><span class="epic-card-fill" style="width:{% if task.children_total > 0 %}{{ task.children_done * 100 / task.children_total }}{% else %}0{% endif %}%"></span></span>
+    <span class="{% if task.epic_ready() %}epic-card-ready{% else %}epic-card-line{% endif %}">{{ task.epic_line() }}</span>
+  </div>
+  {% endif %}
   {% if has_icon_content %}
   <div class="card-iconrow">
     {% if !task.description.is_empty() %}
@@ -43,9 +58,9 @@
     {% if !task.subtasks.is_empty() %}
     <button type="button" class="card-ico" data-sec="subtasks" title="Has subtasks. Click to expand or collapse." aria-label="Toggle subtasks"><svg width="16" height="16" viewBox="0 0 16 16" overflow="visible" aria-hidden="true"><path d="M6 4h9v1H6zM6 8h9v1H6zM6 12h9v1H6z" fill="currentColor"/><path d="M-.6 3.6l1.3 1.2L3.5 2M-.6 7.6l1.3 1.2L3.5 6M-.6 11.6l1.3 1.2L3.5 10" fill="none" stroke="currentColor" stroke-width="1.3"/></svg></button>{% if let Some(p) = task.progress() %}<span class="card-progress" title="Subtasks done"><span class="card-progress-bar"><span class="card-progress-fill" style="width:{{ p.0 * 100 / p.1 }}%"></span></span><span class="card-progress-text">{{ p.0 }} of {{ p.1 }}</span></span>{% endif %}
     {% endif %}
-    {% if let Some(p) = task.children_progress() %}
+    {% if let Some(p) = task.children_progress() %}{% if !task.is_epic() %}
     <span class="card-progress card-progress-children" title="Children done"><span class="card-progress-bar"><span class="card-progress-fill" style="width:{{ p.0 * 100 / p.1 }}%"></span></span><span class="card-progress-text card-progress-children-text">{{ p.0 }} of {{ p.1 }} done</span></span>
-    {% endif %}
+    {% endif %}{% endif %}
     {% if task.comment_count > 0 %}
     <button type="button" class="card-ico" data-sec="comments" title="Has comments. Click to view comments." aria-label="View comments"><svg width="16" height="16" viewBox="0 0 16 16" overflow="visible" aria-hidden="true"><path d="M-.05 9.07A7.5 4.85 0 1 1 2.49 11.4L-.6 13.3z" fill="#fff" stroke="currentColor"/><circle cx="4" cy="8" r="1.1" fill="currentColor"/><circle cx="7" cy="8" r="1.1" fill="currentColor"/><circle cx="10" cy="8" r="1.1" fill="currentColor"/></svg></button>
     {% endif %}

@@ -18,7 +18,7 @@ function select(value) {
 }
 
 function classSet(names) {
-  return { contains: function (name) { return names.indexOf(name) !== -1; } };
+  return { contains: function (name) { return names.indexOf(name) !== -1; }, toggle: function () {} };
 }
 
 function load(sessionStorage, localStorage) {

@@ -143,7 +143,7 @@ fn cell_label(page: &str, column: &str, lane: &str) -> (String, bool) {
 }
 
 #[tokio::test]
-async fn the_board_page_should_draw_no_epic_and_count_none_in_column_totals() {
+async fn the_board_page_should_draw_the_epic_card_and_count_none_in_column_totals() {
     let (_dir, fx) = fixture();
     create(
         &fx,
@@ -168,8 +168,8 @@ async fn the_board_page_should_draw_no_epic_and_count_none_in_column_totals() {
         "the board page draws the work card"
     );
     assert!(
-        !page.contains("Epic Card Zed"),
-        "the board page draws no epic card"
+        page.contains("Epic Card Zed"),
+        "the board page draws the epic card"
     );
     let head = header_chunk(&page, &fx.col_limited);
     assert_eq!(
@@ -1298,4 +1298,91 @@ async fn making_a_card_an_epic_should_turn_its_ticked_subtasks_into_the_epics_ca
         .filter_map(|sub| sub["name"].as_str())
         .collect();
     assert_eq!(left, ["Left alone"], "{epic}");
+}
+
+fn epic_card<'a>(page: &'a str, id: &str) -> &'a str {
+    let at = page
+        .find(&format!("data-task-id=\"{id}\""))
+        .expect("epic card");
+    let from = page[..at].rfind("<article").expect("card open");
+    let rest = &page[from..];
+    &rest[..rest.find("</article>").expect("card close")]
+}
+
+#[tokio::test]
+async fn an_epic_should_draw_as_a_white_card_with_its_label_toggle_and_done_bar() {
+    let (_dir, fx) = fixture();
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic Draw", "kind": "epic"}),
+    )
+    .await;
+    let child = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Child", "size": 3}),
+    )
+    .await;
+    adopt(&fx, &child, &epic).await;
+    let page = board_page(&fx).await;
+    let card = epic_card(&page, &epic);
+    assert!(card.contains("task-card-epic"), "{card}");
+    assert!(!card.contains("taskColor-"), "{card}");
+    assert!(card.contains("class=\"epic-card-label\">Epic<"), "{card}");
+    assert!(card.contains("card-epic-toggle"), "{card}");
+    assert!(card.contains("0 of 1 done"), "{card}");
+    assert!(card.contains("about 3 Pomodori in its cards"), "{card}");
+    assert!(
+        !card.contains("epic-card-chip"),
+        "no final check, no chip: {card}"
+    );
+}
+
+#[tokio::test]
+async fn an_epic_with_final_check_items_should_show_a_size_chip_in_its_colour() {
+    let (_dir, fx) = fixture();
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic Chip", "kind": "epic", "size": 2}),
+    )
+    .await;
+    let (status, sub) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{epic}/subtasks"),
+        Some(json!({"name": "Try it live"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sub}");
+    let page = board_page(&fx).await;
+    let card = epic_card(&page, &epic);
+    assert!(card.contains("epic-card-chip"), "{card}");
+    assert!(card.contains("Final check &middot; 2"), "{card}");
+    assert!(card.contains("2 Pomodori"), "{card}");
+}
+
+#[tokio::test]
+async fn an_epic_with_a_highlighted_label_should_show_its_stripe_flag_and_column_chip() {
+    let (_dir, fx) = fixture();
+    let (status, text) = call(
+        &fx,
+        "PUT",
+        &format!("/api/boards/{}/label-settings", fx.board_id),
+        Some(json!({"highlights": [{"label": "hot", "color": "#b8461f"}]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic Hot", "kind": "epic", "labels": ["hot"]}),
+    )
+    .await;
+    let page = board_page(&fx).await;
+    let card = epic_card(&page, &epic);
+    assert!(card.contains("--hl-stripe: #b8461f"), "{card}");
+    assert!(card.contains("data-flag-label=\"hot\""), "{card}");
+    let head = header_chunk(&page, &fx.col_todo);
+    assert!(
+        head.contains("<span class=\"columnHeader-markCount\">1</span>"),
+        "{head}"
+    );
 }

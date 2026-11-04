@@ -300,6 +300,7 @@
             }),
           }).then(function (res) {
             if (!res.ok) {
+              if (res.status === 409) return refuseMove(res, card, fromList, evt.oldDraggableIndex);
               if (res.status === 403 || res.status === 422) {
                 return toastRefusal(res, 'Could not move task.').then(function () {
                   setTimeout(function () { window.location.reload(); }, 2500);
@@ -328,7 +329,9 @@
               if (TimerUI.updateCardIndicators) TimerUI.updateCardIndicators();
               if (TimerUI.updateCardLive) TimerUI.updateCardLive();
             }
-            if (fromCol !== toCol) {
+            if (window.BoardChrome && BoardChrome.syncEpicFunnels) BoardChrome.syncEpicFunnels();
+            if (card.dataset.kind === 'epic' && window.BoardChrome) BoardChrome.refreshMarks();
+            if (fromCol !== toCol && card.dataset.kind !== 'epic') {
               updateColumnCount(fromCol, -1, -estimate);
               updateColumnCount(toCol, 1, estimate);
             }
@@ -338,6 +341,19 @@
       });
     });
   }
+  const putCardBack = (card, list, index) => {
+    const rest = [...list.querySelectorAll('.task-card')].filter((el) => el !== card);
+    if (rest[index]) list.insertBefore(card, rest[index]);
+    else if (rest.length) rest[rest.length - 1].after(card);
+    else list.appendChild(card);
+  };
+
+  const refuseMove = (res, card, list, index) => toastRefusal(res, 'Could not move task.').then(() => {
+    putCardBack(card, list, index);
+    if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
+    return null;
+  });
+
   // Note: htmx inserts new cards inside the existing .task-list containers,
   // which already have Sortable attached, so no re-init is needed.
 
@@ -2023,10 +2039,12 @@
             var list = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
             var colId = list ? list.dataset.columnId : null;
             var estimate = cardEstimateMinutes(cardMenuCard);
+            const wasEpic = !!cardMenuCard && cardMenuCard.dataset.kind === 'epic';
             if (cardMenuCard && cardMenuCard.parentNode) cardMenuCard.remove();
             cardMenuCard = null;
             if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
-            if (colId) updateColumnCount(colId, -1, -estimate);
+            if (wasEpic) BoardChrome.refreshMarks();
+            else if (colId) updateColumnCount(colId, -1, -estimate);
             syncTimerAfterDelete();
           });
       });
@@ -2980,7 +2998,7 @@
       var td = el.closest('td.board-cell');
       var list = td ? td.querySelector('.task-list') : null;
       if (!list) return;
-      var count = list.querySelectorAll('.task-card').length;
+      const count = list.querySelectorAll('.task-card:not(.task-card-epic)').length;
       var limit = el.dataset.limit ? parseInt(el.dataset.limit, 10) : null;
       var over = limit != null && count > limit;
       el.textContent = limit != null ? count + ' / ' + limit : (count > 0 ? String(count) : '');
@@ -8051,8 +8069,10 @@
               var list = card ? card.closest('.task-list') : null;
               var colId = list ? list.dataset.columnId : null;
               var estimate = cardEstimateMinutes(card);
+              const wasEpic = !!card && card.dataset.kind === 'epic';
               if (card && card.parentNode) card.parentNode.removeChild(card);
-              if (colId) updateColumnCount(colId, -1, -estimate);
+              if (wasEpic) BoardChrome.refreshMarks();
+              else if (colId) updateColumnCount(colId, -1, -estimate);
               self.refresh();
             })
             .catch(function () { toast('Could not delete task.'); });
@@ -17602,6 +17622,12 @@
         if (el) el.addEventListener('click', function () { self.closeEpics(); });
       });
       panel.addEventListener('epics:open', function () { self.loadEpics(); });
+      document.addEventListener('click', (e) => {
+        const toggle = e.target.closest ? e.target.closest('.card-epic-toggle') : null;
+        if (!toggle) return;
+        const id = toggle.dataset.epicId;
+        self.filterOnEpic(self.epicFilter === id ? '' : id);
+      });
       this.syncEpicsBtn();
     },
     toggleEpics: function () {
@@ -17776,6 +17802,7 @@
         head.appendChild(fold);
       }
       head.appendChild(self.epicNameButton(epic));
+      head.appendChild(self.locateButton(epic));
       var funnel = document.createElement('button');
       funnel.type = 'button';
       funnel.className = 'board-bar-btn epic-funnel' + (lit ? ' is-lit' : '');
@@ -17795,8 +17822,38 @@
         inside.textContent = 'inside ' + parent.name;
         row.appendChild(inside);
       }
+      if (epic.column_name) {
+        const where = document.createElement('div');
+        where.className = 'epic-column';
+        where.textContent = 'in ' + epic.column_name;
+        row.appendChild(where);
+      }
       row.appendChild(self.epicProgress(epic));
       return row;
+    },
+    LOCATE_MS: 2000,
+    locateButton(epic) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'board-bar-btn epic-locate';
+      button.dataset.epicId = epic.id;
+      button.title = 'Show on board';
+      button.setAttribute('aria-label', 'Show on board');
+      button.innerHTML = '<svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><path d="M8 1v3M8 12v3M1 8h3M12 8h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+      button.addEventListener('click', () => this.locateEpic(epic.id));
+      return button;
+    },
+    locateEpic(id) {
+      const card = [...document.querySelectorAll('.task-card')].find((el) => el.dataset.taskId === id);
+      if (!card || card.hidden || card.style.display === 'none' || card.getClientRects().length === 0) {
+        toast('Not shown on the board', 'Its card is hidden by a filter, a collapsed column or an archive page.');
+        return;
+      }
+      card.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      card.classList.remove('card-located');
+      void card.offsetWidth;
+      card.classList.add('card-located');
+      window.setTimeout(() => card.classList.remove('card-located'), this.LOCATE_MS);
     },
     markEpicsSeen: function (epic, byParent, seen) {
       var self = this;
@@ -18159,8 +18216,21 @@
       this.applyFilter();
       this.maybeSaveFilter();
     },
+    isEpicChild(card, epic) {
+      const tag = card.querySelector('.card-epic-tag');
+      return !!tag && tag.dataset.epicId === epic;
+    },
     syncEpicFunnels: function () {
       var chosen = this.epicFilter;
+      document.querySelectorAll('.task-card').forEach((card) => {
+        card.classList.toggle('is-epic-child', !!chosen && this.isEpicChild(card, chosen));
+      });
+      document.querySelectorAll('.card-epic-toggle').forEach((toggle) => {
+        const lit = !!chosen && toggle.dataset.epicId === chosen;
+        toggle.setAttribute('aria-pressed', lit ? 'true' : 'false');
+        const card = toggle.closest('.task-card');
+        if (card) card.classList.toggle('is-lit', lit);
+      });
       document.querySelectorAll('.epic-funnel').forEach(function (funnel) {
         var lit = !!chosen && funnel.dataset.epicId === chosen;
         funnel.classList.toggle('is-lit', lit);
@@ -18351,10 +18421,7 @@
           try { cardFields = JSON.parse(card.dataset.filterFields || '{}'); } catch (e) { cardFields = {}; }
           if (!fieldKeys.every(function (k) { return cardFields[k] === fields[k]; })) show = false;
         }
-        if (show && epic) {
-          var tag = card.querySelector('.card-epic-tag');
-          if (!tag || tag.dataset.epicId !== epic) show = false;
-        }
+        if (show && epic && card.dataset.taskId !== epic && !self.isEpicChild(card, epic)) show = false;
         var list = card.closest('.task-list');
         var only = list ? self.columnLabels[list.dataset.columnId] : null;
         if (show && only) {
@@ -18487,7 +18554,7 @@
           overdue = 0;
           var sel = '.task-list[data-column-id="' + cssEscape(colId) + '"] .task-card';
           document.querySelectorAll(sel).forEach(function (card) {
-            if (card.style.display === 'none') return;
+            if (card.style.display === 'none' || card.dataset.kind === 'epic') return;
             count++;
             minutes += cardEstimateMinutes(card);
             if (card.dataset.overdue === '1') overdue++;

@@ -14,6 +14,8 @@ function card(id, labels, fields) {
   return {
     dataset: { taskId: id, labels: JSON.stringify(labels), filterFields: JSON.stringify(fields), memberIds: '', dueAt: '' },
     style: {},
+    classList: { toggle: function () {} },
+    querySelector: function () { return null; },
     closest: function () { return null; }
   };
 }

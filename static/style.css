@@ -7794,6 +7794,97 @@ body.dark .login-error {
 .task-card-umbrella {
   border-left-width: 4px;
 }
+.task-card.task-card-epic {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 11px;
+  border-width: 3px;
+  border-color: #2f2f2f;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #222222;
+}
+.task-card.task-card-epic.is-lit { border-color: #2563a8; }
+.task-card.is-epic-child { border-width: 2px; border-color: #2563a8; }
+body.dark .task-card.is-epic-child { border-color: #4a90d9; }
+.task-card.task-card-epic .card-title { font-size: 15px; font-weight: 700; line-height: 20px; }
+.epic-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.epic-card-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #444444;
+}
+.epic-card-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.epic-card-chip {
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 14px;
+}
+.card-epic-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #cccccc;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #555555;
+  cursor: pointer;
+}
+.card-epic-toggle[aria-pressed="true"] {
+  border-color: #2563a8;
+  background: #2563a8;
+  color: #ffffff;
+}
+.epic-card-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.epic-card-bar {
+  display: block;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #dddddd;
+}
+.epic-card-fill {
+  display: block;
+  height: 8px;
+  background: #3a7d3a;
+}
+.epic-card-line { font-size: 12px; color: #444444; }
+.epic-card-ready {
+  align-self: flex-start;
+  padding: 4px 8px;
+  border-radius: 3px;
+  background: #e3f2e3;
+  color: #1f5c1f;
+  font-size: 12px;
+}
+.task-card.card-located {
+  animation: card-located 2s ease-out;
+}
+@keyframes card-located {
+  0%, 70% { box-shadow: 0 0 0 4px #ffd84d, 0 0 0 7px rgba(255, 216, 77, 0.45); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 216, 77, 0), 0 0 0 0 rgba(255, 216, 77, 0); }
+}
 .tm-umbrella-line {
   display: inline-flex;
   align-items: center;
@@ -9104,6 +9195,28 @@ body.dark .tm-mention-pop button:hover, body.dark .tm-mention-pop button[aria-se
   border-radius: 50%;
   background: transparent;
   color: #666666;
+}
+.epic-locate {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: #666666;
+  cursor: pointer;
+}
+.epic-locate:hover,
+.epic-locate:focus-visible {
+  border-color: #c4c8ce;
+  background: #eceef1;
+}
+.epic-column {
+  margin: 3px 0 0 20px;
+  font-size: 11px;
+  line-height: 15px;
+  color: #888888;
 }
 .epic-row.is-lit { background: #e8f5e9; }
 .epic-funnel.is-lit {

@@ -1,0 +1,5 @@
+{"entries":[
+{"id":"epic-01-board","noGolden":"Pomb-only state with no KanbanFlow golden; regress mode compares it between builds.","viewport":{"width":1440,"height":612},"note":"Pomb Epic Test board: an epic with a final-check chip and a highlighted label, one done and one open child, and a plain card.","setup":[{"goto":"/b/{ep}"},{"waitFor":".task-card[data-kind=\"epic\"]"}],"comparisons":[]},
+{"id":"epic-02-highlight","noGolden":"Pomb-only state with no KanbanFlow golden; regress mode compares it between builds.","viewport":{"width":1440,"height":612},"note":"The epic's highlight toggle on: its border blue and the other cards faded.","setup":[{"goto":"/b/{ep}"},{"click":".task-card[data-kind=\"epic\"] .card-epic-toggle"},{"waitFor":".task-card.task-card-epic.is-lit"}],"comparisons":[]},
+{"id":"epic-03-panel","noGolden":"Pomb-only state with no KanbanFlow golden; regress mode compares it between builds.","viewport":{"width":1440,"height":612},"note":"The Epics panel open: the epic's row with its column and the locate button.","setup":[{"goto":"/b/{ep}"},{"click":"#epics-btn"},{"waitFor":"#epics-panel .epic-row .epic-locate"}],"comparisons":[]}
+]}
