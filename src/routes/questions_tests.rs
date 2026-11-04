@@ -17,6 +17,7 @@ type Breaker = Box<dyn Fn(&mut Value)>;
 enum Caller {
     Browser,
     Token,
+    Lead,
 }
 
 struct Fixture {
@@ -26,6 +27,7 @@ struct Fixture {
     app: axum::Router,
     cookie: String,
     bearer: String,
+    lead: String,
     board_id: String,
     todo: String,
     blocked: String,
@@ -41,6 +43,8 @@ fn fixture() -> Fixture {
     let session = db.create_session(&user_id, "").expect("session");
     let (record, raw) = new_api_token_record(&user_id, "agent-7", AuthScope::Work, None);
     db.create_api_token(&record).expect("token");
+    let (record, lead) = new_api_token_record(&user_id, "lead-1", AuthScope::Provision, None);
+    db.create_api_token(&record).expect("lead token");
     let board_id = db.create_board(&user_id, "Questions").expect("board");
     let todo = db.create_column(&board_id, "Todo", None).expect("column");
     let blocked = db
@@ -59,6 +63,7 @@ fn fixture() -> Fixture {
         app,
         cookie: format!("session={session}"),
         bearer: format!("Bearer {raw}"),
+        lead: format!("Bearer {lead}"),
         board_id,
         todo,
         blocked,
@@ -80,6 +85,7 @@ async fn send(
         .header("accept", "application/json");
     builder = match as_token {
         Caller::Token => builder.header("authorization", &fx.bearer),
+        Caller::Lead => builder.header("authorization", &fx.lead),
         Caller::Browser => builder.header("cookie", &fx.cookie),
     };
     let body = match body {
@@ -710,4 +716,128 @@ async fn a_plain_comment_of_kind_question_should_be_refused() {
         );
     }
     assert_untouched(&fx, &task, &fx.todo).await;
+}
+
+async fn blocked_flags(fx: &Fixture) -> Vec<(String, bool)> {
+    let (status, columns) = send(
+        fx,
+        Caller::Browser,
+        "GET",
+        &format!("/api/boards/{}/columns", fx.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{columns}");
+    columns
+        .as_array()
+        .expect("columns")
+        .iter()
+        .map(|column| {
+            (
+                column["id"].as_str().expect("id").to_string(),
+                column["is_blocked"].as_bool().expect("is_blocked"),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_lead_token_should_set_and_clear_the_blocked_column() {
+    let fx = fixture();
+    let uri = |id: &str| format!("/api/columns/{id}");
+
+    assert!(blocked_flags(&fx).await.iter().all(|(_, flag)| !flag));
+
+    let (status, body) = send(
+        &fx,
+        Caller::Lead,
+        "PATCH",
+        &uri(&fx.blocked),
+        Some(json!({"is_blocked": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let flags = blocked_flags(&fx).await;
+    assert!(flags.iter().all(|(id, flag)| *flag == (*id == fx.blocked)));
+
+    let (status, body) = send(
+        &fx,
+        Caller::Lead,
+        "PATCH",
+        &uri(&fx.review),
+        Some(json!({"is_blocked": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        blocked_flags(&fx)
+            .await
+            .contains(&(fx.blocked.clone(), true))
+    );
+
+    let (status, body) = send(
+        &fx,
+        Caller::Lead,
+        "PATCH",
+        &uri(&fx.review),
+        Some(json!({"is_blocked": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        blocked_flags(&fx)
+            .await
+            .iter()
+            .all(|(id, flag)| *flag == (*id == fx.review))
+    );
+
+    let (status, body) = send(
+        &fx,
+        Caller::Lead,
+        "PATCH",
+        &uri(&fx.review),
+        Some(json!({"is_blocked": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(blocked_flags(&fx).await.iter().all(|(_, flag)| !flag));
+}
+
+#[tokio::test]
+async fn a_work_token_should_be_refused_the_blocked_column() {
+    let fx = fixture();
+
+    let (status, body) = send(
+        &fx,
+        Caller::Token,
+        "PATCH",
+        &format!("/api/columns/{}", fx.blocked),
+        Some(json!({"is_blocked": true})),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "permission_denied", "{body}");
+    assert_eq!(body["permission"], "columns.edit", "{body}");
+    assert!(blocked_flags(&fx).await.iter().all(|(_, flag)| !flag));
+}
+
+#[tokio::test]
+async fn a_question_after_setting_the_blocked_column_by_patch_should_move_the_card_there() {
+    let fx = fixture();
+    let task = card(&fx, json!({})).await;
+    let (status, body) = send(
+        &fx,
+        Caller::Lead,
+        "PATCH",
+        &format!("/api/columns/{}", fx.blocked),
+        Some(json!({"is_blocked": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = ask(&fx, &task, question(&fx)).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(row(&fx, &task).column_id, fx.blocked);
 }

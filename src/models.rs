@@ -537,6 +537,11 @@ impl BoardRow {
             .filter(|id| !id.is_empty())
     }
 
+    /// Returns whether `column_id` is the column the board marks as Blocked.
+    pub fn is_blocked_column(&self, column_id: &str) -> bool {
+        self.blocked_column_id().as_deref() == Some(column_id)
+    }
+
     /// Returns the id stored for the board's main swimlane.
     pub fn main_swimlane_id(&self) -> Option<String> {
         self.config_string(MAIN_SWIMLANE_KEY)

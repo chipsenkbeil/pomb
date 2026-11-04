@@ -454,6 +454,7 @@
             data-wip-limit="{% if let Some(lim) = col.wip_limit %}{{ lim }}{% endif %}"
             data-wip-unit="{{ col.limit_unit }}"
             data-is-done="{% if col.is_done %}1{% else %}0{% endif %}"
+            data-is-blocked="{% if col.is_blocked %}1{% else %}0{% endif %}"
             data-collapsed="{% if col.collapsed %}1{% else %}0{% endif %}"
             data-watched="{% if col.watched %}1{% else %}0{% endif %}"
             data-overdue-count="{{ col.overdue_count }}"
@@ -880,6 +881,9 @@
     </div>
     <div class="dlg-checks">
       <label class="check-label"><input type="checkbox" id="ec-collapsed"> Collapsed</label>
+      <label class="check-label check-label-stacked"><input type="checkbox" id="ec-blocked">
+        <span><strong>Blocked column</strong><span class="check-sub">Cards with a posted question move here</span></span>
+      </label>
       <!-- KF-045: Column sum is a dropdown (KanbanFlow parity), not a checkbox. -->
       <label class="dlg-field"><span>Column sum</span>
         <select id="ec-column-sum">

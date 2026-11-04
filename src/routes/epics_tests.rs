@@ -596,7 +596,7 @@ fn section<'a>(modal: &'a str, id: &str) -> &'a str {
 }
 
 #[tokio::test]
-async fn an_epics_modal_should_open_with_about_progress_its_cards_then_comments() {
+async fn an_epics_modal_should_tab_description_its_cards_comments_relations_files_and_history() {
     let (_dir, fx) = fixture();
     let epic = create(
         &fx,
@@ -605,16 +605,114 @@ async fn an_epics_modal_should_open_with_about_progress_its_cards_then_comments(
     .await;
     let modal = modal_of(&fx, &epic).await;
 
-    let about = modal.find(">About</h3>").expect("About heading");
-    let cards = modal.find(">Its cards</h3>").expect("Its cards heading");
-    let comments = modal.find("id=\"tm-panel-comments\"").expect("comments");
-    assert!(about < cards && cards < comments, "{modal}");
+    let tab = |name: &str| {
+        modal
+            .find(&format!("id=\"tm-tab-{name}\""))
+            .unwrap_or_else(|| panic!("no tab {name}: {modal}"))
+    };
+    let order = [
+        "description",
+        "children",
+        "subtasks",
+        "comments",
+        "relations",
+        "files",
+        "history",
+    ];
+    for pair in order.windows(2) {
+        assert!(
+            tab(pair[0]) < tab(pair[1]),
+            "{} before {}",
+            pair[0],
+            pair[1]
+        );
+    }
+    assert!(
+        modal.contains(">Its cards &middot; 0/0</button>"),
+        "{modal}"
+    );
+    assert!(!modal.contains(">About</h3>"), "{modal}");
     assert!(
         modal.contains("class=\"task-modal taskColorVars-"),
         "{modal}"
     );
     assert!(modal.contains(" tm-epic\""), "{modal}");
-    assert!(!modal.contains("role=\"tablist\""), "{modal}");
+    assert!(modal.contains("role=\"tablist\""), "{modal}");
+}
+
+#[tokio::test]
+async fn an_epics_hidden_panels_should_each_have_a_tab_that_can_open_them() {
+    let (_dir, fx) = fixture();
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let modal = modal_of(&fx, &epic).await;
+
+    for name in [
+        "children",
+        "subtasks",
+        "comments",
+        "relations",
+        "files",
+        "history",
+    ] {
+        let panel = &modal[modal
+            .find(&format!("id=\"tm-panel-{name}\""))
+            .expect("panel")..];
+        let panel = &panel[..panel.find('>').expect("tag end")];
+        assert!(panel.contains("hidden"), "{panel}");
+        assert!(
+            panel.contains(&format!("aria-labelledby=\"tm-tab-{name}\"")),
+            "{panel}"
+        );
+        assert!(
+            modal.contains(&format!(
+                "data-tm-tab=\"{name}\" aria-controls=\"tm-panel-{name}\""
+            )),
+            "no tab for {name}: {modal}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_epics_final_check_tab_should_hide_while_empty_and_show_its_items() {
+    let (_dir, fx) = fixture();
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let empty = modal_of(&fx, &epic).await;
+    let tag = |modal: &str| {
+        let start = modal
+            .find("id=\"tm-tab-subtasks\"")
+            .expect("final check tab");
+        let rest = &modal[start..];
+        rest[..rest.find('>').expect("tag end")].to_string()
+    };
+    assert!(tag(&empty).contains(" hidden"), "{empty}");
+
+    let (status, sub) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{epic}/subtasks"),
+        Some(json!({"name": "Ship it"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sub}");
+    let filled = modal_of(&fx, &epic).await;
+    assert!(!tag(&filled).contains(" hidden"), "{filled}");
+    assert!(
+        filled.contains("Final check &middot; <span id=\"modal-subtask-tabcount\">1</span>"),
+        "{filled}"
+    );
+    let panel = section(&filled, "tm-panel-subtasks");
+    assert!(panel.contains(">Final check <span"), "{panel}");
+    assert!(panel.contains("Ship it"), "{panel}");
+    assert!(panel.contains("id=\"modal-subtask-input\""), "{panel}");
+    assert!(panel.contains("tm-subtask-check"), "{panel}");
 }
 
 #[tokio::test]
@@ -747,7 +845,10 @@ async fn an_empty_epic_should_still_show_its_cards_with_an_empty_note() {
     .await;
     let modal = modal_of(&fx, &epic).await;
     let cards = section(&modal, "tm-panel-children");
-    assert!(cards.contains("Its cards"), "{cards}");
+    assert!(
+        modal.contains(">Its cards &middot; 0/0</button>"),
+        "{modal}"
+    );
     assert!(cards.contains("tm-children-empty"), "{cards}");
     assert!(!cards.contains("<li "), "{cards}");
     assert!(!cards.contains("data-children-hide-done"), "{cards}");
@@ -839,7 +940,7 @@ async fn a_plain_cards_modal_should_keep_its_controls_and_show_no_about() {
 }
 
 #[tokio::test]
-async fn an_epics_menus_should_omit_the_entries_its_modal_has_no_panel_for() {
+async fn an_epics_menus_should_offer_the_entries_its_tabs_have_panels_for() {
     let (_dir, fx) = fixture();
     let epic = create(
         &fx,
@@ -857,8 +958,8 @@ async fn an_epics_menus_should_omit_the_entries_its_modal_has_no_panel_for() {
     let modal = modal_of(&fx, &epic).await;
     for entry in entries {
         assert!(
-            !action_menus(&modal).contains(entry),
-            "{entry} in an epic's menus"
+            action_menus(&modal).contains(entry),
+            "{entry} missing from an epic's menus"
         );
     }
     let modal = modal_of(&fx, &card).await;
@@ -1298,6 +1399,36 @@ async fn making_a_card_an_epic_should_turn_its_ticked_subtasks_into_the_epics_ca
         .filter_map(|sub| sub["name"].as_str())
         .collect();
     assert_eq!(left, ["Left alone"], "{epic}");
+}
+
+#[tokio::test]
+async fn the_epic_card_toggle_should_draw_the_panel_funnel_icon() {
+    let (_dir, fx) = fixture();
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic Funnel", "kind": "epic"}),
+    )
+    .await;
+    let page = board_page(&fx).await;
+    let card = epic_card(&page, &epic);
+    let script = include_str!("../../static/app.js");
+    let panel = &script[script
+        .find("'board-bar-btn epic-funnel'")
+        .expect("panel funnel")..];
+    let panel_path = &panel[panel.find("<path d=\"").expect("panel path")..];
+    let panel_path = &panel_path[..panel_path.find("\"/>").expect("panel path end")];
+    assert!(
+        card.contains(panel_path),
+        "{panel_path} missing from {card}"
+    );
+    assert!(
+        card.contains("title=\"Filter the board to this epic\""),
+        "{card}"
+    );
+    assert!(
+        card.contains("aria-label=\"Filter the board to this epic\""),
+        "{card}"
+    );
 }
 
 fn epic_card<'a>(page: &'a str, id: &str) -> &'a str {

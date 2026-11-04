@@ -118,17 +118,18 @@ use crate::layouts::{LAYOUTS, Layout};
 use crate::limit::{Limits, TrustProxy};
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
-    AttachmentVersion, AuthScope, BackupSettings, BackupStatus, BinRow, BoardAccess, BoardFeed,
-    BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CommentQuestion, CommentReaction,
-    CoverChange, DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange, FieldDefRow, HistoryKind,
-    InboundAddressRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS,
-    MAX_CUSTOM_COLORS, MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
-    MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NEEDS_HUMAN_LABEL, NUMBERING_KEY, Numbering,
-    PasskeyRow, QUESTION_KIND, QuestionAnswer, Quota, Quotas, RecoveryCodeRow, ReportBookmark,
-    Responsible, SECONDS_PER_HOUR, SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment,
-    TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind, TaskLink, TaskRow, TextCap,
-    TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes, custom_color_value,
-    format_minutes, is_custom_color, lighter_hex, normalize_hex, standard_color, text_contrast,
+    AttachmentVersion, AuthScope, BLOCKED_COLUMN_KEY, BackupSettings, BackupStatus, BinRow,
+    BoardAccess, BoardFeed, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
+    CommentQuestion, CommentReaction, CoverChange, DeviceAuthRow, DeviceAuthStatus, EntryKind,
+    EventChange, FieldDefRow, HistoryKind, InboundAddressRow, InstanceMode, InstanceSettings,
+    LaneLimit, LinkKind, MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS, MAX_NUMBERING_NAME_CHARS,
+    MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS, MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST,
+    NEEDS_HUMAN_LABEL, NUMBERING_KEY, Numbering, PasskeyRow, QUESTION_KIND, QuestionAnswer, Quota,
+    Quotas, RecoveryCodeRow, ReportBookmark, Responsible, SECONDS_PER_HOUR, SessionRow, Settings,
+    Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind,
+    TaskLink, TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, WebhookRow,
+    custom_color_hexes, custom_color_value, format_minutes, is_custom_color, lighter_hex,
+    normalize_hex, standard_color, text_contrast,
 };
 use crate::permissions::Permission;
 use crate::rules;
@@ -5603,6 +5604,30 @@ fn txn_move_swimlane(txn: &WriteTransaction, id: &str, position: i64) -> DbResul
     Ok(true)
 }
 
+/// Points a board's `blocked_column_id` at `column_id`, or removes the key when `blocked` is false
+/// and it names `column_id`, inside an open write transaction.
+fn txn_set_blocked_column(
+    txn: &WriteTransaction,
+    board_id: &str,
+    column_id: &str,
+    blocked: bool,
+) -> DbResult<()> {
+    let Some(mut board) = txn_read_one::<BoardRow>(txn, BOARDS, board_id)? else {
+        return Ok(());
+    };
+    let mut cfg: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&board.config_json).unwrap_or_default();
+    if blocked {
+        cfg.insert(BLOCKED_COLUMN_KEY.to_string(), column_id.into());
+    } else if board.is_blocked_column(column_id) {
+        cfg.remove(BLOCKED_COLUMN_KEY);
+    } else {
+        return Ok(());
+    }
+    board.config_json = serde_json::to_string(&cfg)?;
+    txn_store_board(txn, &board, OverQuota::Allow)
+}
+
 /// Merge `updates` into a board's config bag inside an open write
 /// transaction; an unknown board is left alone.
 fn txn_merge_board_config(
@@ -5958,6 +5983,9 @@ pub struct ColumnPatch<'a> {
     /// `Some(None)` clears the WIP limit.
     pub wip_limit: Option<Option<i64>>,
     pub is_done: Option<bool>,
+    /// Whether the column is its board's Blocked column, where `false` clears the board's Blocked
+    /// column only when it is this one.
+    pub is_blocked: Option<bool>,
     pub description: Option<&'a str>,
     pub collapsed: Option<bool>,
     pub config_json: Option<&'a str>,
@@ -7507,6 +7535,9 @@ impl Db {
                 column.config_json = config_json.to_string();
             }
             txn_store_owned(&txn, COLUMNS, id, &column, OverQuota::Refuse)?;
+            if let Some(is_blocked) = patch.is_blocked {
+                txn_set_blocked_column(&txn, &column.board_id, id, is_blocked)?;
+            }
         }
         if let Some(is_done) = restamp {
             restamp_column_tasks(&txn, id, is_done)?;

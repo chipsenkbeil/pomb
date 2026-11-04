@@ -2585,6 +2585,7 @@
     document.getElementById('ec-wip').value = th.dataset.wipLimit || '';
     document.getElementById('ec-wip-type').value = th.dataset.wipUnit === 'hours' ? 'hours' : 'count';
     document.getElementById('ec-collapsed').checked = th.dataset.collapsed === '1';
+    document.getElementById('ec-blocked').checked = th.dataset.isBlocked === '1';
     // KF-042: the remaining fields live in the column's opaque config_json
     // bag — load the saved values so editing a name doesn't wipe them.
     var cfg = columnConfigBag(th);
@@ -2635,6 +2636,7 @@
       description: document.getElementById('ec-description').value.trim(),
       wip_limit: wip,
       collapsed: document.getElementById('ec-collapsed').checked,
+      is_blocked: document.getElementById('ec-blocked').checked,
       config_json: JSON.stringify(config),
     }).then(drained).then(function (res) {
       if (res.ok) window.location.reload();
@@ -3137,13 +3139,13 @@
 
   function selectModalTab(name) {
     if (MODAL_TABS.indexOf(name) === -1) return;
-    if (document.querySelector('#modal-root .task-modal.tm-epic')) return;
     if (!document.getElementById('tm-tab-' + name)) name = 'description';
     modalTab = name;
     Array.prototype.forEach.call(document.querySelectorAll('#modal-root [data-tm-tab]'), function (tab) {
       var on = tab.getAttribute('data-tm-tab') === name;
       tab.setAttribute('aria-selected', on ? 'true' : 'false');
       tab.tabIndex = on ? 0 : -1;
+      if (on) tab.hidden = false;
     });
     MODAL_TABS.forEach(function (tabName) {
       var panel = document.getElementById('tm-panel-' + tabName);
@@ -3180,10 +3182,12 @@
   }
 
   function wireModalTabs() {
-    var tabs = Array.prototype.slice.call(document.querySelectorAll('#modal-root [data-tm-tab]'));
-    tabs.forEach(function (tab, i) {
+    var all = Array.prototype.slice.call(document.querySelectorAll('#modal-root [data-tm-tab]'));
+    all.forEach(function (tab) {
       tab.addEventListener('click', function () { showModalTab(tab.getAttribute('data-tm-tab')); });
       tab.addEventListener('keydown', function (e) {
+        const tabs = all.filter((t) => !t.hidden);
+        const i = tabs.indexOf(tab);
         var to = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 :
           e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : null;
         if (to === null || e.metaKey || e.ctrlKey || e.altKey) return;

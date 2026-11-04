@@ -71,7 +71,7 @@ catalog! {
     BoardsConfigure, "boards.configure", "boards", Admin, "Replace a board's config, change its settings and manage its members.";
     BoardsDelete, "boards.delete", "boards", Admin, "Delete a board.";
     ColumnsCreate, "columns.create", "columns", Lead, "Create a column, optionally marked as the done column.";
-    ColumnsEdit, "columns.edit", "columns", Lead, "Rename a column and change its WIP limit, description, collapse state, config or done flag.";
+    ColumnsEdit, "columns.edit", "columns", Lead, "Rename a column and change its WIP limit, description, collapse state, config, done flag or Blocked flag.";
     ColumnsReorder, "columns.reorder", "columns", Lead, "Reorder a board's columns.";
     ColumnsDelete, "columns.delete", "columns", Admin, "Delete a column.";
     SwimlanesCreate, "swimlanes.create", "swimlanes", Lead, "Create a swimlane.";

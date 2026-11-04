@@ -21,7 +21,7 @@
     <span class="epic-card-label">Epic</span>
     <span class="epic-card-tools">
       {% if let Some(size) = task.final_check %}<span class="epic-card-chip" style="background: {{ task.color_bg }}; border-color: {{ task.color_border }}" title="Its own final check: {{ size.label() }}">Final check &middot; {{ task.chip_count() }}</span>{% endif %}
-      <button type="button" class="card-epic-toggle" data-epic-id="{{ task.id }}" aria-pressed="false" title="Highlight this epic's cards" aria-label="Highlight this epic's cards"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="7" y="3" width="14" height="10" rx="1.5"></rect><path d="M4 7v11a2 2 0 0 0 2 2h11"></path></svg></button>
+      <button type="button" class="card-epic-toggle" data-epic-id="{{ task.id }}" aria-pressed="false" title="Filter the board to this epic" aria-label="Filter the board to this epic"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg></button>
     </span>
   </div>
   {% endif %}

@@ -4094,6 +4094,8 @@ struct ColumnHead {
     /// overdue task(s)" indicator.
     overdue_count: usize,
     is_done: bool,
+    /// Whether this is the board's Blocked column.
+    is_blocked: bool,
     /// Whether the viewing account watches the column.
     watched: bool,
     /// Opaque column-dialog settings bag, for the Edit column dialog.
@@ -4242,7 +4244,8 @@ struct BoardMemberInput {
     role: MemberRoleInput,
 }
 
-/// One board column in `GET /api/boards/:id/columns`: `{ "id", "name", "wip_limit", "is_done" }`
+/// One board column in `GET /api/boards/:id/columns`: `{ "id", "name", "wip_limit", "is_done",
+/// "is_blocked" }`
 /// (Move-task dialog board switcher).
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct ColumnListItem {
@@ -4252,6 +4255,8 @@ struct ColumnListItem {
     wip_limit: Option<i64>,
     /// Whether tasks moved here count as Done.
     is_done: bool,
+    /// Whether this is the board's Blocked column, where a posted question moves its card.
+    is_blocked: bool,
     /// Whether the calling account watches the column.
     watched: bool,
 }
@@ -4573,7 +4578,7 @@ struct ModalTemplate {
     custom_css: String,
     /// The role the signed-in account holds on the task's board.
     role: BoardRole,
-    /// Whether the task is an epic, which the modal lays out as About, Its cards and Comments.
+    /// Whether the task is an epic, which the modal tabs as Description, Its cards, Final check, Comments, Relations, Files and History.
     is_epic: bool,
     /// Whether the epic is closed, by someone closing it or by a move into a Done column.
     closed: bool,
@@ -5057,6 +5062,7 @@ fn board_template(
                 over_limit,
                 overdue_count,
                 is_done: col.is_done,
+                is_blocked: board.row().is_blocked_column(&col.id),
                 watched: col.watched_by(db.account_id().as_str()),
                 config_json: col.config_json.clone(),
                 sum_label: match ColumnSettings::from_column(col).sum {
@@ -12856,7 +12862,7 @@ fn question_from_input(
 /// Returns the 409 for a board whose settings name no usable Blocked column.
 fn no_blocked_column() -> AppError {
     AppError::conflict(
-        "the board has no Blocked column: set blocked_column_id in the board config to one of its columns",
+        "the board has no Blocked column: mark one of its columns as the Blocked column with is_blocked on PATCH /api/columns/{id}",
     )
 }
 
@@ -16331,6 +16337,9 @@ struct UpdateColumnInput {
     #[serde(default, deserialize_with = "de_opt_opt")]
     wip_limit: Option<Option<i64>>,
     is_done: Option<bool>,
+    /// Whether the column is its board's Blocked column, where a posted question moves its card.
+    /// `false` clears the board's Blocked column when it is this one. Absent leaves it unchanged.
+    is_blocked: Option<bool>,
     /// Column description (empty string clears it).
     description: Option<String>,
     /// Collapse/expand the column on the board.
@@ -16348,8 +16357,9 @@ struct UpdateColumnInput {
     config_json: Option<String>,
 }
 
-/// Renames a column, sets or clears its WIP limit, flips its done flag, and updates its
-/// description, collapsed state, the calling account's watch and settings bag.
+/// Renames a column, sets or clears its WIP limit, flips its done flag, makes it or stops it being
+/// the board's Blocked column, and updates its description, collapsed state, the calling account's
+/// watch and settings bag.
 #[utoipa::path(
     patch,
     path = "/api/columns/{id}",
@@ -16378,6 +16388,7 @@ async fn update_column(
     let reshapes = input.name.is_some()
         || input.wip_limit.is_some()
         || input.is_done.is_some()
+        || input.is_blocked.is_some()
         || input.description.is_some()
         || input.collapsed.is_some()
         || input.config_json.is_some();
@@ -16403,6 +16414,7 @@ async fn update_column(
         name,
         wip_limit: input.wip_limit,
         is_done: input.is_done,
+        is_blocked: input.is_blocked,
         description: input.description.as_deref().map(str::trim),
         collapsed: input.collapsed,
         watch: input.watched.map(|watched| ColumnWatch {
@@ -18193,8 +18205,8 @@ async fn serve_calendar_feed(
     Ok((StatusCode::OK, headers, body).into_response())
 }
 
-/// Lists a board's columns (id, name, WIP limit, Done flag) for the Move-task dialog's board
-/// switcher.
+/// Lists a board's columns (id, name, WIP limit, Done and Blocked flags) for the Move-task dialog's
+/// board switcher.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/columns",
@@ -18220,12 +18232,14 @@ async fn list_board_columns(
 /// Returns a board's columns in board order as list items.
 fn board_columns(db: &AccountDb, board_id: &str) -> Result<Vec<ColumnListItem>, AppError> {
     let account = db.account_id().as_str();
+    let board = found(db.board(board_id), "board not found")?;
     let columns = db
         .list_columns(board_id)
         .map_err(AppError::from)?
         .into_iter()
         .map(|column| ColumnListItem {
             watched: column.watched_by(account),
+            is_blocked: board.row().is_blocked_column(&column.id),
             id: column.id,
             name: column.name,
             wip_limit: column.wip_limit,
@@ -29791,6 +29805,7 @@ mod tests {
                 over_limit: false,
                 overdue_count: usize::from(i == 1),
                 is_done: i == 4,
+                is_blocked: false,
                 watched: false,
                 config_json: "{}".into(),
                 sum_label: None,
