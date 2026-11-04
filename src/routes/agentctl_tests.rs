@@ -1290,7 +1290,7 @@ async fn subtask_names(fx: &Fixture, task: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_work_token_should_delete_a_subtask_it_created_and_get_403_on_any_other() {
+async fn a_work_token_should_get_403_deleting_any_subtask_including_its_own() {
     let (_dir, fx) = fixture();
     let mine = token_with(&fx, "agent", AuthScope::Work);
     let theirs = token_with(&fx, "agent", AuthScope::Work);
@@ -1306,7 +1306,7 @@ async fn a_work_token_should_delete_a_subtask_it_created_and_get_403_on_any_othe
         .expect("task")
         .id;
 
-    for sub in [&other_token, &browser, &stored_before] {
+    for sub in [&own, &other_token, &browser, &stored_before] {
         let uri = format!("/api/tasks/{a}/subtasks/{sub}");
         let (status, text) = request(&fx, As::Bearer(&mine), "DELETE", &uri, None, true).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
@@ -1316,30 +1316,29 @@ async fn a_work_token_should_delete_a_subtask_it_created_and_get_403_on_any_othe
         );
     }
     assert_eq!(subtask_names(&fx, &a).await.len(), 4);
-
-    let uri = format!("/api/tasks/{a}/subtasks/{own}");
-    let (status, text) = request(&fx, As::Bearer(&mine), "DELETE", &uri, None, true).await;
-    assert_eq!(status, StatusCode::OK, "{text}");
-    assert_eq!(
-        subtask_names(&fx, &a).await,
-        ["other token", "browser", "stored before"]
-    );
-    let (status, _) = request(&fx, As::Bearer(&mine), "DELETE", &uri, None, true).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn a_token_holding_subtasks_delete_should_delete_any_subtask() {
     let (_dir, fx) = fixture();
     let work = token_with(&fx, "agent", AuthScope::Work);
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
     let admin = token_with(&fx, "boss", AuthScope::Admin);
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
 
-    for who in [As::Bearer(&work), As::Admin, As::Bearer(&admin)] {
-        let sub = subtask_as(&fx, who, &a, "step").await;
-        let uri = format!("/api/tasks/{a}/subtasks/{sub}");
-        let (status, text) = request(&fx, As::Bearer(&admin), "DELETE", &uri, None, true).await;
-        assert_eq!(status, StatusCode::OK, "{text}");
+    for deleter in [&lead, &admin] {
+        for who in [
+            As::Bearer(&work),
+            As::Admin,
+            As::Bearer(&lead),
+            As::Bearer(&admin),
+        ] {
+            let sub = subtask_as(&fx, who, &a, "step").await;
+            let uri = format!("/api/tasks/{a}/subtasks/{sub}");
+            let (status, text) =
+                request(&fx, As::Bearer(deleter), "DELETE", &uri, None, true).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+        }
     }
     assert!(subtask_names(&fx, &a).await.is_empty());
 }
@@ -11310,7 +11309,8 @@ async fn the_settings_page_should_hold_the_catalog_form_the_board_picker_and_the
     assert_eq!(status, StatusCode::OK);
     for id in [
         "token-picker",
-        "token-board-list",
+        "token-boards",
+        "token-expiry",
         "token-inspect-form",
         "token-inspect-result",
     ] {

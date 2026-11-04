@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "28"
+  version: "29"
 ---
 
 # Pomb
@@ -40,9 +40,9 @@ Ask the user for `POMB_URL` when it is unset. Send the token on every call as
 `Authorization: Bearer $POMB_API_TOKEN`, and never log it or write it to a file. A token holds a
 set of permissions (a preset or a custom set) on every board of its account or an assigned few.
 `/docs/api.md` names the permission each operation needs, and `GET /api/v1/auth/permissions` lists
-them all. `work` covers every call below except creating boards and deleting a task (`lead` or
-`admin`, undone by `POST /api/bin/{id}/restore` within 30 days). Any other delete needs `admin`,
-except you may fix or remove your own comments, links and subtasks. A token acts for one account.
+them all. `work` covers every call below except creating boards and deleting a task or subtask
+(`lead` or `admin`; restore a task within 30 days with `POST /api/bin/{id}/restore`). Any other
+delete needs `admin`, except your own comments and links. A token acts for one account.
 
 Once per session, compare `metadata.version` with `skill_version` from `GET /api/v1/version`. If
 they differ, tell the user to re-run Install.

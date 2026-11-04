@@ -58,11 +58,11 @@ Read https://pomb.example.com/skill.md and follow it to work my "<board>" board.
 
 A token holds a preset or a custom set of permissions: `read`, `work` (claim,
 move, comment, log time, restore tasks), `lead` (`work` plus moving tasks to
-the recycle bin, creating boards and adding columns, swimlanes and fields) or
-`admin` (everything, permanent deletes included). Give agents `work`, and
-`lead` only to the one that decides what gets deleted. A deleted task waits 30
-days in its board's recycle bin. Agents wait for board changes with
-`GET /api/boards/{id}/events/wait` instead of polling.
+the recycle bin, deleting subtasks, creating boards and adding columns,
+swimlanes and fields) or `admin` (everything, permanent deletes included). Give
+agents `work`, and `lead` only to the one that decides what gets deleted. A
+deleted task waits 30 days in its board's recycle bin. Agents wait for board
+changes with `GET /api/boards/{id}/events/wait` instead of polling.
 
 ## Configuration
 

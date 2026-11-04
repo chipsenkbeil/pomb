@@ -447,7 +447,6 @@
 
   var TokenForm = {
     boardsAll: 'all',
-    boardsSome: 'some',
     levelLabels: { read: 'Read', write: 'Write', full: 'Full', custom: 'Custom' },
     areaText: {
       boards: 'Boards, columns, swimlanes, palette, labels and fields.',
@@ -601,7 +600,31 @@
       };
       if (form.roleId) request.role_id = form.roleId;
       return request;
-    }
+    },
+    boardMatches: function (boards, term) {
+      var needle = term.trim().toLowerCase();
+      return boards.filter(function (board) { return board.name.toLowerCase().indexOf(needle) >= 0; });
+    },
+    boardChips: function (boards, picked) {
+      return boards.filter(function (board) { return picked.indexOf(board.id) >= 0; });
+    },
+    boardToggle: function (picked, id) {
+      return picked.indexOf(id) >= 0
+        ? picked.filter(function (other) { return other !== id; })
+        : picked.concat([id]);
+    },
+    expiryChoices: function (now) {
+      return [[0, 'Never'], [30, '30 days'], [90, '90 days'], [365, '1 year']].map(function (entry) {
+        return {
+          days: entry[0],
+          label: entry[1],
+          ends: entry[0] === 0
+            ? 'No end date'
+            : 'Ends ' + new Date(now + entry[0] * 86400000).toISOString().slice(0, 10) + ' UTC'
+        };
+      });
+    },
+    expiryDefault: 365
   };
 
   var pickerMenu = null;
@@ -632,6 +655,11 @@
   }
 
   document.addEventListener('mousedown', function (event) {
+    if (pickerMenu && !pickerMenu.node.contains(event.target) && !pickerMenu.anchor.contains(event.target)) {
+      closePickerMenu();
+    }
+  });
+  document.addEventListener('focusin', function (event) {
     if (pickerMenu && !pickerMenu.node.contains(event.target) && !pickerMenu.anchor.contains(event.target)) {
       closePickerMenu();
     }
@@ -667,6 +695,27 @@
     return svg;
   }
 
+  function pickerTrigger(key) {
+    if (!key) return null;
+    var triggers = document.querySelectorAll('[data-pick-key]');
+    for (var i = 0; i < triggers.length; i++) {
+      if (triggers[i].dataset.pickKey === key) return triggers[i];
+    }
+    return null;
+  }
+
+  function focusPickerTrigger(key) {
+    var trigger = pickerTrigger(key);
+    if (trigger) trigger.focus();
+  }
+
+  function anchorPickerMenu(key) {
+    var trigger = pickerTrigger(key);
+    if (!trigger || !pickerMenu) return;
+    pickerMenu.anchor = trigger;
+    trigger.setAttribute('aria-expanded', 'true');
+  }
+
   function pickerOption(name, note, active, onPick) {
     var button = pickerEl('button', 'pk-opt' + (active ? ' pk-opt-on' : ''));
     button.type = 'button';
@@ -678,10 +727,187 @@
     text.appendChild(pickerEl('span', 'pk-opt-note', note));
     button.appendChild(text);
     button.addEventListener('click', function () {
+      var key = pickerMenu ? pickerMenu.anchor.dataset.pickKey : '';
       closePickerMenu();
       onPick();
+      focusPickerTrigger(key);
     });
     return button;
+  }
+
+  function mountBoardPicker(root) {
+    var boards = [];
+    var picked = [];
+    var only = false;
+    var chips = pickerEl('div', 'pk-chips');
+
+    function renderChips() {
+      chips.textContent = '';
+      TokenForm.boardChips(boards, picked).forEach(function (board) {
+        var chip = pickerEl('span', 'pk-chip');
+        chip.appendChild(pickerEl('span', 'pk-chip-name', board.name));
+        var remove = pickerEl('button', 'pk-chip-remove', '×');
+        remove.type = 'button';
+        remove.setAttribute('aria-label', 'Remove ' + board.name);
+        remove.addEventListener('click', function () {
+          picked = TokenForm.boardToggle(picked, board.id);
+          renderChips();
+        });
+        chip.appendChild(remove);
+        chips.appendChild(chip);
+      });
+    }
+
+    function accessButton() {
+      var button = pickerEl('button', 'pk-select');
+      button.type = 'button';
+      button.id = root.id + '-access';
+      button.dataset.pickKey = 'access';
+      button.setAttribute('aria-haspopup', 'menu');
+      button.setAttribute('aria-expanded', 'false');
+      button.appendChild(pickerEl('span', 'pk-select-name', only ? 'Only select boards' : 'All boards'));
+      button.appendChild(pickerChevron(false));
+      button.addEventListener('click', function () {
+        if (pickerMenu && pickerMenu.anchor === button) { closePickerMenu(); return; }
+        var menu = pickerEl('div', 'pk-menu pk-menu-roles');
+        menu.setAttribute('role', 'menu');
+        menu.appendChild(pickerOption('All boards', 'Every board of the account, including new ones.', !only, function () {
+          only = false;
+          render();
+        }));
+        menu.appendChild(pickerOption('Only select boards', 'Just the boards you pick.', only, function () {
+          only = true;
+          render();
+        }));
+        openPickerMenu(button, menu);
+      });
+      return button;
+    }
+
+    function selectButton() {
+      var button = pickerEl('button', 'pk-add', 'Select boards');
+      button.type = 'button';
+      button.dataset.pickKey = 'select';
+      button.setAttribute('aria-haspopup', 'menu');
+      button.setAttribute('aria-expanded', 'false');
+      button.addEventListener('click', function () {
+        if (pickerMenu && pickerMenu.anchor === button) { closePickerMenu(); return; }
+        var menu = pickerEl('div', 'pk-menu pk-menu-add');
+        var top = pickerEl('div', 'pk-menu-top');
+        top.appendChild(pickerEl('span', 'pk-menu-heading', 'Select boards'));
+        var close = pickerEl('button', 'pk-remove', '×');
+        close.type = 'button';
+        close.setAttribute('aria-label', 'Close');
+        close.addEventListener('click', function () {
+          var key = pickerMenu ? pickerMenu.anchor.dataset.pickKey : '';
+          closePickerMenu();
+          focusPickerTrigger(key);
+        });
+        top.appendChild(close);
+        menu.appendChild(top);
+        var search = pickerEl('label', 'pk-search');
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Search boards';
+        input.setAttribute('aria-label', 'Search boards');
+        search.appendChild(input);
+        menu.appendChild(search);
+        var list = pickerEl('div', 'pk-menu-list');
+        var empty = pickerEl('p', 'pk-menu-empty', 'No board matches.');
+        menu.appendChild(list);
+        menu.appendChild(empty);
+        function filter() {
+          var found = TokenForm.boardMatches(boards, input.value);
+          list.textContent = '';
+          found.forEach(function (board) {
+            var label = pickerEl('label', 'pk-menu-check');
+            var box = document.createElement('input');
+            box.type = 'checkbox';
+            box.checked = picked.indexOf(board.id) >= 0;
+            box.addEventListener('change', function () {
+              picked = TokenForm.boardToggle(picked, board.id);
+              renderChips();
+            });
+            label.appendChild(box);
+            label.appendChild(document.createTextNode(' ' + board.name));
+            list.appendChild(label);
+          });
+          empty.hidden = found.length > 0;
+        }
+        input.addEventListener('input', filter);
+        filter();
+        openPickerMenu(button, menu);
+        input.focus();
+      });
+      return button;
+    }
+
+    function render() {
+      root.textContent = '';
+      var field = pickerEl('div', 'pk-field');
+      var label = pickerEl('label', 'pk-label', 'Board access');
+      label.htmlFor = root.id + '-access';
+      field.appendChild(label);
+      field.appendChild(accessButton());
+      if (only) {
+        field.appendChild(selectButton());
+        renderChips();
+        field.appendChild(chips);
+      }
+      root.appendChild(field);
+    }
+
+    render();
+    return {
+      setBoards: function (found) { boards = found; renderChips(); },
+      value: function () {
+        return only ? TokenForm.boardChips(boards, picked).map(function (board) { return board.id; }) : null;
+      },
+      reset: function () { only = false; picked = []; render(); }
+    };
+  }
+
+  function mountExpiryMenu(root) {
+    var days = TokenForm.expiryDefault;
+
+    function render() {
+      root.textContent = '';
+      var field = pickerEl('div', 'pk-field');
+      var label = pickerEl('label', 'pk-label', 'Expires');
+      label.htmlFor = root.id + '-choice';
+      field.appendChild(label);
+      var choices = TokenForm.expiryChoices(Date.now());
+      var current = choices.filter(function (choice) { return choice.days === days; })[0];
+      var button = pickerEl('button', 'pk-select');
+      button.type = 'button';
+      button.id = root.id + '-choice';
+      button.dataset.pickKey = 'expiry';
+      button.setAttribute('aria-haspopup', 'menu');
+      button.setAttribute('aria-expanded', 'false');
+      button.appendChild(pickerEl('span', 'pk-select-name', current.label));
+      button.appendChild(pickerEl('span', 'pk-select-note', current.ends));
+      button.appendChild(pickerChevron(false));
+      button.addEventListener('click', function () {
+        if (pickerMenu && pickerMenu.anchor === button) { closePickerMenu(); return; }
+        var menu = pickerEl('div', 'pk-menu pk-menu-roles');
+        menu.setAttribute('role', 'menu');
+        TokenForm.expiryChoices(Date.now()).forEach(function (choice) {
+          menu.appendChild(pickerOption(choice.label, choice.ends, choice.days === days, function () {
+            days = choice.days;
+            render();
+          }));
+        });
+        openPickerMenu(button, menu);
+      });
+      field.appendChild(button);
+      root.appendChild(field);
+    }
+
+    render();
+    return {
+      days: function () { return days; },
+      reset: function () { days = TokenForm.expiryDefault; render(); }
+    };
   }
 
   function mountPermissionPicker(root, catalog, roles) {
@@ -725,6 +951,7 @@
       var button = pickerEl('button', 'pk-select');
       button.type = 'button';
       button.id = root.id + '-role';
+      button.dataset.pickKey = 'role';
       button.setAttribute('aria-haspopup', 'menu');
       button.setAttribute('aria-expanded', 'false');
       button.appendChild(pickerEl('span', 'pk-select-name', role ? role.name : 'Custom'));
@@ -764,6 +991,7 @@
     function levelButton(area, level) {
       var button = pickerEl('button', 'pk-access');
       button.type = 'button';
+      button.dataset.pickKey = 'level-' + area.name;
       button.setAttribute('aria-haspopup', 'menu');
       button.setAttribute('aria-expanded', 'false');
       button.appendChild(pickerEl('span', 'pk-access-label', 'Access:'));
@@ -864,6 +1092,7 @@
     function addButton() {
       var button = pickerEl('button', 'pk-add');
       button.type = 'button';
+      button.dataset.pickKey = 'add';
       button.setAttribute('aria-haspopup', 'menu');
       button.setAttribute('aria-expanded', 'false');
       var plus = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -887,7 +1116,11 @@
         var close = pickerEl('button', 'pk-remove', '×');
         close.type = 'button';
         close.setAttribute('aria-label', 'Close');
-        close.addEventListener('click', closePickerMenu);
+        close.addEventListener('click', function () {
+          var key = pickerMenu ? pickerMenu.anchor.dataset.pickKey : '';
+          closePickerMenu();
+          focusPickerTrigger(key);
+        });
         top.appendChild(close);
         menu.appendChild(top);
         var search = pickerEl('label', 'pk-search');
@@ -914,6 +1147,7 @@
               setArea(area, []);
             }
             changed();
+            anchorPickerMenu('add');
           });
           label.appendChild(box);
           label.appendChild(document.createTextNode(' ' + TokenForm.areaName(area.name)));
@@ -1159,24 +1393,8 @@
     var pickerBox = document.getElementById('token-picker');
     var picker = null;
     var roles = [];
-    var boardsBox = document.getElementById('token-board-list');
-    var boardMode = document.querySelectorAll('input[name="token-boards"]');
-    function checkedValues(box) {
-      return Array.prototype.map.call(box.querySelectorAll('input:checked'), function (input) {
-        return input.value;
-      });
-    }
-    function checkbox(value, text, title) {
-      var label = document.createElement('label');
-      label.className = 'check-label';
-      var input = document.createElement('input');
-      input.type = 'checkbox';
-      input.value = value;
-      label.appendChild(input);
-      label.appendChild(document.createTextNode(' ' + text));
-      if (title) label.title = title;
-      return label;
-    }
+    var boardPicker = mountBoardPicker(document.getElementById('token-boards'));
+    var expiryMenu = mountExpiryMenu(document.getElementById('token-expiry'));
     function renderCatalog(items) {
       catalog = items;
       picker = mountPermissionPicker(pickerBox, catalog, roles);
@@ -1202,24 +1420,20 @@
         return r.json();
       })
       .then(function (boards) {
-        boards.forEach(function (board) { boardsBox.appendChild(checkbox(board.id, board.name)); });
+        boardPicker.setBoards(boards);
       })
-      .catch(function (ex) { boardsBox.textContent = 'Could not load boards: ' + ex.message; });
-    boardMode.forEach(function (radio) {
-      radio.addEventListener('change', function () {
-        boardsBox.hidden = document.querySelector('input[name="token-boards"]:checked').value !== TokenForm.boardsSome;
-      });
-    });
+      .catch(function (ex) { showError('Could not load boards: ' + ex.message); });
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       err.hidden = true;
-      var only = document.querySelector('input[name="token-boards"]:checked').value === TokenForm.boardsSome;
+      var chosen = boardPicker.value();
+      var only = chosen !== null;
       var request = TokenForm.body(catalog, {
         name: document.getElementById('token-name').value.trim(),
         ticked: picker ? picker.held() : [],
         roleId: picker ? picker.roleId() : null,
-        boards: only ? checkedValues(boardsBox) : null,
-        expiryDays: parseInt(document.getElementById('token-expiry').value, 10)
+        boards: chosen,
+        expiryDays: expiryMenu.days()
       });
       if (!request.permissions.length) { showError('Tick at least one permission.'); return; }
       if (only && !request.boards.length) { showError('Pick at least one board.'); return; }
@@ -1234,10 +1448,9 @@
         document.getElementById('token-created-value').textContent = data.raw_token;
         document.getElementById('token-created').hidden = false;
         form.reset();
-        boardsBox.hidden = true;
-        boardsBox.querySelectorAll('input').forEach(function (input) { input.checked = false; });
+        boardPicker.reset();
         picker.reset();
-        document.getElementById('token-expiry').value = '365';
+        expiryMenu.reset();
 
         // Refresh the Active tokens list in place instead of a delayed full-page reload,
         // so the one-time secret above stays visible.

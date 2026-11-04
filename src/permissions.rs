@@ -113,9 +113,9 @@ catalog! {
     TasksClaim, "tasks.claim", "tasks", Work, "Claim a task, renew or release the claim, and watch the task.";
     TasksBin, "tasks.bin", "tasks", Lead, "Move a task to the recycle bin.";
     TasksDelete, "tasks.delete", "tasks", Admin, "Delete a task from the recycle bin for good.";
-    SubtasksEdit, "subtasks.edit", "subtasks", Work, "Create, rename, assign, reorder and set the due date of subtasks, and delete the ones you created.";
+    SubtasksEdit, "subtasks.edit", "subtasks", Work, "Create, rename, assign, reorder and set the due date of subtasks.";
     SubtasksCheck, "subtasks.check", "subtasks", Work, "Tick and untick subtasks.";
-    SubtasksDelete, "subtasks.delete", "subtasks", Admin, "Delete any subtask, whoever created it.";
+    SubtasksDelete, "subtasks.delete", "subtasks", Lead, "Delete any subtask, whoever created it, and turn a subtask into a task.";
     LinksWrite, "links.write", "links", Work, "Create task links, and delete the ones you created.";
     LinksDelete, "links.delete", "links", Admin, "Delete any task link, whoever created it, and change a task's umbrella.";
     CommentsRead, "comments.read", "comments", Read, "Read comments.";
@@ -219,7 +219,7 @@ pub const STANDARD_BASE: &[Permission] = &[
     Permission::CommentsWrite,
 ];
 
-/// The six standard roles, from the planner who shapes a card to the lead who holds every part.
+/// The six standard roles, from the planner who shapes a card to the lead who runs the board's cards.
 pub const STANDARD_ROLES: &[StandardRole] = &[
     StandardRole {
         name: "planner",
@@ -264,12 +264,12 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
             Permission::TasksEdit,
             Permission::TasksMove,
             Permission::TasksClaim,
+            Permission::TasksBin,
             Permission::SubtasksEdit,
-            Permission::SubtasksCheck,
+            Permission::SubtasksDelete,
             Permission::LinksWrite,
-            Permission::LabelsManage,
-            Permission::AttachmentsWrite,
-            Permission::TimeWrite,
+            Permission::ColumnsEdit,
+            Permission::SettingsRead,
             Permission::TokensIssue,
             Permission::RolesGrant,
         ],
@@ -424,6 +424,7 @@ mod tests {
             .collect();
         let expected = HashSet::from([
             "tasks.bin",
+            "subtasks.delete",
             "boards.create",
             "columns.create",
             "columns.edit",
@@ -444,17 +445,24 @@ mod tests {
     }
 
     #[test]
-    fn only_admin_should_hold_a_delete_permission() {
+    fn delete_permissions_should_need_admin_except_subtasks_delete() {
         for preset in [Preset::Read, Preset::Work, Preset::Lead] {
             assert!(
-                held(preset).iter().all(|name| !name.ends_with(".delete")),
+                held(preset)
+                    .iter()
+                    .all(|name| !name.ends_with(".delete") || *name == "subtasks.delete"),
                 "{}",
                 preset.name()
             );
         }
         for permission in Permission::ALL {
             if permission.name().ends_with(".delete") {
-                assert_eq!(permission.lowest_preset(), Preset::Admin);
+                let lowest = if *permission == Permission::SubtasksDelete {
+                    Preset::Lead
+                } else {
+                    Preset::Admin
+                };
+                assert_eq!(permission.lowest_preset(), lowest);
             }
         }
     }
@@ -546,12 +554,12 @@ mod tests {
                     "tasks.edit",
                     "tasks.move",
                     "tasks.claim",
+                    "tasks.bin",
                     "subtasks.edit",
-                    "subtasks.check",
+                    "subtasks.delete",
                     "links.write",
-                    "labels.manage",
-                    "attachments.write",
-                    "time.write",
+                    "columns.edit",
+                    "settings.read",
                     "tokens.issue",
                     "roles.grant",
                 ],

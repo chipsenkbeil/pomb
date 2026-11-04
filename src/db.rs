@@ -1583,8 +1583,16 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Version 69 changes no stored field or table. `boards.read` joins the base every standard role
 /// holds, and the upgrade adds it to each stored role that bears a standard name.
 ///
+/// Version 70 changes no stored field or table. `subtasks.delete` joins the lead preset and the
+/// lead standard role, and the upgrade adds it to each stored token that held the whole lead
+/// preset without it.
+///
+/// Version 71 changes no stored field or table. The lead standard role shrinks to the permissions a
+/// lead uses, and the upgrade sets the stored role named `lead` to that set. Stored tokens keep
+/// their permissions.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 69;
+pub const SCHEMA_VERSION: u64 = 71;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1658,6 +1666,8 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "aaaf5ff2b9576404c34b111a8ae33bff2eba289b4f2734c014c791f71cfffe36",
     "4f54b1b8694a065153cb08819ff7a974a9090b5974807113d37f1e188d06255d",
     "bcb728397c770bad9fed1da00e67973b338a43e78744ffd93faf21828277eb5e",
+    "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
+    "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
     "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
     "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
 ];
@@ -1799,29 +1809,30 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 62) {
         split_write_permissions(txn)?;
     }
+    let mut added = Vec::new();
     if from.is_none_or(|version| version < 41) {
-        grant_added_permissions(
-            txn,
-            &[
-                Permission::TasksBin,
-                Permission::LabelsManage,
-                Permission::EpicsManage,
-                Permission::InboundManage,
-            ],
-        )?;
+        added.extend([
+            Permission::TasksBin,
+            Permission::LabelsManage,
+            Permission::EpicsManage,
+            Permission::InboundManage,
+        ]);
     } else if from.is_some_and(|version| version < 51) {
-        grant_added_permissions(
-            txn,
-            &[
-                Permission::LabelsManage,
-                Permission::EpicsManage,
-                Permission::InboundManage,
-            ],
-        )?;
+        added.extend([
+            Permission::LabelsManage,
+            Permission::EpicsManage,
+            Permission::InboundManage,
+        ]);
     } else if from.is_some_and(|version| version < 58) {
-        grant_added_permissions(txn, &[Permission::EpicsManage, Permission::InboundManage])?;
+        added.extend([Permission::EpicsManage, Permission::InboundManage]);
     } else if from.is_some_and(|version| version < 59) {
-        grant_added_permissions(txn, &[Permission::InboundManage])?;
+        added.push(Permission::InboundManage);
+    }
+    if from.is_none_or(|version| version < 70) {
+        added.push(Permission::SubtasksDelete);
+    }
+    if !added.is_empty() {
+        grant_added_permissions(txn, &added)?;
     }
     if from.is_none_or(|version| version < 58) {
         mark_parents_as_epics(txn)?;
@@ -1833,7 +1844,34 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 69) {
         grant_standard_roles_boards_read(txn)?;
     }
+    if from.is_none_or(|version| version < 71) {
+        fit_lead_role(txn)?;
+    }
     Ok(())
+}
+
+/// Sets the stored role named `lead` to exactly the permissions of the lead standard role.
+fn fit_lead_role(txn: &WriteTransaction) -> DbResult<()> {
+    let fitted: Vec<serde_json::Value> = STANDARD_ROLES
+        .iter()
+        .filter(|standard| standard.name == "lead")
+        .flat_map(|standard| standard.permissions())
+        .map(|permission| serde_json::Value::from(permission.name()))
+        .collect();
+    rewrite_rows(txn, AGENT_ROLES, |_, role| {
+        if role.get("name").and_then(serde_json::Value::as_str) != Some("lead") {
+            return false;
+        }
+        let Some(held) = role.get_mut("permissions") else {
+            return false;
+        };
+        let fitted = serde_json::Value::Array(fitted.clone());
+        if *held == fitted {
+            return false;
+        }
+        *held = fitted;
+        true
+    })
 }
 
 /// Gives every stored role that bears a standard name `boards.read`, which the base of the standard
@@ -14490,6 +14528,94 @@ mod schema_version_tests {
         expected.remove(&Permission::TokensIssue);
         expected.remove(&Permission::RolesGrant);
         assert_eq!(token.permissions, expected);
+    }
+
+    #[test]
+    fn version_69_lead_token_should_gain_subtasks_delete_and_a_custom_set_should_not() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let (lead, work, custom) = {
+            let db = Db::connect(&path).expect("connect");
+            let mut ids = Vec::new();
+            for scope in [AuthScope::Provision, AuthScope::Work, AuthScope::Provision] {
+                let (record, _) = new_api_token_record(&account, scope.as_str(), scope, None);
+                db.create_api_token(&record).expect("token");
+                ids.push(record.id);
+            }
+            (ids[0].clone(), ids[1].clone(), ids[2].clone())
+        };
+        let without = |object: &mut serde_json::Map<String, serde_json::Value>| {
+            let held = object["permissions"].as_array_mut().expect("permissions");
+            held.retain(|name| name != "subtasks.delete");
+        };
+        edit_raw(&path, API_TOKENS, &lead, without);
+        edit_raw(&path, API_TOKENS, &work, without);
+        edit_raw(&path, API_TOKENS, &custom, |object| {
+            without(object);
+            let held = object["permissions"].as_array_mut().expect("permissions");
+            held.retain(|name| name != "tasks.bin");
+        });
+        stamp(&path, 69);
+
+        let db = Db::connect(&path).expect("open version 69");
+        let token = |id: &str| -> ApiTokenRecord {
+            read_one(&db.db, API_TOKENS, id)
+                .expect("read")
+                .expect("row")
+        };
+        assert!(
+            token(&lead)
+                .permissions
+                .contains(&Permission::SubtasksDelete)
+        );
+        assert!(
+            !token(&work)
+                .permissions
+                .contains(&Permission::SubtasksDelete)
+        );
+        assert!(
+            !token(&custom)
+                .permissions
+                .contains(&Permission::SubtasksDelete)
+        );
+    }
+
+    #[test]
+    fn version_70_file_should_fit_the_lead_role_and_leave_other_roles_and_tokens() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let held = BTreeSet::from([Permission::TasksRead, Permission::TimeWrite]);
+        let (lead, planner, token) = {
+            let db = Db::connect(&path).expect("connect");
+            let lead = db
+                .create_agent_role(account.as_str(), "lead", held.clone())
+                .expect("lead");
+            let planner = db
+                .create_agent_role(account.as_str(), "planner", held.clone())
+                .expect("planner");
+            let (record, _) = new_api_token_record(&account, "issued", AuthScope::Provision, None);
+            db.create_api_token(&record).expect("token");
+            (lead.id, planner.id, record)
+        };
+        stamp(&path, 70);
+
+        let db = Db::connect(&path).expect("open version 70");
+        let role = |id: &str| -> AgentRoleRow {
+            read_one(&db.db, AGENT_ROLES, id)
+                .expect("read")
+                .expect("row")
+        };
+        let fitted = STANDARD_ROLES
+            .iter()
+            .find(|standard| standard.name == "lead")
+            .expect("lead")
+            .permissions();
+        assert_eq!(role(&lead).permissions, fitted);
+        assert_eq!(role(&planner).permissions, held);
+        let kept: ApiTokenRecord = read_one(&db.db, API_TOKENS, &token.id)
+            .expect("read")
+            .expect("row");
+        assert_eq!(kept.permissions, token.permissions);
     }
 
     fn upgraded_token_holding(held: &[&str]) -> ApiTokenRecord {

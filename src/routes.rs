@@ -11970,9 +11970,9 @@ struct ConvertSubtaskInput {
 
 /// Turns a subtask into a task of its own. The new task takes the subtask's name and due date and
 /// goes in the parent's swimlane, in the chosen column of the parent's board. The subtask leaves
-/// the parent, and the two tasks are linked as `relation` says. A token needs `tasks.create` and
-/// `subtasks.edit`, `links.write` for any relation but `none`, and without `subtasks.delete` may
-/// convert only a subtask it created.
+/// the parent, and the two tasks are linked as `relation` says. A token needs `tasks.create`,
+/// `subtasks.edit` and `subtasks.delete` (the subtask leaves the parent), and `links.write` for any
+/// relation but `none`.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/subtasks/{sub_id}/convert",
@@ -11986,7 +11986,7 @@ struct ConvertSubtaskInput {
     responses(
         (status = 201, description = "The new task", body = TaskDetail),
         (status = 400, description = "Unknown color or member, or a column on another board"),
-        (status = 403, description = "`permission_denied`: the token lacks `subtasks.edit` or, for a relation, `links.write`, or lacks `subtasks.delete` and did not create the subtask. `card_locked`: the parent carries a locking label"),
+        (status = 403, description = "`permission_denied`: the token lacks `subtasks.edit`, `subtasks.delete` or, for a relation, `links.write`. `card_locked`: the parent carries a locking label"),
         (status = 404, description = "Task, subtask or column not found"),
         (status = 422, description = "`column_rule`: the target column refuses the new task, or the parent's column refuses the parent without the subtask"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -12017,9 +12017,7 @@ async fn convert_subtask(
     if !matches!(input.relation, ConvertRelation::None) && !user.has(Permission::LinksWrite) {
         return Err(AppError::permission_denied(Permission::LinksWrite));
     }
-    if token_owner(&user, Permission::SubtasksDelete)
-        .is_some_and(|owner| owner.is_empty() || sub.token_id.as_deref() != Some(owner))
-    {
+    if !user.has(Permission::SubtasksDelete) {
         return Err(AppError::permission_denied(Permission::SubtasksDelete));
     }
     check_members(db, &input.member_ids)?;
@@ -12161,13 +12159,10 @@ enum SubtaskDelete {
     Deleted,
     /// The task has no such subtask.
     Missing,
-    /// The token did not create the subtask and lacks `subtasks.delete`.
-    NotOwner,
 }
 
-/// Removes a subtask from a task's checklist. A token without `subtasks.delete` may delete only a
-/// subtask that same token created, and gets 403 `permission_denied` on any other, including one
-/// made by the browser or stored before subtasks recorded their creator.
+/// Removes a subtask from a task's checklist. Only a token holding `subtasks.delete` may, whoever
+/// created the subtask, and any other gets 403 `permission_denied`, also for a subtask it created.
 #[utoipa::path(
     delete,
     path = "/api/tasks/{id}/subtasks/{sub_id}",
@@ -12179,7 +12174,7 @@ enum SubtaskDelete {
     ),
     responses(
         (status = 200, description = "Subtask removed"),
-        (status = 403, description = "`permission_denied`: the token lacks `subtasks.edit`, or lacks `subtasks.delete` and did not create the subtask"),
+        (status = 403, description = "`permission_denied`: the token lacks `subtasks.delete`"),
         (status = 404, description = "Task or subtask not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -12193,16 +12188,11 @@ async fn delete_subtask(
     let owned = found(account.task(&id), "task or subtask not found")?;
     ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
     let entry_rule = entry_rule_of(&account, owned.board_id(), &owned.row().column_id)?;
-    let owner = token_owner(&user, Permission::SubtasksDelete);
     let outcome = account
         .apply_task_change(&owned, user.actor(), |task| {
             let Some(index) = task.subtasks.iter().position(|s| s.id == sub_id) else {
                 return (Ok(SubtaskDelete::Missing), false);
             };
-            let made_by = task.subtasks[index].token_id.as_deref();
-            if owner.is_some_and(|id| id.is_empty() || made_by != Some(id)) {
-                return (Ok(SubtaskDelete::NotOwner), false);
-            }
             let before = task.clone();
             let sub = task.subtasks.remove(index);
             if let Some((column_name, rule)) = &entry_rule
@@ -12226,7 +12216,6 @@ async fn delete_subtask(
     match outcome {
         SubtaskDelete::Deleted => Ok(StatusCode::OK),
         SubtaskDelete::Missing => Err(AppError::not_found("task or subtask not found")),
-        SubtaskDelete::NotOwner => Err(AppError::permission_denied(Permission::SubtasksDelete)),
     }
 }
 
@@ -23458,11 +23447,12 @@ const DEVICE_TOKEN_EXPIRIES: [ExpiryChoice; 5] = [
     },
 ];
 
-/// Returns whether `permissions` holds a permission that deletes.
+/// Returns whether `permissions` holds a delete only the admin preset holds, which leaves out
+/// `subtasks.delete` of the lead preset.
 fn holds_delete(permissions: &BTreeSet<Permission>) -> bool {
-    permissions
-        .iter()
-        .any(|permission| permission.name().ends_with(".delete"))
+    permissions.iter().any(|permission| {
+        permission.name().ends_with(".delete") && permission.lowest_preset() == Preset::Admin
+    })
 }
 
 /// Returns the form value of the expiry chosen when the owner picks none for a request of

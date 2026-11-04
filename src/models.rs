@@ -2920,7 +2920,7 @@ pub struct Subtask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_at: Option<String>,
     /// Id of the API token that created it, or null for the browser, an import and any subtask
-    /// stored before the field existed. Without `subtasks.delete`, only that token may delete it.
+    /// stored before the field existed.
     #[serde(default)]
     pub token_id: Option<String>,
     /// Ids of the accounts the subtask is assigned to.

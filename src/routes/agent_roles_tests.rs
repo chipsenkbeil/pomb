@@ -12,7 +12,7 @@ use crate::db::{ChildTokenRefusal, Db, MAX_AGENT_ROLES_PER_ACCOUNT, RoleTokenRef
 use crate::models::{
     AccountId, AgentRoleRow, ApiTokenRecord, AuthScope, BoardAccess, BoardRole, HistoryKind,
 };
-use crate::permissions::{Permission, Preset};
+use crate::permissions::{Permission, Preset, STANDARD_ROLES};
 
 /// Two accounts, each with a browser session, a read token and a board.
 struct Fixture {
@@ -2193,4 +2193,361 @@ async fn escalate_should_need_comments_write() {
     let reply = act(&raw, &fx, "POST", &uri, body).await;
     assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
     assert!(labels_of(&fx, &task).is_empty());
+}
+
+async fn subtask_call(
+    fx: &Fixture,
+    raw: &str,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> Reply {
+    let bearer = format!("Bearer {raw}");
+    call(&fx.app, method, uri, &[("authorization", &bearer)], body).await
+}
+
+fn assert_subtasks_delete_denied(reply: &Reply, who: &str) {
+    assert_eq!(
+        (reply.status, reply.code.as_deref()),
+        (StatusCode::FORBIDDEN, Some("permission_denied")),
+        "{who}: {}",
+        reply.body
+    );
+    assert!(
+        reply.body.to_string().contains("subtasks.delete"),
+        "{who}: {}",
+        reply.body
+    );
+}
+
+#[tokio::test]
+async fn only_the_lead_role_should_delete_or_convert_a_subtask() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let tasks = format!("/api/tasks/{task}/subtasks");
+    let (_, issuer) = issuer_token(&fx, None, BoardAccess::All, None);
+    let mut raws = Vec::new();
+    for name in STANDARD_NAMES {
+        let role = standard_role(&fx, name).await;
+        let body = json!({"name": format!("{name}-agent"), "role_id": role["id"]});
+        let issued = issue_child(&fx, &issuer, body).await;
+        assert_eq!(issued.status, StatusCode::OK, "{}", issued.body);
+        let raw = issued.body["raw_token"].as_str().expect("raw").to_string();
+        raws.push((name, raw));
+    }
+    let browser_made = |name: &str| {
+        fx.db
+            .add_subtask(&task, name)
+            .expect("subtask")
+            .expect("task")
+            .id
+    };
+
+    for (name, raw) in &raws {
+        if *name == "lead" {
+            continue;
+        }
+        let foreign = browser_made("foreign");
+        let uri = format!("{tasks}/{foreign}");
+        let reply = subtask_call(&fx, raw, "DELETE", &uri, None).await;
+        assert_subtasks_delete_denied(&reply, name);
+    }
+    let raw_of = |wanted: &str| {
+        &raws
+            .iter()
+            .find(|(name, _)| *name == wanted)
+            .expect("role")
+            .1
+    };
+    let planner = raw_of("planner");
+    let own = subtask_call(&fx, planner, "POST", &tasks, Some(json!({"name": "own"}))).await;
+    assert_eq!(own.status, StatusCode::OK, "{}", own.body);
+    let own_uri = format!("{tasks}/{}", own.body["id"].as_str().expect("id"));
+    let reply = subtask_call(&fx, planner, "DELETE", &own_uri, None).await;
+    assert_subtasks_delete_denied(&reply, "planner own");
+    let convert = format!("{own_uri}/convert");
+    let reply = subtask_call(&fx, planner, "POST", &convert, Some(json!({}))).await;
+    assert_subtasks_delete_denied(&reply, "planner own convert");
+
+    let lead = raw_of("lead");
+    let reply = subtask_call(&fx, lead, "DELETE", &own_uri, None).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let foreign = browser_made("foreign");
+    let uri = format!("{tasks}/{foreign}");
+    let reply = subtask_call(&fx, lead, "DELETE", &uri, None).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let convertible = browser_made("convertible");
+    let uri = format!("{tasks}/{convertible}/convert");
+    let reply = subtask_call(&fx, lead, "POST", &uri, Some(json!({}))).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+}
+
+async fn assert_lead_runs_the_cards(fx: &Fixture, raw: &str) -> String {
+    let board = &fx.boards[ALICE];
+    let todo = fx.db.create_column(board, "Todo", None).expect("column");
+    let doing = fx.db.create_column(board, "Doing", None).expect("column");
+    let task = fx.db.create_task(&todo, None, "A", 1, None).expect("task");
+    let other = fx.db.create_task(&todo, None, "B", 2, None).expect("task");
+    let sub = fx
+        .db
+        .add_subtask(&task, "step")
+        .expect("subtask")
+        .expect("task")
+        .id;
+    let planner = standard_role(fx, "planner").await;
+    let call_as = |method: &'static str, uri: String, body: Option<Value>| async move {
+        subtask_call(fx, raw, method, &uri, body).await
+    };
+
+    let allowed = [
+        ("GET", "/api/boards".to_string(), None, StatusCode::OK),
+        (
+            "GET",
+            "/api/v1/agent-roles".to_string(),
+            None,
+            StatusCode::OK,
+        ),
+        (
+            "POST",
+            "/api/tasks".to_string(),
+            Some(json!({"column_id": todo, "name": "New"})),
+            StatusCode::CREATED,
+        ),
+        (
+            "PATCH",
+            format!("/api/tasks/{task}"),
+            Some(json!({"name": "Renamed"})),
+            StatusCode::OK,
+        ),
+        (
+            "POST",
+            format!("/api/tasks/{task}/move"),
+            Some(json!({"column_id": doing, "position": 0})),
+            StatusCode::OK,
+        ),
+        (
+            "POST",
+            format!("/api/tasks/{task}/claim"),
+            Some(json!({"claimant": "me", "ttl_seconds": 60})),
+            StatusCode::OK,
+        ),
+        (
+            "POST",
+            format!("/api/tasks/{task}/links"),
+            Some(json!({"kind": "related", "target_id": other})),
+            StatusCode::OK,
+        ),
+        (
+            "PATCH",
+            format!("/api/columns/{doing}"),
+            Some(json!({"is_blocked": true})),
+            StatusCode::OK,
+        ),
+        (
+            "POST",
+            format!("/api/tasks/{task}/subtasks"),
+            Some(json!({"name": "lead made"})),
+            StatusCode::OK,
+        ),
+        (
+            "PATCH",
+            format!("/api/tasks/{task}/subtasks/{sub}"),
+            Some(json!({"name": "renamed"})),
+            StatusCode::OK,
+        ),
+        (
+            "PUT",
+            format!(
+                "/api/v1/agent-roles/{}/boards/{board}",
+                planner["id"].as_str().expect("id")
+            ),
+            None,
+            StatusCode::OK,
+        ),
+        (
+            "DELETE",
+            format!("/api/tasks/{other}"),
+            None,
+            StatusCode::OK,
+        ),
+    ];
+    for (method, uri, body, status) in allowed {
+        let reply = call_as(method, uri.clone(), body).await;
+        assert_eq!(reply.status, status, "{method} {uri}: {}", reply.body);
+    }
+    let reply = call_as("DELETE", format!("/api/tasks/{task}/subtasks/{sub}"), None).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    task
+}
+
+#[tokio::test]
+async fn lead_role_token_should_run_the_cards_and_be_refused_the_board_structure() {
+    let fx = Fixture::new();
+    let board = &fx.boards[ALICE];
+    let (_, issuer) = issuer_token(&fx, None, BoardAccess::All, None);
+    let lead = standard_role(&fx, "lead").await;
+    let template = permission_names(&lead);
+    assert!(template.contains("tokens.issue") && template.contains("roles.grant"));
+    let body = json!({"name": "lead-agent", "role_id": lead["id"]});
+    let issued = issue_child(&fx, &issuer, body).await;
+    assert_eq!(issued.status, StatusCode::OK, "{}", issued.body);
+    let raw = issued.body["raw_token"].as_str().expect("raw");
+    let task = assert_lead_runs_the_cards(&fx, raw).await;
+    let call_as = |method: &'static str, uri: String, body: Option<Value>| {
+        let fx = &fx;
+        async move { subtask_call(fx, raw, method, &uri, body).await }
+    };
+    let refused = [
+        ("POST", "/api/boards".to_string(), "boards.create"),
+        (
+            "PUT",
+            format!("/api/boards/{board}/config"),
+            "boards.configure",
+        ),
+        ("POST", "/api/swimlanes".to_string(), "swimlanes.create"),
+        (
+            "POST",
+            format!("/api/boards/{board}/colors"),
+            "colors.create",
+        ),
+        (
+            "POST",
+            format!("/api/boards/{board}/fields"),
+            "fields.create",
+        ),
+        (
+            "POST",
+            format!("/api/boards/{board}/save-as-template"),
+            "templates.save",
+        ),
+        (
+            "PUT",
+            format!("/api/boards/{board}/label-settings"),
+            "labels.manage",
+        ),
+        (
+            "POST",
+            format!("/api/tasks/{task}/attachments"),
+            "attachments.write",
+        ),
+        ("POST", format!("/api/tasks/{task}/time"), "time.write"),
+        ("POST", format!("/api/tasks/{task}/close"), "epics.manage"),
+    ];
+    for (method, uri, permission) in refused {
+        let reply = call_as(method, uri.clone(), Some(json!({}))).await;
+        assert_eq!(
+            (reply.status, reply.code.as_deref()),
+            (StatusCode::FORBIDDEN, Some("permission_denied")),
+            "{method} {uri}: {}",
+            reply.body
+        );
+        assert!(
+            reply.body.to_string().contains(permission),
+            "{uri}: {}",
+            reply.body
+        );
+    }
+    let reply = call_as(
+        "PATCH",
+        format!("/api/tasks/{task}"),
+        Some(json!({"kind": "task"})),
+    )
+    .await;
+    assert_eq!(
+        (reply.status, reply.code.as_deref()),
+        (StatusCode::FORBIDDEN, Some("permission_denied")),
+        "{}",
+        reply.body
+    );
+    assert!(
+        reply.body.to_string().contains("epics.manage"),
+        "{}",
+        reply.body
+    );
+    let extra = fx
+        .db
+        .add_subtask(&task, "tick")
+        .expect("subtask")
+        .expect("task")
+        .id;
+    let tick = format!("/api/tasks/{task}/subtasks/{extra}");
+    let reply = call_as("PATCH", tick, Some(json!({"done": true}))).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+    assert!(
+        reply.body.to_string().contains("subtasks.check"),
+        "{}",
+        reply.body
+    );
+}
+
+#[tokio::test]
+async fn token_holding_the_lead_role_set_should_issue_child_tokens_and_grant_boards() {
+    let fx = Fixture::new();
+    let lead_set: Vec<Permission> = STANDARD_ROLES
+        .iter()
+        .find(|role| role.name == "lead")
+        .expect("lead")
+        .permissions()
+        .into_iter()
+        .collect();
+    let (_, lead) = issuer_token(&fx, Some(&lead_set), BoardAccess::All, None);
+    let planner = standard_role(&fx, "planner").await;
+    let body = json!({"name": "kid", "role_id": planner["id"]});
+    let issued = issue_child(&fx, &lead, body).await;
+    assert_eq!(issued.status, StatusCode::OK, "{}", issued.body);
+    assert_eq!(issued.body["role_name"], "planner");
+
+    let second = fx.db.create_board(&fx.alice, "Second").expect("board");
+    let uri = format!(
+        "/api/v1/agent-roles/{}/boards/{second}",
+        planner["id"].as_str().expect("id")
+    );
+    let granted = call(&fx.app, "PUT", &uri, &[("authorization", &lead)], None).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    assert!(
+        granted.body["boards"]
+            .as_array()
+            .expect("boards")
+            .contains(&json!(second)),
+        "{}",
+        granted.body
+    );
+}
+
+#[tokio::test]
+async fn browser_issued_lead_role_token_should_run_the_lead_actions_and_issue_and_grant() {
+    let fx = Fixture::new();
+    let lead = standard_role(&fx, "lead").await;
+    let body = json!({"name": "lead-agent", "role_id": lead["id"]});
+    let made = fx
+        .browse(ALICE, "POST", "/api/v1/auth/tokens", Some(body))
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    let held = permission_names(&made.body);
+    assert!(held.contains("tokens.issue") && held.contains("roles.grant"));
+    let raw = made.body["raw_token"].as_str().expect("raw");
+    let bearer = format!("Bearer {raw}");
+    assert_lead_runs_the_cards(&fx, raw).await;
+
+    let planner = standard_role(&fx, "planner").await;
+    let body = json!({"name": "kid", "role_id": planner["id"]});
+    let issued = issue_child(&fx, &bearer, body).await;
+    assert_eq!(issued.status, StatusCode::OK, "{}", issued.body);
+    assert_eq!(issued.body["role_name"], "planner");
+
+    let second = fx.db.create_board(&fx.alice, "Second").expect("board");
+    let uri = format!(
+        "/api/v1/agent-roles/{}/boards/{second}",
+        planner["id"].as_str().expect("id")
+    );
+    let granted = call(&fx.app, "PUT", &uri, &[("authorization", &bearer)], None).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    assert!(
+        granted.body["boards"]
+            .as_array()
+            .expect("boards")
+            .contains(&json!(second)),
+        "{}",
+        granted.body
+    );
 }

@@ -5602,7 +5602,7 @@ async fn convert_subtask_should_accept_no_relation_from_a_token_without_links_wr
 }
 
 #[tokio::test]
-async fn convert_subtask_should_refuse_a_foreign_subtask_to_a_token_without_subtasks_delete() {
+async fn convert_subtask_should_refuse_a_token_without_subtasks_delete() {
     let fx = Fixture::multi();
     let setup = fx.convertible().await;
     let token = fx.token_lacking(&[Permission::SubtasksDelete]);
@@ -5614,7 +5614,7 @@ async fn convert_subtask_should_refuse_a_foreign_subtask_to_a_token_without_subt
 }
 
 #[tokio::test]
-async fn convert_subtask_should_accept_a_subtask_the_token_made_without_subtasks_delete() {
+async fn convert_subtask_should_refuse_a_subtask_the_token_made_without_subtasks_delete() {
     let fx = Fixture::multi();
     let setup = fx.convertible().await;
     let token = fx.token_lacking(&[Permission::SubtasksDelete]);
@@ -5628,9 +5628,11 @@ async fn convert_subtask_should_accept_a_subtask_the_token_made_without_subtasks
         ..setup
     };
 
-    let converted = fx.convert_as(&token, &own, json!({})).await;
-    assert_eq!(converted.status, StatusCode::CREATED, "{}", converted.body);
-    assert_eq!(converted.body["name"], "Mine");
+    let refused = fx.convert_as(&token, &own, json!({})).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(refused.code.as_deref(), Some("permission_denied"));
+    let parent = fx.db.task(&own.task).expect("read").expect("task");
+    assert_eq!(parent.subtasks.len(), 2);
 }
 
 impl Fixture {

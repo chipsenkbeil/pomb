@@ -134,4 +134,27 @@ check('the board picker posts the chosen ids',
   TokenForm.body(catalog, { name: 'x', ticked: ['tasks.read'], boards: ['b1', 'b2'], expiryDays: 0 }).boards,
   ['b1', 'b2']);
 
+
+var boardList = [
+  { id: 'b1', name: 'Roadmap' }, { id: 'b2', name: 'Road Trip' }, { id: 'b3', name: 'Chores' }
+];
+check('the board search matches a name part in any case',
+  TokenForm.boardMatches(boardList, ' ROAD ').map(function (board) { return board.id; }), ['b1', 'b2']);
+check('an empty board search lists every board', TokenForm.boardMatches(boardList, '').length, 3);
+check('a board search with no hit lists none', TokenForm.boardMatches(boardList, 'zzz'), []);
+check('the chips list the picked boards in board order',
+  TokenForm.boardChips(boardList, ['b3', 'b1']).map(function (board) { return board.name; }),
+  ['Roadmap', 'Chores']);
+check('a picked board that no longer exists has no chip', TokenForm.boardChips(boardList, ['gone']), []);
+check('toggling adds a board then removes it',
+  [TokenForm.boardToggle([], 'b1'), TokenForm.boardToggle(['b1', 'b2'], 'b1')], [['b1'], ['b2']]);
+
+var day = Date.UTC(2026, 10, 4);
+check('each expiry choice shows the date it ends on',
+  TokenForm.expiryChoices(day).map(function (choice) { return [choice.days, choice.label, choice.ends]; }),
+  [[0, 'Never', 'No end date'], [30, '30 days', 'Ends 2026-12-04 UTC'],
+    [90, '90 days', 'Ends 2027-02-02 UTC'], [365, '1 year', 'Ends 2027-11-04 UTC']]);
+check('the default expiry is one of the choices',
+  TokenForm.expiryChoices(day).some(function (choice) { return choice.days === TokenForm.expiryDefault; }), true);
+
 if (failures) process.exit(1);
