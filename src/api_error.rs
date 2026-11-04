@@ -52,6 +52,8 @@ pub enum ErrorCode {
     /// and carries `board_id`: null when the token lacks the permission entirely, and set when it
     /// holds the permission but is not assigned to that board.
     PermissionDenied,
+    /// The request asks for a board the token does not hold (403). The message names it.
+    ExceedsGrant,
     /// The endpoint needs the browser session, not an API token (403).
     SessionRequired,
     /// The task carries a locking label, which only the owner's browser session may write around

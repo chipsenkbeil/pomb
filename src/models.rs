@@ -1608,6 +1608,10 @@ pub struct AgentRoleRow {
     pub created_at: i64,
     /// Unix seconds of the last rename or template change.
     pub updated_at: i64,
+    /// How many tokens the role has issued, which numbers the next `agent-N` label and never
+    /// falls.
+    #[serde(default)]
+    pub issued: u64,
 }
 
 impl AgentRoleRow {
@@ -4585,6 +4589,15 @@ pub struct ApiTokenRecord {
     /// The most hours a child of this token may live, set by the owner in the browser.
     #[serde(default = "default_child_token_hours")]
     pub child_lifetime_hours: i64,
+    /// The id of the agent role the token was issued as, absent for a token issued as none.
+    #[serde(default)]
+    pub role_id: Option<String>,
+    /// The name the role held when the token was issued, which a rename leaves as it was.
+    #[serde(default)]
+    pub role_name: Option<String>,
+    /// The `agent-N` label of the issue, N from the role's counter and never reused.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 /// Returns the lifetime a stored token that predates the field allows its children.

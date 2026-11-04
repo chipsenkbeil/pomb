@@ -270,6 +270,13 @@ pub struct AuthUser {
     pub token_id: Option<String>,
     /// The lead token that issued the token behind the request, absent for any other credential.
     pub parent_token: Option<ParentToken>,
+    /// Id of the agent role the token behind the request was issued as, absent for any other
+    /// credential.
+    pub role_id: Option<String>,
+    /// The name that role held when the token was issued.
+    pub role_name: Option<String>,
+    /// The `agent-N` label of the token's issue.
+    pub label: Option<String>,
     /// Highest scope the credential holds.
     pub scope: AuthScope,
     /// Every permission the credential holds.
@@ -599,6 +606,9 @@ pub fn new_api_token_record(
         parent_id: None,
         parent_name: None,
         child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
+        role_id: None,
+        role_name: None,
+        label: None,
     };
     (record, raw)
 }
@@ -1380,6 +1390,16 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/v1/agent-roles/:id",
         Permission::SettingsWrite,
     ),
+    (
+        Method::POST,
+        "/api/v1/agent-roles/standard",
+        Permission::SettingsWrite,
+    ),
+    (
+        Method::PUT,
+        "/api/v1/agent-roles/:id/boards/:board_id",
+        Permission::SettingsWrite,
+    ),
     (Method::GET, "/api/v1/auth/tokens", Permission::SettingsRead),
     (
         Method::POST,
@@ -1700,6 +1720,9 @@ fn browser_user(account: UserRow) -> AuthUser {
         token_name: None,
         token_id: None,
         parent_token: None,
+        role_id: None,
+        role_name: None,
+        label: None,
         scope: AuthScope::Admin,
         permissions: Preset::Admin.permissions(),
         boards: BoardAccess::All,
@@ -1876,6 +1899,15 @@ pub async fn auth_middleware(
                     kind,
                     token_name: maybe_record.as_ref().map(|record| record.name.clone()),
                     parent_token: maybe_record.as_ref().and_then(parent_token_of),
+                    role_id: maybe_record
+                        .as_ref()
+                        .and_then(|record| record.role_id.clone()),
+                    role_name: maybe_record
+                        .as_ref()
+                        .and_then(|record| record.role_name.clone()),
+                    label: maybe_record
+                        .as_ref()
+                        .and_then(|record| record.label.clone()),
                     token_id: maybe_record.map(|record| record.id),
                     scope,
                     permissions,
@@ -2067,6 +2099,9 @@ mod tests {
             parent_id: None,
             parent_name: None,
             child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
+            role_id: None,
+            role_name: None,
+            label: None,
         };
         assert!(!raw.starts_with(API_TOKEN_PREFIX));
         assert!(verify_api_token(&record, raw));
@@ -2575,6 +2610,9 @@ mod tests {
             parent_id: None,
             parent_name: None,
             child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
+            role_id: None,
+            role_name: None,
+            label: None,
         };
         assert!(!record.is_expired(now));
         record.expires_at = Some(now + 60);

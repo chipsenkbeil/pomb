@@ -69,10 +69,11 @@ use crate::db::{
     NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedColumn, OwnedTask, OwnerChange,
     PaletteStrandsColor, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome,
     QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked, RoleDenied,
-    SessionEndOutcome, SessionListing, SessionRefused, SessionToken, SwimlaneDeleteOutcome,
-    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext, UmbrellaChange,
-    UmbrellaPart, UmbrellaRef, WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels,
-    local_day, merge_metadata, push_change_event, push_column_event, push_event, round_estimate,
+    RoleTokenRefusal, SessionEndOutcome, SessionListing, SessionRefused, SessionToken,
+    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext,
+    UmbrellaChange, UmbrellaPart, UmbrellaRef, WebhookColumnMissing, WebhookPatch, carry_fields,
+    clean_labels, local_day, merge_metadata, push_change_event, push_column_event, push_event,
+    round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -477,6 +478,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/agent-roles/:id",
             get(get_agent_role).patch(update_agent_role),
+        )
+        .route("/api/v1/agent-roles/standard", post(ensure_standard_roles))
+        .route(
+            "/api/v1/agent-roles/:id/boards/:board_id",
+            put(grant_agent_role),
         )
         .route("/api/v1/auth/whoami", get(whoami))
         .route("/api/v1/auth/permissions", get(list_permissions));
@@ -1184,6 +1190,13 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             Method::PATCH,
             "/api/v1/agent-roles/:id",
             AccountSession,
+            Grows,
+        ),
+        (Method::POST, "/api/v1/agent-roles/standard", Account, Grows),
+        (
+            Method::PUT,
+            "/api/v1/agent-roles/:id/boards/:board_id",
+            Account,
             Grows,
         ),
         (Method::GET, "/api/v1/auth/tokens", AccountSession, No),
@@ -22412,6 +22425,13 @@ struct ApiTokenView {
     expires_at: Option<i64>,
     /// The id of the token that issued this one, absent for a token made in the browser.
     parent_id: Option<String>,
+    /// The name of the token that issued this one, as it was named when it did.
+    parent_name: Option<String>,
+    /// The name of the agent role the token was issued as, as the role was named then, absent for
+    /// a token issued as none.
+    role_name: Option<String>,
+    /// The `agent-N` label of the token's issue, absent for a token issued as no role.
+    label: Option<String>,
     /// The most hours a child of this token may live, from 1 to 8. Only the owner sets it, in the
     /// browser.
     child_lifetime_hours: i64,
@@ -22429,6 +22449,9 @@ impl From<&ApiTokenRecord> for ApiTokenView {
             last_used_at: record.last_used_at,
             expires_at: record.expires_at,
             parent_id: record.parent_id.clone(),
+            parent_name: record.parent_name.clone(),
+            role_name: record.role_name.clone(),
+            label: record.label.clone(),
             child_lifetime_hours: record.child_lifetime_hours,
         }
     }
@@ -23210,6 +23233,14 @@ struct Whoami {
     /// Handle of the account the credential acts for, empty for the bootstrap token before the
     /// first account exists.
     handle: String,
+    /// The name of the agent role the token was issued as, as the role was named then, null for a
+    /// credential issued as none.
+    role_name: Option<String>,
+    /// The `agent-N` label of the token's issue, null for a credential issued as no role.
+    label: Option<String>,
+    /// The lead token that issued the token, with its name as it was then, null for any other
+    /// credential.
+    parent_token: Option<ParentToken>,
     /// What the credential may do and where.
     #[serde(flatten)]
     grant: GrantView,
@@ -23279,10 +23310,11 @@ impl GrantView {
     }
 }
 
-/// Returns the kind, name, scope, expiry and grant of the credential that made the request:
-/// `permissions` lists every permission it holds, and `boards` is the string `all` or an array of
-/// the `id` and `name` of each board assigned to it. Every token reaches this route whatever it
-/// holds. A revoked or expired token is a 401.
+/// Returns the kind, name, scope, expiry and grant of the credential that made the request, with
+/// the role name and `agent-N` label of a token issued as a role and the `parent_token` that
+/// issued it, each null when it has none. `permissions` lists every permission it holds, and
+/// `boards` is the string `all` or an array of the `id` and `name` of each board assigned to it.
+/// Every token reaches this route whatever it holds. A revoked or expired token is a 401.
 #[utoipa::path(
     get,
     path = "/api/v1/auth/whoami",
@@ -23309,6 +23341,9 @@ async fn whoami(
         scope: user.scope,
         expires_at: user.expires_at,
         handle: user.handle,
+        role_name: user.role_name,
+        label: user.label,
+        parent_token: user.parent_token,
         grant,
     }))
 }
@@ -23491,14 +23526,18 @@ struct CreateChildTokenInput {
     /// Display name, 1 to 80 characters.
     name: String,
     /// A preset from `GET /api/v1/auth/permissions`. Send exactly one of `preset` and
-    /// `permissions`.
+    /// `permissions`, or neither when `role_id` is set.
     preset: Option<String>,
     /// A custom, non-empty set of permission wire names.
     permissions: Option<Vec<String>>,
     /// The boards the child reaches: "all", the default, only when the caller reaches all of them,
-    /// or a non-empty array of ids of boards the caller reaches.
-    #[serde(default)]
-    boards: BoardsInput,
+    /// or a non-empty array of ids of boards the caller reaches. With `role_id` the default is
+    /// the caller's boards the role is granted on.
+    boards: Option<BoardsInput>,
+    /// The id of an agent role to issue the child as. The child copies the role's template at
+    /// issue, cut to the permissions the caller holds and never `tokens.issue`, and reaches the
+    /// caller's boards the role is granted on. Later edits of the role do not reach it.
+    role_id: Option<String>,
     /// Hours until expiry, from 1 to 8 and no more than the owner allows the caller's children.
     /// Defaults to 1. The child never outlives the caller.
     expires_in_hours: Option<i64>,
@@ -23514,7 +23553,12 @@ struct CreateChildTokenInput {
 /// revokes every token it issued, at any depth. Tokens issued by a token do not count toward the
 /// account's 50 tokens, and no limit holds how many live ones a token has, but a token that mints
 /// faster than 20 at once and then one every 2 seconds gets 429 `rate_limited` with `Retry-After`.
-/// Send one of `preset` and `permissions`, plus `boards`, which defaults to `all`. The child's
+/// Send one of `preset` and `permissions`, plus `boards`, which defaults to `all`. Or send
+/// `role_id` to issue the child as an agent role: it then holds the role's template cut to what
+/// the caller holds, without `tokens.issue`, on the caller's boards the role is granted on, and it
+/// gets the role's name and the next `agent-N` label. With a role, `preset`, `permissions` and
+/// `boards` are optional and may only narrow that grant, and a permission or board outside it is
+/// 403 `exceeds_grant` with no child made. A role child always expires, as above. The child's
 /// history entries and comments name the caller beside the child.
 #[utoipa::path(
     post,
@@ -23524,8 +23568,8 @@ struct CreateChildTokenInput {
     request_body = CreateChildTokenInput,
     responses(
         (status = 200, description = "Created child token (raw_token shown once)", body = CreateTokenResponse),
-        (status = 400, description = "Invalid name, both or neither of `preset` and `permissions`, an unknown preset, permission or board, empty `boards`, `expires_in_hours` outside 1 to 8, or more hours than the owner allows the caller's children"),
-        (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`, or `forbidden`: the child asks for a permission or board the caller lacks, or for `tokens.issue` while the caller was itself issued, or the caller is not an API token"),
+        (status = 400, description = "Invalid name, both or neither of `preset` and `permissions` without a `role_id`, both with one, an unknown preset, permission or board, empty `boards`, `unknown_role`: the account has no such role, `expires_in_hours` outside 1 to 8, or more hours than the owner allows the caller's children"),
+        (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`, or `forbidden`: the child asks for a permission or board the caller lacks, or for `tokens.issue` while the caller was itself issued, or the caller is not an API token, or `exceeds_grant`: with a `role_id`, the child asks for a permission or board outside the role's template and grants cut to the caller, or the cut leaves no permission"),
         (status = 409, description = "Another token of the account has the name, whatever its letter case"),
         (status = 429, description = "`rate_limited`: the caller mints children faster than 20 at once and then one every 2 seconds, so wait the `Retry-After` seconds"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -23541,19 +23585,41 @@ async fn create_child_token(
     let parent_id = calling_token_id(&user)?;
     let input: CreateChildTokenInput = parse_body(&headers, body).await?;
     let name = submitted_token_name(&input.name)?;
-    let (scope, permissions) = named_grant(input.preset.as_deref(), input.permissions.as_deref())?;
-    if let Some(extra) = permissions.difference(user.permissions()).next() {
-        return Err(AppError::forbidden(format!(
-            "the calling token does not hold {}",
-            extra.name()
-        )));
-    }
-    let boards = submitted_boards(&account, input.boards)?;
-    if !boards.within(user.boards()) {
-        return Err(AppError::forbidden(
-            "the child asks for a board the calling token does not reach",
-        ));
-    }
+    let role = match input.role_id.as_deref() {
+        Some(id) => Some(
+            account
+                .agent_role(id)
+                .map_err(AppError::from)?
+                .ok_or_else(unknown_role_at_issue)?,
+        ),
+        None => None,
+    };
+    let (scope, permissions, boards) = match &role {
+        Some(role) => role_child_grant(
+            &account,
+            &user,
+            role,
+            (input.preset.as_deref(), input.permissions.as_deref()),
+            input.boards,
+        )?,
+        None => {
+            let (scope, permissions) =
+                named_grant(input.preset.as_deref(), input.permissions.as_deref())?;
+            if let Some(extra) = permissions.difference(user.permissions()).next() {
+                return Err(AppError::forbidden(format!(
+                    "the calling token does not hold {}",
+                    extra.name()
+                )));
+            }
+            let boards = submitted_boards(&account, input.boards.unwrap_or_default())?;
+            if !boards.within(user.boards()) {
+                return Err(AppError::forbidden(
+                    "the child asks for a board the calling token does not reach",
+                ));
+            }
+            (scope, permissions, boards)
+        }
+    };
     let hours = input
         .expires_in_hours
         .unwrap_or(ApiTokenRecord::DEFAULT_CHILD_HOURS);
@@ -23574,29 +23640,114 @@ async fn create_child_token(
         name: user.token_name.clone().unwrap_or_default(),
     };
     state.limits.check_mint(&parent.id)?;
-    let (record, raw) = account
-        .create_child_api_token(&parent, &name, grant, hours)
-        .map_err(AppError::from)?
-        .map_err(|refusal| match refusal {
-            ChildTokenRefusal::ParentGone => {
-                AppError::with_status(StatusCode::UNAUTHORIZED, "the calling token was revoked")
-                    .with_code(ErrorCode::TokenInvalid)
-            }
-            ChildTokenRefusal::NameTaken => {
-                AppError::conflict("another token of the account has that name")
-            }
-            ChildTokenRefusal::IssuerIsIssued => {
-                AppError::forbidden("a token that was itself issued cannot issue tokens")
-            }
-            ChildTokenRefusal::LifetimeTooLong { allowed_hours } => AppError::bad_request(format!(
-                "the owner allows this token's children {allowed_hours} hours at most"
-            )),
-        })?;
+    let (record, raw) = match &role {
+        Some(role) => account
+            .create_child_api_token_as_role(&role.id, &parent, &name, grant, hours)
+            .map_err(AppError::from)?
+            .map_err(|refusal| match refusal {
+                RoleTokenRefusal::UnknownRole => unknown_role_at_issue(),
+                RoleTokenRefusal::Child(refusal) => child_refusal(refusal),
+            })?,
+        None => account
+            .create_child_api_token(&parent, &name, grant, hours)
+            .map_err(AppError::from)?
+            .map_err(child_refusal)?,
+    };
     Ok(Json(CreateTokenResponse {
         token: ApiTokenView::from(&record),
         grant: GrantView::new(Some(&account), &record.permissions, &record.boards)?,
         raw_token: raw,
     }))
+}
+
+/// Returns the error a refused child token gives.
+fn child_refusal(refusal: ChildTokenRefusal) -> AppError {
+    match refusal {
+        ChildTokenRefusal::ParentGone => {
+            AppError::with_status(StatusCode::UNAUTHORIZED, "the calling token was revoked")
+                .with_code(ErrorCode::TokenInvalid)
+        }
+        ChildTokenRefusal::NameTaken => {
+            AppError::conflict("another token of the account has that name")
+        }
+        ChildTokenRefusal::IssuerIsIssued => {
+            AppError::forbidden("a token that was itself issued cannot issue tokens")
+        }
+        ChildTokenRefusal::LifetimeTooLong { allowed_hours } => AppError::bad_request(format!(
+            "the owner allows this token's children {allowed_hours} hours at most"
+        )),
+    }
+}
+
+/// Returns the grant of a child issued as `role`: the role's template cut to what the caller holds,
+/// without `tokens.issue`, narrowed by what `input` lists, on the caller's boards the role is
+/// granted on, narrowed the same way. A permission or board the cut leaves out is refused as
+/// `exceeds_grant`, and so is a cut that leaves no permission.
+fn role_child_grant(
+    account: &AccountDb,
+    user: &AuthUser,
+    role: &AgentRoleRow,
+    (preset, listed): (Option<&str>, Option<&[String]>),
+    boards: Option<BoardsInput>,
+) -> Result<(AuthScope, BTreeSet<Permission>, BoardAccess), AppError> {
+    let mut allowed: BTreeSet<Permission> = role
+        .permissions
+        .intersection(user.permissions())
+        .copied()
+        .collect();
+    allowed.remove(&Permission::TokensIssue);
+    let permissions = if preset.is_some() || listed.is_some() {
+        let (_, listed) = named_grant(preset, listed)?;
+        if let Some(extra) = listed.difference(&allowed).next() {
+            return Err(AppError::forbidden(format!(
+                "the role and the calling token give no {}",
+                extra.name()
+            ))
+            .with_code(ErrorCode::ExceedsGrant));
+        }
+        listed
+    } else {
+        allowed
+    };
+    if permissions.is_empty() {
+        return Err(AppError::forbidden(
+            "the role template and the calling token share no permission",
+        )
+        .with_code(ErrorCode::ExceedsGrant));
+    }
+    let reached: BTreeSet<String> = account.agent_role_boards(role)?.into_iter().collect();
+    if reached.is_empty() {
+        return Err(outside_role_boards());
+    }
+    let granted = BoardAccess::Only(reached);
+    let boards = match boards {
+        Some(BoardsInput::Only(ids)) if !ids.is_empty() => {
+            let listed = BoardAccess::Only(ids.into_iter().collect());
+            if !listed.within(&granted) {
+                return Err(outside_role_boards());
+            }
+            listed
+        }
+        Some(BoardsInput::Only(_)) => {
+            return Err(AppError::bad_request("boards must not be empty"));
+        }
+        Some(BoardsInput::Every(_)) => return Err(outside_role_boards()),
+        None => granted,
+    };
+    Ok((AuthScope::label_of(&permissions), permissions, boards))
+}
+
+/// Returns the refusal of a child issued as a role the account does not hold.
+fn unknown_role_at_issue() -> AppError {
+    AppError::bad_request("no such agent role").with_code(ErrorCode::UnknownRole)
+}
+
+/// Returns the refusal of a board outside a role's grants and the calling token's boards.
+fn outside_role_boards() -> AppError {
+    AppError::forbidden(
+        "the child asks for a board outside the role's grants and the calling token's boards",
+    )
+    .with_code(ErrorCode::ExceedsGrant)
 }
 
 /// Returns the id of the API token that made the request, which only an API token has.
@@ -24144,6 +24295,111 @@ async fn update_agent_role(
         .map(submitted_template)
         .transpose()?;
     let role = role_or_404(account.update_agent_role(&id, name, permissions))?;
+    Ok(Json(AgentRoleView::new(&account, role)?))
+}
+
+/// The body of `POST /api/v1/agent-roles/standard`.
+#[derive(serde::Deserialize, ToSchema)]
+struct StandardRolesInput {
+    /// The ids of the boards to grant to all six standard roles. May be empty.
+    boards: Vec<String>,
+}
+
+/// The reply of `POST /api/v1/agent-roles/standard`.
+#[derive(serde::Serialize, ToSchema)]
+struct StandardRolesView {
+    /// The six standard roles in the order planner, implementer, reviewer, verifier, release,
+    /// lead.
+    roles: Vec<AgentRoleView>,
+    /// The names of the roles this call created. Empty when all six existed already.
+    created: Vec<String>,
+}
+
+/// Returns board `id` when the caller holds it. A board the token is not assigned to is a 403
+/// `exceeds_grant` naming it, and one the account has no access to is a 404.
+fn held_board(account: &AccountDb, id: &str) -> Result<OwnedBoard, AppError> {
+    if !account.boards_outside_set(&[id.to_string()])?.is_empty() {
+        return Err(
+            AppError::forbidden(format!("the calling token does not hold board {id}"))
+                .with_code(ErrorCode::ExceedsGrant),
+        );
+    }
+    account
+        .board(id)?
+        .ok_or_else(|| AppError::not_found(format!("no such board: {id}")))
+}
+
+/// Creates the standard roles the account lacks, from the fixed table of planner, implementer,
+/// reviewer, verifier, release and lead, and grants every listed board to all six. A role that
+/// exists keeps its template, and a repeat call changes nothing. Every board must be one the
+/// caller holds, or nothing is written. No other role is created or edited this way.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agent-roles/standard",
+    operation_id = "ensure_standard_roles",
+    tag = "Agent roles",
+    request_body = StandardRolesInput,
+    responses(
+        (status = 200, description = "The six standard roles and the names this call created", body = StandardRolesView),
+        (status = 403, description = "`exceeds_grant`: a listed board is not one the calling token holds, and nothing was written"),
+        (status = 404, description = "A listed board does not exist, and nothing was written"),
+        (status = 409, description = "`quota_exceeded`: creating the missing roles would pass the account's 50 roles"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn ensure_standard_roles(
+    account: AccountDb,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<StandardRolesView>, AppError> {
+    let input: StandardRolesInput = parse_body(&headers, body).await?;
+    let ids: BTreeSet<&String> = input.boards.iter().collect();
+    let boards = ids
+        .into_iter()
+        .map(|id| held_board(&account, id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let standard = account
+        .ensure_standard_roles(&boards)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("a listed board is not one of the account's own"))?;
+    let roles = standard
+        .roles
+        .into_iter()
+        .map(|role| AgentRoleView::new(&account, role))
+        .collect::<Result<_, _>>()?;
+    Ok(Json(StandardRolesView {
+        roles,
+        created: standard.created,
+    }))
+}
+
+/// Grants an agent role on a board, and does nothing when it holds the grant already. A token
+/// grants only a board it holds. The owner's browser grants any board.
+#[utoipa::path(
+    put,
+    path = "/api/v1/agent-roles/{id}/boards/{board_id}",
+    operation_id = "grant_agent_role",
+    tag = "Agent roles",
+    params(
+        ("id" = String, Path, description = "Agent role id"),
+        ("board_id" = String, Path, description = "Board id"),
+    ),
+    responses(
+        (status = 200, description = "The role with its boards", body = AgentRoleView),
+        (status = 403, description = "`exceeds_grant`: the board is not one the calling token holds"),
+        (status = 404, description = "`unknown_role`: the account has no such role, or the board does not exist"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn grant_agent_role(
+    account: AccountDb,
+    Path((id, board_id)): Path<(String, String)>,
+) -> Result<Json<AgentRoleView>, AppError> {
+    let role = role_or_404(account.agent_role(&id))?;
+    let board = held_board(&account, &board_id)?;
+    if !account.grant_agent_role(&role.id, &board)? {
+        return Err(AppError::not_found(format!("no such board: {board_id}")));
+    }
     Ok(Json(AgentRoleView::new(&account, role)?))
 }
 
@@ -26007,6 +26263,8 @@ them, which the Backups section of the settings page calls after a confirmation.
         get_agent_role,
         create_agent_role,
         update_agent_role,
+        ensure_standard_roles,
+        grant_agent_role,
         whoami,
         list_permissions,
         list_api_tokens,
@@ -26088,6 +26346,8 @@ them, which the Backups section of the settings page calls after a confirmation.
             AgentRoleView,
             CreateAgentRoleInput,
             EditAgentRoleInput,
+            StandardRolesInput,
+            StandardRolesView,
             RevokeResult,
             SessionsEnded,
             SessionView,

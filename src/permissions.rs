@@ -176,7 +176,6 @@ impl Preset {
 
 /// One of the six agent roles every account starts from.
 #[derive(Copy, Clone, Debug)]
-#[cfg(test)]
 pub struct StandardRole {
     /// The role's name, its key.
     pub name: &'static str,
@@ -184,7 +183,6 @@ pub struct StandardRole {
     pub extra: &'static [Permission],
 }
 
-#[cfg(test)]
 impl StandardRole {
     /// Returns [`STANDARD_BASE`] plus the role's `extra` permissions.
     #[must_use]
@@ -195,7 +193,6 @@ impl StandardRole {
 
 /// The permissions every standard role holds: reading tasks, comments and attachments, and
 /// commenting.
-#[cfg(test)]
 pub const STANDARD_BASE: &[Permission] = &[
     Permission::TasksRead,
     Permission::CommentsRead,
@@ -204,7 +201,6 @@ pub const STANDARD_BASE: &[Permission] = &[
 ];
 
 /// The six standard roles, from the planner who shapes a card to the lead who holds every part.
-#[cfg(test)]
 pub const STANDARD_ROLES: &[StandardRole] = &[
     StandardRole {
         name: "planner",
@@ -255,6 +251,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
             Permission::LabelsManage,
             Permission::AttachmentsWrite,
             Permission::TimeWrite,
+            Permission::TokensIssue,
         ],
     },
 ];
@@ -532,6 +529,7 @@ mod tests {
                     "labels.manage",
                     "attachments.write",
                     "time.write",
+                    "tokens.issue",
                 ],
             ),
         ];

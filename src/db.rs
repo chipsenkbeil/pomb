@@ -72,8 +72,8 @@ pub use self::account::{
     UmbrellaPart, UmbrellaRef,
 };
 use self::activity::Activity;
-pub use self::agents::AgentRoleNameTaken;
 use self::agents::txn_remove_grants_of_board;
+pub use self::agents::{AgentRoleNameTaken, StandardRoles};
 use self::bin::txn_remove_board_bin;
 pub use self::bin::{PurgeOutcome, RestoreOutcome};
 pub use self::dispatch::Delivery;
@@ -1403,8 +1403,19 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// The upgrade rewrites no row and opens the new tables empty. The new stamp makes a version-63
 /// binary refuse a file whose board deletes it would run without removing the board's grants.
 ///
+/// Version 65 adds, over version 64 (additive, read from older rows through a serde default):
+///
+/// 1. `ApiTokenRecord`: `role_id`, `role_name` and `label`, the agent role the token was issued as,
+///    the role's name when it was, and the `agent-N` label of that issue.
+/// 2. `AgentRoleRow`: `issued`, how many tokens the role has issued, which numbers the next label.
+///
+/// The upgrade rewrites no row, so an older token reads as issued as no role and an older role as
+/// having issued none. The new stamp makes a version-64 binary refuse a file whose role tokens it
+/// would save without their snapshot, or whose roles it would save with the counter reset, which
+/// would reuse a label.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 64;
+pub const SCHEMA_VERSION: u64 = 65;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1475,6 +1486,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "36a870e0a7b7c046a30ee5a9b470d7b8bb0817173e2368a62d80711757e92abb",
     "e0b911ec0186f26f2948e7fa29bcadb8dc26cc3f5e190321ca1321f2c5947669",
     "043aa18d87c1fbed7a5e8a135ced106f018c97063e0c551c5aaf1b6b2036a922",
+    "aaaf5ff2b9576404c34b111a8ae33bff2eba289b4f2734c014c791f71cfffe36",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -4307,6 +4319,49 @@ fn txn_create_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<
     txn_store_token(txn, token)
 }
 
+/// Runs the checks every child token passes inside an open write transaction, and sets the expiry
+/// of `record`, which names its parent. Returns the refusal, with nothing written beyond the
+/// deletion of the account's expired issued tokens, when the parent is gone, is itself issued and
+/// the child would hold `tokens.issue`, allows its children fewer than `hours`, or another token
+/// of the account has the name.
+fn txn_check_child_token(
+    txn: &WriteTransaction,
+    record: &mut ApiTokenRecord,
+    hours: i64,
+    now: i64,
+) -> DbResult<Result<(), ChildTokenRefusal>> {
+    let Some(parent_id) = record.parent_id.as_deref() else {
+        return Err("a child token must name its parent".into());
+    };
+    let parent = txn_read_one::<ApiTokenRecord>(txn, API_TOKENS, parent_id)?;
+    let Some(parent) = parent.filter(|parent| parent.account_id == record.account_id) else {
+        return Ok(Err(ChildTokenRefusal::ParentGone));
+    };
+    if parent.parent_id.is_some() && record.permissions.contains(&Permission::TokensIssue) {
+        return Ok(Err(ChildTokenRefusal::IssuerIsIssued));
+    }
+    if hours > parent.child_lifetime_hours {
+        return Ok(Err(ChildTokenRefusal::LifetimeTooLong {
+            allowed_hours: parent.child_lifetime_hours,
+        }));
+    }
+    record.expires_at =
+        Some((now + hours * SECONDS_PER_HOUR).min(parent.expires_at.unwrap_or(i64::MAX)));
+    txn_remove_expired_issued_tokens(txn, &record.account_id, now)?;
+    let name = record.name.to_lowercase();
+    for id in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, &record.account_id)? {
+        for table in [API_TOKENS, SUSPENDED_TOKENS] {
+            let Some(token) = txn_read_one::<ApiTokenRecord>(txn, table, &id)? else {
+                continue;
+            };
+            if token.name.to_lowercase() == name {
+                return Ok(Err(ChildTokenRefusal::NameTaken));
+            }
+        }
+    }
+    Ok(Ok(()))
+}
+
 /// Deletes the expired issued tokens of `account`, live or suspended, with the tokens they
 /// issued, inside an open write transaction, and returns how many live ones it deleted.
 fn txn_remove_expired_issued_tokens(
@@ -4767,6 +4822,15 @@ pub enum ChildTokenRefusal {
         /// Most hours a child of the issuing token may live.
         allowed_hours: i64,
     },
+}
+
+/// Why a token was not stored as a child issued as an agent role.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RoleTokenRefusal {
+    /// The account holds no such role.
+    UnknownRole,
+    /// A check every child token passes refused it.
+    Child(ChildTokenRefusal),
 }
 
 /// Refusal of a write that would take an account past one of its quotas or a fixed bound.
@@ -6416,35 +6480,9 @@ impl Db {
         hours: i64,
         now: i64,
     ) -> DbResult<Result<ApiTokenRecord, ChildTokenRefusal>> {
-        let Some(parent_id) = record.parent_id.as_deref() else {
-            return Err("a child token must name its parent".into());
-        };
         let txn = self.db.begin_write()?;
-        let parent = txn_read_one::<ApiTokenRecord>(&txn, API_TOKENS, parent_id)?;
-        let Some(parent) = parent.filter(|parent| parent.account_id == record.account_id) else {
-            return Ok(Err(ChildTokenRefusal::ParentGone));
-        };
-        if parent.parent_id.is_some() && record.permissions.contains(&Permission::TokensIssue) {
-            return Ok(Err(ChildTokenRefusal::IssuerIsIssued));
-        }
-        if hours > parent.child_lifetime_hours {
-            return Ok(Err(ChildTokenRefusal::LifetimeTooLong {
-                allowed_hours: parent.child_lifetime_hours,
-            }));
-        }
-        record.expires_at =
-            Some((now + hours * SECONDS_PER_HOUR).min(parent.expires_at.unwrap_or(i64::MAX)));
-        txn_remove_expired_issued_tokens(&txn, &record.account_id, now)?;
-        let name = record.name.to_lowercase();
-        for id in txn_mmap_get(&txn, TOKENS_BY_ACCOUNT, &record.account_id)? {
-            for table in [API_TOKENS, SUSPENDED_TOKENS] {
-                let Some(token) = txn_read_one::<ApiTokenRecord>(&txn, table, &id)? else {
-                    continue;
-                };
-                if token.name.to_lowercase() == name {
-                    return Ok(Err(ChildTokenRefusal::NameTaken));
-                }
-            }
+        if let Err(refusal) = txn_check_child_token(&txn, &mut record, hours, now)? {
+            return Ok(Err(refusal));
         }
         txn_create_token(&txn, &record)?;
         txn.commit()?;

@@ -22,11 +22,12 @@ use super::{
     LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkRefusal, MemberSet, MoveGuards, MoveOutcome,
     NewComment, NewInbound, NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage,
     OwnerChange, PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome, Reads, RestoreOutcome,
-    Rows, SWIMLANES, SessionEndOutcome, SessionListing, SessionToken, SwimlaneDeleteOutcome,
-    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS,
-    TASKS_BY_COLUMN, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome, UmbrellaChange, WEBHOOKS,
-    WebhookPatch, first_board, index_in, link_event_target, links_blocked_in, no_signed_in_account,
-    read_in, redacted_history, role_in, task_role_in,
+    RoleTokenRefusal, Rows, SWIMLANES, SessionEndOutcome, SessionListing, SessionToken,
+    StandardRoles, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
+    SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, TaskContext,
+    TemplateDeleteOutcome, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board, index_in,
+    link_event_target, links_blocked_in, no_signed_in_account, read_in, redacted_history, role_in,
+    task_role_in,
 };
 use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission, required_role,
@@ -2349,6 +2350,13 @@ impl AccountDb {
             .grant_agent_role(self.account.as_str(), role_id, &board.row().id)
     }
 
+    /// Creates the standard roles the account lacks and grants every board in `boards` to all six.
+    /// Returns [`None`], writing nothing, when a board is not one the account owns.
+    pub fn ensure_standard_roles(&self, boards: &[OwnedBoard]) -> DbResult<Option<StandardRoles>> {
+        let ids: Vec<String> = boards.iter().map(|board| board.row().id.clone()).collect();
+        self.db.ensure_standard_roles(self.account.as_str(), &ids)
+    }
+
     /// Revokes agent role `role_id` on board `board_id`. Returns `false` when the account holds no
     /// such role or the role held no such grant.
     pub fn revoke_agent_role(&self, role_id: &str, board_id: &str) -> DbResult<bool> {
@@ -2654,6 +2662,28 @@ impl AccountDb {
         record.parent_name = Some(parent.name.clone());
         let now = Utc::now().timestamp();
         let stored = self.db.create_child_api_token(record, hours, now)?;
+        Ok(stored.map(|record| (record, raw)))
+    }
+
+    /// Mints and stores a child API token issued by token `parent` as agent role `role_id` that
+    /// lives `hours`, returning its record and the raw token, or the refusal the database gives.
+    pub fn create_child_api_token_as_role(
+        &self,
+        role_id: &str,
+        parent: &ParentToken,
+        name: &str,
+        grant: TokenGrant,
+        hours: i64,
+    ) -> DbResult<Result<(ApiTokenRecord, String), RoleTokenRefusal>> {
+        let (mut record, raw) = new_api_token_record(&self.account, name, grant.scope, None);
+        record.permissions = grant.permissions;
+        record.boards = grant.boards;
+        record.parent_id = Some(parent.id.clone());
+        record.parent_name = Some(parent.name.clone());
+        let now = Utc::now().timestamp();
+        let stored = self
+            .db
+            .create_api_token_as_role(role_id, record, hours, now)?;
         Ok(stored.map(|record| (record, raw)))
     }
 
