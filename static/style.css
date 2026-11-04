@@ -2396,7 +2396,7 @@ body.modal-open { overflow: hidden; }
 
 .tm-subtask {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.5rem;
   padding: 0.3rem 0.4rem;
   border-radius: 6px;
@@ -2406,15 +2406,15 @@ body.modal-open { overflow: hidden; }
 .tm-subtask:hover { background: var(--taskColorLight); }
 .tm-subtask.focused { background: #eef2ff; outline: 2px solid var(--accent); }
 
-.tm-subtask-check { width: 1rem; height: 1rem; accent-color: var(--accent); }
+.tm-subtask-check { width: 1rem; height: 1rem; margin: 0.2rem 0 0; flex: none; accent-color: var(--accent); }
 
 .tm-subtask-name {
   flex: 1;
   min-width: 0;
   cursor: text;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .tm-subtask-edit {
@@ -2424,6 +2424,10 @@ body.modal-open { overflow: hidden; }
   border: 1px solid var(--accent);
   border-radius: 4px;
   padding: 0.15rem 0.4rem;
+  line-height: 1.4rem;
+  resize: none;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 /* KF-264: per-row drag/menu handle (GM-085): muted-gray vertical ellipsis
@@ -2434,7 +2438,8 @@ body.modal-open { overflow: hidden; }
   background: transparent;
   cursor: pointer;
   line-height: 1;
-  padding: 0.1rem 0.3rem;
+  padding: 0 0.3rem;
+  height: 1.4rem;
   border-radius: 4px;
   display: flex;
   align-items: center;
@@ -7462,6 +7467,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .tm-subtask-due {
   flex: none;
   font-size: 12px;
+  line-height: 1.4rem;
   color: #666666;
   white-space: nowrap;
 }
@@ -8708,7 +8714,7 @@ body.dark .tic-page .tic-row:hover, body.dark .tic-page .tic-row:focus { backgro
 .task-card.task-card--selected.task-card-hl:hover {
   box-shadow: inset 4px 0 0 var(--hl-stripe), inset 0 0 0 3px var(--taskColorBorder, currentColor);
 }
-.tm-subtask-members { display: flex; flex: none; align-items: center; gap: 3px; }
+.tm-subtask-members { display: flex; flex: none; align-items: center; gap: 3px; height: 1.4rem; }
 .tm-subtask-members:empty { display: none; }
 .tm-subtask-member { width: 22px; height: 22px; font-size: 11px; }
 

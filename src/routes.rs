@@ -207,7 +207,8 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/tasks/:id/comments/:comment_id/answer",
             post(answer_comment_question),
-        );
+        )
+        .route("/api/tasks/:id/escalate", post(escalate_task));
 
     let router = router
         .route(
@@ -955,6 +956,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             Task,
             Grows,
         ),
+        (Method::POST, "/api/tasks/:id/escalate", Task, Grows),
         (Method::GET, "/api/tasks/:id/attachments", Task, No),
         (Method::POST, "/api/tasks/:id/attachments", Task, Grows),
         (Method::POST, "/api/tasks/:id/attachments/link", Task, Grows),
@@ -13308,6 +13310,80 @@ async fn answer_comment_question(
         .answer_question(&task, &comment_id, answer, position, user.actor())
         .map_err(AppError::from)?;
     question_comment(written).map(Json)
+}
+
+/// Request body to hand a card to the lead or the planner.
+#[derive(Deserialize, ToSchema)]
+struct EscalateInput {
+    /// Who the card waits on: `lead` or `planner`. Required.
+    tier: Option<String>,
+    /// Why the card is handed over, at most 5000 bytes. Stored as the body of a comment of kind
+    /// `blocked`. Required.
+    reason: Option<String>,
+}
+
+/// Hands a card to the lead or the planner: writes one comment of kind `blocked` holding the
+/// reason, adds the `needs:lead` or `needs:planner` label of the tier and removes the other
+/// tier's label, in one write. The card stays in its column. Needs only `comments.write`, so a
+/// role without `tasks.edit` can escalate a card it is stuck on. A card carrying a locking label,
+/// `needs:human` included, refuses a token.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/escalate",
+    operation_id = "escalate_task",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim (see Claims)"),
+    ),
+    request_body = EscalateInput,
+    responses(
+        (status = 200, description = "The `blocked` comment", body = TaskComment),
+        (status = 400, description = "A tier other than `lead` or `planner`, or a missing, empty or too long reason"),
+        (status = 403, description = "`card_locked`: the card carries a locking label"),
+        (status = 404, description = "Task not found"),
+        (status = 409, description = "`stale_fence`: a live claim holds another fence"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn escalate_task(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskComment>, AppError> {
+    let input: EscalateInput = parse_body(&headers, body).await?;
+    let tier = input
+        .tier
+        .as_deref()
+        .map(str::trim)
+        .and_then(EscalationTier::parse)
+        .ok_or_else(|| AppError::bad_request("tier must be lead or planner"))?;
+    let text = comment_text(input.reason.as_deref().unwrap_or_default())?;
+    let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let fence = claim_fence_header(&headers)?;
+    let new = NewComment {
+        author: &user.username,
+        body: text,
+        actor_kind: if user.kind == CredentialKind::Session {
+            ActorKind::User
+        } else {
+            ActorKind::ApiToken
+        },
+        token_name: user.token_name.as_deref(),
+        token_id: user.token_id.as_deref(),
+        kind: Some(BLOCKED_KIND),
+    };
+    match account
+        .escalate_task(&task, new, tier, user.actor(), fence)
+        .map_err(AppError::from)?
+    {
+        FencedWrite::Written(comment) => Ok(Json(comment)),
+        FencedWrite::NotFound => Err(AppError::not_found("task not found")),
+        FencedWrite::StaleFence => Err(stale_fence()),
+    }
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -26911,6 +26987,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         edit_comment,
         react_to_comment,
         answer_comment_question,
+        escalate_task,
         delete_comment,
         upload_attachment,
         attach_link,

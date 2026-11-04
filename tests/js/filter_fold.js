@@ -87,7 +87,26 @@ function load(sessionStorage, localStorage) {
       return row;
     }
   };
-  var window = { sessionStorage: sessionStorage, localStorage: localStorage, addEventListener: function () {} };
+  var timers = [];
+  var now = 0;
+  var window = {
+    sessionStorage: sessionStorage,
+    localStorage: localStorage,
+    addEventListener: function () {},
+    setTimeout: function (fn, ms) { timers.push({ fn: fn, at: now + ms }); return timers.length; },
+    clearTimeout: function (id) { timers[id - 1] = null; }
+  };
+  function tick(ms) {
+    var until = now + ms;
+    for (;;) {
+      var due = timers.filter(function (t) { return t && t.at <= until; })[0];
+      if (!due) break;
+      timers[timers.indexOf(due)] = null;
+      now = due.at;
+      due.fn();
+    }
+    now = until;
+  }
   var boardId = function () { return 'b1'; };
   var chrome = eval('(function () {' + src.slice(start, end) + '\n return BoardChrome; })()');
   chrome.syncLegendFilter = function () {};
@@ -96,6 +115,7 @@ function load(sessionStorage, localStorage) {
   }
   return {
     label: label,
+    tick: tick,
     chrome: chrome, cards: cards, card: card, els: els, list: list, folds: folds,
     mode: function () { return mode; },
     setMode: function (m) { mode = m; }
@@ -150,6 +170,7 @@ page.setMode('collapse');
 page.chrome.applyFilter();
 var first = page.folds()[0];
 page.chrome.foldDragOver(over(page, { fold: first, list: page.list }));
+page.tick(400);
 check('dragging over a fold shows its cards', shown(page), [1, 1, 1, 1, 0, 0, 0]);
 check('dragging over a fold hides the row itself', first.style.display, 'none');
 page.chrome.foldDragOver(over(page, { card: page.cards[1], list: page.list }));
@@ -157,12 +178,16 @@ check('staying over the opened cards keeps the fold open', shown(page), [1, 1, 1
 page.chrome.foldDragOver(over(page, { list: page.list }));
 check('the gap between opened cards keeps the fold open', shown(page), [1, 1, 1, 1, 0, 0, 0]);
 page.chrome.foldDragOver(over(page, { list: {} }));
+page.tick(150);
 check('another list refolds', shown(page), [1, 0, 0, 1, 0, 0, 0]);
 page.chrome.foldDragOver(over(page, { fold: first, list: page.list }));
+page.tick(400);
 page.chrome.foldDragOver(over(page, { card: page.cards[3], list: page.list }));
+page.tick(150);
 check('leaving the fold refolds it', [shown(page), first.style.display], [[1, 0, 0, 1, 0, 0, 0], '']);
 
 page.chrome.foldDragOver(over(page, { fold: first, list: page.list }));
+page.tick(400);
 page.chrome.unfold();
 check('unfold removes every fold row and keeps the hidden cards hidden', [page.folds().length, shown(page)], [0, [1, 0, 0, 1, 0, 0, 0]]);
 check('with the fold rows gone the list holds only cards', layout(page), ['1', '2', '3', '4', '5', '6', '7']);

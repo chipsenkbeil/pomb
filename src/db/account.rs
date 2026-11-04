@@ -35,10 +35,10 @@ use crate::auth::{
 use crate::models::{
     AccountId, AccountStatus, ActiveTimer, Actor, AgentRoleRow, ApiTokenRecord, AuthScope, Avatar,
     BinRow, BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
-    CommentQuestion, CoverChange, DeviceAuthRow, EventKind, FieldDefRow, InboundAddressRow,
-    LinkKind, Numbering, ParentToken, PasskeyRow, PruneNotice, QuestionAnswer, RecoveryCodeRow,
-    ReportBookmark, Settings, SwimlaneRow, TaskAttachment, TaskBrief, TaskCard, TaskComment,
-    TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow, WebhookRow,
+    CommentQuestion, CoverChange, DeviceAuthRow, EscalationTier, EventKind, FieldDefRow,
+    InboundAddressRow, LinkKind, Numbering, ParentToken, PasskeyRow, PruneNotice, QuestionAnswer,
+    RecoveryCodeRow, ReportBookmark, Settings, SwimlaneRow, TaskAttachment, TaskBrief, TaskCard,
+    TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow, WebhookRow,
 };
 use crate::permissions::Permission;
 
@@ -1906,6 +1906,20 @@ impl AccountDb {
     ) -> DbResult<QuestionWrite> {
         self.db
             .post_question(&task.row().id, new, question, to, actor)
+    }
+
+    /// Appends a `blocked` comment and sets the `needs:lead` or `needs:planner` label of `tier`,
+    /// dropping the other tier's, all in one write that keeps the task in its column.
+    pub fn escalate_task(
+        &self,
+        task: &OwnedTask,
+        new: NewComment<'_>,
+        tier: EscalationTier,
+        actor: Actor<'_>,
+        fence: Option<u64>,
+    ) -> DbResult<FencedWrite<TaskComment>> {
+        self.db
+            .escalate_task(&task.row().id, new, tier, actor, fence)
     }
 
     /// Records the answer to a question comment, removes `needs:human` and moves the task to the

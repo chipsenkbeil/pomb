@@ -9,7 +9,9 @@ use super::{history_actor, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{ChildTokenRefusal, Db, MAX_AGENT_ROLES_PER_ACCOUNT, RoleTokenRefusal};
-use crate::models::{AccountId, AgentRoleRow, ApiTokenRecord, AuthScope, BoardAccess, BoardRole};
+use crate::models::{
+    AccountId, AgentRoleRow, ApiTokenRecord, AuthScope, BoardAccess, BoardRole, HistoryKind,
+};
 use crate::permissions::{Permission, Preset};
 
 /// Two accounts, each with a browser session, a read token and a board.
@@ -396,12 +398,15 @@ fn child_as(fx: &Fixture, name: &str) -> ApiTokenRecord {
 }
 
 fn issue_as(fx: &Fixture, role: &Value, name: &str) -> (ApiTokenRecord, String) {
+    issue_as_at(fx, role, name, chrono::Utc::now().timestamp())
+}
+
+fn issue_as_at(fx: &Fixture, role: &Value, name: &str, now: i64) -> (ApiTokenRecord, String) {
     let parent = issuer(fx);
     let (mut record, raw) = new_api_token_record(&fx.alice, name, AuthScope::Work, None);
     record.parent_id = Some(parent.id);
     record.parent_name = Some(parent.name);
     let role_id = role["id"].as_str().expect("role id");
-    let now = chrono::Utc::now().timestamp();
     let stored = fx
         .db
         .create_api_token_as_role(role_id, record, 1, now)
@@ -1204,7 +1209,7 @@ async fn role_child_should_pass_the_child_checks_in_one_write() {
     );
     assert_eq!((issued(), token_total(&fx)), (0, before));
 
-    let (first, _) = issue_as(&fx, &role, "first");
+    let (first, _) = issue_as_at(&fx, &role, "first", now);
     assert_eq!(first.expires_at.map(|at| at - now), Some(3600));
     let refused = fx
         .db
@@ -2033,4 +2038,159 @@ async fn child_as_a_role_should_refuse_a_bad_preset_before_an_empty_cut() {
     let body = json!({"name": "bad", "role_id": role["id"], "preset": "nonsense"});
     let reply = issue_child(&fx, &caller, body).await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+}
+
+fn issue_holding(fx: &Fixture, role: &Value, name: &str) -> (ApiTokenRecord, String) {
+    let parent = issuer(fx);
+    let (mut record, raw) = new_api_token_record(&fx.alice, name, AuthScope::Work, None);
+    record.parent_id = Some(parent.id);
+    record.parent_name = Some(parent.name);
+    record.permissions = permission_names(role)
+        .iter()
+        .map(|name| Permission::named(name).expect("permission"))
+        .collect();
+    let role_id = role["id"].as_str().expect("role id");
+    let now = chrono::Utc::now().timestamp();
+    let stored = fx
+        .db
+        .create_api_token_as_role(role_id, record, 1, now)
+        .expect("issue")
+        .expect("role");
+    (stored, raw)
+}
+
+fn column_of(fx: &Fixture, task: &str) -> String {
+    fx.db
+        .task(task)
+        .expect("read")
+        .expect("task")
+        .column_id
+        .clone()
+}
+
+fn labels_of(fx: &Fixture, task: &str) -> Vec<String> {
+    fx.db
+        .task(task)
+        .expect("read")
+        .expect("task")
+        .labels
+        .clone()
+}
+
+#[tokio::test]
+async fn implementer_should_escalate_a_card_to_the_lead_in_one_write() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let role = standard_role(&fx, "implementer").await;
+    let (record, raw) = issue_holding(&fx, &role, "impl-one");
+    assert!(!record.permissions.contains(&Permission::TasksEdit));
+    fx.db
+        .set_task_labels(&task, &["keep".to_string(), "needs:planner".to_string()])
+        .expect("labels");
+    let before = column_of(&fx, &task);
+    let uri = format!("/api/tasks/{task}/escalate");
+    let body = json!({"tier": "lead", "reason": "Stuck on the migration"});
+    let reply = act(&raw, &fx, "POST", &uri, body).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["kind"], "blocked");
+    assert_eq!(reply.body["body"], "Stuck on the migration");
+    assert_eq!(reply.body["role_name"], "implementer");
+
+    let row = fx.db.task(&task).expect("read").expect("task");
+    assert_eq!(row.labels, ["keep", "needs:lead"]);
+    assert_eq!(row.column_id, before);
+    assert_eq!(row.comments.len(), 1);
+    assert_eq!(row.comments[0].kind.as_deref(), Some("blocked"));
+    let events: Vec<_> = row.history.iter().rev().take(2).collect();
+    assert_eq!(events[0].kind, HistoryKind::LabelsUpdated);
+    assert_eq!(events[1].kind, HistoryKind::CommentAdded);
+    assert!(
+        events
+            .iter()
+            .all(|event| event.role_name.as_deref() == Some("implementer"))
+    );
+}
+
+#[tokio::test]
+async fn escalate_should_set_the_planner_tier_and_drop_the_lead_one() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let role = standard_role(&fx, "reviewer").await;
+    let (_, raw) = issue_holding(&fx, &role, "rev-one");
+    fx.db
+        .set_task_labels(&task, &["needs:lead".to_string()])
+        .expect("labels");
+    let uri = format!("/api/tasks/{task}/escalate");
+    let body = json!({"tier": "planner", "reason": "The outcome is wrong"});
+    let reply = act(&raw, &fx, "POST", &uri, body).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(labels_of(&fx, &task), ["needs:planner"]);
+
+    let again = json!({"tier": "planner", "reason": "Still wrong"});
+    let reply = act(&raw, &fx, "POST", &uri, again).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(labels_of(&fx, &task), ["needs:planner"]);
+    let row = fx.db.task(&task).expect("read").expect("task");
+    assert_eq!(row.comments.len(), 2);
+}
+
+#[tokio::test]
+async fn escalate_should_refuse_a_bad_tier_or_reason_and_write_nothing() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let role = standard_role(&fx, "implementer").await;
+    let (_, raw) = issue_holding(&fx, &role, "impl-one");
+    let uri = format!("/api/tasks/{task}/escalate");
+    let long = "x".repeat(5001);
+    for body in [
+        json!({"tier": "human", "reason": "why"}),
+        json!({"tier": "Lead", "reason": "why"}),
+        json!({"reason": "why"}),
+        json!({"tier": "lead"}),
+        json!({"tier": "lead", "reason": "  "}),
+        json!({"tier": "lead", "reason": long}),
+    ] {
+        let reply = act(&raw, &fx, "POST", &uri, body.clone()).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{body}: {}",
+            reply.body
+        );
+    }
+    let row = fx.db.task(&task).expect("read").expect("task");
+    assert!(row.labels.is_empty() && row.comments.is_empty());
+}
+
+#[tokio::test]
+async fn escalate_should_refuse_a_locked_card_for_a_token() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let role = standard_role(&fx, "implementer").await;
+    let (_, raw) = issue_holding(&fx, &role, "impl-one");
+    fx.db
+        .set_task_labels(&task, &["needs:human".to_string()])
+        .expect("labels");
+    let uri = format!("/api/tasks/{task}/escalate");
+    let body = json!({"tier": "lead", "reason": "why"});
+    let reply = act(&raw, &fx, "POST", &uri, body).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+    assert_eq!(reply.body["code"], "card_locked");
+    let row = fx.db.task(&task).expect("read").expect("task");
+    assert_eq!(row.labels, ["needs:human"]);
+    assert!(row.comments.is_empty());
+}
+
+#[tokio::test]
+async fn escalate_should_need_comments_write() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let (mut record, raw) = new_api_token_record(&fx.alice, "reader", AuthScope::Work, None);
+    record.permissions = BTreeSet::from([Permission::TasksRead]);
+    fx.db.create_api_token(&record).expect("token");
+    let uri = format!("/api/tasks/{task}/escalate");
+    let body = json!({"tier": "lead", "reason": "why"});
+    let reply = act(&raw, &fx, "POST", &uri, body).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+    assert!(labels_of(&fx, &task).is_empty());
 }

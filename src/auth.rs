@@ -1021,6 +1021,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         Permission::CommentsWrite,
     ),
     (
+        Method::POST,
+        "/api/tasks/:id/escalate",
+        Permission::CommentsWrite,
+    ),
+    (
         Method::GET,
         "/api/tasks/:id/attachments",
         Permission::AttachmentsRead,
@@ -2274,6 +2279,7 @@ mod tests {
             "/api/tasks/:id/comments/:comment_id/answer",
             AuthScope::Work,
         ),
+        (Method::POST, "/api/tasks/:id/escalate", AuthScope::Work),
         (Method::POST, "/api/tasks/:id/attachments", AuthScope::Work),
         (
             Method::POST,

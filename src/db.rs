@@ -118,18 +118,18 @@ use crate::layouts::{LAYOUTS, Layout};
 use crate::limit::{Limits, TrustProxy};
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
-    AttachmentVersion, AuthScope, BLOCKED_COLUMN_KEY, BackupSettings, BackupStatus, BinRow,
-    BoardAccess, BoardFeed, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
+    AttachmentVersion, AuthScope, BLOCKED_COLUMN_KEY, BLOCKED_KIND, BackupSettings, BackupStatus,
+    BinRow, BoardAccess, BoardFeed, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
     CommentQuestion, CommentReaction, CoverChange, DeviceAuthRow, DeviceAuthStatus, EntryKind,
-    EventChange, FieldDefRow, HistoryKind, InboundAddressRow, InstanceMode, InstanceSettings,
-    LaneLimit, LinkKind, MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS, MAX_NUMBERING_NAME_CHARS,
-    MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS, MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST,
-    NEEDS_HUMAN_LABEL, NUMBERING_KEY, Numbering, PasskeyRow, QUESTION_KIND, QuestionAnswer, Quota,
-    Quotas, RecoveryCodeRow, ReportBookmark, Responsible, SECONDS_PER_HOUR, SessionRow, Settings,
-    Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind,
-    TaskLink, TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, WebhookRow,
-    custom_color_hexes, custom_color_value, format_minutes, is_custom_color, lighter_hex,
-    normalize_hex, standard_color, text_contrast,
+    EscalationTier, EventChange, FieldDefRow, HistoryKind, InboundAddressRow, InstanceMode,
+    InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS,
+    MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
+    MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NEEDS_HUMAN_LABEL, NUMBERING_KEY, Numbering,
+    PasskeyRow, QUESTION_KIND, QuestionAnswer, Quota, Quotas, RecoveryCodeRow, ReportBookmark,
+    Responsible, SECONDS_PER_HOUR, SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment,
+    TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind, TaskLink, TaskRow, TextCap,
+    TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes, custom_color_value,
+    format_minutes, is_custom_color, lighter_hex, normalize_hex, standard_color, text_contrast,
 };
 use crate::permissions::{Permission, STANDARD_ROLES};
 use crate::rules;
@@ -784,6 +784,27 @@ fn remove_needs_human(task: &mut TaskRow, actor: Actor<'_>) {
         from: Some(before),
         to: (!task.labels.is_empty()).then(|| task.labels.join(", ")),
     };
+    push_change_event(task, HistoryKind::LabelsUpdated, detail, actor, change);
+}
+
+/// Adds the label of `tier` to `task` and removes the label of the other tier, with one labels
+/// event, unless the labels already read that way.
+fn set_tier_label(task: &mut TaskRow, tier: EscalationTier, actor: Actor<'_>) {
+    let before = task.labels.join(", ");
+    let dropped = tier.other().label();
+    task.labels.retain(|label| label != dropped);
+    if !task.labels.iter().any(|label| label == tier.label()) {
+        task.labels.push(tier.label().to_string());
+    }
+    let after = task.labels.join(", ");
+    if after == before {
+        return;
+    }
+    let change = EventChange {
+        from: (!before.is_empty()).then_some(before),
+        to: Some(after.clone()),
+    };
+    let detail = format!("Set labels: {after}");
     push_change_event(task, HistoryKind::LabelsUpdated, detail, actor, change);
 }
 
@@ -9572,6 +9593,59 @@ impl Db {
         }
         let moved = Self::move_for_question(&txn, task_id, to, actor)?;
         QuestionWrite::commit_if_moved(txn, moved, comment)
+    }
+
+    /// Appends a `blocked` comment holding the reason, adds the label of `tier` and removes the
+    /// label of the other tier, with the comment and label events, in one write. The task's
+    /// column stays. With a `fence`, a live claim holding another fence refuses the write.
+    pub fn escalate_task(
+        &self,
+        task_id: &str,
+        new: NewComment<'_>,
+        tier: EscalationTier,
+        actor: Actor<'_>,
+        fence: Option<u64>,
+    ) -> DbResult<FencedWrite<TaskComment>> {
+        let comment = TaskComment {
+            id: Uuid::new_v4().to_string(),
+            author: new.author.to_string(),
+            body: new.body.to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            actor_kind: new.actor_kind,
+            token_name: new.token_name.map(str::to_string),
+            token_id: new.token_id.filter(|id| !id.is_empty()).map(str::to_string),
+            edited_at: None,
+            kind: Some(BLOCKED_KIND.to_string()),
+            reactions: Vec::new(),
+            question: None,
+            parent_token: actor.parent_token.cloned(),
+            role_id: actor.role_id.map(str::to_string),
+            role_name: actor.role_name.map(str::to_string),
+            label: actor.label.map(str::to_string),
+        };
+        let txn = self.db.begin_write()?;
+        let owner = task_owner_in(&txn, task_id)?;
+        {
+            let mut tbl = txn.open_table(TASKS)?;
+            let Some(mut task) = task_in(&tbl, task_id)? else {
+                return Ok(FencedWrite::NotFound);
+            };
+            if !task.fence_allows(fence) {
+                return Ok(FencedWrite::StaleFence);
+            }
+            if let Some(owner) = &owner {
+                let after = task.comments.len() + 1;
+                txn_refuse_over_quota(&txn, owner, Quota::CommentsPerTask, after)?;
+            }
+            task.comments.push(comment.clone());
+            let detail = format!("{} escalated the card", new.author);
+            push_event(&mut task, HistoryKind::CommentAdded, detail, actor);
+            set_tier_label(&mut task, tier, actor);
+            task.updated_at = Some(Utc::now().to_rfc3339());
+            txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
+        }
+        txn.commit()?;
+        Ok(FencedWrite::Written(comment))
     }
 
     /// Records the answer to question comment `comment_id`, removes the [`NEEDS_HUMAN_LABEL`]

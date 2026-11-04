@@ -60,6 +60,48 @@ pub const NEEDS_HUMAN_LABEL: &str = "needs:human";
 /// The comment `kind` of a structured question.
 pub const QUESTION_KIND: &str = "question";
 
+/// The comment `kind` of an escalation's reason.
+pub const BLOCKED_KIND: &str = "blocked";
+
+/// Who an escalated card waits on.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum EscalationTier {
+    /// The lead, who takes a card an implementer is stuck on.
+    Lead,
+    /// The planner, who takes a card whose outcome is wrong.
+    Planner,
+}
+
+impl EscalationTier {
+    /// Parses a wire name: `lead` or `planner`.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "lead" => Some(Self::Lead),
+            "planner" => Some(Self::Planner),
+            _ => None,
+        }
+    }
+
+    /// Returns the label a card waiting on this tier carries.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Lead => "needs:lead",
+            Self::Planner => "needs:planner",
+        }
+    }
+
+    /// Returns the other tier.
+    #[must_use]
+    pub fn other(self) -> Self {
+        match self {
+            Self::Lead => Self::Planner,
+            Self::Planner => Self::Lead,
+        }
+    }
+}
+
 /// Key in a board's config bag of the setting that lets its owner delete tasks from the recycle
 /// bin for good.
 pub const BIN_PERMANENT_DELETE_KEY: &str = "bin_permanent_delete";

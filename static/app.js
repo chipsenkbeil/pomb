@@ -6424,20 +6424,26 @@
       var row = nameEl.closest('.tm-subtask');
       if (row.querySelector('.tm-subtask-edit')) return;
       var current = nameEl.textContent;
-      var edit = document.createElement('input');
-      edit.type = 'text';
+      var edit = document.createElement('textarea');
+      edit.rows = 1;
       edit.className = 'tm-subtask-edit';
       edit.value = current;
       edit.maxLength = 200;
       edit.setAttribute('aria-label', 'Edit subtask');
+      const fit = () => {
+        edit.style.height = 'auto';
+        edit.style.height = edit.scrollHeight + 'px';
+      };
       nameEl.replaceWith(edit);
+      fit();
       edit.focus();
       edit.select();
+      edit.addEventListener('input', fit);
       var settled = false;
       function finish(save) {
         if (settled) return;
         settled = true;
-        var val = edit.value.trim();
+        var val = edit.value.replace(/\s*\n\s*/g, ' ').trim();
         if (!save || !val || val === current) { edit.replaceWith(nameEl); return; }
         api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/' +
             encodeURIComponent(row.dataset.subtaskId), 'PATCH', { name: val })
@@ -17154,6 +17160,8 @@
     initialized: false,
     LABEL_MODE: { AND: 'and', OR: 'or' },
     FOLD_MODE: { COLLAPSE: 'collapse', HIDE: 'hide' },
+    OPEN_DWELL_MS: 400,
+    CLOSE_GRACE_MS: 150,
     closeBoardMenu: null,
 
     init: function () {
@@ -18387,7 +18395,62 @@
       if (el) el.checked = true;
     },
 
+    scrollMemory: new WeakMap(),
+    cardShown(card) {
+      return !card.hidden && card.style.display !== 'none';
+    },
+    scrollAnchor(list) {
+      if (typeof list.scrollTop !== 'number' || !list.getBoundingClientRect) return null;
+      const top = list.getBoundingClientRect().top;
+      const cards = [...list.querySelectorAll('.task-card, .filter-fold')];
+      const at = cards.findIndex((card) => this.cardShown(card) && card.getBoundingClientRect().bottom > top);
+      if (at === -1) return null;
+      return { card: cards[at], offset: cards[at].getBoundingClientRect().top - top, earlier: cards.slice(0, at) };
+    },
+    scrollToAnchor(list, anchor) {
+      if (!anchor) return;
+      const successor = anchor.card._run ? anchor.card._run.slice(0, 1) : [];
+      const kept = [anchor.card, ...successor, ...anchor.earlier.slice().reverse()]
+        .find((card) => list.contains(card) && this.cardShown(card));
+      if (!kept) return;
+      const offset = kept === anchor.card || kept === successor[0] ? anchor.offset : 0;
+      list.scrollTop += kept.getBoundingClientRect().top - list.getBoundingClientRect().top - offset;
+    },
+    holdScroll(list, change) {
+      const anchor = list ? this.scrollAnchor(list) : null;
+      change();
+      if (!anchor) return;
+      this.scrollToAnchor(list, anchor);
+      const memory = this.scrollMemory.get(list);
+      if (memory) memory.shown = list.scrollTop;
+    },
+    noteScroll() {
+      return [...document.querySelectorAll('.task-list')].map((list) => {
+        const anchor = this.scrollAnchor(list);
+        const memory = this.scrollMemory.get(list);
+        if (memory && anchor && list.scrollTop !== memory.shown) memory.moved = anchor;
+        return { list, anchor };
+      });
+    },
+    keepScroll(places) {
+      const filtering = this.isFiltering();
+      places.forEach(({ list, anchor }) => {
+        let memory = this.scrollMemory.get(list);
+        let target = anchor;
+        if (!filtering) {
+          if (memory) target = memory.moved || memory.base;
+          this.scrollMemory.delete(list);
+        } else if (!memory) {
+          memory = { base: anchor, moved: null, shown: 0 };
+          this.scrollMemory.set(list, memory);
+        }
+        this.scrollToAnchor(list, target);
+        if (memory && filtering) memory.shown = list.scrollTop;
+      });
+    },
+
     applyFilter: function () {
+      const places = this.noteScroll();
       var user = this.filterValue('f-user');
       var color = this.filterValue('f-color');
       var date = this.filterValue('f-date');
@@ -18439,6 +18502,7 @@
       this.refold();
       this.refreshFilteredCounts();
       this.syncFilterBtn();
+      this.keepScroll(places);
     },
     ARCHIVE_PAGE_SIZE: 20,
     pageArchives() {
@@ -18487,10 +18551,14 @@
       document.querySelectorAll('.filter-fold').forEach(function (row) { row.remove(); });
     },
     unfold: function () {
+      this.cancelOpen();
+      this.cancelClose();
       this.closeFold();
       this.removeFolds();
     },
     refold: function () {
+      this.cancelOpen();
+      this.cancelClose();
       this.openedFold = null;
       this.removeFolds();
       if (this.foldMode() !== this.FOLD_MODE.COLLAPSE || !this.isFiltering()) return;
@@ -18516,31 +18584,70 @@
       });
     },
     openFold: function (row) {
+      this.cancelClose();
       if (this.openedFold === row) return;
       this.closeFold();
-      row._run.forEach(function (card) { card.style.display = ''; });
-      row.style.display = 'none';
+      this.holdScroll(row._list, () => {
+        row._run.forEach((card) => { card.style.display = ''; });
+        row.style.display = 'none';
+      });
       this.openedFold = row;
     },
     closeFold: function () {
       var row = this.openedFold;
       if (!row) return;
-      row._run.forEach(function (card) { card.style.display = 'none'; });
-      row.style.display = '';
+      this.holdScroll(row._list, () => {
+        row._run.forEach((card) => { card.style.display = 'none'; });
+        row.style.display = '';
+      });
       this.openedFold = null;
     },
     foldDragOver: function (target) {
       if (!target || !target.closest) return;
       var row = target.closest('.filter-fold');
-      if (row) { this.openFold(row); return; }
+      if (row) {
+        if (this.openedFold && this.openedFold !== row) this.scheduleClose();
+        this.scheduleOpen(row);
+        return;
+      }
+      this.cancelOpen();
       var open = this.openedFold;
       if (!open) return;
       var list = target.closest('.task-list');
       if (list && list === open._list) {
         var card = target.closest('.task-card');
-        if (!card || open._run.indexOf(card) !== -1 || card.classList.contains('sortable-placeholder')) return;
+        if (!card || open._run.indexOf(card) !== -1 || card.classList.contains('sortable-placeholder')) {
+          this.cancelClose();
+          return;
+        }
       }
-      this.closeFold();
+      this.scheduleClose();
+    },
+    scheduleOpen: function (row) {
+      if (this.pendingFold === row) return;
+      this.cancelOpen();
+      this.pendingFold = row;
+      this.openTimer = window.setTimeout(() => {
+        this.openTimer = null;
+        this.pendingFold = null;
+        this.openFold(row);
+      }, this.OPEN_DWELL_MS);
+    },
+    scheduleClose: function () {
+      if (this.closeTimer) return;
+      this.closeTimer = window.setTimeout(() => {
+        this.closeTimer = null;
+        this.closeFold();
+      }, this.CLOSE_GRACE_MS);
+    },
+    cancelOpen: function () {
+      if (this.openTimer) window.clearTimeout(this.openTimer);
+      this.openTimer = null;
+      this.pendingFold = null;
+    },
+    cancelClose: function () {
+      if (this.closeTimer) window.clearTimeout(this.closeTimer);
+      this.closeTimer = null;
     },
     // KF-161: column header counts reflect the currently filtered (visible)
     // card set, KanbanFlow parity. When no filter is active the

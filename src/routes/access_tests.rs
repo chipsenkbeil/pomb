@@ -828,6 +828,9 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
         (&Method::POST, "/api/tasks/:id/comments/:comment_id/answer") => {
             json!({"choice": 1, "quote": "go"})
         }
+        (&Method::POST, "/api/tasks/:id/escalate") => {
+            json!({"tier": "lead", "reason": "stuck"})
+        }
         (&Method::PATCH, "/api/tasks/:id/attachments/:attachment_id") => json!({"name": "b"}),
         (&Method::POST, "/api/tasks/:id/attachments/document") => {
             json!({"name": "notes", "text": "hi"})
