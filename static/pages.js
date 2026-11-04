@@ -1230,11 +1230,88 @@
     };
   }
 
+  var TokenTabs = {
+    names: ['create', 'debug', 'list'],
+    pane: 'api-tokens',
+    fromHash: function (hash) {
+      var parts = hash.replace(/^#/, '').split('/');
+      return parts[0] === TokenTabs.pane && TokenTabs.names.indexOf(parts[1]) >= 0 ? parts[1] : TokenTabs.names[0];
+    },
+    toHash: function (name) {
+      return '#' + TokenTabs.pane + (name === TokenTabs.names[0] ? '' : '/' + name);
+    },
+    paneOf: function (hash) {
+      return hash.replace(/^#/, '').split('/')[0];
+    },
+    step: function (current, key) {
+      var count = TokenTabs.names.length;
+      var at = TokenTabs.names.indexOf(current);
+      var to = key === 'ArrowRight' ? at + 1 : key === 'ArrowLeft' ? at - 1 :
+        key === 'Home' ? 0 : key === 'End' ? count - 1 : null;
+      return to === null ? null : TokenTabs.names[(to + count) % count];
+    }
+  };
+
+  var TokenSort = {
+    columns: ['name', 'token', 'scope', 'created', 'last_used', 'expires'],
+    numeric: ['created', 'last_used', 'expires'],
+    toggle: function (state, column) {
+      return { column: column, direction: state && state.column === column && state.direction === 'ascending' ? 'descending' : 'ascending' };
+    },
+    compare: function (column, a, b) {
+      var numeric = TokenSort.numeric.indexOf(column) >= 0;
+      if (numeric) {
+        if (a === '' || b === '') return a === b ? 0 : a === '' ? 1 : -1;
+        return Number(a) - Number(b);
+      }
+      var x = a.toLowerCase();
+      var y = b.toLowerCase();
+      return x < y ? -1 : x > y ? 1 : 0;
+    },
+    order: function (rows, column, direction) {
+      var sign = direction === 'descending' ? -1 : 1;
+      var numeric = TokenSort.numeric.indexOf(column) >= 0;
+      return rows.map(function (row, index) { return { row: row, index: index }; }).sort(function (a, b) {
+        var x = a.row[column];
+        var y = b.row[column];
+        if (numeric && (x === '' || y === '')) return TokenSort.compare(column, x, y) || a.index - b.index;
+        return sign * TokenSort.compare(column, x, y) || a.index - b.index;
+      }).map(function (entry) { return entry.row; });
+    }
+  };
+
   pages['settings'] = function () {
     var panes = document.querySelectorAll('.settings-pane');
     var navItems = document.querySelectorAll('.bshell-nav-item');
+    var tokenTabs = document.querySelectorAll('[data-tk-tab]');
+    function showTokenTab(name) {
+      tokenTabs.forEach(function (tab) {
+        var on = tab.getAttribute('data-tk-tab') === name;
+        tab.setAttribute('aria-selected', on ? 'true' : 'false');
+        tab.tabIndex = on ? 0 : -1;
+      });
+      TokenTabs.names.forEach(function (tabName) {
+        document.getElementById('tk-panel-' + tabName).hidden = tabName !== name;
+      });
+    }
+    function chooseTokenTab(name) {
+      showTokenTab(name);
+      history.replaceState(null, '', TokenTabs.toHash(name));
+    }
+    tokenTabs.forEach(function (tab) {
+      tab.addEventListener('click', function () { chooseTokenTab(tab.getAttribute('data-tk-tab')); });
+      tab.addEventListener('keydown', function (e) {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        var next = TokenTabs.step(tab.getAttribute('data-tk-tab'), e.key);
+        if (next === null) return;
+        e.preventDefault();
+        chooseTokenTab(next);
+        document.getElementById('tk-tab-' + next).focus();
+      });
+    });
     function showPane() {
-      var id = location.hash.slice(1);
+      var id = TokenTabs.paneOf(location.hash);
+      showTokenTab(TokenTabs.fromHash(location.hash));
       var known = false;
       panes.forEach(function (p) { if (p.id === id) known = true; });
       if (!known) id = 'profile';
@@ -1515,6 +1592,7 @@
           if (fresh && current) {
             current.innerHTML = fresh.innerHTML;
             bindTokenRevokeButtons(current);
+            bindTokenSort(current);
           }
         })
         .catch(function (ex) { showError('Could not refresh token list: ' + ex.message); });
@@ -1561,6 +1639,32 @@
       });
     }
     bindTokenRevokeButtons(document);
+    function bindTokenSort(root) {
+      var table = root.querySelector('#token-table');
+      if (!table) return;
+      var heads = table.querySelectorAll('th[data-sort-col]');
+      var state = null;
+      heads.forEach(function (th) {
+        th.querySelector('.token-sort').addEventListener('click', function () {
+          state = TokenSort.toggle(state, th.getAttribute('data-sort-col'));
+          var body = table.tBodies[0];
+          var trs = Array.prototype.slice.call(body.rows);
+          var rows = trs.map(function (tr) {
+            var row = { tr: tr };
+            TokenSort.columns.forEach(function (column, i) {
+              var cell = tr.cells[i];
+              row[column] = TokenSort.numeric.indexOf(column) >= 0 ? cell.getAttribute('data-sort') : cell.textContent.trim();
+            });
+            return row;
+          });
+          TokenSort.order(rows, state.column, state.direction).forEach(function (row) { body.appendChild(row.tr); });
+          heads.forEach(function (other) {
+            other.setAttribute('aria-sort', other === th ? state.direction : 'none');
+          });
+        });
+      });
+    }
+    bindTokenSort(document);
     var passkeyError = document.getElementById('passkey-error');
     function reloadPasskeys() { location.hash = 'passkeys'; location.reload(); }
     var passkeyForm = document.getElementById('passkey-add-form');

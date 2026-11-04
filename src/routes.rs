@@ -22169,6 +22169,12 @@ struct ApiTokenListItem {
     created: String,
     last_used: String,
     expires: String,
+    /// Unix seconds of creation, for sorting.
+    created_sort: i64,
+    /// Unix seconds of last use, empty when never used.
+    last_used_sort: String,
+    /// Unix seconds of expiry, empty when it never expires.
+    expires_sort: String,
     /// Whether another token issued this one.
     child: bool,
     /// How many live tokens this one issued.
@@ -22216,6 +22222,15 @@ impl From<&ApiTokenRecord> for ApiTokenListItem {
             last4: token.last4.clone(),
             scopes: token.scope.as_str().to_string(),
             created: fmt_ts(token.created_at),
+            created_sort: token.created_at,
+            last_used_sort: token
+                .last_used_at
+                .map(|ts| ts.to_string())
+                .unwrap_or_default(),
+            expires_sort: token
+                .expires_at
+                .map(|ts| ts.to_string())
+                .unwrap_or_default(),
             last_used: token
                 .last_used_at
                 .map(fmt_ts)

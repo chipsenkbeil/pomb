@@ -128,6 +128,13 @@
       <code>Authorization: Bearer pomb_&hellip;</code>. A token is shown <strong>once</strong>
       when created. Copy it into the agent&rsquo;s environment
       (<code>POMB_API_TOKEN</code>). The API reference is at <a href="/docs/api.md">/docs/api.md</a>.</p>
+    <div class="tk-tabs" role="tablist" aria-label="API token sections">
+      <button type="button" class="tm-tab" role="tab" id="tk-tab-create" data-tk-tab="create" aria-controls="tk-panel-create" aria-selected="true">Create</button>
+      <button type="button" class="tm-tab" role="tab" id="tk-tab-debug" data-tk-tab="debug" aria-controls="tk-panel-debug" aria-selected="false" tabindex="-1">Debug</button>
+      <button type="button" class="tm-tab" role="tab" id="tk-tab-list" data-tk-tab="list" aria-controls="tk-panel-list" aria-selected="false" tabindex="-1">List and revoke</button>
+    </div>
+
+    <div class="tk-panel" id="tk-panel-create" role="tabpanel" aria-labelledby="tk-tab-create">
     <p class="settings-hint">Install the Pomb skill for Claude Code (Codex and other Agent Skills
       clients read the same file from their own skills directory):</p>
     <p class="token-value"><code id="skill-install">mkdir -p ~/.claude/skills/pomb &amp;&amp; curl -fsS {{ base_url }}/skill.md -o ~/.claude/skills/pomb/SKILL.md</code></p>
@@ -149,6 +156,9 @@
       <p class="settings-hint" id="token-error" hidden></p>
     </form>
 
+    </div>
+
+    <div class="tk-panel" id="tk-panel-debug" role="tabpanel" aria-labelledby="tk-tab-debug" hidden>
     <h3>Inspect a token</h3>
     <form id="token-inspect-form" class="settings-form token-form">
       <label>Pasted token
@@ -163,22 +173,25 @@
       <ul id="token-inspect-permissions" class="token-inspect-permissions"></ul>
     </div>
 
+    </div>
+
+    <div class="tk-panel" id="tk-panel-list" role="tabpanel" aria-labelledby="tk-tab-list" hidden>
     <h3>Active tokens</h3>
     <div id="token-list">
       {% if tokens.is_empty() %}
       <p class="settings-hint">No API tokens yet.</p>
       {% else %}
-      <div class="bshell-scroll"><table class="bshell-table token-table">
-        <thead><tr><th>Name</th><th>Token</th><th>Scope</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+      <div class="bshell-scroll token-scroll"><table class="bshell-table token-table" id="token-table">
+        <thead><tr><th data-sort-col="name" aria-sort="none"><button type="button" class="token-sort">Name</button></th><th data-sort-col="token" aria-sort="none"><button type="button" class="token-sort">Token</button></th><th data-sort-col="scope" aria-sort="none"><button type="button" class="token-sort">Scope</button></th><th data-sort-col="created" aria-sort="none"><button type="button" class="token-sort">Created</button></th><th data-sort-col="last_used" aria-sort="none"><button type="button" class="token-sort">Last used</button></th><th data-sort-col="expires" aria-sort="none"><button type="button" class="token-sort">Expires</button></th><th></th></tr></thead>
         <tbody>
           {% for token in tokens %}
           <tr{% if token.child %} class="token-child"{% endif %}>
             <td>{{ token.name }}</td>
             <td><code>{{ token.prefix }}&hellip;{{ token.last4 }}</code></td>
             <td>{{ token.scopes }}</td>
-            <td>{{ token.created }}</td>
-            <td>{{ token.last_used }}</td>
-            <td>{{ token.expires }}</td>
+            <td data-sort="{{ token.created_sort }}">{{ token.created }}</td>
+            <td data-sort="{{ token.last_used_sort }}">{{ token.last_used }}</td>
+            <td data-sort="{{ token.expires_sort }}">{{ token.expires }}</td>
             <td><button type="button" class="kf-btn token-revoke" data-id="{{ token.id }}" data-name="{{ token.name }}">Revoke</button>{% if token.children > 0 %} <button type="button" class="kf-btn token-revoke-children" data-id="{{ token.id }}" data-name="{{ token.name }}">Revoke all children</button>{% endif %}</td>
           </tr>
           {% endfor %}

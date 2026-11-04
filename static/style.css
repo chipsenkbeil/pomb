@@ -7585,6 +7585,12 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .token-table td { padding-inline: 5px; font-size: 14px; }
 .token-table td:first-child { min-width: 7rem; overflow-wrap: anywhere; }
 .token-table .token-child td:first-child { padding-inline-start: 1.5rem; }
+.token-scroll { max-height: 15.5rem; overflow-y: auto; }
+.token-scroll thead th { position: sticky; top: 0; z-index: 1; background: #ffffff; box-shadow: 0 1px 0 #dddddd; }
+.token-sort { all: unset; cursor: pointer; font-weight: inherit; }
+.token-sort:focus-visible { outline: 2px solid #2096c8; }
+.token-table th[aria-sort="ascending"] .token-sort::after { content: " \25B2"; font-size: 10px; }
+.token-table th[aria-sort="descending"] .token-sort::after { content: " \25BC"; font-size: 10px; }
 
 @media (max-width: 767px) {
   .board-settings-page { padding: 16px 0; }
@@ -9570,3 +9576,5 @@ body.dark .tlp-panel-bar { background: #333; }
   .pk-row-info { flex-basis: 100%; }
   .pk-row-head .pk-access, .pk-row-head .pk-pill { margin-right: auto; }
 }
+
+.tk-tabs { display: flex; gap: 4px; margin: 16px 0; border-bottom: 1px solid var(--card-border); overflow-x: auto; }
