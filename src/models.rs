@@ -50,6 +50,16 @@ pub const MAIN_SWIMLANE_KEY: &str = "main_swimlane_id";
 /// Board config key set while the board shows its swimlane names folded.
 pub const LANE_NAMES_FOLDED_KEY: &str = "lane_names_folded";
 
+/// Key in a board's config bag of the id of its Blocked column, where a posted question moves a
+/// card.
+pub const BLOCKED_COLUMN_KEY: &str = "blocked_column_id";
+
+/// Label a posted question puts on its card and an answer removes.
+pub const NEEDS_HUMAN_LABEL: &str = "needs:human";
+
+/// The comment `kind` of a structured question.
+pub const QUESTION_KIND: &str = "question";
+
 /// Key in a board's config bag of the setting that lets its owner delete tasks from the recycle
 /// bin for good.
 pub const BIN_PERMANENT_DELETE_KEY: &str = "bin_permanent_delete";
@@ -510,15 +520,26 @@ impl BoardRow {
         self.config_bool(LANE_NAMES_FOLDED_KEY)
     }
 
-    /// Returns the id stored for the board's main swimlane.
-    pub fn main_swimlane_id(&self) -> Option<String> {
+    /// Reads a string from the board config bag.
+    fn config_string(&self, key: &str) -> Option<String> {
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
             .ok()
             .and_then(|m| {
-                m.get(MAIN_SWIMLANE_KEY)
+                m.get(key)
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string)
             })
+    }
+
+    /// Returns the id of the column the board marks as Blocked.
+    pub fn blocked_column_id(&self) -> Option<String> {
+        self.config_string(BLOCKED_COLUMN_KEY)
+            .filter(|id| !id.is_empty())
+    }
+
+    /// Returns the id stored for the board's main swimlane.
+    pub fn main_swimlane_id(&self) -> Option<String> {
+        self.config_string(MAIN_SWIMLANE_KEY)
     }
 
     /// Returns the board's calendar feeds, including the one a token held under the older
@@ -1987,6 +2008,60 @@ pub struct TaskComment {
     /// The reactions the comment holds, one entry per account and emoji, oldest first.
     #[serde(default)]
     pub reactions: Vec<CommentReaction>,
+    /// The structured question this comment poses, or null for a plain comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<CommentQuestion>,
+}
+
+/// A question an agent posts on a card it cannot move on alone, and the answer it gets.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct CommentQuestion {
+    /// The question.
+    pub text: String,
+    /// The choices, numbered from 1 in order. At least two.
+    pub choices: Vec<QuestionChoice>,
+    /// The number of the choice the agent recommends.
+    pub recommended: u32,
+    /// Why the agent cannot decide alone.
+    pub why: String,
+    /// The answer, or null while the question is open.
+    #[serde(default)]
+    pub answer: Option<QuestionAnswer>,
+}
+
+impl CommentQuestion {
+    /// Returns the choice numbered `number`, counting from 1.
+    #[must_use]
+    pub fn choice(&self, number: u32) -> Option<&QuestionChoice> {
+        let index = usize::try_from(number).ok()?.checked_sub(1)?;
+        self.choices.get(index)
+    }
+}
+
+/// One choice of a question.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct QuestionChoice {
+    /// What picking the choice means.
+    pub label: String,
+    /// The column the card moves to when this choice is picked.
+    pub column_id: String,
+}
+
+/// How a question was answered. A token's answer is relayed: it names the token and quotes the
+/// owner's own words.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct QuestionAnswer {
+    /// The number of the choice picked.
+    pub choice: u32,
+    /// The username of the account that answered.
+    pub answered_by: String,
+    /// Name of the API token that relayed the answer, or null when the owner answered in the
+    /// browser.
+    pub token_name: Option<String>,
+    /// The owner's own words a token relayed, or null for a browser answer.
+    pub quote: Option<String>,
+    /// RFC3339.
+    pub answered_at: String,
 }
 
 /// One account's reaction to a comment.

@@ -118,6 +118,7 @@ catalog! {
     WebhooksManage, "webhooks.manage", "webhooks", Admin, "List, create, change and delete a board's webhooks, which send its events to other servers.";
     InboundManage, "inbound.manage", "inbound", Admin, "List, create, rotate and delete a board's inbound addresses, which turn forwarded mail into tasks.";
     TokensIssue, "tokens.issue", "tokens", Lead, "Create child tokens that hold no more than this token and expire within hours.";
+    RolesGrant, "roles.grant", "roles", Lead, "Create the missing standard roles, and grant, revoke or end a role's tokens on boards this token holds.";
 }
 
 /// A named set of permissions, each holding everything the one before it holds.
@@ -252,6 +253,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
             Permission::AttachmentsWrite,
             Permission::TimeWrite,
             Permission::TokensIssue,
+            Permission::RolesGrant,
         ],
     },
 ];
@@ -262,7 +264,7 @@ mod tests {
 
     use super::*;
 
-    const NAMES: [&str; 52] = [
+    const NAMES: [&str; 53] = [
         "boards.read",
         "boards.create",
         "boards.configure",
@@ -315,6 +317,7 @@ mod tests {
         "webhooks.manage",
         "inbound.manage",
         "tokens.issue",
+        "roles.grant",
     ];
 
     fn held(preset: Preset) -> HashSet<&'static str> {
@@ -417,6 +420,7 @@ mod tests {
             "labels.manage",
             "epics.manage",
             "tokens.issue",
+            "roles.grant",
         ]);
         assert_eq!(added, expected);
     }
@@ -530,6 +534,7 @@ mod tests {
                     "attachments.write",
                     "time.write",
                     "tokens.issue",
+                    "roles.grant",
                 ],
             ),
         ];

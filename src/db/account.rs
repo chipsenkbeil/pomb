@@ -21,24 +21,24 @@ use super::{
     FieldCreateOutcome, INBOUND_ADDRESSES, Incoming, IssuedInbound, LINKS_BY_TARGET,
     LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkRefusal, MemberSet, MoveGuards, MoveOutcome,
     NewComment, NewInbound, NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage,
-    OwnerChange, PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome, Reads, RestoreOutcome,
-    RoleTokenRefusal, Rows, SWIMLANES, SessionEndOutcome, SessionListing, SessionToken,
-    StandardRoles, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
-    SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, TaskContext,
-    TemplateDeleteOutcome, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board, index_in,
-    link_event_target, links_blocked_in, no_signed_in_account, read_in, redacted_history, role_in,
-    task_role_in,
+    OwnerChange, PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome, QuestionMove,
+    QuestionWrite, Reads, RestoreOutcome, RoleTokenRefusal, Rows, SWIMLANES, SessionEndOutcome,
+    SessionListing, SessionToken, StandardRoles, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
+    SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
+    TaskContext, TemplateDeleteOutcome, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board,
+    index_in, link_event_target, links_blocked_in, no_signed_in_account, read_in, redacted_history,
+    role_in, task_role_in,
 };
 use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission, required_role,
 };
 use crate::models::{
     AccountId, AccountStatus, ActiveTimer, Actor, AgentRoleRow, ApiTokenRecord, AuthScope, Avatar,
-    BinRow, BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CoverChange,
-    DeviceAuthRow, EventKind, FieldDefRow, InboundAddressRow, LinkKind, Numbering, ParentToken,
-    PasskeyRow, PruneNotice, RecoveryCodeRow, ReportBookmark, Settings, SwimlaneRow,
-    TaskAttachment, TaskBrief, TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow,
-    TimeEntryRow, UserRow, WebhookRow,
+    BinRow, BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
+    CommentQuestion, CoverChange, DeviceAuthRow, EventKind, FieldDefRow, InboundAddressRow,
+    LinkKind, Numbering, ParentToken, PasskeyRow, PruneNotice, QuestionAnswer, RecoveryCodeRow,
+    ReportBookmark, Settings, SwimlaneRow, TaskAttachment, TaskBrief, TaskCard, TaskComment,
+    TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow, WebhookRow,
 };
 use crate::permissions::Permission;
 
@@ -1864,6 +1864,17 @@ impl AccountDb {
         self.db.mark_all_notifications_read(&self.account)
     }
 
+    /// Removes one of the account's notifications and returns how many remain unread, or
+    /// [`None`] when the account has no such notification.
+    pub fn delete_notification(&self, seq: u64) -> DbResult<Option<usize>> {
+        self.db.delete_notification(&self.account, seq)
+    }
+
+    /// Removes every notification of the account.
+    pub fn delete_all_notifications(&self) -> DbResult<()> {
+        self.db.delete_all_notifications(&self.account)
+    }
+
     /// Reorders a task's subtasks to the given id sequence.
     pub fn reorder_subtasks(&self, task: &OwnedTask, order: &[String]) -> DbResult<bool> {
         self.db.reorder_subtasks(&task.row().id, order)
@@ -1878,6 +1889,34 @@ impl AccountDb {
         fence: Option<u64>,
     ) -> DbResult<FencedWrite<TaskComment>> {
         self.db.add_comment(&task.row().id, new, actor, fence)
+    }
+
+    /// Appends a question comment, labels the task `needs:human` and moves it to the `blocked`
+    /// column, all in one write.
+    pub fn post_question(
+        &self,
+        task: &OwnedTask,
+        new: NewComment<'_>,
+        question: CommentQuestion,
+        to: QuestionMove<'_>,
+        actor: Actor<'_>,
+    ) -> DbResult<QuestionWrite> {
+        self.db
+            .post_question(&task.row().id, new, question, to, actor)
+    }
+
+    /// Records the answer to a question comment, removes `needs:human` and moves the task to the
+    /// destination of the choice, all in one write, unless another question on the task is open.
+    pub fn answer_question(
+        &self,
+        task: &OwnedTask,
+        comment_id: &str,
+        answer: QuestionAnswer,
+        position: f64,
+        actor: Actor<'_>,
+    ) -> DbResult<QuestionWrite> {
+        self.db
+            .answer_question(&task.row().id, comment_id, answer, position, actor)
     }
 
     /// Deletes a comment from a task, logging the deletion in the same write. With an `owner`,
@@ -2357,11 +2396,30 @@ impl AccountDb {
         self.db.ensure_standard_roles(self.account.as_str(), &ids)
     }
 
-    /// Revokes agent role `role_id` on board `board_id`. Returns `false` when the account holds no
+    /// Revokes agent role `role_id` on board `board_id` with the tokens issued as it that reach
+    /// the board. Returns how many live tokens it deleted, or [`None`] when the account holds no
     /// such role or the role held no such grant.
-    pub fn revoke_agent_role(&self, role_id: &str, board_id: &str) -> DbResult<bool> {
+    pub fn revoke_agent_role(&self, role_id: &str, board_id: &str) -> DbResult<Option<u64>> {
         self.db
             .revoke_agent_role(self.account.as_str(), role_id, board_id)
+    }
+
+    /// Deletes the tokens issued as role `role_id` that reach `board_id`, or every token issued as
+    /// it when `board_id` is [`None`], and keeps the role and its grants. Returns how many live
+    /// tokens it deleted, or [`None`] when the account holds no such role.
+    pub fn revoke_role_tokens(
+        &self,
+        role_id: &str,
+        board_id: Option<&str>,
+    ) -> DbResult<Option<u64>> {
+        self.db
+            .revoke_role_tokens(self.account.as_str(), role_id, board_id)
+    }
+
+    /// Deletes role `role_id` with its grants and every token issued as it. Returns how many live
+    /// tokens it deleted, or [`None`] when the account holds no such role.
+    pub fn delete_agent_role(&self, role_id: &str) -> DbResult<Option<u64>> {
+        self.db.delete_agent_role(self.account.as_str(), role_id)
     }
 
     /// Returns webhook `id` when the account owns its board.

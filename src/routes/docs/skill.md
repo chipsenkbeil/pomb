@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "27"
+  version: "28"
 ---
 
 # Pomb
@@ -102,9 +102,8 @@ credentials gets every 4xx that way. Match on `code` and show `message` to the u
 5. Report progress with `POST /api/tasks/{id}/comments` and `{"body": "...", "kind": "agent"}`. Move
    a finished task into a Done column with `POST /api/tasks/{id}/move` and
    `{"column_id": "<done column id>", "position": 0}`, where `position` is the index among the other
-   tasks in that column and 0 is the top. Send `If-Claim-Fence: N` on a move of a claimed task. Ask
-   which Done column if there are several. Tick a description's `- [ ]` box with
-   `POST /api/tasks/{id}/checklist/{index}` and
+   tasks in that column and 0 is the top. Ask which Done column if there are several. Tick a
+   description's `- [ ]` box with `POST /api/tasks/{id}/checklist/{index}` and
    `{"checked": true, "description_hash": "<task description_hash>"}`. On 409 reread and retry.
 6. Release with `POST /api/tasks/{id}/claim/release` and `{"fence": N}` (empty 200), also on stop.
 7. An epic (`kind` `epic`) is claimed once every direct child is done. While a child is open, a claim is
@@ -113,6 +112,8 @@ credentials gets every 4xx that way. Match on `code` and show `message` to the u
    a task to `"kind": "epic"`. Link a child with `POST /api/tasks/{id}/links` on it and `{"kind": "parent", "target_id": "<epic>"}`.
 8. `GET /api/boards/{id}/epics` shows progress. Finished children never close an epic: a lead token or
    the owner does with `POST /api/tasks/{id}/close`, or a move into Done does, and a move out reopens it.
+9. On a decision you cannot make alone, add a `question` to `POST /api/tasks/{id}/comments`. Relay the owner's
+   pick with `POST /api/tasks/{id}/comments/{comment_id}/answer` and `{"choice": N, "quote": "<his words>"}`.
 
 ## Waiting for changes
 
@@ -129,9 +130,8 @@ read the rest with `?since=` on `GET /api/boards/{id}/tasks`.
 
 ## Logging time
 
-Log time one way per piece of work, never both. Either log finished work with
-`POST /api/tasks/{id}/time` and `{"minutes": 25, "note": "..."}`, or time it with a pomodoro.
-`GET /api/tasks/{id}/time` replies with an array of entries.
+Log time one way per piece of work, never both: log finished work with `POST /api/tasks/{id}/time`
+and `{"minutes": 25, "note": "..."}`, or time it with a pomodoro. `GET` on that path lists entries.
 
 Start with `POST /api/timer/start` and `{"mode": "pomodoro", "task_id": "..."}`, and keep
 `started_at` and `session_id` from the reply. Stop with `POST /api/timer/stop` and the same two

@@ -1042,6 +1042,7 @@ impl Builder<'_> {
                     kind: comment.kind,
                     edited_at: comment.edited_at,
                     reactions: Vec::new(),
+                    question: None,
                     parent_token: None,
                     role_id: None,
                     role_name: None,

@@ -119,16 +119,16 @@ use crate::limit::{Limits, TrustProxy};
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
     AttachmentVersion, AuthScope, BackupSettings, BackupStatus, BinRow, BoardAccess, BoardFeed,
-    BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CommentReaction, CoverChange,
-    DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange, FieldDefRow, HistoryKind,
+    BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CommentQuestion, CommentReaction,
+    CoverChange, DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange, FieldDefRow, HistoryKind,
     InboundAddressRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS,
     MAX_CUSTOM_COLORS, MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
-    MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NUMBERING_KEY, Numbering, PasskeyRow, Quota, Quotas,
-    RecoveryCodeRow, ReportBookmark, Responsible, SECONDS_PER_HOUR, SessionRow, Settings, Subtask,
-    SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind, TaskLink,
-    TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes,
-    custom_color_value, format_minutes, is_custom_color, lighter_hex, normalize_hex,
-    standard_color, text_contrast,
+    MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NEEDS_HUMAN_LABEL, NUMBERING_KEY, Numbering,
+    PasskeyRow, QUESTION_KIND, QuestionAnswer, Quota, Quotas, RecoveryCodeRow, ReportBookmark,
+    Responsible, SECONDS_PER_HOUR, SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment,
+    TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind, TaskLink, TaskRow, TextCap,
+    TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes, custom_color_value,
+    format_minutes, is_custom_color, lighter_hex, normalize_hex, standard_color, text_contrast,
 };
 use crate::permissions::Permission;
 use crate::rules;
@@ -687,6 +687,103 @@ pub enum MoveOutcome {
         count: usize,
         limit: i64,
     },
+}
+
+/// Where a question's write moves the task.
+#[derive(Copy, Clone, Debug)]
+pub struct QuestionMove<'a> {
+    /// Id of the destination column.
+    pub column_id: &'a str,
+    /// Index in the target cell.
+    pub position: f64,
+    /// An `If-Claim-Fence` value, where a live claim holding another fence refuses the write.
+    pub fence: Option<u64>,
+}
+
+/// Typed outcome for [`Db::post_question`] and [`Db::answer_question`].
+#[derive(Clone, Debug)]
+pub enum QuestionWrite {
+    /// Written, carrying the question comment as stored.
+    Done(Box<TaskComment>),
+    /// Refused: the task or the comment does not exist.
+    NotFound,
+    /// Refused: a live claim holds another fence.
+    StaleFence,
+    /// Refused: the epic holds `count` children that are not Done, and the target column has a
+    /// WIP limit or is a Done column.
+    OpenChildren {
+        /// Children that are not Done.
+        count: usize,
+    },
+    /// Refused: the target column holds `count` tasks against `limit`.
+    WipLimit {
+        /// Tasks the column holds.
+        count: usize,
+        /// The column's limit.
+        limit: i64,
+    },
+    /// Refused: the comment is not a question.
+    NoQuestion,
+    /// Refused: the question has its answer already.
+    AlreadyAnswered,
+    /// Refused: the question has no choice with that number.
+    BadChoice,
+}
+
+impl QuestionWrite {
+    /// Commits `txn` and returns [`QuestionWrite::Done`] with `comment` when the move happened,
+    /// and drops `txn` with the move's refusal otherwise.
+    fn commit_if_moved(
+        txn: WriteTxn<'_>,
+        moved: MoveOutcome,
+        comment: TaskComment,
+    ) -> DbResult<Self> {
+        let refusal = match moved {
+            MoveOutcome::Moved => {
+                txn.commit()?;
+                return Ok(Self::Done(Box::new(comment)));
+            }
+            MoveOutcome::NotFound => Self::NotFound,
+            MoveOutcome::StaleFence => Self::StaleFence,
+            MoveOutcome::OpenChildren { count } => Self::OpenChildren { count },
+            MoveOutcome::WipLimit { count, limit } => Self::WipLimit { count, limit },
+        };
+        Ok(refusal)
+    }
+}
+
+/// Adds the [`NEEDS_HUMAN_LABEL`] label to `task` with a labels event, unless it has it.
+fn add_needs_human(task: &mut TaskRow, actor: Actor<'_>) {
+    if task.labels.iter().any(|label| label == NEEDS_HUMAN_LABEL) {
+        return;
+    }
+    let before = task.labels.join(", ");
+    task.labels.push(NEEDS_HUMAN_LABEL.to_string());
+    let change = EventChange {
+        from: (!before.is_empty()).then_some(before),
+        to: Some(task.labels.join(", ")),
+    };
+    let detail = format!("Set labels: {}", task.labels.join(", "));
+    push_change_event(task, HistoryKind::LabelsUpdated, detail, actor, change);
+}
+
+/// Removes the [`NEEDS_HUMAN_LABEL`] label from `task` with a labels event, if it has it.
+fn remove_needs_human(task: &mut TaskRow, actor: Actor<'_>) {
+    if !task.labels.iter().any(|label| label == NEEDS_HUMAN_LABEL) {
+        return;
+    }
+    let before = task.labels.join(", ");
+    task.labels.retain(|label| label != NEEDS_HUMAN_LABEL);
+    let detail = if task.labels.is_empty() {
+        "Cleared the labels".to_string()
+    } else {
+        format!("Set labels: {}", task.labels.join(", "))
+    };
+    let change = EventChange {
+        from: Some(before),
+        to: (!task.labels.is_empty()).then(|| task.labels.join(", ")),
+    };
+    push_change_event(task, HistoryKind::LabelsUpdated, detail, actor, change);
 }
 
 /// Typed outcome for [`Db::create_device_auth`].
@@ -1441,8 +1538,28 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// role. The new stamp makes a version-65 binary refuse a file whose attributions it would drop on
 /// its next save.
 ///
+/// Version 67 adds, over version 66 (additive):
+///
+/// 1. Table `tokens_by_role_board`, a multimap from `role id/board id` to the id of each token
+///    issued as that role that reaches that board, which a role's revokes read.
+/// 2. The `Permission` `roles.grant`, in the lead preset. The upgrade grants it to no stored token,
+///    which holds the set its approval expanded.
+///
+/// The upgrade fills the table from the tokens that name a role. The new stamp makes a version-66
+/// binary refuse a file whose role tokens it would save without their index entries.
+///
+/// Version 68 adds, over version 67 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskComment`: `question`, the structured question a comment poses, as a `CommentQuestion`
+///    with its `QuestionChoice` list and, once answered, its `QuestionAnswer`.
+///
+/// The upgrade rewrites no row, so an older comment reads as a plain one. The new stamp makes a
+/// version-67 binary refuse a file whose question comments it would save without their question.
+///
+/// A board's opaque `config_json` gains `blocked_column_id`, the id of its Blocked column.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 66;
+pub const SCHEMA_VERSION: u64 = 68;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1515,6 +1632,8 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "043aa18d87c1fbed7a5e8a135ced106f018c97063e0c551c5aaf1b6b2036a922",
     "aaaf5ff2b9576404c34b111a8ae33bff2eba289b4f2734c014c791f71cfffe36",
     "4f54b1b8694a065153cb08819ff7a974a9090b5974807113d37f1e188d06255d",
+    "bcb728397c770bad9fed1da00e67973b338a43e78744ffd93faf21828277eb5e",
+    "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1681,6 +1800,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 58) {
         mark_parents_as_epics(txn)?;
         txn_recount_usage(txn)?;
+    }
+    if from.is_none_or(|version| version < 67) {
+        txn_reindex_role_tokens(txn)?;
     }
     Ok(())
 }
@@ -2220,6 +2342,9 @@ fn grant_scope_permissions(txn: &WriteTransaction) -> DbResult<()> {
     grant_permissions_in(txn, DEVICE_AUTHS, "device_auths")
 }
 
+/// The permissions of a preset that no upgrade grants to a stored row.
+const UNGRANTED: [Permission; 2] = [Permission::TokensIssue, Permission::RolesGrant];
+
 /// Gives `added` to every token and device request that holds the whole lead or admin preset of
 /// its scope as it stood before they existed.
 fn grant_added_permissions(txn: &WriteTransaction, added: &[Permission]) -> DbResult<()> {
@@ -2230,8 +2355,8 @@ fn grant_added_permissions(txn: &WriteTransaction, added: &[Permission]) -> DbRe
 }
 
 /// Gives `row` the permissions in `added` that the preset of its scope holds, and reports whether
-/// it did. Only a row short of its preset by nothing but `added` and `tokens.issue`, which no
-/// upgrade grants, gains them, so a custom set and a full preset stay as they are.
+/// it did. Only a row short of its preset by nothing but `added`, `tokens.issue` and `roles.grant`,
+/// which no upgrade grants, gains them, so a custom set and a full preset stay as they are.
 fn grant_to_preset(row: &mut JsonObject, added: &[Permission]) -> bool {
     let Some(scope) = row
         .get("scope")
@@ -2250,7 +2375,7 @@ fn grant_to_preset(row: &mut JsonObject, added: &[Permission]) -> bool {
     };
     let short_only_of_added = preset
         .difference(&held)
-        .all(|permission| added.contains(permission) || *permission == Permission::TokensIssue);
+        .all(|permission| added.contains(permission) || UNGRANTED.contains(permission));
     if !held.is_subset(&preset) || !short_only_of_added {
         return false;
     }
@@ -2293,6 +2418,7 @@ fn grant_permissions_in(txn: &WriteTransaction, table: Rows, name: &str) -> DbRe
         };
         let mut granted = scope.permissions();
         granted.remove(&Permission::TokensIssue);
+        granted.remove(&Permission::RolesGrant);
         object.insert("permissions".to_string(), serde_json::to_value(granted)?);
         object.insert(
             "boards".to_string(),
@@ -2451,6 +2577,10 @@ const PASSKEYS_BY_CREDENTIAL: TableDefinition<'_, &str, &str> =
 /// account id -> id of each API token it holds, in [`API_TOKENS`] or [`SUSPENDED_TOKENS`].
 const TOKENS_BY_ACCOUNT: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("tokens_by_account");
+/// `role id/board id` -> id of each token issued as that role that reaches that board, in
+/// [`API_TOKENS`] or [`SUSPENDED_TOKENS`]. A token that reaches every board sits under `role id/`.
+const TOKENS_BY_ROLE_BOARD: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("tokens_by_role_board");
 /// Agent roles by id.
 const AGENT_ROLES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("agent_roles");
 /// account id -> id of each agent role it holds.
@@ -4359,6 +4489,81 @@ fn txn_reindex_devices(txn: &WriteTransaction) -> DbResult<()> {
     Ok(())
 }
 
+/// Rebuilds [`TOKENS_BY_ROLE_BOARD`] from the live and suspended tokens that name a role, inside an
+/// open write transaction.
+fn txn_reindex_role_tokens(txn: &WriteTransaction) -> DbResult<()> {
+    txn.delete_multimap_table(TOKENS_BY_ROLE_BOARD)?;
+    for table in [API_TOKENS, SUSPENDED_TOKENS] {
+        for token in rows_in::<ApiTokenRecord, _>(&txn.open_table(table)?)? {
+            txn_index_role_token(txn, &token)?;
+        }
+    }
+    Ok(())
+}
+
+/// Returns the key of [`TOKENS_BY_ROLE_BOARD`] for `role_id` on `board_id`.
+fn role_board_key(role_id: &str, board_id: &str) -> String {
+    format!("{role_id}/{board_id}")
+}
+
+/// Returns the keys of [`TOKENS_BY_ROLE_BOARD`] that `token` sits under, none for a token issued
+/// as no role.
+fn role_board_keys(token: &ApiTokenRecord) -> Vec<String> {
+    let Some(role_id) = token.role_id.as_deref() else {
+        return Vec::new();
+    };
+    match &token.boards {
+        BoardAccess::All => vec![format!("{role_id}/")],
+        BoardAccess::Only(ids) => ids.iter().map(|id| role_board_key(role_id, id)).collect(),
+    }
+}
+
+/// Adds `token` under every key [`role_board_keys`] lists, inside an open write transaction.
+fn txn_index_role_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<()> {
+    for key in role_board_keys(token) {
+        mmap_insert(txn, TOKENS_BY_ROLE_BOARD, &key, &token.id)?;
+    }
+    Ok(())
+}
+
+/// Removes `token` from every key [`role_board_keys`] lists, inside an open write transaction.
+fn txn_unindex_role_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<()> {
+    for key in role_board_keys(token) {
+        mmap_remove(txn, TOKENS_BY_ROLE_BOARD, &key, &token.id)?;
+    }
+    Ok(())
+}
+
+/// Returns the ids of the tokens issued as `role_id` that reach `board_id`, or every token issued
+/// as it when `board_id` is [`None`], read inside an open write transaction.
+fn txn_role_token_ids(
+    txn: &WriteTransaction,
+    role_id: &str,
+    board_id: Option<&str>,
+) -> DbResult<BTreeSet<String>> {
+    let tbl = txn.open_multimap_table(TOKENS_BY_ROLE_BOARD)?;
+    let every = format!("{role_id}/");
+    let mut keys = Vec::new();
+    let mut ids = BTreeSet::new();
+    match board_id {
+        Some(board_id) => keys.extend([every.clone(), role_board_key(role_id, board_id)]),
+        None => {
+            let end = format!("{role_id}0");
+            for entry in tbl.range(every.as_str()..end.as_str())? {
+                for guard in entry?.1 {
+                    ids.insert(guard?.value().to_owned());
+                }
+            }
+        }
+    }
+    for key in keys {
+        for guard in tbl.get(key.as_str())? {
+            ids.insert(guard?.value().to_owned());
+        }
+    }
+    Ok(ids)
+}
+
 /// Stores a new `token` when its account is active and below the per-account token cap, inside an
 /// open write transaction.
 fn txn_create_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<()> {
@@ -4443,6 +4648,7 @@ fn txn_remove_expired_issued_tokens(
 fn txn_store_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<()> {
     write_one(txn, API_TOKENS, &token.id, token)?;
     mmap_insert(txn, TOKENS_BY_ACCOUNT, &token.account_id, &token.id)?;
+    txn_index_role_token(txn, token)?;
     txn_index_token_key(txn, token)
 }
 
@@ -4486,6 +4692,7 @@ fn txn_remove_token(txn: &WriteTransaction, account: &str, id: &str) -> DbResult
         .transpose()?;
     if let Some(token) = live.as_ref().or(suspended.as_ref()) {
         txn_unindex_token_key(txn, token)?;
+        txn_unindex_role_token(txn, token)?;
     }
     mmap_remove(txn, TOKENS_BY_ACCOUNT, account, id)?;
     let mut removed = u64::from(live.is_some());
@@ -5457,9 +5664,18 @@ fn txn_join_token_set(txn: &WriteTransaction, token_id: &str, board_id: &str) ->
     let Some(mut token) = txn_read_one::<ApiTokenRecord>(txn, API_TOKENS, token_id)? else {
         return Ok(());
     };
-    if let BoardAccess::Only(ids) = &mut token.boards {
-        ids.insert(board_id.to_string());
+    if let BoardAccess::Only(ids) = &mut token.boards
+        && ids.insert(board_id.to_string())
+    {
         write_one(txn, API_TOKENS, token_id, &token)?;
+        if let Some(role_id) = token.role_id.as_deref() {
+            mmap_insert(
+                txn,
+                TOKENS_BY_ROLE_BOARD,
+                &role_board_key(role_id, board_id),
+                token_id,
+            )?;
+        }
     }
     Ok(())
 }
@@ -5473,6 +5689,14 @@ fn txn_prune_token_sets(txn: &WriteTransaction, owner: &str, board_id: &str) -> 
             };
             if token.boards.forget(board_id) {
                 write_one(txn, table, &token_id, &token)?;
+                if let Some(role_id) = token.role_id.as_deref() {
+                    mmap_remove(
+                        txn,
+                        TOKENS_BY_ROLE_BOARD,
+                        &role_board_key(role_id, board_id),
+                        &token_id,
+                    )?;
+                }
             }
         }
     }
@@ -5906,6 +6130,7 @@ impl Db {
             txn.open_table(FEED_TOKENS)?;
             txn.open_table(PASSKEYS_BY_CREDENTIAL)?;
             txn.open_multimap_table(TOKENS_BY_ACCOUNT)?;
+            txn.open_multimap_table(TOKENS_BY_ROLE_BOARD)?;
             txn.open_multimap_table(SESSIONS_BY_USER)?;
             txn.open_multimap_table(DEVICES_BY_ACCOUNT)?;
             txn.open_table(TOKEN_IDS_BY_HASH)?;
@@ -9204,6 +9429,7 @@ impl Db {
             edited_at: None,
             kind: new.kind.map(str::to_string),
             reactions: Vec::new(),
+            question: None,
             parent_token: actor.parent_token.cloned(),
             role_id: actor.role_id.map(str::to_string),
             role_name: actor.role_name.map(str::to_string),
@@ -9231,6 +9457,156 @@ impl Db {
         }
         txn.commit()?;
         Ok(FencedWrite::Written(comment))
+    }
+
+    /// Appends a question comment, adds the [`NEEDS_HUMAN_LABEL`] label and moves the task to the
+    /// `blocked` column, with the comment, label and move events, in one write. The move applies
+    /// the fence, the open-children refusal for an epic and the target's WIP limit as any move
+    /// does, and a refusal writes nothing.
+    pub fn post_question(
+        &self,
+        task_id: &str,
+        new: NewComment<'_>,
+        question: CommentQuestion,
+        to: QuestionMove<'_>,
+        actor: Actor<'_>,
+    ) -> DbResult<QuestionWrite> {
+        let comment = TaskComment {
+            id: Uuid::new_v4().to_string(),
+            author: new.author.to_string(),
+            body: new.body.to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            actor_kind: new.actor_kind,
+            token_name: new.token_name.map(str::to_string),
+            token_id: new.token_id.filter(|id| !id.is_empty()).map(str::to_string),
+            edited_at: None,
+            kind: Some(QUESTION_KIND.to_string()),
+            reactions: Vec::new(),
+            parent_token: actor.parent_token.cloned(),
+            role_id: actor.role_id.map(str::to_string),
+            role_name: actor.role_name.map(str::to_string),
+            label: actor.label.map(str::to_string),
+            question: Some(question),
+        };
+        let txn = self.db.begin_write()?;
+        let owner = task_owner_in(&txn, task_id)?;
+        {
+            let mut tbl = txn.open_table(TASKS)?;
+            let Some(mut task) = task_in(&tbl, task_id)? else {
+                return Ok(QuestionWrite::NotFound);
+            };
+            if !task.fence_allows(to.fence) {
+                return Ok(QuestionWrite::StaleFence);
+            }
+            if let Some(owner) = &owner {
+                let after = task.comments.len() + 1;
+                txn_refuse_over_quota(&txn, owner, Quota::CommentsPerTask, after)?;
+            }
+            task.comments.push(comment.clone());
+            let detail = format!("{} asked a question", new.author);
+            push_event(&mut task, HistoryKind::CommentAdded, detail, actor);
+            add_needs_human(&mut task, actor);
+            task.updated_at = Some(Utc::now().to_rfc3339());
+            txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
+        }
+        let moved = Self::move_for_question(&txn, task_id, to, actor)?;
+        QuestionWrite::commit_if_moved(txn, moved, comment)
+    }
+
+    /// Records the answer to question comment `comment_id`, removes the [`NEEDS_HUMAN_LABEL`]
+    /// label and moves the task to the destination of the choice `answer` names, with the answer,
+    /// label and move events, in one write. While another question on the task is still open, the
+    /// answer is recorded and the label and the task's column stay as they are. Only an open
+    /// question takes an answer, and a refused move writes nothing.
+    pub fn answer_question(
+        &self,
+        task_id: &str,
+        comment_id: &str,
+        answer: QuestionAnswer,
+        position: f64,
+        actor: Actor<'_>,
+    ) -> DbResult<QuestionWrite> {
+        let choice = answer.choice;
+        let txn = self.db.begin_write()?;
+        let destination;
+        let answered;
+        {
+            let mut tbl = txn.open_table(TASKS)?;
+            let Some(mut task) = task_in(&tbl, task_id)? else {
+                return Ok(QuestionWrite::NotFound);
+            };
+            let Some(comment) = task.comments.iter_mut().find(|c| c.id == comment_id) else {
+                return Ok(QuestionWrite::NotFound);
+            };
+            let Some(question) = comment.question.as_mut() else {
+                return Ok(QuestionWrite::NoQuestion);
+            };
+            if question.answer.is_some() {
+                return Ok(QuestionWrite::AlreadyAnswered);
+            }
+            let Some(picked) = question.choice(choice) else {
+                return Ok(QuestionWrite::BadChoice);
+            };
+            let picked = picked.column_id.clone();
+            let detail = format!("{} answered choice {choice}", answer.answered_by);
+            question.answer = Some(answer);
+            answered = comment.clone();
+            let others_open = task
+                .comments
+                .iter()
+                .any(|c| c.question.as_ref().is_some_and(|q| q.answer.is_none()));
+            destination = (!others_open).then_some(picked);
+            push_event(&mut task, HistoryKind::CommentAdded, detail, actor);
+            if !others_open {
+                remove_needs_human(&mut task, actor);
+            }
+            task.updated_at = Some(Utc::now().to_rfc3339());
+            txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
+        }
+        let Some(column_id) = destination else {
+            txn.commit()?;
+            return Ok(QuestionWrite::Done(Box::new(answered)));
+        };
+        let to = QuestionMove {
+            column_id: &column_id,
+            position,
+            fence: None,
+        };
+        let moved = Self::move_for_question(&txn, task_id, to, actor)?;
+        QuestionWrite::commit_if_moved(txn, moved, answered)
+    }
+
+    /// Moves a task into `column_id` inside the caller's transaction with the history event a
+    /// move logs and the target's WIP limit enforced.
+    fn move_for_question(
+        txn: &WriteTransaction,
+        task_id: &str,
+        to: QuestionMove<'_>,
+        actor: Actor<'_>,
+    ) -> DbResult<MoveOutcome> {
+        let QuestionMove {
+            column_id,
+            position,
+            fence,
+        } = to;
+        let Some(task) = txn_read_one::<TaskRow>(txn, TASKS, task_id)? else {
+            return Ok(MoveOutcome::NotFound);
+        };
+        let target: ColumnRow = txn_read_one(txn, COLUMNS, column_id)?
+            .ok_or_else(|| format!("unknown column: {column_id}"))?;
+        let source: Option<ColumnRow> = txn_read_one(txn, COLUMNS, &task.column_id)?;
+        let from = source
+            .as_ref()
+            .map_or("a column", |column| column.name.as_str());
+        let detail = format!("Moved from {from} to {}", target.name);
+        let guards = MoveGuards {
+            event: (task.column_id != column_id).then_some(detail.as_str()),
+            fence,
+            enforce_wip: true,
+            batch: &[],
+            skip_epic_guard: false,
+        };
+        Self::move_in(txn, task_id, column_id, None, position, guards, actor)
     }
 
     /// Deletes a comment from a task, logging the deletion in the same
@@ -13367,6 +13743,188 @@ mod schema_version_tests {
         assert!(rows_of(&path, AGENT_ROLE_GRANTS).is_empty());
     }
 
+    /// Every key and token id of [`TOKENS_BY_ROLE_BOARD`], as `role id/board id` and token id.
+    fn role_index(db: &Db) -> BTreeSet<(String, String)> {
+        let txn = db.db.begin_read().expect("read txn");
+        let tbl = txn
+            .open_multimap_table(TOKENS_BY_ROLE_BOARD)
+            .expect("table");
+        let mut out = BTreeSet::new();
+        for entry in tbl.iter().expect("iter") {
+            let (key, values) = entry.expect("entry");
+            for value in values {
+                out.insert((
+                    key.value().to_owned(),
+                    value.expect("id").value().to_owned(),
+                ));
+            }
+        }
+        out
+    }
+
+    /// Issues a token as role `role_id` that reaches `boards`, under a fresh issuer.
+    fn role_token(
+        db: &Db,
+        account: &AccountId,
+        role_id: &str,
+        name: &str,
+        boards: &[&str],
+        hours: i64,
+    ) -> ApiTokenRecord {
+        let issuer = {
+            let (record, _) =
+                new_api_token_record(account, &format!("lead-{name}"), AuthScope::Provision, None);
+            db.create_api_token(&record).expect("issuer");
+            record
+        };
+        let (mut record, _) = new_api_token_record(account, name, AuthScope::Work, None);
+        record.parent_id = Some(issuer.id);
+        record.boards = BoardAccess::Only(boards.iter().map(|id| (*id).to_string()).collect());
+        db.create_api_token_as_role(role_id, record, hours, Utc::now().timestamp())
+            .expect("issue")
+            .expect("role")
+    }
+
+    /// The role index follows a token through issue, revoke, expiry and the board's deletion.
+    #[test]
+    fn role_index_should_follow_each_way_a_token_ends() {
+        let (_dir, path) = temp_path();
+        let db = Db::connect(&path).expect("connect");
+        let account = db.create_user("alice").expect("account");
+        let a = db.create_board(&account, "A").expect("board");
+        let b = db.create_board(&account, "B").expect("board");
+        let role = db
+            .create_agent_role(account.as_str(), "planner", BTreeSet::new())
+            .expect("role");
+
+        let both = role_token(&db, &account, &role.id, "both", &[&a, &b], 1);
+        let only_a = role_token(&db, &account, &role.id, "only-a", &[&a], 1);
+        let expiring = role_token(&db, &account, &role.id, "expiring", &[&b], 0);
+        let key = |board: &str, token: &ApiTokenRecord| {
+            (format!("{}/{board}", role.id), token.id.clone())
+        };
+        assert_eq!(
+            role_index(&db),
+            BTreeSet::from([
+                key(&a, &both),
+                key(&b, &both),
+                key(&a, &only_a),
+                key(&b, &expiring),
+            ])
+        );
+
+        let created = db
+            .create_board_by(&account, "C", &both.id)
+            .expect("board by token");
+        assert!(role_index(&db).contains(&key(&created, &both)));
+        assert_eq!(
+            db.revoke_role_tokens(account.as_str(), &role.id, Some(&created))
+                .expect("revoke"),
+            Some(1)
+        );
+        assert!(role_index(&db).iter().all(|(_, id)| *id != both.id));
+        let both = role_token(&db, &account, &role.id, "both-again", &[&a, &b], 1);
+        assert!(db.delete_api_token(&account, &only_a.id).expect("revoke"));
+        db.prune_expired_issued_tokens(expiring.expires_at.expect("expiry") + 1)
+            .expect("prune");
+        assert_eq!(
+            role_index(&db),
+            BTreeSet::from([key(&a, &both), key(&b, &both)])
+        );
+
+        db.delete_board(&b).expect("delete board");
+        assert_eq!(role_index(&db), BTreeSet::from([key(&a, &both)]));
+        assert!(db.delete_api_token(&account, &both.id).expect("revoke"));
+        assert!(role_index(&db).is_empty());
+    }
+
+    /// Deleting a role leaves no role, grant, index or token row of it, and keeps another role's.
+    #[test]
+    fn delete_agent_role_should_leave_no_row_of_the_role() {
+        let (_dir, path) = temp_path();
+        let (account, kept_role, kept_token) = {
+            let db = Db::connect(&path).expect("connect");
+            let account = db.create_user("alice").expect("account");
+            let a = db.create_board(&account, "A").expect("board");
+            let b = db.create_board(&account, "B").expect("board");
+            let role = db
+                .create_agent_role(account.as_str(), "planner", BTreeSet::new())
+                .expect("role");
+            let kept = db
+                .create_agent_role(account.as_str(), "keeper", BTreeSet::new())
+                .expect("role");
+            for board in [&a, &b] {
+                for id in [&role.id, &kept.id] {
+                    assert!(
+                        db.grant_agent_role(account.as_str(), id, board)
+                            .expect("grant")
+                    );
+                }
+            }
+            role_token(&db, &account, &role.id, "one", &[&a], 1);
+            role_token(&db, &account, &role.id, "two", &[&a, &b], 1);
+            let kept_token = role_token(&db, &account, &kept.id, "kept", &[&b], 1);
+            assert_eq!(
+                db.delete_agent_role("someone-else", &role.id)
+                    .expect("foreign"),
+                None
+            );
+            assert_eq!(
+                db.delete_agent_role(account.as_str(), &role.id)
+                    .expect("delete"),
+                Some(2)
+            );
+            assert_eq!(
+                db.delete_agent_role(account.as_str(), &role.id)
+                    .expect("again"),
+                None
+            );
+            assert!(
+                role_index(&db)
+                    .iter()
+                    .all(|(key, _)| key.starts_with(&kept.id))
+            );
+            (account, kept.id, kept_token.id)
+        };
+        let roles = rows_of(&path, AGENT_ROLES);
+        assert_eq!(roles.keys().collect::<Vec<_>>(), [&kept_role]);
+        let grants = rows_of(&path, AGENT_ROLE_GRANTS);
+        assert!(grants.keys().all(|key| key.starts_with(&kept_role)));
+        assert_eq!(grants.len(), 2);
+        let db = Db::connect(&path).expect("reopen");
+        let tokens = db.list_account_api_tokens(&account).expect("tokens");
+        assert!(tokens.iter().any(|token| token.id == kept_token));
+        assert_eq!(
+            db.list_agent_roles(account.as_str()).expect("roles").len(),
+            1
+        );
+    }
+
+    /// A version-66 file opens with the role index filled from its role tokens.
+    #[test]
+    fn version_66_file_should_open_with_its_role_tokens_indexed() {
+        let (_dir, path) = temp_path();
+        let expected = {
+            let db = Db::connect(&path).expect("connect");
+            let account = db.create_user("alice").expect("account");
+            let board = db.create_board(&account, "A").expect("board");
+            let role = db
+                .create_agent_role(account.as_str(), "planner", BTreeSet::new())
+                .expect("role");
+            let token = role_token(&db, &account, &role.id, "agent", &[&board], 1);
+            let txn = db.db.begin_write().expect("write txn");
+            txn.delete_multimap_table(TOKENS_BY_ROLE_BOARD)
+                .expect("drop");
+            txn.commit().expect("commit");
+            BTreeSet::from([(format!("{}/{board}", role.id), token.id)])
+        };
+        stamp(&path, 66);
+        let db = Db::connect(&path).expect("open version 66");
+        assert_eq!(role_index(&db), expected);
+        drop(db);
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+    }
+
     /// Applies `edit` to the row `key` of `table` as stored.
     fn edit_raw(
         path: &str,
@@ -13718,6 +14276,7 @@ mod schema_version_tests {
         };
         let reset = [
             "tokens.issue",
+            "roles.grant",
             "tasks.create",
             "tasks.edit",
             "tasks.move",
@@ -13745,6 +14304,7 @@ mod schema_version_tests {
         let token = upgraded_preset_token(AuthScope::Admin, 58, &["inbound.manage"]);
         let mut expected = AuthScope::Admin.permissions();
         expected.remove(&Permission::TokensIssue);
+        expected.remove(&Permission::RolesGrant);
         assert_eq!(token.permissions, expected);
     }
 
@@ -13754,6 +14314,7 @@ mod schema_version_tests {
         let token = upgraded_preset_token(AuthScope::Provision, 40, &later);
         let mut expected = AuthScope::Provision.permissions();
         expected.remove(&Permission::TokensIssue);
+        expected.remove(&Permission::RolesGrant);
         assert_eq!(token.permissions, expected);
     }
 
@@ -13939,6 +14500,7 @@ mod schema_version_tests {
         let db = Db::connect(&path).expect("open version 26");
         let upgraded = |mut preset: BTreeSet<Permission>| {
             preset.remove(&Permission::TokensIssue);
+            preset.remove(&Permission::RolesGrant);
             preset
         };
         let lead = upgraded(Preset::Lead.permissions());
@@ -14820,8 +15382,9 @@ mod schema_fingerprint_tests {
     use crate::models::{
         AgentRoleGrantRow, AgentRoleRow, Avatar, AvatarKind, BoardEventRow, BoardMemberRow,
         BoardRole, BreakActivity, DiskLimits, FieldColumn, InviteRow, NotificationRow, OutboxRow,
-        ParentToken, PruneSettings, PruneStatus, Quotas, RateLimits, RegistrationMode, Responsible,
-        SubtaskTemplate, TimeFormat, TimerMode, WebhookEvent, WeekStart,
+        ParentToken, PruneSettings, PruneStatus, QuestionChoice, Quotas, RateLimits,
+        RegistrationMode, Responsible, SubtaskTemplate, TimeFormat, TimerMode, WebhookEvent,
+        WeekStart,
     };
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
@@ -15167,7 +15730,10 @@ mod schema_fingerprint_tests {
             shape::<SwimlaneRow>("SwimlaneRow"),
             shape::<TaskAttachment>("TaskAttachment"),
             shape::<TaskComment>("TaskComment"),
+            shape::<CommentQuestion>("CommentQuestion"),
             shape::<CommentReaction>("CommentReaction"),
+            shape::<QuestionAnswer>("QuestionAnswer"),
+            shape::<QuestionChoice>("QuestionChoice"),
             shape::<TaskEvent>("TaskEvent"),
             shape::<TaskKind>("TaskKind"),
             shape::<TaskRow>("TaskRow"),
@@ -15218,6 +15784,7 @@ mod schema_fingerprint_tests {
             table(FEED_TOKENS),
             table(PASSKEYS_BY_CREDENTIAL),
             multimap(TOKENS_BY_ACCOUNT),
+            multimap(TOKENS_BY_ROLE_BOARD),
             multimap(SESSIONS_BY_USER),
             multimap(DEVICES_BY_ACCOUNT),
             table(TOKEN_IDS_BY_HASH),

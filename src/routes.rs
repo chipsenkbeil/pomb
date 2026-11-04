@@ -68,12 +68,12 @@ use crate::db::{
     MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement,
     NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedColumn, OwnedTask, OwnerChange,
     PaletteStrandsColor, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome,
-    QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked, RoleDenied,
-    RoleTokenRefusal, SessionEndOutcome, SessionListing, SessionRefused, SessionToken,
-    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext,
-    UmbrellaChange, UmbrellaPart, UmbrellaRef, WebhookColumnMissing, WebhookPatch, carry_fields,
-    clean_labels, local_day, merge_metadata, push_change_event, push_column_event, push_event,
-    round_estimate,
+    QuestionMove, QuestionWrite, QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome,
+    Revoked, RoleDenied, RoleTokenRefusal, SessionEndOutcome, SessionListing, SessionRefused,
+    SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
+    SwimlaneUpdateOutcome, TaskContext, UmbrellaChange, UmbrellaPart, UmbrellaRef,
+    WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels, local_day, merge_metadata,
+    push_change_event, push_column_event, push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -135,9 +135,13 @@ pub fn router(state: AppState) -> Router {
         .route("/b/:board_id/timeline", get(timeline_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route("/api/search", get(search_cards))
-        .route("/api/notifications", get(list_notifications))
+        .route(
+            "/api/notifications",
+            get(list_notifications).delete(delete_all_notifications),
+        )
         .route("/api/notifications/read", post(mark_all_notifications_read))
         .route("/api/notifications/:id/read", post(mark_notification_read))
+        .route("/api/notifications/:id", delete(delete_notification))
         .route(
             "/api/tasks/:id",
             get(get_task).patch(update_task).delete(delete_task),
@@ -199,6 +203,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/tasks/:id/comments/:comment_id/reactions",
             post(react_to_comment),
+        )
+        .route(
+            "/api/tasks/:id/comments/:comment_id/answer",
+            post(answer_comment_question),
         );
 
     let router = router
@@ -477,12 +485,22 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/agent-roles/:id",
-            get(get_agent_role).patch(update_agent_role),
+            get(get_agent_role)
+                .patch(update_agent_role)
+                .delete(delete_agent_role),
         )
         .route("/api/v1/agent-roles/standard", post(ensure_standard_roles))
         .route(
             "/api/v1/agent-roles/:id/boards/:board_id",
-            put(grant_agent_role),
+            put(grant_agent_role).delete(revoke_agent_role_grant),
+        )
+        .route(
+            "/api/v1/agent-roles/:id/boards/:board_id/revoke-tokens",
+            post(revoke_agent_role_board_tokens),
+        )
+        .route(
+            "/api/v1/agent-roles/:id/revoke-tokens",
+            post(revoke_agent_role_tokens),
         )
         .route("/api/v1/auth/whoami", get(whoami))
         .route("/api/v1/auth/permissions", get(list_permissions));
@@ -842,6 +860,13 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             AccountSession,
             Grows,
         ),
+        (Method::DELETE, "/api/notifications", AccountSession, Exempt),
+        (
+            Method::DELETE,
+            "/api/notifications/:id",
+            AccountSession,
+            Exempt,
+        ),
         (Method::GET, "/api/tasks/:id", Task, No),
         (Method::PATCH, "/api/tasks/:id", Task, Grows),
         (Method::DELETE, "/api/tasks/:id", Task, Exempt),
@@ -921,6 +946,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (
             Method::POST,
             "/api/tasks/:id/comments/:comment_id/reactions",
+            Task,
+            Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/comments/:comment_id/answer",
             Task,
             Grows,
         ),
@@ -1185,6 +1216,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         ),
         (Method::GET, "/api/v1/agent-roles", Account, No),
         (Method::GET, "/api/v1/agent-roles/:id", Account, No),
+        (
+            Method::DELETE,
+            "/api/v1/agent-roles/:id",
+            AccountSession,
+            Exempt,
+        ),
         (Method::POST, "/api/v1/agent-roles", AccountSession, Grows),
         (
             Method::PATCH,
@@ -1198,6 +1235,24 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             "/api/v1/agent-roles/:id/boards/:board_id",
             Account,
             Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/agent-roles/:id/boards/:board_id",
+            Account,
+            Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/v1/agent-roles/:id/boards/:board_id/revoke-tokens",
+            Account,
+            Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/v1/agent-roles/:id/revoke-tokens",
+            AccountSession,
+            Exempt,
         ),
         (Method::GET, "/api/v1/auth/tokens", AccountSession, No),
         (Method::GET, "/api/v1/auth/tokens/:id", AccountSession, No),
@@ -12619,6 +12674,9 @@ pub(crate) const MAX_COMMENT_BYTES: usize = 5000;
 
 #[derive(Deserialize, ToSchema)]
 struct CreateCommentInput {
+    /// The comment text, at most 5000 bytes after trimming. Required, except that a comment with a
+    /// `question` takes the question text when this is blank.
+    #[serde(default)]
     body: String,
     /// Optional display label for the comment, such as "reviewer · glm", so agents that share one
     /// token can tell themselves apart. It is at most 80 characters after trimming. Defaults to the
@@ -12627,8 +12685,153 @@ struct CreateCommentInput {
     /// is refused.
     author: Option<String>,
     /// Optional free-form tag, e.g. "agent", "oracle", "review", "system";
-    /// at most 64 characters. Blank means untagged.
+    /// at most 64 characters. Blank means untagged. A comment with a `question` has kind
+    /// `question`, and any other kind is refused. A comment of kind `question` without a `question` is refused too.
     kind: Option<String>,
+    /// Makes the comment a structured question that blocks the card: the card moves to the board's
+    /// Blocked column and gains the `needs:human` label in the same write, until the question is
+    /// answered. Every part is required.
+    question: Option<QuestionInput>,
+}
+
+/// The parts of a structured question. A missing part is refused with a 400 that names it.
+#[derive(Deserialize, ToSchema)]
+struct QuestionInput {
+    /// The question.
+    text: Option<String>,
+    /// The choices, numbered from 1 in order: at least two and at most 10.
+    choices: Option<Vec<QuestionChoiceInput>>,
+    /// The number of the choice you recommend.
+    recommended: Option<u32>,
+    /// Why you cannot decide alone.
+    why: Option<String>,
+}
+
+/// One choice of a structured question.
+#[derive(Deserialize, ToSchema)]
+struct QuestionChoiceInput {
+    /// What picking the choice means, at most 200 characters.
+    label: Option<String>,
+    /// The id of the column on the card's board the card moves to when this choice is picked.
+    column_id: Option<String>,
+}
+
+/// Fewest choices a question holds.
+const MIN_QUESTION_CHOICES: usize = 2;
+
+/// Most choices a question holds.
+const MAX_QUESTION_CHOICES: usize = 10;
+
+/// Longest choice label, in characters.
+const MAX_QUESTION_LABEL_CHARS: usize = 200;
+
+/// Returns the question `input` describes, or the 400 that names its first missing or invalid
+/// part. Every choice names a column of board `board_id`.
+fn question_from_input(
+    db: &AccountDb,
+    board_id: &str,
+    input: &QuestionInput,
+) -> Result<CommentQuestion, AppError> {
+    let required = |part: &Option<String>, name: &str| -> Result<String, AppError> {
+        let text = part.as_deref().map(str::trim).unwrap_or_default();
+        if text.is_empty() {
+            return Err(AppError::bad_request(format!(
+                "question.{name} is required"
+            )));
+        }
+        if text.len() > MAX_COMMENT_BYTES {
+            return Err(AppError::bad_request(format!(
+                "question.{name} is too long (max {MAX_COMMENT_BYTES} bytes)"
+            )));
+        }
+        Ok(text.to_string())
+    };
+    let text = required(&input.text, "text")?;
+    let raw = input.choices.as_deref().unwrap_or_default();
+    if !(MIN_QUESTION_CHOICES..=MAX_QUESTION_CHOICES).contains(&raw.len()) {
+        return Err(AppError::bad_request(format!(
+            "question.choices needs between {MIN_QUESTION_CHOICES} and {MAX_QUESTION_CHOICES} choices"
+        )));
+    }
+    let mut choices = Vec::with_capacity(raw.len());
+    for (index, choice) in raw.iter().enumerate() {
+        let number = index + 1;
+        let label = required(&choice.label, &format!("choices[{number}].label"))?;
+        if label.chars().count() > MAX_QUESTION_LABEL_CHARS {
+            return Err(AppError::bad_request(format!(
+                "question.choices[{number}].label must be at most {MAX_QUESTION_LABEL_CHARS} characters"
+            )));
+        }
+        let column_id = required(&choice.column_id, &format!("choices[{number}].column_id"))?;
+        let on_board = db
+            .column(&column_id)
+            .map_err(AppError::from)?
+            .is_some_and(|column| column.row().board_id == board_id);
+        if !on_board {
+            return Err(AppError::bad_request(format!(
+                "question.choices[{number}].column_id names a column that is not on this board"
+            )));
+        }
+        choices.push(QuestionChoice { label, column_id });
+    }
+    let recommended = input
+        .recommended
+        .ok_or_else(|| AppError::bad_request("question.recommended is required"))?;
+    if !(1..=choices.len()).contains(&(recommended as usize)) {
+        return Err(AppError::bad_request(format!(
+            "question.recommended must be a choice number from 1 to {}",
+            choices.len()
+        )));
+    }
+    let why = required(&input.why, "why")?;
+    Ok(CommentQuestion {
+        text,
+        choices,
+        recommended,
+        why,
+        answer: None,
+    })
+}
+
+/// Returns the 409 for a board whose settings name no usable Blocked column.
+fn no_blocked_column() -> AppError {
+    AppError::conflict(
+        "the board has no Blocked column: set blocked_column_id in the board config to one of its columns",
+    )
+}
+
+/// Returns the board's Blocked column, which its config names by id.
+fn blocked_column(db: &AccountDb, board_id: &str) -> Result<OwnedColumn, AppError> {
+    let board = found(db.board(board_id), "board not found")?;
+    let id = board
+        .row()
+        .blocked_column_id()
+        .ok_or_else(no_blocked_column)?;
+    db.column(&id)
+        .map_err(AppError::from)?
+        .filter(|column| column.row().board_id == board_id)
+        .ok_or_else(no_blocked_column)
+}
+
+/// Returns the comment a question write stored, or the error its refusal maps to.
+fn question_comment(written: QuestionWrite) -> Result<TaskComment, AppError> {
+    match written {
+        QuestionWrite::Done(comment) => Ok(*comment),
+        QuestionWrite::NotFound => Err(AppError::not_found("task or comment not found")),
+        QuestionWrite::StaleFence => Err(stale_fence()),
+        QuestionWrite::OpenChildren { count } => Err(epic_has_open_children(count)),
+        QuestionWrite::WipLimit { count, limit } => Err(AppError::conflict(format!(
+            "column WIP limit reached ({count}/{limit})"
+        ))
+        .with_code(ErrorCode::WipLimitReached)),
+        QuestionWrite::NoQuestion => Err(AppError::bad_request("the comment is not a question")),
+        QuestionWrite::AlreadyAnswered => {
+            Err(AppError::conflict("the question is answered already"))
+        }
+        QuestionWrite::BadChoice => Err(AppError::bad_request(
+            "choice must be the number of one of the question's choices",
+        )),
+    }
 }
 
 /// Lists a task's comments as JSON, oldest first.
@@ -12666,9 +12869,9 @@ async fn list_comments(
     request_body = CreateCommentInput,
     responses(
         (status = 200, description = "The created comment", body = TaskComment),
-        (status = 400, description = "Comment body is required, too long, kind over 64 characters, or author over 80 characters or equal to your username"),
+        (status = 400, description = "Comment body is required, too long, kind over 64 characters, or author over 80 characters or equal to your username. For a question: a missing or invalid part, named in the message, a choice whose column is not on the board, or a kind other than `question`"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`stale_fence`: a live claim holds another fence"),
+        (status = 409, description = "`stale_fence`: a live claim holds another fence. For a question: the board has no Blocked column, `wip_limit_reached`, or `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -12683,7 +12886,16 @@ async fn create_comment(
     let task = found(account.task(&id), "task not found")?;
     ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     let fence = claim_fence_header(&headers)?;
-    let text = comment_text(&input.body)?;
+    let question = input
+        .question
+        .as_ref()
+        .map(|question| question_from_input(&account, task.board_id(), question))
+        .transpose()?;
+    let body = match &question {
+        Some(question) if input.body.trim().is_empty() => question.text.clone(),
+        _ => input.body.clone(),
+    };
+    let text = comment_text(&body)?;
     let kind = input
         .kind
         .as_deref()
@@ -12692,6 +12904,16 @@ async fn create_comment(
     if kind.is_some_and(|kind| kind.chars().count() > MAX_COMMENT_KIND_CHARS) {
         return Err(AppError::bad_request(
             "comment kind must be at most 64 characters",
+        ));
+    }
+    if question.is_some() && kind.is_some_and(|kind| kind != QUESTION_KIND) {
+        return Err(AppError::bad_request(
+            "a comment with a question has kind question",
+        ));
+    }
+    if question.is_none() && kind.is_some_and(|kind| kind.eq_ignore_ascii_case(QUESTION_KIND)) {
+        return Err(AppError::bad_request(
+            "a comment of kind question needs a question",
         ));
     }
 
@@ -12714,24 +12936,36 @@ async fn create_comment(
     // API callers can attribute the comment to a display name, and blank falls back to the
     // authenticated username
     let author: &str = label.unwrap_or(&user.username);
-    match account
-        .add_comment(
-            &task,
-            NewComment {
-                author,
-                body: text,
-                actor_kind: if user.kind == CredentialKind::Session {
-                    ActorKind::User
-                } else {
-                    ActorKind::ApiToken
-                },
-                token_name: user.token_name.as_deref(),
-                token_id: user.token_id.as_deref(),
-                kind,
-            },
-            user.actor(),
+    let new = NewComment {
+        author,
+        body: text,
+        actor_kind: if user.kind == CredentialKind::Session {
+            ActorKind::User
+        } else {
+            ActorKind::ApiToken
+        },
+        token_name: user.token_name.as_deref(),
+        token_id: user.token_id.as_deref(),
+        kind,
+    };
+    if let Some(question) = question {
+        let board_id = task.board_id();
+        let blocked = blocked_column(&account, board_id)?;
+        if task.row().column_id != blocked.row().id {
+            ensure_entry_allowed(&account, blocked.row(), board_id, task.row())?;
+        }
+        let to = QuestionMove {
+            column_id: &blocked.row().id,
+            position: placement_index(new_task_placement(&account, board_id)?),
             fence,
-        )
+        };
+        let written = account
+            .post_question(&task, new, question, to, user.actor())
+            .map_err(AppError::from)?;
+        return question_comment(written).map(Json);
+    }
+    match account
+        .add_comment(&task, new, user.actor(), fence)
         .map_err(AppError::from)?
     {
         FencedWrite::Written(comment) => Ok(Json(comment)),
@@ -12907,6 +13141,107 @@ async fn react_to_comment(
             Err(AppError::not_found("task or comment not found"))
         }
     }
+}
+
+/// Request body to answer a question comment.
+#[derive(Deserialize, ToSchema)]
+struct AnswerInput {
+    /// The number of the choice picked, counting from 1. Required.
+    choice: Option<u32>,
+    /// The owner's own words that picked the choice, at most 5000 bytes. Required and non-empty
+    /// for a token, which relays the owner's answer, and ignored for the browser.
+    quote: Option<String>,
+}
+
+/// Answers a question comment: records the answerer and the choice, removes the `needs:human`
+/// label and moves the card to the choice's column, in one write. The browser answers as the
+/// owner. A token must send `quote`, the owner's own words, and the answer is stored as relayed,
+/// naming the token and the quote. A question takes one answer. The `needs:human` label the question
+/// added does not lock the card against the answer, though any other locking label does.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/comments/{comment_id}/answer",
+    operation_id = "answer_comment_question",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("comment_id" = String, Path, description = "Id of the question comment"),
+    ),
+    request_body = AnswerInput,
+    responses(
+        (status = 200, description = "The question comment with its answer", body = TaskComment),
+        (status = 400, description = "Missing choice, a choice number the question lacks, a token without a non-empty quote, a quote that is too long, or the comment is not a question"),
+        (status = 404, description = "Task or comment not found"),
+        (status = 409, description = "The question is answered already, its column is gone, `wip_limit_reached`, or `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn answer_comment_question(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path((id, comment_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskComment>, AppError> {
+    let input: AnswerInput = parse_body(&headers, body).await?;
+    let choice = input
+        .choice
+        .ok_or_else(|| AppError::bad_request("choice is required"))?;
+    let relayed = user.kind != CredentialKind::Session;
+    let quote = input.quote.as_deref().map(str::trim).unwrap_or_default();
+    if relayed && quote.is_empty() {
+        return Err(AppError::bad_request(
+            "quote is required: send the owner's own words that picked the choice",
+        ));
+    }
+    if quote.len() > MAX_COMMENT_BYTES {
+        return Err(AppError::bad_request(format!(
+            "quote is too long (max {MAX_COMMENT_BYTES} bytes)"
+        )));
+    }
+    let task = found(account.task(&id), "task or comment not found")?;
+    let mut unlocked = task.row().clone();
+    unlocked.labels.retain(|label| label != NEEDS_HUMAN_LABEL);
+    ensure_unlocked(&account, &user, task.board_id(), &unlocked)?;
+    let comment = task
+        .row()
+        .comments
+        .iter()
+        .find(|comment| comment.id == comment_id)
+        .ok_or_else(|| AppError::not_found("task or comment not found"))?;
+    let question = comment
+        .question
+        .as_ref()
+        .ok_or_else(|| AppError::bad_request("the comment is not a question"))?;
+    if question.answer.is_some() {
+        return Err(AppError::conflict("the question is answered already"));
+    }
+    let picked = question.choice(choice).ok_or_else(|| {
+        AppError::bad_request("choice must be the number of one of the question's choices")
+    })?;
+    let destination = account
+        .column(&picked.column_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::conflict("the column of this choice is gone"))?;
+    if task.row().column_id != destination.row().id {
+        ensure_entry_allowed(&account, destination.row(), task.board_id(), task.row())?;
+    }
+    let position = placement_index(new_task_placement(&account, &destination.row().board_id)?);
+    let answer = QuestionAnswer {
+        choice,
+        answered_by: user.handle.clone(),
+        token_name: relayed.then(|| {
+            user.token_name
+                .clone()
+                .unwrap_or_else(|| user.username.clone())
+        }),
+        quote: relayed.then(|| quote.to_string()),
+        answered_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let written = account
+        .answer_question(&task, &comment_id, answer, position, user.actor())
+        .map_err(AppError::from)?;
+    question_comment(written).map(Json)
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -19852,6 +20187,9 @@ struct BoardConfigInput {
     /// Whether the default member also becomes the task's responsible member. True when never
     /// set.
     default_member_responsible: Option<bool>,
+    /// The id of the column a posted question moves its card to, which must be a column of this
+    /// board. An empty string clears it.
+    blocked_column_id: Option<String>,
     /// "Estimation unit": true estimates in points instead of hours and false (the default) in
     /// hours. It switches at once in either direction, and each task keeps both its hour estimate
     /// and its points.
@@ -20017,6 +20355,9 @@ struct BoardConfigView {
     default_member: String,
     /// Whether the default member also becomes responsible.
     default_member_responsible: bool,
+    /// The id of the board's Blocked column, where a posted question moves its card, or null when
+    /// it has none.
+    blocked_column_id: Option<String>,
     /// Whether the board estimates in points instead of hours.
     estimate_in_points: bool,
     /// The board's task numbering, or null when it has none.
@@ -20034,7 +20375,7 @@ struct BoardConfigView {
     request_body = BoardConfigInput,
     responses(
         (status = 200, description = "Current board config", body = BoardConfigView),
-        (status = 400, description = "Invalid due_time, unknown default_member, or archiving the last unarchived board"),
+        (status = 400, description = "Invalid due_time, unknown default_member, a blocked_column_id that is not a column of the board, or archiving the last unarchived board"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -20105,6 +20446,22 @@ async fn update_board_config(
             serde_json::Value::Bool(in_points),
         );
     }
+    if let Some(column_id) = input.blocked_column_id.as_deref().map(str::trim) {
+        let on_board = column_id.is_empty()
+            || db
+                .column(column_id)
+                .map_err(AppError::from)?
+                .is_some_and(|column| column.row().board_id == board.row().id);
+        if !on_board {
+            return Err(AppError::bad_request(
+                "blocked_column_id must be a column of this board",
+            ));
+        }
+        updates.insert(
+            BLOCKED_COLUMN_KEY.to_string(),
+            serde_json::Value::String(column_id.to_string()),
+        );
+    }
     if let Some(raw) = input.due_time.as_deref() {
         let time = parse_due_time(raw.trim()).ok_or_else(|| {
             AppError::bad_request(format!("invalid due_time \"{raw}\": use 24-hour HH:MM"))
@@ -20139,6 +20496,7 @@ async fn update_board_config(
         bin_permanent_delete: board.row().config_bool(BIN_PERMANENT_DELETE_KEY),
         default_member: board.row().default_member(),
         default_member_responsible: board.row().default_member_responsible(),
+        blocked_column_id: board.row().blocked_column_id(),
         estimate_in_points: board.row().config_bool(ESTIMATE_IN_POINTS_KEY),
         numbering: board.row().numbering().map(NumberingView::from),
     }))
@@ -24385,7 +24743,8 @@ fn held_board(account: &AccountDb, id: &str) -> Result<OwnedBoard, AppError> {
 }
 
 /// Creates the standard roles the account lacks, from the fixed table of planner, implementer,
-/// reviewer, verifier, release and lead, and grants every listed board to all six. A role that
+/// reviewer, verifier, release and lead, and grants every listed board to all six. Needs
+/// `roles.grant`, which the lead preset holds. A role that
 /// exists keeps its template, and a repeat call changes nothing. Every board must be one the
 /// caller holds, or nothing is written. No other role is created or edited this way.
 #[utoipa::path(
@@ -24396,7 +24755,7 @@ fn held_board(account: &AccountDb, id: &str) -> Result<OwnedBoard, AppError> {
     request_body = StandardRolesInput,
     responses(
         (status = 200, description = "The six standard roles and the names this call created", body = StandardRolesView),
-        (status = 403, description = "`exceeds_grant`: a listed board is not one the calling token holds, and nothing was written"),
+        (status = 403, description = "`permission_denied`: the caller lacks `roles.grant`, or `exceeds_grant`: a listed board is not one the calling token holds, and nothing was written"),
         (status = 404, description = "A listed board does not exist, and nothing was written"),
         (status = 409, description = "`quota_exceeded`: creating the missing roles would pass the account's 50 roles"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -24441,7 +24800,7 @@ async fn ensure_standard_roles(
     ),
     responses(
         (status = 200, description = "The role with its boards", body = AgentRoleView),
-        (status = 403, description = "`exceeds_grant`: the board is not one the calling token holds"),
+        (status = 403, description = "`permission_denied`: the caller lacks `roles.grant`, or `exceeds_grant`: the board is not one the calling token holds"),
         (status = 404, description = "`unknown_role`: the account has no such role, or the board does not exist"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -24456,6 +24815,148 @@ async fn grant_agent_role(
         return Err(AppError::not_found(format!("no such board: {board_id}")));
     }
     Ok(Json(AgentRoleView::new(&account, role)?))
+}
+
+/// Result of revoking the tokens of an agent role.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct RevokedRoleTokens {
+    /// How many live tokens were revoked, children included.
+    revoked: u64,
+}
+
+/// Withdraws an agent role's grant on a board and revokes, in the same write, every live token
+/// issued as the role that reaches the board, with the tokens they issued. The role's tokens on
+/// other boards stay live. The owner's browser revokes any board's grant. A token revokes only
+/// the grant on a board it holds.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/agent-roles/{id}/boards/{board_id}",
+    operation_id = "revoke_agent_role_grant",
+    tag = "Agent roles",
+    params(
+        ("id" = String, Path, description = "Agent role id"),
+        ("board_id" = String, Path, description = "Board id"),
+    ),
+    responses(
+        (status = 200, description = "How many live tokens were revoked", body = RevokedRoleTokens),
+        (status = 403, description = "`exceeds_grant`: the board is not one the calling token holds"),
+        (status = 404, description = "`unknown_role`: the account has no such role, or the board does not exist, or the role holds no grant on it"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn revoke_agent_role_grant(
+    account: AccountDb,
+    Path((id, board_id)): Path<(String, String)>,
+) -> Result<Json<RevokedRoleTokens>, AppError> {
+    let role = role_or_404(account.agent_role(&id))?;
+    let board = held_board(&account, &board_id)?;
+    let revoked = account
+        .revoke_agent_role(&role.id, &board.row().id)?
+        .ok_or_else(|| {
+            AppError::not_found("the role holds no grant on that board")
+                .with_code(ErrorCode::UnknownRole)
+        })?;
+    Ok(Json(RevokedRoleTokens { revoked }))
+}
+
+/// Revokes every live token issued as an agent role that reaches a board, with the tokens they
+/// issued, and keeps the role's grant on the board. A token revokes only on a board it holds.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agent-roles/{id}/boards/{board_id}/revoke-tokens",
+    operation_id = "revoke_agent_role_board_tokens",
+    tag = "Agent roles",
+    params(
+        ("id" = String, Path, description = "Agent role id"),
+        ("board_id" = String, Path, description = "Board id"),
+    ),
+    responses(
+        (status = 200, description = "How many live tokens were revoked", body = RevokedRoleTokens),
+        (status = 403, description = "`exceeds_grant`: the board is not one the calling token holds"),
+        (status = 404, description = "`unknown_role`: the account has no such role, or the board does not exist"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn revoke_agent_role_board_tokens(
+    account: AccountDb,
+    Path((id, board_id)): Path<(String, String)>,
+) -> Result<Json<RevokedRoleTokens>, AppError> {
+    let role = role_or_404(account.agent_role(&id))?;
+    let board = held_board(&account, &board_id)?;
+    let revoked = account
+        .revoke_role_tokens(&role.id, Some(&board.row().id))?
+        .ok_or_else(|| {
+            AppError::not_found("no such agent role").with_code(ErrorCode::UnknownRole)
+        })?;
+    Ok(Json(RevokedRoleTokens { revoked }))
+}
+
+/// Revokes every live token issued as an agent role on every board of the account, with the tokens
+/// they issued, and keeps the role and its grants. Only the owner's browser session does this, so
+/// an API token cannot.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agent-roles/{id}/revoke-tokens",
+    operation_id = "revoke_agent_role_tokens",
+    tag = "Agent roles",
+    params(("id" = String, Path, description = "Agent role id")),
+    responses(
+        (status = 200, description = "How many live tokens were revoked", body = RevokedRoleTokens),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "`unknown_role`: the account has no such role"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn revoke_agent_role_tokens(
+    account: AccountDb,
+    _: FreshSession,
+    Path(id): Path<String>,
+) -> Result<Json<RevokedRoleTokens>, AppError> {
+    let role = role_or_404(account.agent_role(&id))?;
+    let revoked = account.revoke_role_tokens(&role.id, None)?.ok_or_else(|| {
+        AppError::not_found("no such agent role").with_code(ErrorCode::UnknownRole)
+    })?;
+    Ok(Json(RevokedRoleTokens { revoked }))
+}
+
+/// Result of deleting an agent role.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct DeletedAgentRole {
+    /// The id of the deleted role.
+    deleted: String,
+    /// How many live tokens were revoked, children included.
+    revoked: u64,
+}
+
+/// Deletes an agent role with its grants and revokes, in the same write, every live token issued
+/// as it with the tokens they issued. History keeps the role name stored on each entry. Only the
+/// owner's browser session does this, so an API token cannot.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/agent-roles/{id}",
+    operation_id = "delete_agent_role",
+    tag = "Agent roles",
+    params(("id" = String, Path, description = "Agent role id")),
+    responses(
+        (status = 200, description = "The deleted role id and how many live tokens were revoked", body = DeletedAgentRole),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "`unknown_role`: the account has no such role"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_agent_role(
+    account: AccountDb,
+    _: FreshSession,
+    Path(id): Path<String>,
+) -> Result<Json<DeletedAgentRole>, AppError> {
+    let role = role_or_404(account.agent_role(&id))?;
+    let revoked = account.delete_agent_role(&role.id)?.ok_or_else(|| {
+        AppError::not_found("no such agent role").with_code(ErrorCode::UnknownRole)
+    })?;
+    Ok(Json(DeletedAgentRole {
+        deleted: role.id,
+        revoked,
+    }))
 }
 
 // ---- Agent discovery ----
@@ -25473,6 +25974,60 @@ async fn mark_all_notifications_read(
     Ok(Json(UnreadView { unread: 0 }))
 }
 
+/// Removes one of the signed-in account's notifications. Needs the browser session.
+#[utoipa::path(
+    delete,
+    path = "/api/notifications/{id}",
+    operation_id = "delete_notification",
+    tag = "Notifications",
+    params(("id" = u64, Path, description = "Notification id")),
+    responses(
+        (status = 200, description = "The notification is gone, and the body holds the count still unread", body = UnreadView),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "The account has no such notification"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_notification(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<UnreadView>, AppError> {
+    require_cookie_auth(&user)?;
+    let unread = id
+        .parse::<u64>()
+        .ok()
+        .map(|seq| account.delete_notification(seq))
+        .transpose()
+        .map_err(AppError::from)?
+        .flatten()
+        .ok_or_else(|| AppError::not_found("notification not found"))?;
+    Ok(Json(UnreadView {
+        unread: unread as u64,
+    }))
+}
+
+/// Removes every notification of the signed-in account. Needs the browser session.
+#[utoipa::path(
+    delete,
+    path = "/api/notifications",
+    operation_id = "delete_all_notifications",
+    tag = "Notifications",
+    responses(
+        (status = 200, description = "Every notification is gone, so the unread count is 0", body = UnreadView),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_all_notifications(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<UnreadView>, AppError> {
+    require_cookie_auth(&user)?;
+    account.delete_all_notifications().map_err(AppError::from)?;
+    Ok(Json(UnreadView { unread: 0 }))
+}
+
 // ---- Generated OpenAPI ----
 
 /// Routes on a board or another owned row that also need the browser session, so a token never
@@ -26219,6 +26774,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         list_comments,
         edit_comment,
         react_to_comment,
+        answer_comment_question,
         delete_comment,
         upload_attachment,
         attach_link,
@@ -26329,6 +26885,10 @@ them, which the Backups section of the settings page calls after a confirmation.
         update_agent_role,
         ensure_standard_roles,
         grant_agent_role,
+        revoke_agent_role_grant,
+        revoke_agent_role_board_tokens,
+        revoke_agent_role_tokens,
+        delete_agent_role,
         whoami,
         list_permissions,
         list_api_tokens,
@@ -26361,6 +26921,8 @@ them, which the Backups section of the settings page calls after a confirmation.
         list_notifications,
         mark_notification_read,
         mark_all_notifications_read,
+        delete_notification,
+        delete_all_notifications,
         list_passkeys,
         remove_passkey,
         sign_out_other_sessions,
@@ -26408,6 +26970,7 @@ them, which the Backups section of the settings page calls after a confirmation.
             CreateTokenResponse,
             InspectTokenResponse,
             AgentRoleView,
+            RevokedRoleTokens,
             CreateAgentRoleInput,
             EditAgentRoleInput,
             StandardRolesInput,
@@ -26443,6 +27006,9 @@ them, which the Backups section of the settings page calls after a confirmation.
             AddSubtasksFromTemplateInput,
             SubtaskTemplate,
             CreateCommentInput,
+            QuestionInput,
+            QuestionChoiceInput,
+            AnswerInput,
             EditCommentInput,
             UploadAttachmentInput,
             UploadReply,
@@ -26452,6 +27018,9 @@ them, which the Backups section of the settings page calls after a confirmation.
             RenameAttachmentInput,
             TaskComment,
             CommentReaction,
+            CommentQuestion,
+            QuestionChoice,
+            QuestionAnswer,
             ReactInput,
             ActorKind,
             TaskAttachment,
@@ -26641,6 +27210,9 @@ mod history_values_tests;
 
 #[cfg(test)]
 mod epics_tests;
+
+#[cfg(test)]
+mod questions_tests;
 
 #[cfg(test)]
 mod import_tests;
@@ -33675,6 +34247,7 @@ mod tests {
             [
                 "archived",
                 "bin_permanent_delete",
+                "blocked_column_id",
                 "default_member",
                 "default_member_responsible",
                 "due_time",

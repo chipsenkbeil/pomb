@@ -890,6 +890,16 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/notifications/:id/read",
         Permission::SettingsWrite,
     ),
+    (
+        Method::DELETE,
+        "/api/notifications",
+        Permission::SettingsWrite,
+    ),
+    (
+        Method::DELETE,
+        "/api/notifications/:id",
+        Permission::SettingsWrite,
+    ),
     (Method::POST, "/api/tasks", Permission::TasksCreate),
     (Method::GET, "/api/tasks/:id", Permission::TasksRead),
     (Method::PATCH, "/api/tasks/:id", Permission::TasksEdit),
@@ -1003,6 +1013,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::POST,
         "/api/tasks/:id/comments/:comment_id/reactions",
+        Permission::CommentsWrite,
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/comments/:comment_id/answer",
         Permission::CommentsWrite,
     ),
     (
@@ -1396,11 +1411,31 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::POST,
         "/api/v1/agent-roles/standard",
-        Permission::SettingsWrite,
+        Permission::RolesGrant,
     ),
     (
         Method::PUT,
         "/api/v1/agent-roles/:id/boards/:board_id",
+        Permission::RolesGrant,
+    ),
+    (
+        Method::DELETE,
+        "/api/v1/agent-roles/:id/boards/:board_id",
+        Permission::RolesGrant,
+    ),
+    (
+        Method::POST,
+        "/api/v1/agent-roles/:id/boards/:board_id/revoke-tokens",
+        Permission::RolesGrant,
+    ),
+    (
+        Method::POST,
+        "/api/v1/agent-roles/:id/revoke-tokens",
+        Permission::SettingsWrite,
+    ),
+    (
+        Method::DELETE,
+        "/api/v1/agent-roles/:id",
         Permission::SettingsWrite,
     ),
     (Method::GET, "/api/v1/auth/tokens", Permission::SettingsRead),
@@ -2234,6 +2269,11 @@ mod tests {
             "/api/tasks/:id/comments/:comment_id/reactions",
             AuthScope::Work,
         ),
+        (
+            Method::POST,
+            "/api/tasks/:id/comments/:comment_id/answer",
+            AuthScope::Work,
+        ),
         (Method::POST, "/api/tasks/:id/attachments", AuthScope::Work),
         (
             Method::POST,
@@ -2371,6 +2411,26 @@ mod tests {
         (
             Method::DELETE,
             "/api/v1/auth/tokens/children/:id",
+            AuthScope::Provision,
+        ),
+        (
+            Method::POST,
+            "/api/v1/agent-roles/standard",
+            AuthScope::Provision,
+        ),
+        (
+            Method::PUT,
+            "/api/v1/agent-roles/:id/boards/:board_id",
+            AuthScope::Provision,
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/agent-roles/:id/boards/:board_id",
+            AuthScope::Provision,
+        ),
+        (
+            Method::POST,
+            "/api/v1/agent-roles/:id/boards/:board_id/revoke-tokens",
             AuthScope::Provision,
         ),
         (

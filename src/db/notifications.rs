@@ -361,6 +361,33 @@ impl Db {
         }
         txn.commit()
     }
+
+    /// Removes notification `seq` of `account` and returns how many remain unread, or [`None`]
+    /// when the account has no such notification.
+    pub fn delete_notification(&self, account: &AccountId, seq: u64) -> DbResult<Option<usize>> {
+        let txn = self.db.begin_write()?;
+        let removed = txn
+            .open_table(NOTIFICATIONS)?
+            .remove(notification_key(account.as_str(), seq).as_str())?
+            .is_some();
+        if !removed {
+            return Ok(None);
+        }
+        let unread = txn_unread(&txn, account.as_str())?;
+        txn.commit()?;
+        Ok(Some(unread))
+    }
+
+    /// Removes every notification of `account`.
+    pub fn delete_all_notifications(&self, account: &AccountId) -> DbResult<()> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(NOTIFICATIONS)?;
+            let (first, last) = account_keys(account.as_str());
+            table.retain_in(first.as_str()..=last.as_str(), |_, _| false)?;
+        }
+        txn.commit()
+    }
 }
 
 #[cfg(test)]
@@ -544,6 +571,58 @@ mod tests {
         let page = fx.page(None, 10);
         assert_eq!(page.unread, 0);
         assert!(page.items.iter().all(|(_, row)| row.read));
+    }
+
+    #[test]
+    fn deleting_one_should_remove_only_it_and_report_the_unread_count() {
+        let fx = fixture();
+        let task = fx.followed();
+        for _ in 0..3 {
+            fx.comment(&task, TOKEN);
+        }
+        fx.db.mark_notification_read(&fx.owner, 3).expect("mark");
+        assert_eq!(
+            fx.db.delete_notification(&fx.owner, 2).expect("delete"),
+            Some(1)
+        );
+        assert_eq!(seqs(&fx.page(None, 10)), [3, 1]);
+        assert_eq!(
+            fx.db.delete_notification(&fx.owner, 2).expect("delete"),
+            None
+        );
+    }
+
+    #[test]
+    fn deleting_all_should_empty_the_account_and_leave_the_others() {
+        let fx = fixture();
+        let task = fx.followed();
+        for _ in 0..3 {
+            fx.comment(&task, TOKEN);
+        }
+        let row = notification(
+            NotificationKind::BoardDeleted,
+            &fx.board_row(),
+            None,
+            None,
+            TOKEN,
+            "2026-11-03T00:00:00Z",
+        );
+        let txn = fx.db.db.begin_write().expect("write");
+        txn_append(&txn, fx.other.as_str(), &[row]).expect("append");
+        txn.commit().expect("commit");
+        fx.db
+            .delete_all_notifications(&fx.owner)
+            .expect("delete all");
+        let mine = fx.page(None, 10);
+        assert_eq!((mine.items.len(), mine.unread), (0, 0));
+        assert_eq!(
+            fx.db
+                .notifications(&fx.other, None, 10)
+                .expect("page")
+                .items
+                .len(),
+            1
+        );
     }
 
     #[test]

@@ -825,6 +825,9 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
         (&Method::POST, "/api/tasks/:id/comments/:comment_id/reactions") => {
             json!({"emoji": "\u{1F44D}"})
         }
+        (&Method::POST, "/api/tasks/:id/comments/:comment_id/answer") => {
+            json!({"choice": 1, "quote": "go"})
+        }
         (&Method::PATCH, "/api/tasks/:id/attachments/:attachment_id") => json!({"name": "b"}),
         (&Method::POST, "/api/tasks/:id/attachments/document") => {
             json!({"name": "notes", "text": "hi"})
@@ -2620,4 +2623,67 @@ async fn notifications_should_belong_to_their_account_and_the_browser_session() 
     assert_eq!(status, StatusCode::OK, "{text}");
     let marked: Value = serde_json::from_str(&text).expect("json");
     assert_eq!(marked["unread"], 0, "{text}");
+}
+
+/// An account dismisses only its own notifications, and only from the browser session.
+#[tokio::test]
+async fn dismissing_notifications_should_belong_to_their_account_and_the_browser_session() {
+    let fx = accounts().await;
+    let board = fx
+        .db
+        .board(&fx.a_ids.board)
+        .expect("read")
+        .expect("A's board");
+    let actor = Actor {
+        name: "api-token",
+        token_name: Some("ci"),
+        kind: ActorKind::ApiToken,
+        parent_token: None,
+        role_id: None,
+        role_name: None,
+        label: None,
+    };
+    for _ in 0..2 {
+        fx.db
+            .notify(Change::BoardDeleted(&board), actor)
+            .expect("notify");
+    }
+    let get = Method::GET;
+    let delete = Method::DELETE;
+    let list = "/api/notifications";
+    let (_, text) = send(&fx.app, Who::Session(&fx.a_cookie), &get, list, None).await;
+    let mine: Value = serde_json::from_str(&text).expect("json");
+    let id = mine["items"][0]["id"].as_u64().expect("id");
+    let one = format!("{list}/{id}");
+
+    let (status, _) = send(&fx.app, Who::Session(&fx.b_cookie), &delete, &one, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(&fx.app, Who::Session(&fx.b_cookie), &delete, list, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, text) = send(&fx.app, Who::Session(&fx.a_cookie), &get, list, None).await;
+    let still: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(
+        still["items"].as_array().map(Vec::len),
+        Some(2),
+        "B's calls removed A's notifications"
+    );
+
+    for (uri, label) in [(one.as_str(), "one"), (list, "all")] {
+        let (status, text) = send(&fx.app, Who::Token(&fx.a_token), &delete, uri, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{label}: {text}");
+        assert!(text.contains("session_required"), "{label}: {text}");
+    }
+
+    let (status, text) = send(&fx.app, Who::Session(&fx.a_cookie), &delete, &one, None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let removed: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(removed["unread"], 1, "{text}");
+    let (status, _) = send(&fx.app, Who::Session(&fx.a_cookie), &delete, &one, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, text) = send(&fx.app, Who::Session(&fx.a_cookie), &delete, list, None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (_, text) = send(&fx.app, Who::Session(&fx.a_cookie), &get, list, None).await;
+    let empty: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(empty["items"], json!([]), "{text}");
 }

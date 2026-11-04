@@ -3132,7 +3132,13 @@
       if (panel) panel.hidden = tabName !== name;
     });
     if (name === 'history') loadModalHistory();
+    if (name === 'comments') fitOpenCommentBox();
   }
+
+  const fitOpenCommentBox = () => {
+    const box = document.getElementById('modal-comment-input');
+    if (box) fitCommentBox(box);
+  };
 
   function showModalTab(name) {
     if (modalSubviewOpen) {
@@ -5714,14 +5720,14 @@
       bindDescriptionBlock(descBlock);
     }
     syncMdToggle();
-    // KF-254: the single-line composer submits on Enter (no Add button).
+    // KF-254: the composer submits on Enter (no Add button), Shift+Enter adds a line.
     var commentInput = document.getElementById('modal-comment-input');
     if (commentInput) {
       wireMentions(commentInput);
       bindImagePaste(commentInput);
-      commentInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); addModalComment(); }
-      });
+      commentInput.addEventListener('keydown', onCommentKeydown);
+      commentInput.addEventListener('input', () => fitCommentBox(commentInput));
+      fitCommentBox(commentInput);
     }
     var closeBtn = overlay.querySelector('[data-close-modal]');
     if (closeBtn) closeBtn.addEventListener('click', closeModal);
@@ -9844,6 +9850,17 @@
     };
   })();
 
+  const fitCommentBox = (box) => {
+    box.style.height = 'auto';
+    box.style.height = box.scrollHeight + box.offsetHeight - box.clientHeight + 'px';
+  };
+
+  const onCommentKeydown = (e) => {
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    addModalComment();
+  };
+
   // Comments (KF-064): the modal body always shows the section; Add →
   // Comment focuses the input.
   function addModalComment() {
@@ -10834,7 +10851,7 @@
       discarded = true;
     }
     var commentTa = document.getElementById('modal-comment-input');
-    if (commentTa && commentTa.value.trim() !== '') { commentTa.value = ''; discarded = true; }
+    if (commentTa && commentTa.value.trim() !== '') { commentTa.value = ''; fitCommentBox(commentTa); discarded = true; }
     var subInput = document.getElementById('modal-subtask-input');
     if (subInput && subInput.value.trim() !== '') { subInput.value = ''; discarded = true; }
     return discarded;
@@ -19328,6 +19345,13 @@
       text.appendChild(who);
       text.appendChild(document.createTextNode(' ' + this.describe(n)));
       row.appendChild(text);
+      const dismiss = document.createElement('button');
+      dismiss.className = 'notification-dismiss';
+      dismiss.setAttribute('type', 'button');
+      dismiss.setAttribute('aria-label', 'Dismiss notification');
+      dismiss.title = 'Dismiss';
+      dismiss.textContent = '×';
+      row.appendChild(dismiss);
       const at = Date.parse(n.created_at);
       if (!isNaN(at)) {
         const now = Date.now();
@@ -19394,6 +19418,31 @@
         });
     },
 
+    dismiss(id, row, list, empty) {
+      return fetch('/api/notifications/' + id, { method: 'DELETE', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then((res) => jsonIfJson(res))
+        .then((done) => {
+          if (!done) return;
+          row.remove();
+          this.setUnread(done.unread);
+          empty.hidden = list.children.length > 0;
+        });
+    },
+
+    clearAll(list, empty, more) {
+      return fetch('/api/notifications', { method: 'DELETE', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then((res) => jsonIfJson(res))
+        .then((done) => {
+          if (!done) return;
+          this.generation++;
+          list.textContent = '';
+          empty.hidden = false;
+          more.hidden = true;
+          this.nextBefore = null;
+          this.setUnread(done.unread);
+        });
+    },
+
     openTask: function (link) {
       var url = new URL(link.href, window.location.href);
       if (url.pathname !== window.location.pathname) return false;
@@ -19411,6 +19460,7 @@
     var empty = panel.querySelector('.notifications-empty');
     var more = panel.querySelector('.notifications-more');
     var markAll = panel.querySelector('.notifications-mark-all');
+    const clearAll = panel.querySelector('.notifications-clear-all');
     function placePanel() {
       var r = btn.getBoundingClientRect();
       panel.style.top = (r.bottom + 6) + 'px';
@@ -19450,10 +19500,17 @@
       }
     });
     markAll.addEventListener('click', function () { Notifications.markAll(list); });
+    clearAll.addEventListener('click', () => Notifications.clearAll(list, empty, more));
     more.addEventListener('click', function () {
       Notifications.load(list, empty, more, Notifications.nextBefore);
     });
     list.addEventListener('click', function (e) {
+      const dismiss = e.target.closest('.notification-dismiss');
+      if (dismiss) {
+        const row = dismiss.closest('.notification-row');
+        Notifications.dismiss(row.getAttribute('data-notification-id'), row, list, empty);
+        return;
+      }
       var link = e.target.closest('.notification-link');
       if (link && Notifications.openTask(link)) {
         e.preventDefault();

@@ -262,15 +262,17 @@ async fn board_delete_should_drop_role_grants() {
     fx.db.delete_board(&fx.boards[ALICE]).expect("delete");
     let after = fx.bearer(ALICE, "GET", &uri, None).await;
     assert_eq!(after.body["boards"], json!([kept]));
-    assert!(
+    assert_eq!(
         fx.db
             .revoke_agent_role(fx.alice.as_str(), id, &kept)
-            .expect("revoke")
+            .expect("revoke"),
+        Some(0)
     );
-    assert!(
-        !fx.db
+    assert_eq!(
+        fx.db
             .revoke_agent_role(fx.alice.as_str(), id, &kept)
-            .expect("revoke")
+            .expect("revoke"),
+        None
     );
     let revoked = fx.bearer(ALICE, "GET", &uri, None).await;
     assert_eq!(revoked.body["boards"], json!([]));
@@ -1359,4 +1361,385 @@ async fn roleless_token_should_keep_the_free_text_role() {
     let event = row.history.last().expect("event");
     assert_eq!(event.role_name, None);
     assert_eq!(history_actor(event), "api-token (agent)");
+}
+
+fn lead_bearer(fx: &Fixture, boards: &[&str]) -> String {
+    let (mut record, raw) = new_api_token_record(&fx.alice, "lead", AuthScope::Provision, None);
+    record.boards = BoardAccess::Only(boards.iter().map(|id| (*id).to_string()).collect());
+    fx.db.create_api_token(&record).expect("token");
+    format!("Bearer {raw}")
+}
+
+fn issue_on(fx: &Fixture, role: &Value, name: &str, boards: &[&str]) -> ApiTokenRecord {
+    let parent = issuer(fx);
+    let (mut record, _) = new_api_token_record(&fx.alice, name, AuthScope::Work, None);
+    record.parent_id = Some(parent.id);
+    record.parent_name = Some(parent.name);
+    record.boards = BoardAccess::Only(boards.iter().map(|id| (*id).to_string()).collect());
+    let role_id = role["id"].as_str().expect("role id");
+    let now = chrono::Utc::now().timestamp();
+    fx.db
+        .create_api_token_as_role(role_id, record, 1, now)
+        .expect("issue")
+        .expect("role")
+}
+
+fn live_names(fx: &Fixture) -> BTreeSet<String> {
+    fx.db
+        .list_account_api_tokens(&fx.alice)
+        .expect("list")
+        .into_iter()
+        .map(|token| token.name)
+        .collect()
+}
+
+struct RoleTokens {
+    role_id: String,
+    other: String,
+}
+
+fn names(list: &[&str]) -> BTreeSet<String> {
+    list.iter().map(|name| (*name).to_string()).collect()
+}
+
+async fn role_with_tokens(fx: &Fixture) -> RoleTokens {
+    let other = fx.db.create_board(&fx.alice, "Other").expect("board");
+    let role = fx.create(ALICE, "implementer").await;
+    let role_id = role["id"].as_str().expect("id").to_string();
+    for board in [&fx.boards[ALICE], &other] {
+        assert!(
+            fx.db
+                .grant_agent_role(fx.alice.as_str(), &role_id, board)
+                .expect("grant")
+        );
+    }
+    let first = &fx.boards[ALICE];
+    let on_first = issue_on(fx, &role, "on-first", &[first]);
+    issue_on(fx, &role, "on-other", &[&other]);
+    issue_on(fx, &role, "on-both", &[first, &other]);
+    let (mut child, _) = new_api_token_record(&fx.alice, "child", AuthScope::Work, None);
+    child.parent_id = Some(on_first.id);
+    child.expires_at = on_first.expires_at;
+    fx.db.create_api_token(&child).expect("child");
+    RoleTokens { role_id, other }
+}
+
+#[tokio::test]
+async fn grant_revoke_should_end_the_role_tokens_on_that_board_and_their_children() {
+    let fx = Fixture::new();
+    let held = role_with_tokens(&fx).await;
+    let uri = format!(
+        "/api/v1/agent-roles/{}/boards/{}",
+        held.role_id, fx.boards[ALICE]
+    );
+    let revoked = fx.browse(ALICE, "DELETE", &uri, None).await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    assert_eq!(revoked.body, json!({"revoked": 3}));
+    assert_eq!(
+        live_names(&fx),
+        names(&["agent", "issuer", "on-other"]),
+        "only the token on the other board stays"
+    );
+    let role = fx
+        .bearer(
+            ALICE,
+            "GET",
+            &format!("/api/v1/agent-roles/{}", held.role_id),
+            None,
+        )
+        .await;
+    assert_eq!(role.body["boards"], json!([held.other]));
+
+    let again = fx.browse(ALICE, "DELETE", &uri, None).await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND, "{}", again.body);
+}
+
+#[tokio::test]
+async fn grant_revoke_by_a_lead_should_reach_only_boards_it_holds() {
+    let fx = Fixture::new();
+    let held = role_with_tokens(&fx).await;
+    let lead = lead_bearer(&fx, &[&fx.boards[ALICE]]);
+    let refused = call(
+        &fx.app,
+        "DELETE",
+        &format!("/api/v1/agent-roles/{}/boards/{}", held.role_id, held.other),
+        &[("authorization", &lead)],
+        None,
+    )
+    .await;
+    assert_exceeds_grant(&refused);
+    assert_eq!(
+        live_names(&fx),
+        names(&[
+            "agent", "child", "issuer", "lead", "on-both", "on-first", "on-other"
+        ])
+    );
+
+    let revoked = call(
+        &fx.app,
+        "DELETE",
+        &format!(
+            "/api/v1/agent-roles/{}/boards/{}",
+            held.role_id, fx.boards[ALICE]
+        ),
+        &[("authorization", &lead)],
+        None,
+    )
+    .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    assert_eq!(revoked.body, json!({"revoked": 3}));
+}
+
+#[tokio::test]
+async fn board_token_revoke_should_keep_the_grant() {
+    let fx = Fixture::new();
+    let held = role_with_tokens(&fx).await;
+    let lead = lead_bearer(&fx, &[&fx.boards[ALICE]]);
+    let uri = format!(
+        "/api/v1/agent-roles/{}/boards/{}/revoke-tokens",
+        held.role_id, fx.boards[ALICE]
+    );
+    let revoked = call(&fx.app, "POST", &uri, &[("authorization", &lead)], None).await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    assert_eq!(revoked.body, json!({"revoked": 3}));
+    assert_eq!(
+        live_names(&fx),
+        names(&["agent", "issuer", "lead", "on-other"])
+    );
+    let role = fx
+        .bearer(
+            ALICE,
+            "GET",
+            &format!("/api/v1/agent-roles/{}", held.role_id),
+            None,
+        )
+        .await;
+    assert_eq!(role.body["boards"].as_array().map(Vec::len), Some(2));
+
+    let outside = format!(
+        "/api/v1/agent-roles/{}/boards/{}/revoke-tokens",
+        held.role_id, held.other
+    );
+    let refused = call(&fx.app, "POST", &outside, &[("authorization", &lead)], None).await;
+    assert_exceeds_grant(&refused);
+}
+
+#[tokio::test]
+async fn role_wide_revoke_should_need_the_owner_session_and_keep_the_role() {
+    let fx = Fixture::new();
+    let held = role_with_tokens(&fx).await;
+    let uri = format!("/api/v1/agent-roles/{}/revoke-tokens", held.role_id);
+    let refused = fx.bearer(ALICE, "POST", &uri, None).await;
+    assert_eq!(
+        (refused.status, refused.code.as_deref()),
+        (StatusCode::FORBIDDEN, Some("session_required")),
+        "{}",
+        refused.body
+    );
+    assert_eq!(live_names(&fx).len(), 6);
+
+    let foreign = fx.browse(BOB, "POST", &uri, None).await;
+    assert_eq!(foreign.status, StatusCode::NOT_FOUND, "{}", foreign.body);
+    assert_eq!(live_names(&fx).len(), 6);
+
+    let revoked = fx.browse(ALICE, "POST", &uri, None).await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    assert_eq!(revoked.body, json!({"revoked": 4}));
+    assert_eq!(live_names(&fx), names(&["agent", "issuer"]));
+    let role = fx
+        .bearer(
+            ALICE,
+            "GET",
+            &format!("/api/v1/agent-roles/{}", held.role_id),
+            None,
+        )
+        .await;
+    assert_eq!(role.body["boards"].as_array().map(Vec::len), Some(2));
+}
+
+fn work_bearer(fx: &Fixture) -> String {
+    let (record, raw) = new_api_token_record(&fx.alice, "work", AuthScope::Work, None);
+    fx.db.create_api_token(&record).expect("token");
+    format!("Bearer {raw}")
+}
+
+#[tokio::test]
+async fn lead_should_create_standard_roles_and_grant_held_boards() {
+    let fx = Fixture::new();
+    let lead = lead_bearer(&fx, &[&fx.boards[ALICE]]);
+    let body = json!({"boards": [fx.boards[ALICE]]});
+    let reply = call(
+        &fx.app,
+        "POST",
+        STANDARD,
+        &[("authorization", &lead)],
+        Some(body),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(names_of(&reply.body, "created"), STANDARD_NAMES);
+    for role in reply.body["roles"].as_array().expect("roles") {
+        assert_eq!(role["boards"], json!([fx.boards[ALICE]]), "{role}");
+    }
+    let lead_role = reply.body["roles"][STANDARD_NAMES.len() - 1]["permissions"]
+        .as_array()
+        .expect("permissions");
+    assert!(lead_role.contains(&json!("roles.grant")));
+}
+
+#[tokio::test]
+async fn lead_should_grant_a_held_board_and_not_one_it_lacks() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let id = role["id"].as_str().expect("id");
+    let second = fx.db.create_board(&fx.alice, "Second").expect("board");
+    let lead = lead_bearer(&fx, &[&fx.boards[ALICE]]);
+
+    let uri = format!("/api/v1/agent-roles/{id}/boards/{}", fx.boards[ALICE]);
+    let granted = call(&fx.app, "PUT", &uri, &[("authorization", &lead)], None).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    assert_eq!(granted.body["boards"], json!([fx.boards[ALICE]]));
+
+    let uri = format!("/api/v1/agent-roles/{id}/boards/{second}");
+    let refused = call(&fx.app, "PUT", &uri, &[("authorization", &lead)], None).await;
+    assert_exceeds_grant(&refused);
+    let after = fx
+        .bearer(ALICE, "GET", &format!("/api/v1/agent-roles/{id}"), None)
+        .await;
+    assert_eq!(after.body["boards"], json!([fx.boards[ALICE]]));
+}
+
+#[tokio::test]
+async fn work_token_should_be_refused_both_grant_routes_naming_roles_grant() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let id = role["id"].as_str().expect("id");
+    let work = work_bearer(&fx);
+    let grant = format!("/api/v1/agent-roles/{id}/boards/{}", fx.boards[ALICE]);
+    let body = json!({"boards": [fx.boards[ALICE]]});
+    for (method, uri, body) in [
+        ("POST", STANDARD, Some(body)),
+        ("PUT", grant.as_str(), None),
+    ] {
+        let refused = call(&fx.app, method, uri, &[("authorization", &work)], body).await;
+        assert_eq!(
+            (refused.status, refused.code.as_deref()),
+            (StatusCode::FORBIDDEN, Some("permission_denied")),
+            "{method} {uri}: {}",
+            refused.body
+        );
+        assert_eq!(
+            refused.body["permission"], "roles.grant",
+            "{}",
+            refused.body
+        );
+    }
+    let after = fx
+        .bearer(ALICE, "GET", &format!("/api/v1/agent-roles/{id}"), None)
+        .await;
+    assert_eq!(after.body["boards"], json!([]));
+}
+
+#[tokio::test]
+async fn lead_should_not_create_or_edit_a_role() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let uri = format!("/api/v1/agent-roles/{}", role["id"].as_str().expect("id"));
+    let lead = lead_bearer(&fx, &[&fx.boards[ALICE]]);
+    let create = json!({"name": "sneaky", "permissions": ["tasks.read"]});
+    for (method, uri, body) in [
+        ("POST", "/api/v1/agent-roles", Some(create)),
+        ("PATCH", uri.as_str(), Some(json!({"name": "renamed"}))),
+    ] {
+        let refused = call(&fx.app, method, uri, &[("authorization", &lead)], body).await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{method} {uri}");
+    }
+    let after = fx.browse(ALICE, "GET", &uri, None).await;
+    assert_eq!(after.body, role);
+}
+
+#[tokio::test]
+async fn role_delete_should_need_the_owner_session_and_remove_the_role_and_its_tokens() {
+    let fx = Fixture::new();
+    let held = role_with_tokens(&fx).await;
+    let uri = format!("/api/v1/agent-roles/{}", held.role_id);
+    let lead = lead_bearer(&fx, &[&fx.boards[ALICE]]);
+    let by_lead = call(&fx.app, "DELETE", &uri, &[("authorization", &lead)], None).await;
+    assert_eq!(
+        (by_lead.status, by_lead.code.as_deref()),
+        (StatusCode::FORBIDDEN, Some("permission_denied")),
+        "{}",
+        by_lead.body
+    );
+    let refused = fx.bearer(ALICE, "DELETE", &uri, None).await;
+    assert_eq!(
+        (refused.status, refused.code.as_deref()),
+        (StatusCode::FORBIDDEN, Some("session_required")),
+        "{}",
+        refused.body
+    );
+    assert_eq!(live_names(&fx).len(), 7);
+
+    let foreign = fx.browse(BOB, "DELETE", &uri, None).await;
+    assert_eq!(foreign.status, StatusCode::NOT_FOUND, "{}", foreign.body);
+    assert_eq!(live_names(&fx).len(), 7);
+
+    let deleted = fx.browse(ALICE, "DELETE", &uri, None).await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+    assert_eq!(deleted.body, json!({"deleted": held.role_id, "revoked": 4}));
+    assert_eq!(live_names(&fx), names(&["agent", "issuer", "lead"]));
+    let gone = fx.bearer(ALICE, "GET", &uri, None).await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.body);
+    let again = fx.browse(ALICE, "DELETE", &uri, None).await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND, "{}", again.body);
+}
+
+#[tokio::test]
+async fn role_delete_should_keep_the_role_name_on_history_comments_and_time_entries() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let role = fx.create(ALICE, "implementer").await;
+    let (_, raw) = issue_as(&fx, &role, "impl-one");
+    let claim = json!({"claimant": "me", "ttl_seconds": 60});
+    let claim_uri = format!("/api/tasks/{task}/claim");
+    let claimed = act(&raw, &fx, "POST", &claim_uri, claim).await;
+    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+    let comment = json!({"body": "done"});
+    let comment_uri = format!("/api/tasks/{task}/comments");
+    let said = act(&raw, &fx, "POST", &comment_uri, comment).await;
+    assert_eq!(said.status, StatusCode::OK, "{}", said.body);
+    let entry = json!({"minutes": 5});
+    let time_uri = format!("/api/tasks/{task}/time");
+    let logged = act(&raw, &fx, "POST", &time_uri, entry).await;
+    assert_eq!(logged.status, StatusCode::OK, "{}", logged.body);
+
+    let uri = format!("/api/v1/agent-roles/{}", role["id"].as_str().expect("id"));
+    let deleted = fx.browse(ALICE, "DELETE", &uri, None).await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+    assert_eq!(deleted.body["revoked"], 1);
+    assert!(live_names(&fx).iter().all(|name| name != "impl-one"));
+
+    let row = fx.db.task(&task).expect("read").expect("task");
+    let stamped = row
+        .history
+        .iter()
+        .filter(|event| event.role_name.is_some())
+        .count();
+    assert!(stamped >= 2, "{stamped}");
+    assert!(
+        row.history
+            .iter()
+            .filter(|event| event.role_name.is_some())
+            .all(|event| event.role_name.as_deref() == Some("implementer"))
+    );
+    let comment = row.comments.last().expect("comment");
+    assert_eq!(comment.role_name.as_deref(), Some("implementer"));
+    let rows = fx.db.list_entries(&task).expect("entries");
+    assert_eq!(rows[0].role_name.as_deref(), Some("implementer"));
+
+    let modal = fx
+        .bearer(ALICE, "GET", &format!("/api/tasks/{task}/modal"), None)
+        .await;
+    let html = modal.body.as_str().expect("html");
+    assert!(html.contains(">via implementer</small>"), "{html}");
 }

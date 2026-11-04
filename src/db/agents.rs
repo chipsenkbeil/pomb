@@ -10,7 +10,7 @@ use super::{
     AGENT_ROLE_GRANTS, AGENT_ROLES, AGENT_ROLES_BY_ACCOUNT, BOARDS, Bound, Db, DbResult,
     GRANTS_BY_BOARD, GRANTS_BY_ROLE, MAX_AGENT_ROLES_PER_ACCOUNT, QuotaExceeded, RoleTokenRefusal,
     mmap_get, mmap_insert, mmap_remove, read_one, txn_check_child_token, txn_create_token,
-    txn_mmap_get, txn_read_one, write_one,
+    txn_mmap_get, txn_read_one, txn_remove_token, txn_role_token_ids, write_one,
 };
 use crate::models::{AgentRoleGrantRow, AgentRoleRow, ApiTokenRecord, BoardRow};
 use crate::permissions::{Permission, STANDARD_ROLES};
@@ -88,6 +88,22 @@ fn txn_remove_grant(txn: &WriteTransaction, role_id: &str, board_id: &str) -> Db
         .is_some();
     mmap_remove(txn, GRANTS_BY_BOARD, board_id, role_id)?;
     mmap_remove(txn, GRANTS_BY_ROLE, role_id, board_id)?;
+    Ok(removed)
+}
+
+/// Deletes the tokens issued as role `role_id` of `account` that reach `board_id`, or every token
+/// issued as it when `board_id` is [`None`], with the tokens they issued, found through the role
+/// and board index, inside an open write transaction. Returns how many live tokens it deleted.
+pub(super) fn txn_revoke_role_tokens(
+    txn: &WriteTransaction,
+    account: &str,
+    role_id: &str,
+    board_id: Option<&str>,
+) -> DbResult<u64> {
+    let mut removed = 0;
+    for id in txn_role_token_ids(txn, role_id, board_id)? {
+        removed += txn_remove_token(txn, account, &id)?;
+    }
     Ok(removed)
 }
 
@@ -308,21 +324,65 @@ impl Db {
         Ok(Some(StandardRoles { roles, created }))
     }
 
-    /// Revokes agent role `role_id` of `account` on board `board_id`. Returns `false` when the
-    /// account holds no such role or the role held no such grant.
+    /// Revokes agent role `role_id` of `account` on board `board_id`, and in the same write
+    /// deletes the tokens issued as the role that reach the board and the tokens they issued.
+    /// Returns how many live tokens it deleted, or [`None`] when the account holds no such role or
+    /// the role held no such grant.
     pub fn revoke_agent_role(
         &self,
         account: &str,
         role_id: &str,
         board_id: &str,
-    ) -> DbResult<bool> {
+    ) -> DbResult<Option<u64>> {
         let txn = self.db.begin_write()?;
         let held = txn_read_one::<AgentRoleRow>(&txn, AGENT_ROLES, role_id)?
             .is_some_and(|role| role.account_id == account);
         if !held || !txn_remove_grant(&txn, role_id, board_id)? {
-            return Ok(false);
+            return Ok(None);
         }
+        let removed = txn_revoke_role_tokens(&txn, account, role_id, Some(board_id))?;
         txn.commit()?;
-        Ok(true)
+        Ok(Some(removed))
+    }
+
+    /// Deletes the tokens issued as role `role_id` of `account` that reach `board_id`, or every
+    /// token issued as it when `board_id` is [`None`], with the tokens they issued, and keeps the
+    /// role and its grants. Returns how many live tokens it deleted, or [`None`] when the account
+    /// holds no such role.
+    pub fn revoke_role_tokens(
+        &self,
+        account: &str,
+        role_id: &str,
+        board_id: Option<&str>,
+    ) -> DbResult<Option<u64>> {
+        let txn = self.db.begin_write()?;
+        let held = txn_read_one::<AgentRoleRow>(&txn, AGENT_ROLES, role_id)?
+            .is_some_and(|role| role.account_id == account);
+        if !held {
+            return Ok(None);
+        }
+        let removed = txn_revoke_role_tokens(&txn, account, role_id, board_id)?;
+        txn.commit()?;
+        Ok(Some(removed))
+    }
+
+    /// Deletes agent role `role_id` of `account` with its grants and index rows, and in the same
+    /// write every token issued as it and the tokens they issued. Returns how many live tokens it
+    /// deleted, or [`None`] when the account holds no such role.
+    pub fn delete_agent_role(&self, account: &str, role_id: &str) -> DbResult<Option<u64>> {
+        let txn = self.db.begin_write()?;
+        let held = txn_read_one::<AgentRoleRow>(&txn, AGENT_ROLES, role_id)?
+            .is_some_and(|role| role.account_id == account);
+        if !held {
+            return Ok(None);
+        }
+        let removed = txn_revoke_role_tokens(&txn, account, role_id, None)?;
+        for board_id in txn_mmap_get(&txn, GRANTS_BY_ROLE, role_id)? {
+            txn_remove_grant(&txn, role_id, &board_id)?;
+        }
+        txn.open_table(AGENT_ROLES)?.remove(role_id)?;
+        mmap_remove(&txn, AGENT_ROLES_BY_ACCOUNT, account, role_id)?;
+        txn.commit()?;
+        Ok(Some(removed))
     }
 }

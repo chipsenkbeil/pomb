@@ -56,6 +56,9 @@ check('hours', Notifications.ago(Date.parse('2026-11-03T09:00:00Z'), base), '3h 
 check('a day is yesterday', Notifications.ago(Date.parse('2026-11-02T11:00:00Z'), base), 'yesterday');
 check('days', Notifications.ago(Date.parse('2026-10-30T12:00:00Z'), base), '4d ago');
 check('a bad timestamp adds no time', timeOf('nope'), undefined);
+const dismissOf = Notifications.row({ id: 5, read: true, kind: 'board_deleted', actor: 'a', board_name: 'W' }).children
+  .find((c) => c.className === 'notification-dismiss');
+check('a row has a dismiss button', dismissOf && dismissOf.textContent, '×');
 
 replies['/api/notifications/1/read'] = { unread: 2 };
 replies['/api/notifications/2/read'] = { unread: 1 };
@@ -86,6 +89,41 @@ Notifications.markRead([1, 2]).then(function () {
     return stale;
   }).then(function () {
     check('a stale load adds no rows', list.children, [9]);
+  });
+}).then(() => {
+  const requests = [];
+  fetch = (url, opts) => { requests.push([url, opts.method]); return Promise.resolve(replies[url]); };
+  const kept = { remove() { this.gone = true; } };
+  const list = { children: [kept, {}] };
+  const empty = { hidden: true };
+  const more = { hidden: false };
+  replies['/api/notifications/7'] = { unread: 4 };
+  return Notifications.dismiss('7', kept, list, empty).then(() => {
+    check('dismiss deletes the row on the server', requests[0], ['/api/notifications/7', 'DELETE']);
+    check('dismiss removes the row', kept.gone, true);
+    check('dismiss shows the new unread count', Notifications.unread, 4);
+    check('rows remaining keep the empty message hidden', empty.hidden, true);
+    list.children = [];
+    return Notifications.dismiss('7', kept, list, empty);
+  }).then(() => {
+    check('dismissing the last row shows the empty message', empty.hidden, false);
+    replies['/api/notifications/7'] = undefined;
+    kept.gone = false;
+    return Notifications.dismiss('7', kept, list, empty);
+  }).then(() => {
+    check('a failed dismiss keeps the row', kept.gone, false);
+    replies['/api/notifications'] = { unread: 0 };
+    list.textContent = 'rows';
+    empty.hidden = true;
+    Notifications.nextBefore = 3;
+    return Notifications.clearAll(list, empty, more);
+  }).then(() => {
+    check('clear all deletes every notification', requests[requests.length - 1], ['/api/notifications', 'DELETE']);
+    check('clear all empties the list', list.textContent, '');
+    check('clear all shows the empty message', empty.hidden, false);
+    check('clear all hides show older', more.hidden, true);
+    check('clear all forgets the cursor', Notifications.nextBefore, null);
+    check('clear all zeroes the unread count', Notifications.unread, 0);
   });
 }).then(function () {
   if (failures) process.exit(1);
