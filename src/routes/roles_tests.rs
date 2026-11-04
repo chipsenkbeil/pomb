@@ -99,6 +99,8 @@ fn entry(task: &str) -> NewTimeEntry<'_> {
         activity_id: None,
         role: None,
         token_name: None,
+        role_id: None,
+        role_name: None,
     }
 }
 

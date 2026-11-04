@@ -80,6 +80,9 @@ const MAX_DNS_NAME_LEN: usize = 253;
 /// Longest label between the dots of a DNS name, in characters.
 const MAX_DNS_LABEL_LEN: usize = 63;
 
+#[cfg(test)]
+pub(crate) const BODY_LIMIT_BYTES: usize = 1024 * 1024;
+
 /// The `--help` text after the options: what each sign-in mode means and how to recover.
 const AFTER_LONG_HELP: &str = "\
 Sign-in:

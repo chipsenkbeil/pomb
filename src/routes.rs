@@ -1948,6 +1948,12 @@ struct TimeEntryItem {
     /// Name of the API token that logged the entry, or null for a browser session and for an
     /// entry logged before token names were recorded.
     token_name: Option<String>,
+    /// Id of the agent role of the token that logged the entry. Absent for any other entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role_id: Option<String>,
+    /// The role's name when the token was issued. Absent for any other entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role_name: Option<String>,
 }
 
 impl TimeEntryItem {
@@ -1972,6 +1978,8 @@ impl TimeEntryItem {
             labels: row.labels,
             role: row.role,
             token_name: row.token_name,
+            role_id: row.role_id,
+            role_name: row.role_name,
         }
     }
 }
@@ -2521,8 +2529,11 @@ struct CommentView {
     author_initials: String,
     /// Tag shown beside the date, e.g. "agent".
     kind: Option<String>,
-    /// Name of the API token that wrote the comment, shown as "via <name>".
+    /// The role name of a role token's comment, else the name of the API token that wrote it, shown
+    /// as "via <name>".
     via_token: Option<String>,
+    /// The full token name, label and issuer of a role token's comment, shown on hover.
+    via_title: Option<String>,
     /// The reaction pills under the comment.
     reactions: Vec<ReactionPill>,
 }
@@ -3132,7 +3143,18 @@ impl TaskView {
                     .token_name
                     .as_deref()
                     .filter(|_| c.actor_kind == ActorKind::ApiToken)
-                    .map(|name| delegation_label(name, c.parent_token.as_ref())),
+                    .map(|name| match &c.role_name {
+                        Some(role) => role.clone(),
+                        None => delegation_label(name, c.parent_token.as_ref()),
+                    }),
+                via_title: c
+                    .token_name
+                    .as_deref()
+                    .zip(c.role_name.as_ref())
+                    .filter(|_| c.actor_kind == ActorKind::ApiToken)
+                    .map(|(name, _)| {
+                        token_title(name, c.label.as_deref(), c.parent_token.as_ref())
+                    }),
                 reactions: reaction_pills(&c.reactions, handle),
             })
             .collect();
@@ -4439,7 +4461,7 @@ struct ModalTemplate {
     role: BoardRole,
     /// Whether the task is an epic, which the modal lays out as About, Its cards and Comments.
     is_epic: bool,
-    /// Whether someone closed the epic.
+    /// Whether the epic is closed, by someone closing it or by a move into a Done column.
     closed: bool,
     /// What the About editor opens with: the description, or the epic template while an epic has
     /// none.
@@ -4588,14 +4610,13 @@ impl HistoryEventView {
 /// Returns the actor of `event`, followed by the API token's name in parentheses when a token made
 /// the change.
 fn history_actor(event: &TaskEvent) -> String {
-    match &event.token_name {
-        Some(name) => format!(
-            "{} ({})",
-            event.actor,
-            delegation_label(name, event.parent_token.as_ref())
-        ),
-        None => event.actor.clone(),
-    }
+    attribution(
+        &event.actor,
+        event.token_name.as_deref(),
+        event.parent_token.as_ref(),
+        event.role_name.as_deref(),
+        event.label.as_deref(),
+    )
 }
 
 #[derive(Template)]
@@ -9306,9 +9327,9 @@ struct MoveTaskInput {
     request_body = MoveTaskInput,
     responses(
         (status = 200, description = "Moved task detail", body = TaskDetail),
-        (status = 400, description = "Unknown column, or the task is an epic (an epic cannot be moved)"),
+        (status = 400, description = "Unknown column"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit). `stale_fence`: a live claim holds another fence. Without a code: the target board's numbering has no number left"),
+        (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit). `stale_fence`: a live claim holds another fence. `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column. Without a code: the target board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -9427,7 +9448,7 @@ async fn move_task(
         fence,
         enforce_wip: !query.force.unwrap_or(false),
         batch: &[],
-        allow_epic: false,
+        skip_epic_guard: false,
     };
     match db
         .move_task_logged(
@@ -9443,7 +9464,7 @@ async fn move_task(
         MoveOutcome::Moved => {}
         MoveOutcome::NotFound => return Err(AppError::not_found("task not found")),
         MoveOutcome::StaleFence => return Err(stale_fence()),
-        MoveOutcome::Epic => return Err(epic_not_movable()),
+        MoveOutcome::OpenChildren { count } => return Err(epic_has_open_children(count)),
         MoveOutcome::WipLimit { count, limit } => {
             return Err(
                 AppError::conflict(format!("column WIP limit reached ({count}/{limit})"))
@@ -9623,9 +9644,10 @@ struct BulkTasksResult {
     request_body = BulkTasksInput,
     responses(
         (status = 200, description = "Every task changed, or would change under `dry_run`", body = BulkTasksResult),
-        (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks or a link the tasks cannot hold, or a move of an epic (an epic cannot be moved)"),
+        (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks or a link the tasks cannot hold"),
         (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task, or a task it links to, carries a locking label and the token is not the owner's"),
         (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
+        (status = 409, description = "`epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -9936,7 +9958,7 @@ async fn bulk_tasks(
             {
                 MoveOutcome::Moved => {}
                 MoveOutcome::NotFound => return Err(AppError::not_found("task not found")),
-                MoveOutcome::Epic => return Err(epic_not_movable()),
+                MoveOutcome::OpenChildren { count } => return Err(epic_has_open_children(count)),
                 MoveOutcome::StaleFence | MoveOutcome::WipLimit { .. } => {
                     return Err(AppError::conflict("the tasks could not be moved"));
                 }
@@ -10713,7 +10735,7 @@ struct TaskDetail {
     cover_id: Option<String>,
     /// `task` or `epic`.
     kind: TaskKind,
-    /// True when someone closed the epic. Always false for a task.
+    /// True when someone closed the epic or moved it into a Done column. Always false for a task.
     closed: bool,
     /// Watch flag: task More menu "Watch" (KanbanFlow parity).
     watched: bool,
@@ -11197,8 +11219,9 @@ fn claim_conflict(claim: &TaskClaim) -> AppError {
     .with_code(ErrorCode::ClaimHeld)
 }
 
-/// Closes an epic. Pomb never closes an epic when its children finish: only this call does, and
-/// it needs `epics.manage`. The children, their links and the epic's column stay as they are.
+/// Closes an epic. Pomb never closes an epic when its children finish: this call does, and needs
+/// `epics.manage`, or a move into a Done column does, and a move out reopens it. The children,
+/// their links and the epic's column stay as they are.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/close",
@@ -11274,9 +11297,13 @@ fn set_epic_closed(
     Ok(Json(TaskDetail::load(account, task.into_row())?))
 }
 
-/// Returns the 400 a move answers when it names an epic.
-fn epic_not_movable() -> AppError {
-    AppError::bad_request("an epic cannot be moved")
+/// Returns the 409 a move answers when an epic with open children would enter a WIP-limited or
+/// Done column.
+fn epic_has_open_children(count: usize) -> AppError {
+    AppError::conflict(format!(
+        "the epic still has open children ({count}), so it cannot enter a WIP-limited or Done column"
+    ))
+    .with_code(ErrorCode::EpicHasOpenChildren)
 }
 
 /// Claims a task, or renews the caller's own live claim.
@@ -11291,7 +11318,7 @@ fn epic_not_movable() -> AppError {
         (status = 200, description = "The claim", body = TaskClaim),
         (status = 400, description = "Missing claimant, ttl_seconds outside 1..86400, or a claimant, role, harness, model, jj_workspace, jj_change_id or session_id over 200 characters"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`claim_held`: task claimed by <claimant> until <expires_at>. `epic_not_claimable`: the task is an epic"),
+        (status = 409, description = "`claim_held`: task claimed by <claimant> until <expires_at>. `epic_not_claimable`: the task is an epic with a child that is not done yet, and the message gives the open-child count"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -11306,10 +11333,21 @@ async fn claim_task(
     let task = found(account.task(&id), "task not found")?;
     ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     if !task.row().is_work() {
-        return Err(
-            AppError::conflict("an epic holds no work, so it cannot be claimed")
-                .with_code(ErrorCode::EpicNotClaimable),
-        );
+        let mut reads = account.link_reads().map_err(AppError::from)?;
+        let links = reads.task_links(&id).map_err(AppError::from)?;
+        let children = reads.children(&links).map_err(AppError::from)?;
+        let open = children.len() - done_children(&children);
+        if open > 0 {
+            let still = if open == 1 {
+                "child is"
+            } else {
+                "children are"
+            };
+            return Err(AppError::conflict(format!(
+                "an epic can be claimed once every child is done, and {open} {still} still open"
+            ))
+            .with_code(ErrorCode::EpicNotClaimable));
+        }
     }
     let claimant = input
         .claimant
@@ -11322,7 +11360,7 @@ async fn claim_task(
     let request = ClaimRequest {
         claimant: claimant.to_string(),
         ttl_seconds,
-        role: input.role,
+        role: user.role_name.clone().or(input.role),
         harness: input.harness,
         model: input.model,
         jj_workspace: input.jj_workspace,
@@ -12382,6 +12420,15 @@ struct BoardEvent {
     /// Name of the API token that made the change. Null for the browser, the bootstrap token and
     /// the server.
     token_name: Option<String>,
+    /// Id of the agent role the token was issued as. Absent for any other actor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role_id: Option<String>,
+    /// The role's name when the token was issued. Absent for any other actor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role_name: Option<String>,
+    /// The `agent-N` label of the token's issue. Absent for any other actor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
     /// RFC3339.
     at: String,
 }
@@ -12411,6 +12458,9 @@ fn board_event(seq: u64, row: BoardEventRow) -> BoardEvent {
         labels_removed: row.labels_removed,
         actor_kind: row.actor_kind,
         token_name: row.token_name,
+        role_id: row.role_id,
+        role_name: row.role_name,
+        label: row.label,
         at: row.at,
     }
 }
@@ -14559,8 +14609,10 @@ async fn log_time(
         labels: input.labels.as_deref().unwrap_or(&[]),
         created_by: &user.handle,
         activity_id: None,
-        role,
+        role: user.role_name.as_deref().or(role),
         token_name: user.token_name.as_deref(),
+        role_id: user.role_id.as_deref(),
+        role_name: user.role_name.as_deref(),
     };
     let logged = format!("Logged {}", logged_amount(seconds));
     if db
@@ -15679,8 +15731,10 @@ async fn create_manual_time(
         labels: input.labels.as_deref().unwrap_or(&[]),
         created_by: &user.handle,
         activity_id: None,
-        role: None,
+        role: user.role_name.as_deref(),
         token_name: user.token_name.as_deref(),
+        role_id: user.role_id.as_deref(),
+        role_name: user.role_name.as_deref(),
     };
     let id = db
         .log_task_time(
@@ -17873,7 +17927,7 @@ struct TaskSummary {
     position: f64,
     /// `task` or `epic`.
     kind: TaskKind,
-    /// True when someone closed the epic. Always false for a task.
+    /// True when someone closed the epic or moved it into a Done column. Always false for a task.
     closed: bool,
     labels: Vec<String>,
     member_ids: Vec<String>,
@@ -22580,8 +22634,9 @@ fn submitted_scope(scopes: &[String]) -> Result<AuthScope, AppError> {
     })
 }
 
-/// A token must never be able to mint new tokens: creation, listing, and
-/// revocation require the browser session cookie.
+/// A device request makes a root token, which the approving browser session grants. Creating,
+/// listing and revoking hand-made tokens stays browser-only, and a token holding `tokens.issue`
+/// may issue narrower children.
 #[derive(Deserialize, ToSchema)]
 struct DeviceAuthInput {
     /// Shown to the person approving, and the issued token's name; 1-80
@@ -23480,7 +23535,7 @@ fn reauth_required() -> Response {
     responses(
         (status = 200, description = "Created token (raw_token shown once)", body = CreateTokenResponse),
         (status = 400, description = "Invalid name, more or less than one of `scopes`, `preset` and `permissions`, an unknown preset or permission, or `boards` empty or naming a board the account does not hold"),
-        (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot mint tokens, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
+        (status = 403, description = "`session_required`: needs the browser session cookie, so an API token cannot create a hand-made token, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 409, description = "`quota_exceeded`: the account holds 50 tokens already"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -25013,8 +25068,10 @@ fn record_timer_session(
         labels: &[],
         created_by,
         activity_id,
-        role: None,
+        role: actor.role_name,
         token_name: actor.token_name,
+        role_id: actor.role_id,
+        role_name: actor.role_name,
     };
     let logged_on_task = match task {
         Some(task) => {
@@ -25708,10 +25765,12 @@ stored as `blocked_by` on its target, so both forms of one dependency are one li
 link may target a task on another board, and its `board_id` is the other task's current board.
 
 Readiness. A task is `blocked` while any of its `blocked_by` targets is in a column that is not
-Done. A blocker in any Done column, whatever its name, no longer blocks.
+Done. A blocker in any Done column, whatever its name, no longer blocks, and neither does a closed
+epic, wherever its column is. Reopening the epic blocks its dependents again.
 
 `GET /api/boards/{id}/tasks?ready=true` lists the tasks that are not blocked. When a blocker
-enters or leaves a Done column, a column's `is_done` is toggled or a blocker is deleted, every
+enters or leaves a Done column, a column's `is_done` is toggled, an epic is closed or reopened or a
+blocker is deleted, every
 dependent whose `blocked` value flipped gets a new `updated_at`, on any board, so
 `?since=...&ready=true` finds newly ready tasks.
 
@@ -25761,7 +25820,9 @@ The events:
 Every event has `task_id`, `column_id`, `at`, `actor_kind` and `token_name`. `actor_kind` is `user`
 for a change a person made in the browser, `api_token` for a change any API token made (label and
 size edits included) and `system` for a change the server made on its own. `token_name` is null
-unless a named API token made the change.
+unless a named API token made the change. A token issued as an agent role also adds `role_id`,
+`role_name` and `label`, the role, its name when the token was issued and the token's `agent-N`
+label, and they are absent for any other change.
 
 A cursor is a whole number that counts up per board and survives a restart, so resuming with the
 last `cursor` after any downtime misses nothing. A board keeps its newest 1000 events. An `after`
@@ -25999,7 +26060,10 @@ not count toward the 50 tokens of an account and have no count limit, but a toke
 than 20 children at once, then one every 2 seconds, gets 429 `rate_limited` with `Retry-After`. An
 expired issued token is deleted. A child's name must differ from every other token's name on the account,
 whatever the letter case (409). A child's `parent_id` names the token that issued it, and its
-history entries and comments carry a `parent_token` with the caller's `id` and `name`. The same
+history entries and comments carry a `parent_token` with the caller's `id` and `name`. A token issued
+as a role stamps the role's `role_id`, `role_name` and its `label` on every history entry, comment,
+attachment and time entry it makes, and a claim or time entry by it takes the role name as its
+`role` whatever the request says. The same
 caller lists its children with
 `GET /api/v1/auth/tokens/children` and revokes one or all of them with
 `DELETE /api/v1/auth/tokens/children/{id}` and `DELETE /api/v1/auth/tokens/children`, and no other
@@ -26656,7 +26720,7 @@ mod tests {
         MAX_REPORT_BOOKMARKS, SECONDS_PER_DAY, TaskKind, TaskRow, TimeFormat, WebhookEvent,
         WebhookRow, WeekStart,
     };
-    use crate::{AppState, auth, markdown};
+    use crate::{AppState, BODY_LIMIT_BYTES, auth, markdown};
 
     const SECONDS_PER_MINUTE: i64 = 60;
 
@@ -26701,6 +26765,9 @@ mod tests {
             token_name: None,
             kind: ActorKind::User,
             parent_token: None,
+            role_id: None,
+            role_name: None,
+            label: None,
         }
     }
 
@@ -27178,6 +27245,8 @@ mod tests {
                     activity_id: None,
                     role: None,
                     token_name: None,
+                    role_id: None,
+                    role_name: None,
                 },
             )
             .expect("entry");
@@ -27610,7 +27679,7 @@ mod tests {
     }
 
     async fn json_body(response: axum::response::Response) -> serde_json::Value {
-        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        let body = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
             .await
             .expect("body");
         serde_json::from_slice(&body).expect("json")
@@ -27699,7 +27768,7 @@ mod tests {
             .await
             .expect("oneshot");
         assert_eq!(response.status(), axum::http::StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        let body = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
             .await
             .expect("body");
         let html = String::from_utf8(body.to_vec()).expect("utf8");
@@ -28066,7 +28135,7 @@ mod tests {
     async fn timer_log_page_should_default_to_this_plus_last_week() {
         let fx = kf420_fixture();
         let response = fx.send("GET", "/timer/log", "same-origin").await;
-        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        let body = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
             .await
             .expect("body");
         let html = String::from_utf8(body.to_vec()).expect("utf8");
@@ -30051,7 +30120,7 @@ mod tests {
                 .await
                 .expect("oneshot");
             assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
-            let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            let body = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
                 .await
                 .expect("body");
             let html = String::from_utf8_lossy(&body);
@@ -30707,6 +30776,8 @@ mod tests {
                 activity_id: None,
                 role: None,
                 token_name: None,
+                role_id: None,
+                role_name: None,
             },
         )
         .expect("pomodoro entry");
@@ -32540,7 +32611,7 @@ mod tests {
         let response = fx.app.clone().oneshot(request).await.expect("oneshot");
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         let headers = response.headers().clone();
-        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
             .await
             .expect("body");
         (headers, String::from_utf8_lossy(&bytes).into_owned())
@@ -33232,6 +33303,8 @@ mod tests {
                     activity_id: None,
                     role: None,
                     token_name: None,
+                    role_id: None,
+                    role_name: None,
                 },
             )
             .expect("entry")

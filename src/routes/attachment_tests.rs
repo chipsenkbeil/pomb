@@ -6,9 +6,9 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use crate::AppState;
 use crate::db::Db;
 use crate::models::{HistoryKind, TaskAttachment};
+use crate::{AppState, BODY_LIMIT_BYTES};
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -70,7 +70,7 @@ impl Fixture {
             .await
             .expect("oneshot");
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
             .await
             .expect("body");
         (status, String::from_utf8_lossy(&bytes).into_owned())
@@ -620,7 +620,9 @@ async fn image_reply(
         .expect("request");
     let response = fx.app.clone().oneshot(request).await.expect("oneshot");
     let (parts, body) = response.into_parts();
-    let bytes = axum::body::to_bytes(body, 1 << 20).await.expect("body");
+    let bytes = axum::body::to_bytes(body, BODY_LIMIT_BYTES)
+        .await
+        .expect("body");
     (parts.status, parts.headers, bytes.to_vec())
 }
 

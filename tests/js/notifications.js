@@ -3,6 +3,10 @@ var start = src.indexOf('  var Notifications = {');
 var end = src.indexOf('  function initNotificationsPanel() {', start);
 if (start < 0 || end < start) throw new Error('notifications object not found');
 
+const accountPrefs = { hour12: true };
+const ltStart = src.indexOf('  var LocalTime = (function () {');
+const ltEnd = src.indexOf('\n  })();\n', ltStart) + '\n  })();\n'.length;
+const LocalTime = new Function('accountPrefs', src.slice(ltStart, ltEnd) + '\nreturn LocalTime;')(accountPrefs);
 var synced = 0;
 var TimerUI = { syncBell: function () { synced++; } };
 var replies = {};
@@ -31,6 +35,27 @@ check('a column event links to the board', Notifications.linkFor({ kind: 'column
 check('a deleted task has no link', Notifications.linkFor({ kind: 'task_deleted', board_id: 'b1', task_id: 't1' }), null);
 check('a deleted board has no link', Notifications.linkFor({ kind: 'board_deleted', board_id: 'b1', task_id: null }), null);
 check('a board deletion names the board', Notifications.describe({ kind: 'board_deleted', board_name: 'Work' }), 'deleted the board Work');
+
+const fakeEl = (tag) => ({
+  tag, children: [], attrs: {}, className: '', textContent: '', title: '',
+  setAttribute(k, v) { this.attrs[k] = v; },
+  appendChild(c) { this.children.push(c); return c; }
+});
+const document = { createElement: fakeEl, createTextNode: (text) => ({ text }) };
+const timeOf = (created) => {
+  const built = Notifications.row({ id: 5, read: true, kind: 'board_deleted', actor: 'a', board_name: 'W', created_at: created });
+  return built.children.find((c) => c.tag === 'time');
+};
+const stamp = new Date(Date.now() - 5 * 60000).toISOString();
+check('a row shows relative time', timeOf(stamp).textContent, '5m ago');
+check('the hover title is the exact local time', timeOf(stamp).title, LocalTime.write('datetime', Date.parse(stamp), Date.now(), undefined, true));
+check('the time element keeps the instant', timeOf(stamp).attrs.datetime, stamp);
+const base = Date.parse('2026-11-03T12:00:00Z');
+check('seconds read just now', Notifications.ago(Date.parse('2026-11-03T11:59:30Z'), base), 'just now');
+check('hours', Notifications.ago(Date.parse('2026-11-03T09:00:00Z'), base), '3h ago');
+check('a day is yesterday', Notifications.ago(Date.parse('2026-11-02T11:00:00Z'), base), 'yesterday');
+check('days', Notifications.ago(Date.parse('2026-10-30T12:00:00Z'), base), '4d ago');
+check('a bad timestamp adds no time', timeOf('nope'), undefined);
 
 replies['/api/notifications/1/read'] = { unread: 2 };
 replies['/api/notifications/2/read'] = { unread: 1 };

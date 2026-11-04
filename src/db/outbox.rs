@@ -72,6 +72,12 @@ struct Who {
     id: String,
     /// The API token's name when a token made the change, else the actor's name.
     full_name: String,
+    /// Id of the agent role the token was issued as, absent for any other actor.
+    role_id: Option<String>,
+    /// The role's name when the token was issued, absent for any other actor.
+    role_name: Option<String>,
+    /// The `agent-N` label of the token's issue, absent for any other actor.
+    label: Option<String>,
 }
 
 /// Returns what the write of task `before` into `after` did, where a task with no `before` is new.
@@ -231,6 +237,9 @@ fn txn_who(txn: &WriteTransaction, actor: Actor<'_>) -> DbResult<Who> {
     Ok(Who {
         id: account.unwrap_or_else(|| actor.name.to_string()),
         full_name: actor.token_name.unwrap_or(actor.name).to_string(),
+        role_id: actor.role_id.map(str::to_string),
+        role_name: actor.role_name.map(str::to_string),
+        label: actor.label.map(str::to_string),
     })
 }
 
@@ -301,6 +310,15 @@ fn payload(
     body.insert("eventType".to_string(), json!(happening.event()));
     body.insert("userId".to_string(), json!(who.id));
     body.insert("userFullName".to_string(), json!(who.full_name));
+    for (key, value) in [
+        ("roleId", &who.role_id),
+        ("roleName", &who.role_name),
+        ("label", &who.label),
+    ] {
+        if let Some(value) = value {
+            body.insert(key.to_string(), json!(value));
+        }
+    }
     body.insert("timestamp".to_string(), json!(now));
     body.insert("task".to_string(), task_value(task, column));
     match happening {
@@ -429,6 +447,9 @@ mod tests {
         token_name: None,
         kind: ActorKind::User,
         parent_token: None,
+        role_id: None,
+        role_name: None,
+        label: None,
     };
 
     const TOKEN: Actor<'static> = Actor {
@@ -436,6 +457,9 @@ mod tests {
         token_name: Some("ci"),
         kind: ActorKind::ApiToken,
         parent_token: None,
+        role_id: None,
+        role_name: None,
+        label: None,
     };
 
     const EVERY_EVENT: [WebhookEvent; 6] = [

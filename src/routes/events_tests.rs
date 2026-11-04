@@ -14,7 +14,7 @@ use crate::auth::new_api_token_record;
 use crate::db::{Db, NewTaskPlacement};
 use crate::limit::Limits;
 use crate::models::{AccountId, Actor, ActorKind, AuthScope, InstanceMode};
-use crate::{AppState, markdown};
+use crate::{AppState, BODY_LIMIT_BYTES, markdown};
 
 /// Seconds a test waits for a reply that should come at once.
 const PROMPT_SECS: u64 = 5;
@@ -35,7 +35,7 @@ async fn send(app: Router, token: String, uri: String) -> Answer {
         .expect("request");
     let response = app.oneshot(request).await.expect("oneshot");
     let status = response.status();
-    let bytes = to_bytes(response.into_body(), 1024 * 1024)
+    let bytes = to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
@@ -117,6 +117,9 @@ impl Fixture {
             token_name: None,
             kind: ActorKind::User,
             parent_token: None,
+            role_id: None,
+            role_name: None,
+            label: None,
         };
         let row = Db::new_task_row(&self.todo, None, name, 0, None);
         self.db

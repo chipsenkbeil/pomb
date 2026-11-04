@@ -5,12 +5,12 @@ use tower::ServiceExt;
 use super::board_history::{Filter, Order};
 use super::server::{passkey_mode, unthrottled_limits};
 use super::{load_history_page, router};
-use crate::AppState;
 use crate::db::Db;
 use crate::models::{
     AccountId, Actor, ActorKind, BIN_RETENTION_DAYS, HistoryKind, SECONDS_PER_DAY, TaskComment,
     TaskEvent,
 };
+use crate::{AppState, BODY_LIMIT_BYTES};
 
 struct Fixture {
     app: axum::Router,
@@ -51,7 +51,7 @@ async fn send(fx: &Fixture, method: &str, uri: &str) -> (StatusCode, String) {
         .expect("request");
     let response = fx.app.clone().oneshot(request).await.expect("oneshot");
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     (status, String::from_utf8_lossy(&bytes).into_owned())
@@ -85,6 +85,9 @@ fn event(kind: HistoryKind, detail: &str, actor: &str, at: &str) -> TaskEvent {
         from: None,
         to: None,
         parent_token: None,
+        role_id: None,
+        role_name: None,
+        label: None,
     }
 }
 
@@ -272,6 +275,9 @@ async fn history_should_hold_comments_and_deleted_tasks() {
                 edited_at: None,
                 reactions: Vec::new(),
                 parent_token: None,
+                role_id: None,
+                role_name: None,
+                label: None,
             });
             ((), true)
         })
@@ -316,7 +322,7 @@ async fn history_export_should_write_only_the_filtered_rows_as_csv_and_excel() {
             .expect("header")
             .contains("board-history.xlsx")
     );
-    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     assert_eq!(&bytes[..4], b"PK\x03\x04");

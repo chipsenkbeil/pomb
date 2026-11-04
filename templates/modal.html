@@ -102,7 +102,7 @@
             <div class="tm-comment-main">
               <div class="tm-comment-top">
                 <div class="tm-comment-idwrap">
-                  <span class="tm-comment-who"><strong class="tm-comment-author">{{ c.author }}</strong>{% if let Some(token) = c.via_token %}<small class="tm-comment-via">via {{ token }}</small>{% endif %}</span>
+                  <span class="tm-comment-who"><strong class="tm-comment-author">{{ c.author }}</strong>{% if let Some(token) = c.via_token %}<small class="tm-comment-via"{% if let Some(title) = c.via_title %} title="{{ title }}"{% endif %}>via {{ token }}</small>{% endif %}</span>
                   <span class="tm-comment-date">{{ c.created_display|safe }}</span>
                   {% if let Some(kind) = c.kind %}<span class="tm-comment-kind" title="{{ kind }}">{{ kind }}</span>{% endif %}
                 </div>
@@ -324,7 +324,7 @@
             {% if role.writes() %}<button type="button" class="tm-side-btn" data-claim-release="{{ fence }}">Release claim</button>{% endif %}
             {% else %}
             <p class="tm-side-note" id="modal-claim">Not claimed</p>
-            {% if role.writes() %}<label class="tm-claim-lease">Lease
+            {% if role.writes() && (!is_epic || task.children_done == task.children_total) %}<label class="tm-claim-lease">Lease
               <select id="tm-claim-ttl" aria-label="Claim lease">
                 <option value="3600">1 hour</option>
                 <option value="14400" selected>4 hours</option>

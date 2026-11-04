@@ -2191,19 +2191,8 @@
   document.addEventListener('click', function (e) {
     var more = e.target.closest ? e.target.closest('[data-load-more]') : null;
     if (!more) return;
-    var list = more.closest('.task-list');
-    var hidden = list.querySelectorAll('.task-card[hidden]');
-    for (var i = 0; i < hidden.length && i < 20; i++) hidden[i].hidden = false;
-    list.querySelectorAll('.done-group-label').forEach(function (label) {
-      var el = label.nextElementSibling;
-      var shown = false;
-      while (el && el.classList.contains('task-card')) {
-        if (!el.hidden) { shown = true; break; }
-        el = el.nextElementSibling;
-      }
-      label.hidden = !shown;
-    });
-    more.hidden = !list.querySelector('.task-card[hidden]');
+    const list = more.closest('.task-list');
+    if (window.BoardChrome && BoardChrome.pageArchive) BoardChrome.pageArchive(list, true);
     if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
   });
 
@@ -18358,11 +18347,52 @@
         }
         card.style.display = show ? '' : 'none';
       });
+      this.pageArchives();
       this.refold();
       this.refreshFilteredCounts();
       this.syncFilterBtn();
     },
+    ARCHIVE_PAGE_SIZE: 20,
+    pageArchives() {
+      document.querySelectorAll('[data-load-more]').forEach((more) => {
+        const list = more.closest('.task-list');
+        if (list) this.pageArchive(list, false);
+      });
+    },
+    pageArchive(list, loadMore) {
+      this.removeFolds();
+      const cards = [...list.querySelectorAll('.task-card')];
+      const filtering = this.isFiltering();
+      const matches = (card) => !filtering || card.style.display !== 'none';
+      let from = 0;
+      if (loadMore) {
+        from = cards.findIndex((card) => card.hidden);
+        if (from === -1) from = cards.length;
+      } else {
+        cards.forEach((card) => { card.hidden = true; });
+      }
+      let revealed = 0;
+      for (let i = from; i < cards.length && revealed < this.ARCHIVE_PAGE_SIZE; i++) {
+        cards[i].hidden = false;
+        if (matches(cards[i])) revealed++;
+      }
+      list.querySelectorAll('.done-group-label').forEach((label) => {
+        let el = label.nextElementSibling;
+        let shown = false;
+        while (el && el.classList.contains('task-card')) {
+          if (!el.hidden && matches(el)) { shown = true; break; }
+          el = el.nextElementSibling;
+        }
+        label.hidden = !shown;
+      });
+      const left = cards.some((card) => card.hidden && matches(card));
+      const button = list.querySelector('[data-load-more]');
+      if (button) button.hidden = !left;
+    },
     foldMode: function () {
+      return this.epicFilter ? this.FOLD_MODE.COLLAPSE : this.panelFoldMode();
+    },
+    panelFoldMode() {
       return this.filterValue('f-fold') === this.FOLD_MODE.COLLAPSE ? this.FOLD_MODE.COLLAPSE : this.FOLD_MODE.HIDE;
     },
     removeFolds: function () {
@@ -18609,7 +18639,7 @@
         labelMode: this.filterLabelMode(),
         fields: this.filterFields(),
         epic: this.epicFilter,
-        fold: this.foldMode()
+        fold: this.panelFoldMode()
       });
       try { window.sessionStorage.setItem(this.sessionFilterKey(), state); } catch (e) {}
       try {
@@ -19278,6 +19308,15 @@
       return { href: base, label: 'VIEW BOARD' };
     },
 
+    ago(at, now) {
+      const seconds = Math.floor((now - at) / 1000);
+      if (seconds < 60) return 'just now';
+      if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+      if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+      const days = Math.floor(seconds / 86400);
+      return days === 1 ? 'yesterday' : days + 'd ago';
+    },
+
     row: function (n) {
       var row = document.createElement('div');
       row.className = 'notification-row' + (n.read ? '' : ' notification-row--unread');
@@ -19289,6 +19328,16 @@
       text.appendChild(who);
       text.appendChild(document.createTextNode(' ' + this.describe(n)));
       row.appendChild(text);
+      const at = Date.parse(n.created_at);
+      if (!isNaN(at)) {
+        const now = Date.now();
+        const when = document.createElement('time');
+        when.className = 'notification-time';
+        when.setAttribute('datetime', n.created_at);
+        when.title = LocalTime.write('datetime', at, now, undefined, accountPrefs.hour12);
+        when.textContent = this.ago(at, now);
+        row.appendChild(when);
+      }
       var link = this.linkFor(n);
       if (link) {
         var a = document.createElement('a');

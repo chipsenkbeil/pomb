@@ -164,6 +164,7 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   border-bottom: 1px solid #f3f4f6;
 }
 .notification-row--unread { background: #eff6ff; }
+.notification-time { font-size: 0.7rem; color: #6b7280; }
 .notification-link { font-size: 0.7rem; font-weight: 700; color: #2563eb; text-decoration: none; }
 .notifications-more {
   display: block;

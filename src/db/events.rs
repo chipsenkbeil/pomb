@@ -164,7 +164,12 @@ fn events_of(before: Option<&TaskRow>, after: &TaskRow, actor: Actor<'_>) -> Vec
     let actor_kind = actor.kind;
     let token_name = actor.token_name.map(str::to_string);
     let at = Utc::now().to_rfc3339();
-    let event = |kind| BoardEventRow::new(kind, after, actor_kind, token_name.clone(), &at);
+    let event = |kind| BoardEventRow {
+        role_id: actor.role_id.map(str::to_string),
+        role_name: actor.role_name.map(str::to_string),
+        label: actor.label.map(str::to_string),
+        ..BoardEventRow::new(kind, after, actor_kind, token_name.clone(), &at)
+    };
     let Some(before) = before else {
         return vec![event(EventKind::TaskAdded)];
     };
@@ -204,6 +209,9 @@ fn events_of(before: Option<&TaskRow>, after: &TaskRow, actor: Actor<'_>) -> Vec
 fn comment_event(task: &TaskRow, comment: &TaskComment, at: &str) -> BoardEventRow {
     BoardEventRow {
         comment_id: Some(comment.id.clone()),
+        role_id: comment.role_id.clone(),
+        role_name: comment.role_name.clone(),
+        label: comment.label.clone(),
         ..BoardEventRow::new(
             EventKind::CommentAdded,
             task,
@@ -356,6 +364,9 @@ mod tests {
         token_name: Some("ci"),
         kind: ActorKind::ApiToken,
         parent_token: None,
+        role_id: None,
+        role_name: None,
+        label: None,
     };
 
     const USER: Actor<'static> = Actor {
@@ -363,6 +374,9 @@ mod tests {
         token_name: None,
         kind: ActorKind::User,
         parent_token: None,
+        role_id: None,
+        role_name: None,
+        label: None,
     };
 
     #[test]

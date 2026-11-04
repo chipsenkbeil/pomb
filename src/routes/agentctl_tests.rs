@@ -15,7 +15,7 @@ use crate::models::{
     FieldOwner, HistoryKind, SECONDS_PER_DAY, SECONDS_PER_HOUR, TimeEntryRow, TimerMode,
 };
 use crate::permissions::{Permission, STANDARD_ROLES};
-use crate::{AppState, markdown};
+use crate::{AppState, BODY_LIMIT_BYTES, markdown};
 
 struct Fixture {
     app: axum::Router,
@@ -104,7 +104,7 @@ async fn request(
         .await
         .expect("oneshot");
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     (status, String::from_utf8_lossy(&bytes).into_owned())
@@ -1899,7 +1899,7 @@ async fn if_claim_fence_should_guard_move_update_and_comment() {
                 .await
                 .expect("oneshot");
             let status = response.status();
-            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
                 .await
                 .expect("body");
             (status, String::from_utf8_lossy(&bytes).into_owned())
@@ -2217,6 +2217,62 @@ async fn a_cross_board_dependent_should_be_bumped_and_listed_on_its_own_board() 
     );
 }
 
+async fn epic_blocking_a_card_on_another_board(fx: &Fixture) -> (String, String, String) {
+    let (_, board) = call(fx, "POST", "/api/boards", Some(json!({"name": "Other"}))).await;
+    let other_board = board["id"].as_str().expect("board id").to_string();
+    let (_, columns) = call(
+        fx,
+        "GET",
+        &format!("/api/boards/{other_board}/columns"),
+        None,
+    )
+    .await;
+    let other_column = columns[0]["id"].as_str().expect("column").to_string();
+    let dependent = create(
+        fx,
+        json!({"column_id": other_column, "name": "Remote dependent"}),
+    )
+    .await;
+    let epic = create(
+        fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    link(fx, &dependent, "blocked_by", &epic).await;
+    (other_board, dependent, epic)
+}
+
+#[tokio::test]
+async fn closing_an_epic_should_free_a_card_it_blocks_and_reopening_should_block_it_again() {
+    let (_dir, fx) = fixture();
+    let (other_board, dependent, epic) = epic_blocking_a_card_on_another_board(&fx).await;
+    assert!(blocked(&fx, &dependent).await, "an open epic blocks");
+    tick();
+    let since = chrono::Utc::now().to_rfc3339();
+    tick();
+
+    let (status, closed) = call(&fx, "POST", &format!("/api/tasks/{epic}/close"), None).await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    assert!(!blocked(&fx, &dependent).await, "a closed epic is met");
+    assert_eq!(
+        ready_since(&fx, &other_board, &since).await,
+        vec![dependent.clone()]
+    );
+
+    tick();
+    let reopened_since = chrono::Utc::now().to_rfc3339();
+    tick();
+    let (status, reopened) = call(&fx, "POST", &format!("/api/tasks/{epic}/reopen"), None).await;
+    assert_eq!(status, StatusCode::OK, "{reopened}");
+    assert!(blocked(&fx, &dependent).await, "reopening blocks again");
+    assert!(updated_at(&fx, &dependent) > reopened_since);
+    assert!(
+        ready_since(&fx, &other_board, &reopened_since)
+            .await
+            .is_empty()
+    );
+}
+
 /// The full task detail JSON, for before/after comparisons.
 async fn detail(fx: &Fixture, task: &str) -> Value {
     let (status, detail) = call(fx, "GET", &format!("/api/tasks/{task}"), None).await;
@@ -2252,7 +2308,7 @@ async fn fenced_request(
         .await
         .expect("oneshot");
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     (status, String::from_utf8_lossy(&bytes).into_owned())
@@ -3074,7 +3130,7 @@ async fn form_post(fx: &Fixture, who: As<'_>, uri: &str, form: &str) -> (StatusC
         .await
         .expect("oneshot");
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     (status, String::from_utf8_lossy(&bytes).into_owned())
@@ -3091,7 +3147,7 @@ async fn start_device(fx: &Fixture, body: Value) -> (StatusCode, Value) {
         .expect("req");
     let response = fx.app.clone().oneshot(request).await.expect("oneshot");
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     let text = String::from_utf8_lossy(&bytes).into_owned();
@@ -7570,7 +7626,7 @@ async fn whoami_should_show_all_for_the_session_and_every_board_tokens() {
         .await
         .expect("oneshot");
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     let bootstrap: Value = serde_json::from_slice(&bytes).expect("json");
@@ -10367,7 +10423,7 @@ async fn inspect_should_refuse_the_bootstrap_token() {
         .await
         .expect("oneshot");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     let text = String::from_utf8(bytes.to_vec()).expect("utf8");
@@ -12068,25 +12124,93 @@ async fn an_epic_should_not_count_against_a_column_wip_limit() {
     assert_eq!(fx.db.count_tasks_in_column(&limited).expect("count"), 2);
 }
 
-#[tokio::test]
-async fn an_epic_should_not_move_by_the_move_route_or_in_bulk() {
-    let (_dir, fx) = fixture();
+async fn epic_with_child(fx: &Fixture, child_column: &str) -> (String, String) {
     let epic = create(
-        &fx,
+        fx,
         json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
     )
     .await;
-    let target = json!({"column_id": fx.col_done, "position": 0});
-
-    let (status, error) = call(
-        &fx,
+    let child = create(fx, json!({"column_id": child_column, "name": "Child"})).await;
+    let (status, link) = call(
+        fx,
         "POST",
-        &format!("/api/tasks/{epic}/move"),
-        Some(target),
+        &format!("/api/tasks/{child}/links"),
+        Some(json!({"kind": "parent", "target_id": epic})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert_eq!(status, StatusCode::OK, "{link}");
+    (epic, child)
+}
 
+async fn move_to(fx: &Fixture, id: &str, column: &str) -> (StatusCode, Value) {
+    call(
+        fx,
+        "POST",
+        &format!("/api/tasks/{id}/move"),
+        Some(json!({"column_id": column, "position": 0})),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn an_epic_with_every_child_done_should_move_through_any_column_and_close_in_done() {
+    let (_dir, fx) = fixture();
+    let limited = fx
+        .db
+        .create_column(&fx.board_id, "Limited", Some(1))
+        .expect("column");
+    create(&fx, json!({"column_id": limited, "name": "Held"})).await;
+    let (epic, _) = epic_with_child(&fx, &fx.col_done).await;
+
+    let (status, moved) = move_to(&fx, &epic, &limited).await;
+    assert_eq!(status, StatusCode::OK, "a full WIP-limited column: {moved}");
+    assert_eq!(stored(&fx, &epic)["column_id"], limited.as_str());
+    assert_eq!(stored(&fx, &epic)["closed"], false);
+
+    let (status, moved) = move_to(&fx, &epic, &fx.col_done).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    assert_eq!(stored(&fx, &epic)["column_id"], fx.col_done.as_str());
+    assert_eq!(stored(&fx, &epic)["closed"], true);
+}
+
+#[tokio::test]
+async fn moving_a_closed_epic_out_of_done_should_reopen_it() {
+    let (_dir, fx) = fixture();
+    let (epic, _) = epic_with_child(&fx, &fx.col_done).await;
+    let (status, moved) = move_to(&fx, &epic, &fx.col_done).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    assert_eq!(stored(&fx, &epic)["closed"], true);
+
+    let (status, moved) = move_to(&fx, &epic, &fx.col_todo).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    assert_eq!(stored(&fx, &epic)["column_id"], fx.col_todo.as_str());
+    assert_eq!(stored(&fx, &epic)["closed"], false);
+}
+
+#[tokio::test]
+async fn an_epic_with_an_open_child_should_be_refused_a_limited_or_done_column_and_allowed_any_other()
+ {
+    let (_dir, fx) = fixture();
+    let limited = fx
+        .db
+        .create_column(&fx.board_id, "Limited", Some(5))
+        .expect("column");
+    let open = fx
+        .db
+        .create_column(&fx.board_id, "Open", None)
+        .expect("column");
+    let (epic, _) = epic_with_child(&fx, &fx.col_todo).await;
+
+    for column in [&limited, &fx.col_done] {
+        let (status, error) = move_to(&fx, &epic, column).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{error}");
+        assert!(
+            error
+                .as_str()
+                .is_some_and(|text| text.contains("open children")),
+            "{error}"
+        );
+    }
     let plain = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
     let body = json!({"task_ids": [plain, epic], "action": "move", "column_id": fx.col_done});
     let (status, error) = call(
@@ -12096,22 +12220,111 @@ async fn an_epic_should_not_move_by_the_move_route_or_in_bulk() {
         Some(body),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert!(
+        error
+            .as_str()
+            .is_some_and(|text| text.contains("open children")),
+        "{error}"
+    );
     assert_eq!(stored(&fx, &epic)["column_id"], fx.col_todo.as_str());
     assert_eq!(stored(&fx, &plain)["column_id"], fx.col_todo.as_str());
+
+    let (status, moved) = move_to(&fx, &epic, &open).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    assert_eq!(stored(&fx, &epic)["column_id"], open.as_str());
 }
 
 #[tokio::test]
-async fn claiming_an_epic_should_be_a_409_epic_not_claimable() {
+async fn a_bulk_move_into_done_should_count_the_children_it_moves_whatever_their_order() {
+    let (_dir, fx) = fixture();
+    let limited = fx
+        .db
+        .create_column(&fx.board_id, "Limited", Some(5))
+        .expect("column");
+    let (epic, child) = epic_with_child(&fx, &fx.col_todo).await;
+    let bulk = |to: &str| json!({"task_ids": [epic, child], "action": "move", "column_id": to});
+    let path = format!("/api/boards/{}/tasks/bulk", fx.board_id);
+
+    let (status, error) = call(&fx, "POST", &path, Some(bulk(&limited))).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "the child stays open: {error}"
+    );
+    assert_eq!(stored(&fx, &epic)["column_id"], fx.col_todo.as_str());
+
+    let (status, moved) = call(&fx, "POST", &path, Some(bulk(&fx.col_done))).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    assert_eq!(stored(&fx, &epic)["column_id"], fx.col_done.as_str());
+    assert_eq!(stored(&fx, &epic)["closed"], true);
+    assert_eq!(stored(&fx, &child)["column_id"], fx.col_done.as_str());
+}
+
+#[tokio::test]
+async fn the_open_child_refusal_should_follow_the_column_settings_after_a_rename() {
+    let (_dir, fx) = fixture();
+    let limited = fx
+        .db
+        .create_column(&fx.board_id, "Limited", Some(5))
+        .expect("column");
+    let (epic, _) = epic_with_child(&fx, &fx.col_todo).await;
+    for (column, name) in [(&limited, "Backlog"), (&fx.col_done, "Archive")] {
+        let uri = format!("/api/columns/{column}");
+        let (status, body) = call(&fx, "PATCH", &uri, Some(json!({"name": name}))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, _) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/columns/{}", fx.col_todo),
+        Some(json!({"name": "Done"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let elsewhere = fx
+        .db
+        .create_column(&fx.board_id, "Done", None)
+        .expect("column");
+
+    for column in [&limited, &fx.col_done] {
+        let (status, error) = move_to(&fx, &epic, column).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{error}");
+        assert!(
+            error
+                .as_str()
+                .is_some_and(|text| text.contains("open children")),
+            "{error}"
+        );
+    }
+    let (status, moved) = move_to(&fx, &epic, &elsewhere).await;
+    assert_eq!(status, StatusCode::OK, "a column only named Done: {moved}");
+    assert_eq!(stored(&fx, &epic)["closed"], false);
+}
+
+#[tokio::test]
+async fn claiming_an_epic_with_an_open_child_should_be_a_409_epic_not_claimable() {
     let (_dir, fx) = fixture();
     let epic = create(
         &fx,
         json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
     )
     .await;
+    let child = create(&fx, json!({"column_id": fx.col_todo, "name": "Child"})).await;
+    let (status, linked) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{child}/links"),
+        Some(json!({"kind": "parent", "target_id": epic})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
     let (status, error) = claim(&fx, &epic, json!({"claimant": "agent", "ttl_seconds": 60})).await;
     assert_eq!(status, StatusCode::CONFLICT, "{error}");
-    assert_eq!(error, "an epic holds no work, so it cannot be claimed");
+    assert_eq!(
+        error,
+        "an epic can be claimed once every child is done, and 1 child is still open"
+    );
     assert!(stored(&fx, &epic)["claim"].is_null());
 }
 
@@ -12133,6 +12346,51 @@ async fn a_column_holding_only_epics_should_delete_and_send_them_to_the_first_co
     let row = stored(&fx, &epic);
     assert_eq!(row["column_id"], fx.col_todo.as_str());
     assert_eq!(row["kind"], "epic");
+}
+
+#[tokio::test]
+async fn deleting_a_column_should_send_an_epic_with_an_open_child_to_a_limited_first_column() {
+    let (_dir, fx) = fixture();
+    let uri = format!("/api/columns/{}", fx.col_todo);
+    let (status, body) = call(&fx, "PATCH", &uri, Some(json!({"wip_limit": 3}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let extra = fx
+        .db
+        .create_column(&fx.board_id, "Extra", None)
+        .expect("column");
+    let (epic, _) = epic_with_child(&fx, &fx.col_todo).await;
+    let (status, moved) = move_to(&fx, &epic, &extra).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+
+    let (status, deleted) = call(&fx, "DELETE", &format!("/api/columns/{extra}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    let row = stored(&fx, &epic);
+    assert_eq!(row["column_id"], fx.col_todo.as_str());
+    assert_eq!(row["closed"], false);
+}
+
+#[tokio::test]
+async fn deleting_a_done_column_should_leave_the_closed_flag_of_its_epic() {
+    let (_dir, fx) = fixture();
+    let extra = fx
+        .db
+        .create_column(&fx.board_id, "Extra", None)
+        .expect("column");
+    fx.db.set_column_done(&extra, true).expect("set done");
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let (status, moved) = move_to(&fx, &epic, &extra).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    assert_eq!(stored(&fx, &epic)["closed"], true);
+
+    let (status, deleted) = call(&fx, "DELETE", &format!("/api/columns/{extra}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    let row = stored(&fx, &epic);
+    assert_eq!(row["column_id"], fx.col_todo.as_str());
+    assert_eq!(row["closed"], true);
 }
 
 #[tokio::test]

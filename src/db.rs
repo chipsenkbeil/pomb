@@ -113,7 +113,7 @@ use crate::auth::{
 };
 use crate::backup::Backups;
 use crate::disk::{DiskGuard, MIB};
-use crate::labels::LabelSettings;
+use crate::labels::{CONFIG_KEY, LabelSettings};
 use crate::layouts::{LAYOUTS, Layout};
 use crate::limit::{Limits, TrustProxy};
 use crate::models::{
@@ -262,6 +262,12 @@ struct TaskColor {
 struct TaskColumn {
     /// The column the task sits in.
     column_id: String,
+    /// What the task is.
+    #[serde(default)]
+    kind: TaskKind,
+    /// Whether someone closed the epic.
+    #[serde(default)]
+    closed: bool,
 }
 
 /// What [`Db::board_labels`] reads of a task.
@@ -573,6 +579,10 @@ pub struct NewTimeEntry<'a> {
     pub role: Option<&'a str>,
     /// Name of the API token that logged the entry.
     pub token_name: Option<&'a str>,
+    /// Id of the agent role of the token that logged the entry.
+    pub role_id: Option<&'a str>,
+    /// The role's name when the token was issued.
+    pub role_name: Option<&'a str>,
 }
 
 impl NewTimeEntry<'_> {
@@ -594,6 +604,8 @@ impl NewTimeEntry<'_> {
             account_id,
             role: self.role.map(str::to_string),
             token_name: self.token_name.map(str::to_string),
+            role_id: self.role_id.map(str::to_string),
+            role_name: self.role_name.map(str::to_string),
         }
     }
 }
@@ -623,8 +635,9 @@ pub struct MoveGuards<'a> {
     pub enforce_wip: bool,
     /// Tasks of the same batch still waiting to move, which the target cell does not count as siblings.
     pub batch: &'a [String],
-    /// Whether an epic may move.
-    pub allow_epic: bool,
+    /// Whether to skip the refusal of an epic with an open child moving into a WIP-limited or
+    /// Done column, and to leave the epic's closed flag alone.
+    pub skip_epic_guard: bool,
 }
 
 /// What a bulk write does with its transaction once every task changed.
@@ -664,8 +677,11 @@ pub enum MoveOutcome {
     Moved,
     NotFound,
     StaleFence,
-    /// Refused: an epic holds no work, so it never moves.
-    Epic,
+    /// Refused: the epic holds `count` children that are not Done, and the target column has a
+    /// WIP limit or is a Done column.
+    OpenChildren {
+        count: usize,
+    },
     /// Refused: the target column holds `count` tasks against `limit`.
     WipLimit {
         count: usize,
@@ -1414,8 +1430,19 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// would save without their snapshot, or whose roles it would save with the counter reset, which
 /// would reuse a label.
 ///
+/// Version 66 adds, over version 65 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskEvent`, `TaskComment`, `TaskAttachment` and `BoardEventRow`: `role_id`, `role_name` and
+///    `label`, the agent role of the token that acted, the role's name when the token was issued
+///    and the `agent-N` label of that issue.
+/// 2. `TimeEntryRow`: `role_id` and `role_name`, the same for the token that logged the entry.
+///
+/// The upgrade rewrites no row, so an older event, comment, attachment or entry reads as made by no
+/// role. The new stamp makes a version-65 binary refuse a file whose attributions it would drop on
+/// its next save.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 65;
+pub const SCHEMA_VERSION: u64 = 66;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1487,6 +1514,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "e0b911ec0186f26f2948e7fa29bcadb8dc26cc3f5e190321ca1321f2c5947669",
     "043aa18d87c1fbed7a5e8a135ced106f018c97063e0c551c5aaf1b6b2036a922",
     "aaaf5ff2b9576404c34b111a8ae33bff2eba289b4f2734c014c791f71cfffe36",
+    "4f54b1b8694a065153cb08819ff7a974a9090b5974807113d37f1e188d06255d",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -3290,6 +3318,30 @@ fn child_ids_in(
     Ok(children)
 }
 
+/// Returns how many children of `epic_id` sit in a column that is not a Done column, leaving out
+/// the children in `finishing`, which are about to move into a Done column.
+fn txn_open_children(
+    txn: &WriteTransaction,
+    epic_id: &str,
+    finishing: &[String],
+) -> DbResult<usize> {
+    let tasks = txn.open_table(TASKS)?;
+    let mut open = 0;
+    for child_id in child_ids_in(txn, &tasks, epic_id)? {
+        if finishing.contains(&child_id) {
+            continue;
+        }
+        let Some(child) = task_in(&tasks, &child_id)? else {
+            continue;
+        };
+        let column: Option<ColumnRow> = txn_read_one(txn, COLUMNS, &child.column_id)?;
+        if !column.is_some_and(|column| column.is_done) {
+            open += 1;
+        }
+    }
+    Ok(open)
+}
+
 /// Removes each child's parent link to `epic_id` and records a `link_removed` event on the child.
 fn txn_unlink_children(
     txn: &WriteTransaction,
@@ -3444,9 +3496,9 @@ fn blocked_states(txn: &WriteTransaction, ids: &[String]) -> DbResult<HashMap<St
     Ok(states)
 }
 
-/// Returns true when a `blocked_by` link among `links` names a task in a column that is not done,
-/// read inside an open transaction. `open` remembers, by task id, whether a named task sits in
-/// such a column, so each is read once.
+/// Returns true when a `blocked_by` link among `links` names a task that is still open, read inside
+/// an open transaction. A task is open when it sits in a column that is not done, unless it is a
+/// closed epic. `open` remembers, by task id, whether a named task is open, so each is read once.
 fn links_blocked_in(
     txn: &impl Reads,
     links: &[TaskLink],
@@ -3457,6 +3509,7 @@ fn links_blocked_in(
             Some(is_open) => *is_open,
             None => {
                 let column = match read_in::<TaskColumn>(txn, TASKS, &link.target_id)? {
+                    Some(target) if target.kind == TaskKind::Epic && target.closed => None,
                     Some(target) => read_in::<ColumnRow>(txn, COLUMNS, &target.column_id)?,
                     None => None,
                 };
@@ -3659,6 +3712,9 @@ pub fn push_column_event(
         from: None,
         to: None,
         parent_token: actor.parent_token.cloned(),
+        role_id: actor.role_id.map(history_text),
+        role_name: actor.role_name.map(history_text),
+        label: actor.label.map(history_text),
     });
     let len = task.history.len();
     if len > Db::MAX_HISTORY_EVENTS {
@@ -7416,7 +7472,7 @@ impl Db {
             for epic in &held {
                 let guards = MoveGuards {
                     event: Some(&detail),
-                    allow_epic: true,
+                    skip_epic_guard: true,
                     ..MoveGuards::default()
                 };
                 let outcome = Self::move_in(
@@ -8237,14 +8293,20 @@ impl Db {
             .into_iter()
             .map(|color| (color.id, color.value))
             .collect();
-        let due_time = self
-            .board(board_id)?
+        let board = self.board(board_id)?;
+        let due_time = board
+            .as_ref()
             .map(|board| board.due_time().format("%H:%M").to_string());
+        let label_settings = board
+            .as_ref()
+            .map(|board| LabelSettings::from_config(&board.config_json).to_config_value());
 
         // The snapshot is written one task at a time and refused once it passes the cap
         let mut snapshot = Vec::new();
         snapshot.extend_from_slice(b"{\"due_time\":");
         serde_json::to_writer(&mut snapshot, &due_time)?;
+        snapshot.extend_from_slice(format!(",\"{}\":", CONFIG_KEY).as_bytes());
+        serde_json::to_writer(&mut snapshot, &label_settings)?;
         for (key, value) in [
             ("colors", colors),
             ("columns", columns),
@@ -8412,6 +8474,15 @@ impl Db {
         {
             let mut updates = serde_json::Map::new();
             updates.insert("due_time".to_string(), due_time.into());
+            txn_merge_board_config(txn, &board_id, updates)?;
+        }
+
+        if let Some(settings) = snapshot
+            .get(CONFIG_KEY)
+            .and_then(|value| serde_json::from_value::<LabelSettings>(value.clone()).ok())
+        {
+            let mut updates = serde_json::Map::new();
+            updates.insert(CONFIG_KEY.to_string(), settings.to_config_value());
             txn_merge_board_config(txn, &board_id, updates)?;
         }
 
@@ -9134,6 +9205,9 @@ impl Db {
             kind: new.kind.map(str::to_string),
             reactions: Vec::new(),
             parent_token: actor.parent_token.cloned(),
+            role_id: actor.role_id.map(str::to_string),
+            role_name: actor.role_name.map(str::to_string),
+            label: actor.label.map(str::to_string),
         };
         let txn = self.db.begin_write()?;
         let owner = task_owner_in(&txn, task_id)?;
@@ -10268,6 +10342,9 @@ impl Db {
             size,
             uploaded_by: uploaded_by.name.to_string(),
             token_name: uploaded_by.token_name.map(str::to_string),
+            role_id: uploaded_by.role_id.map(str::to_string),
+            role_name: uploaded_by.role_name.map(str::to_string),
+            label: uploaded_by.label.map(str::to_string),
             created_at: Utc::now().to_rfc3339(),
             sha256,
             url,
@@ -10760,19 +10837,26 @@ impl Db {
     }
 
     /// Sets whether an epic is closed, with a `closed` or `reopened` history event, in one write
-    /// transaction. It leaves the column, `completed_at` and the children alone.
+    /// transaction. It leaves the column, `completed_at` and the children alone, and stamps
+    /// `updated_at` on every dependent whose `blocked` value flips.
     pub fn set_epic_closed(
         &self,
         task_id: &str,
         closed: bool,
         actor: Actor<'_>,
     ) -> DbResult<EpicCloseOutcome> {
-        let outcome = self.change_task(task_id, false, ChildLinks::Keep, actor, |task, _| {
+        let txn = self.db.begin_write()?;
+        let before = blocked_states(&txn, &blocked_dependents(&txn, &[task_id.to_string()])?)?;
+        let outcome = {
+            let mut tasks = txn.open_table(TASKS)?;
+            let Some(mut task) = task_in(&tasks, task_id)? else {
+                return Ok(EpicCloseOutcome::NotFound);
+            };
             if task.kind != TaskKind::Epic {
-                return (EpicCloseOutcome::NotEpic, RowWrite::Skip);
+                return Ok(EpicCloseOutcome::NotEpic);
             }
             if task.closed == closed {
-                return (EpicCloseOutcome::Unchanged, RowWrite::Skip);
+                return Ok(EpicCloseOutcome::Unchanged);
             }
             task.closed = closed;
             let (kind, detail) = if closed {
@@ -10780,10 +10864,14 @@ impl Db {
             } else {
                 (HistoryKind::Reopened, "Reopened the epic")
             };
-            push_event(task, kind, detail.to_string(), actor);
-            (EpicCloseOutcome::Changed, RowWrite::Stamp)
-        })?;
-        Ok(outcome.unwrap_or(EpicCloseOutcome::NotFound))
+            push_event(&mut task, kind, detail.to_string(), actor);
+            task.updated_at = Some(Utc::now().to_rfc3339());
+            txn_store_task(&txn, &mut tasks, &task, OverQuota::Refuse, actor)?;
+            EpicCloseOutcome::Changed
+        };
+        bump_flipped(&txn, &before)?;
+        txn.commit()?;
+        Ok(outcome)
     }
 
     /// Extend the live claim holding `fence`. Without `ttl_seconds` the
@@ -11025,11 +11113,19 @@ impl Db {
         let Some(task) = txn_read_one::<TaskRow>(txn, TASKS, id)? else {
             return Ok(MoveOutcome::NotFound);
         };
-        if !task.is_work() && !guards.allow_epic {
-            return Ok(MoveOutcome::Epic);
-        }
         let target: ColumnRow = txn_read_one(txn, COLUMNS, column_id)?
             .ok_or_else(|| format!("unknown column: {column_id}"))?;
+        if task.kind == TaskKind::Epic
+            && !guards.skip_epic_guard
+            && task.column_id != column_id
+            && (target.wip_limit.is_some() || target.is_done)
+        {
+            let finishing = if target.is_done { guards.batch } else { &[] };
+            let count = txn_open_children(txn, id, finishing)?;
+            if count > 0 {
+                return Ok(MoveOutcome::OpenChildren { count });
+            }
+        }
         if !task.fence_allows(guards.fence) {
             return Ok(MoveOutcome::StaleFence);
         }
@@ -11037,10 +11133,11 @@ impl Db {
         let old_swimlane_id = task.swimlane_id.clone();
 
         // A move within its own column never adds to that column
-        if let (true, Some(limit), true) = (
+        if let (true, Some(limit), true, true) = (
             guards.enforce_wip,
             target.wip_limit,
             old_column_id != column_id,
+            task.is_work(),
         ) {
             if target.wip_limit_in_hours() {
                 let minutes =
@@ -11154,7 +11251,15 @@ impl Db {
             .filter(|(_, sibling)| sibling.is_work())
             .nth(work_at)
             .map_or(siblings.len(), |(index, _)| index);
+        let closed = match (target.is_done, was_done) {
+            _ if guards.skip_epic_guard => task.closed,
+            (true, false) if task.kind == TaskKind::Epic => true,
+            (false, true) => false,
+            _ => task.closed,
+        };
+        let closed_changed = closed != task.closed;
         let mut moved = TaskRow {
+            closed,
             column_id: column_id.to_string(),
             swimlane_id: new_swimlane_id.clone(),
             position: at as f64,
@@ -11187,6 +11292,14 @@ impl Db {
         } else {
             format!("; dropped fields: {}", serde_json::Value::Object(dropped))
         };
+        if closed_changed {
+            let (kind, detail) = if closed {
+                (HistoryKind::Closed, "Closed the epic")
+            } else {
+                (HistoryKind::Reopened, "Reopened the epic")
+            };
+            push_event(&mut moved, kind, detail.to_string(), actor);
+        }
         let logged = match guards.event {
             Some(detail) => {
                 let detail = format!("{detail}{dropped_note}");
@@ -11410,6 +11523,8 @@ impl Db {
                     activity_id: None,
                     role: None,
                     token_name: None,
+                    role_id: None,
+                    role_name: None,
                 },
             )?
             .unwrap_or_default())
@@ -13938,6 +14053,9 @@ mod schema_version_tests {
                         token_name: None,
                         kind: ActorKind::User,
                         parent_token: None,
+                        role_id: None,
+                        role_name: None,
+                        label: None,
                     },
                     None,
                 )
@@ -14263,6 +14381,9 @@ mod schema_version_tests {
                         from: None,
                         to: None,
                         parent_token: None,
+                        role_id: None,
+                        role_name: None,
+                        label: None,
                     });
                 }
             })
@@ -15590,6 +15711,8 @@ mod ownership_tests {
                     activity_id: None,
                     role: None,
                     token_name: None,
+                    role_id: None,
+                    role_name: None,
                 })
                 .expect("entry"),
             None,
@@ -16616,6 +16739,8 @@ mod storage_tests {
             activity_id: None,
             role: None,
             token_name: None,
+            role_id: None,
+            role_name: None,
         };
         let refused = db.create_entry_full(&account, entry).expect_err("too long");
         assert_eq!(refused.to_string(), "reason must be at most 1024 bytes");
@@ -16762,6 +16887,9 @@ mod responsible_fill_tests {
                 from: None,
                 to: None,
                 parent_token: None,
+                role_id: None,
+                role_name: None,
+                label: None,
             });
         })
         .expect("log");

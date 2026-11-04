@@ -28,8 +28,13 @@ function load(sessionStorage, localStorage) {
     row.parent = list;
     list.children.splice(list.children.indexOf(ref), 0, row);
   };
+  const siblingOf = (el) => {
+    const at = list.children.indexOf(el);
+    return at === -1 ? null : list.children[at + 1] || null;
+  };
   function card(id, color) {
     return {
+      get nextElementSibling() { return siblingOf(this); },
       dataset: { taskId: id, colorValue: color, labels: '[]', filterFields: '{}', memberIds: '', dueAt: '' },
       style: {},
       hidden: false,
@@ -41,6 +46,12 @@ function load(sessionStorage, localStorage) {
   }
   var cards = [card('1', 'red'), card('2', 'blue'), card('3', 'blue'), card('4', 'red'), card('5', 'blue'), card('6', 'blue'), card('7', 'blue')];
   list.children = cards.slice();
+  list.querySelectorAll = (sel) => {
+    if (sel === '.task-card') return list.children.filter((el) => el.classList.contains('task-card'));
+    if (sel === '.done-group-label') return list.children.filter((el) => el.classList.contains('done-group-label'));
+    return [];
+  };
+  list.querySelector = (sel) => (sel === '[data-load-more]' ? list.more || null : null);
   var els = {
     'f-user': select('all'),
     'f-color': select('all'),
@@ -66,6 +77,7 @@ function load(sessionStorage, localStorage) {
       if (sel === '.task-card') return cards.filter(function (c) { return list.children.indexOf(c) !== -1; });
       if (sel === '.task-list') return [list];
       if (sel === '.filter-fold') return folds();
+      if (sel === '[data-load-more]') return list.more ? [list.more] : [];
       return [];
     },
     createElement: function () {
@@ -80,7 +92,7 @@ function load(sessionStorage, localStorage) {
   var chrome = eval('(function () {' + src.slice(start, end) + '\n return BoardChrome; })()');
   chrome.syncLegendFilter = function () {};
   function label() {
-    return { dataset: { taskId: 'L' }, style: {}, classList: classSet(['done-group-label']) };
+    return { dataset: { taskId: 'L' }, style: {}, hidden: false, classList: classSet(['done-group-label']), get nextElementSibling() { return siblingOf(this); } };
   }
   return {
     label: label,
@@ -192,6 +204,76 @@ page = collapsed();
 page.cards[4].hidden = true;
 page.chrome.refold();
 check('cards behind Load more stay out of runs and counts', layout(page), ['1', '2 other cards', '2', '3', '4', '5', '2 other cards', '6', '7']);
+
+const archive = (cardColors, labelAt) => {
+  const p = load(store(), store());
+  p.cards.length = 0;
+  cardColors.forEach((color, i) => p.cards.push(p.card(String(i), color)));
+  p.list.children = p.cards.slice();
+  p.labels = labelAt.map((at) => {
+    const l = p.label();
+    p.list.children.splice(p.list.children.indexOf(p.cards[at]), 0, l);
+    return l;
+  });
+  p.list.more = { hidden: false, closest: () => p.list };
+  return p;
+};
+
+const visible = (p) => p.cards.filter((c) => !c.hidden && c.style.display !== 'none').length;
+
+const colors = (blue, red, tail) => [
+  ...Array(blue).fill('blue'),
+  ...Array(red).fill('red'),
+  ...Array(tail).fill('blue'),
+];
+
+page = archive(colors(25, 25, 0), [0, 30]);
+page.chrome.pageArchive(page.list, false);
+check('plain first page shows 20 cards', [visible(page), page.list.more.hidden, page.labels[1].hidden], [20, false, true]);
+page.chrome.pageArchive(page.list, true);
+check('plain Load more reveals the next 20', [visible(page), page.list.more.hidden, page.labels[1].hidden], [40, false, false]);
+
+page = archive(colors(25, 3, 2), [0, 25]);
+page.els['f-color'].value = 'red';
+page.chrome.applyFilter();
+check('a filter reveals matches past the first page', visible(page), 3);
+check('only a label over a matching card shows', [page.labels[0].hidden, page.labels[1].hidden], [true, false]);
+check('Load more hides when no hidden match is left', page.list.more.hidden, true);
+
+page = archive(colors(5, 30, 0), [0]);
+page.els['f-color'].value = 'red';
+page.chrome.applyFilter();
+check('a filter reveals up to 20 matches', visible(page), 20);
+check('Load more stays while hidden matches remain', page.list.more.hidden, false);
+page.chrome.pageArchive(page.list, true);
+check('each click reveals up to 20 more matches', [visible(page), page.list.more.hidden], [30, true]);
+
+page.els['f-color'].value = 'all';
+page.chrome.applyFilter();
+check('clearing the filter returns the plain first page', [visible(page), page.list.more.hidden, page.labels[0].hidden], [20, false, false]);
+
+page = archive(colors(5, 30, 0), [0]);
+page.setMode('collapse');
+page.els['f-color'].value = 'red';
+page.chrome.applyFilter();
+check('collapse mode folds the other cards in a filtered archive', [visible(page), page.folds().length], [20, 1]);
+page.chrome.applyFilter();
+check('a fold row after a label does not hide the label over matching cards', [page.labels[0].hidden, page.folds().length], [false, 1]);
+
+const epicTag = (id) => () => ({ dataset: { epicId: id } });
+
+const epicSaved = store();
+page = load(epicSaved, store());
+page.cards[0].querySelector = epicTag('e1');
+page.cards[3].querySelector = epicTag('e1');
+page.chrome.setEpicFilter('e1');
+page.chrome.applyFilter();
+check('an epic funnel folds the other cards in place while the panel holds hide', [page.mode(), layout(page)], ['hide', ['1', '2 other cards', '2', '3', '4', '3 other cards', '5', '6', '7']]);
+page.chrome.maybeSaveFilter();
+check('the funnel leaves the panel fold value in the saved state', JSON.parse(epicSaved.getItem('pomb-filter-session:b1')).fold, 'hide');
+page.chrome.setEpicFilter('');
+page.chrome.applyFilter();
+check('clearing the funnel restores the panel fold mode', [page.folds().length, shown(page)], [0, [1, 1, 1, 1, 1, 1, 1]]);
 
 var saved = store();
 page = load(saved, store());

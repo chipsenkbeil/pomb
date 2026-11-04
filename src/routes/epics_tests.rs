@@ -288,25 +288,64 @@ async fn a_move_should_ignore_an_epic_in_the_target_columns_wip_count() {
 }
 
 #[tokio::test]
-async fn a_claim_should_refuse_an_epic_and_still_grant_work() {
+async fn a_claim_should_refuse_an_epic_with_an_open_child_and_grant_it_once_all_are_done() {
     let (_dir, fx) = fixture();
+    let (status, done) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/columns/{}", fx.col_moves),
+        Some(json!({"is_done": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
     let epic = create(
         &fx,
         json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
     )
     .await;
-    let work = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
+    let finished = create(&fx, json!({"column_id": fx.col_moves, "name": "Finished"})).await;
+    let open = create(&fx, json!({"column_id": fx.col_todo, "name": "Open"})).await;
+    adopt(&fx, &finished, &epic).await;
+    adopt(&fx, &open, &epic).await;
     let body = json!({"claimant": "agent", "ttl_seconds": 60});
+    let path = format!("/api/tasks/{epic}/claim");
 
-    let (status, error) = call(
+    let modal = modal_of(&fx, &epic).await;
+    let claim_group = section(&modal, "tm-group-claim");
+    assert!(!claim_group.contains("data-claim-take"), "{claim_group}");
+    assert!(!claim_group.contains("tm-claim-lease"), "{claim_group}");
+    let (status, error) = call(&fx, "POST", &path, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::CONFLICT, "claiming an epic: {error}");
+    assert_eq!(
+        error,
+        "an epic can be claimed once every child is done, and 1 child is still open"
+    );
+
+    let (status, moved) = call(
         &fx,
         "POST",
-        &format!("/api/tasks/{epic}/claim"),
-        Some(body.clone()),
+        &format!("/api/tasks/{open}/move"),
+        Some(json!({"column_id": fx.col_moves, "position": 0})),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "claiming an epic: {error}");
-    assert_eq!(error, "an epic holds no work, so it cannot be claimed");
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    let modal = modal_of(&fx, &epic).await;
+    let claim_group = section(&modal, "tm-group-claim");
+    assert!(claim_group.contains("data-claim-take"), "{claim_group}");
+    assert!(claim_group.contains("tm-claim-lease"), "{claim_group}");
+    let (status, claim) = call(&fx, "POST", &path, Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "claiming a finished epic: {claim}");
+    assert_eq!(claim["claimant"], "agent");
+    let modal = modal_of(&fx, &epic).await;
+    let claim_group = section(&modal, "tm-group-claim");
+    assert!(claim_group.contains("data-claim-release"), "{claim_group}");
+}
+
+#[tokio::test]
+async fn a_claim_should_still_grant_work() {
+    let (_dir, fx) = fixture();
+    let work = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
+    let body = json!({"claimant": "agent", "ttl_seconds": 60});
     let (status, claim) = call(&fx, "POST", &format!("/api/tasks/{work}/claim"), Some(body)).await;
     assert_eq!(status, StatusCode::OK, "claiming work: {claim}");
 }

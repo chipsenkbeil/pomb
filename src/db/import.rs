@@ -259,6 +259,9 @@ mod tests {
             size: 4096,
             uploaded_by: "chip".to_string(),
             token_name: None,
+            role_id: None,
+            role_name: None,
+            label: None,
             created_at: Utc::now().to_rfc3339(),
             sha256: None,
             url: None,
@@ -281,6 +284,8 @@ mod tests {
             account_id: owner.as_str().to_string(),
             role: None,
             token_name: None,
+            role_id: None,
+            role_name: None,
         };
         let file = dir.path().join("spooled");
         std::fs::write(&file, vec![7u8; 4096]).expect("spool");
@@ -330,6 +335,9 @@ mod tests {
             size: 16,
             uploaded_by: "chip".to_string(),
             token_name: None,
+            role_id: None,
+            role_name: None,
+            label: None,
             created_at: Utc::now().to_rfc3339(),
             sha256: None,
             url: None,

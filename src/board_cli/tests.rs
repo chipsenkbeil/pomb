@@ -22,7 +22,7 @@ use crate::client::Client;
 use crate::db::{AccountDb, Db, FencedWrite, NewComment};
 use crate::disk::DiskGuard;
 use crate::models::{AccountId, Actor, ActorKind, AuthScope, DiskLimits};
-use crate::{AppState, Args, Verb, routes};
+use crate::{AppState, Args, BODY_LIMIT_BYTES, Verb, routes};
 
 const BOARD: &str = "Pomb";
 
@@ -128,7 +128,7 @@ impl Server {
             .await
             .expect("oneshot");
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
             .await
             .expect("body");
         let text = String::from_utf8_lossy(&bytes).into_owned();

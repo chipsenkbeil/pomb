@@ -206,6 +206,8 @@ fn create_entry_should_never_log_onto_a_deleted_task() {
                             activity_id: None,
                             role: None,
                             token_name: None,
+                            role_id: None,
+                            role_name: None,
                         },
                         "Logged 5m",
                         Actor::SYSTEM,

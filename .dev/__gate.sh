@@ -7,7 +7,7 @@ verb="${2:?usage: __gate.sh <worktree> <verb> <log>}"
 log="${3:?usage: __gate.sh <worktree> <verb> <log>}"
 
 runs() {
-    ci -C "$wt" --json ls -n 200 | jq -c '.runs[]'
+    ci -C "$wt" --json ps -a -n 200 | jq -c --arg name "$(basename "$wt")-" '.runs[] | select(.repo | startswith($name))'
 }
 
 before=$(runs | jq -r .run | sort)

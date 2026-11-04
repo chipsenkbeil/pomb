@@ -7,12 +7,10 @@ use tower::ServiceExt as _;
 use super::passkey_tests::{Reply, call};
 use super::server::{passkey_mode, unthrottled_limits};
 use super::{MAX_AVATAR_BYTES, router};
-use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
 use crate::models::{AccountId, Actor, AuthScope, AvatarKind, InstanceMode, TimeFormat};
-
-const MAX_BODY_BYTES: usize = 1 << 20;
+use crate::{AppState, BODY_LIMIT_BYTES};
 
 /// An instance with an `admin` account that owns a board and an `agent-1` token.
 struct Fixture {
@@ -96,7 +94,7 @@ impl Fixture {
             .headers()
             .get("content-type")
             .map(|value| value.to_str().expect("ascii").to_string());
-        let bytes = axum::body::to_bytes(response.into_body(), MAX_BODY_BYTES)
+        let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
             .await
             .expect("body");
         (status, content_type, bytes.to_vec())

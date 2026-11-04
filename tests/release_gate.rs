@@ -9,11 +9,16 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
 
+const WORKTREE: &str = "release-1";
 const REPO: &str = "release-1-0123456789abcdef";
 
 fn run_row(id: &str, status: &str, source: &str) -> String {
+    repo_row(REPO, id, status, source)
+}
+
+fn repo_row(repo: &str, id: &str, status: &str, source: &str) -> String {
     format!(
-        r#"{{"run":"{id}","repo":"{REPO}","source":"{source}","kind":"run","status":"{status}"}}"#
+        r#"{{"run":"{id}","repo":"{repo}","source":"{source}","kind":"run","status":"{status}"}}"#
     )
 }
 
@@ -30,6 +35,8 @@ fn run_gate(before: &[String], after: &[String], dev_exit: i32) -> Output {
     let dir = tempfile::tempdir().expect("tempdir");
     let bin = dir.path().join("bin");
     fs::create_dir(&bin).expect("bin dir");
+    let worktree = dir.path().join(WORKTREE);
+    fs::create_dir(&worktree).expect("worktree dir");
     let state = dir.path().join("runs.json");
     let next = dir.path().join("next.json");
     fs::write(&state, runs_doc(before)).expect("write before");
@@ -48,7 +55,7 @@ fn run_gate(before: &[String], after: &[String], dev_exit: i32) -> Output {
     Command::new("bash")
         .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/.dev/__gate.sh"))
         .args([
-            dir.path().to_str().expect("utf8"),
+            worktree.to_str().expect("utf8"),
             "lint",
             log.to_str().expect("utf8"),
         ])
@@ -62,6 +69,25 @@ fn gate_should_accept_one_new_passed_local_run() {
     let old = run_row("aaaaaa", "passed", "local");
     let after = [old.clone(), run_row("bbbbbb", "passed", "local")];
     let out = run_gate(&[old], &after, 0);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        format!("bbbbbb {REPO} local")
+    );
+}
+
+#[test]
+fn gate_should_ignore_new_runs_of_other_repos() {
+    let after = [
+        repo_row("questions-0123456789abcdef", "aaaaaa", "running", "local"),
+        run_row("bbbbbb", "passed", "local"),
+        repo_row("release-10-0123456789abcdef", "cccccc", "passed", "local"),
+    ];
+    let out = run_gate(&[], &after, 0);
     assert!(
         out.status.success(),
         "{}",

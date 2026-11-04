@@ -1081,6 +1081,8 @@ async fn delete_account_should_remove_every_owned_row() {
             activity_id: None,
             role: None,
             token_name: None,
+            role_id: None,
+            role_name: None,
         })
         .expect("entry");
     let device = call(

@@ -1043,6 +1043,9 @@ impl Builder<'_> {
                     edited_at: comment.edited_at,
                     reactions: Vec::new(),
                     parent_token: None,
+                    role_id: None,
+                    role_name: None,
+                    label: None,
                 })
             })
             .collect()
@@ -1190,6 +1193,9 @@ impl Builder<'_> {
                 size: attachment.size,
                 uploaded_by: attachment.uploaded_by,
                 token_name: attachment.token_name,
+                role_id: None,
+                role_name: None,
+                label: None,
                 created_at: attachment.created_at,
                 sha256: None,
                 url: attachment.url,
@@ -1381,6 +1387,9 @@ impl Builder<'_> {
                     from: event.from,
                     to: event.to,
                     parent_token: None,
+                    role_id: None,
+                    role_name: None,
+                    label: None,
                 })
             })
             .collect()
@@ -1455,6 +1464,8 @@ impl Builder<'_> {
                 account_id: self.importer.account.as_str().to_string(),
                 role: entry.role,
                 token_name: entry.token_name,
+                role_id: None,
+                role_name: None,
             });
         }
         Ok(rows)
@@ -2695,6 +2706,9 @@ mod tests {
                 token_name: (name == "notes.txt").then_some("worker"),
                 kind: ActorKind::ApiToken,
                 parent_token: None,
+                role_id: None,
+                role_name: None,
+                label: None,
             };
             db.add_attachment(&task, name, "text/plain", bytes, uploader)
                 .expect("attachment")

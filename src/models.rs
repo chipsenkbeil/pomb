@@ -790,7 +790,8 @@ pub struct TaskRow {
     /// Whether the task is a plain task or an epic, the only kind that holds children.
     #[serde(default)]
     pub kind: TaskKind,
-    /// Whether someone closed the epic. A column move leaves it alone.
+    /// Whether the epic is closed, by someone closing it or by a move into a Done column.
+    /// Moving it out of a Done column reopens it.
     #[serde(default)]
     pub closed: bool,
     /// Activity trail (KanbanFlow parity: History report). Newest appended
@@ -1974,6 +1975,15 @@ pub struct TaskComment {
     /// The lead token that issued the child token that wrote it, or null.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_token: Option<ParentToken>,
+    /// Id of the agent role the token was issued as, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<String>,
+    /// The role's name when the token was issued, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
+    /// The `agent-N` label of the token's issue, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// The reactions the comment holds, one entry per account and emoji, oldest first.
     #[serde(default)]
     pub reactions: Vec<CommentReaction>,
@@ -2011,6 +2021,15 @@ pub struct TaskAttachment {
     /// Name of the API token that uploaded it, or null.
     #[serde(default)]
     pub token_name: Option<String>,
+    /// Id of the agent role the token was issued as, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<String>,
+    /// The role's name when the token was issued, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
+    /// The `agent-N` label of the token's issue, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// RFC3339.
     pub created_at: String,
     /// Hex SHA-256 of the file's bytes, which an upload since duplicate detection records and an
@@ -2138,6 +2157,12 @@ pub struct Actor<'a> {
     pub kind: ActorKind,
     /// The token that issued the child token behind the change, absent for any other actor.
     pub parent_token: Option<&'a ParentToken>,
+    /// Id of the agent role the token behind the change was issued as, absent for any other actor.
+    pub role_id: Option<&'a str>,
+    /// The role's name when the token was issued, absent for any other actor.
+    pub role_name: Option<&'a str>,
+    /// The `agent-N` label of the token's issue, absent for any other actor.
+    pub label: Option<&'a str>,
 }
 
 impl Actor<'static> {
@@ -2147,6 +2172,9 @@ impl Actor<'static> {
         token_name: None,
         kind: ActorKind::System,
         parent_token: None,
+        role_id: None,
+        role_name: None,
+        label: None,
     };
 }
 
@@ -2166,6 +2194,40 @@ pub fn delegation_label(token_name: &str, parent: Option<&ParentToken>) -> Strin
         Some(parent) => format!("{token_name} <- {}", parent.name),
         None => token_name.to_string(),
     }
+}
+
+/// Returns who made a change as a page names them: `role (label)` for a token issued as a role,
+/// `actor (token)` for any other token and `actor` for a person or the server.
+#[must_use]
+pub fn attribution(
+    actor: &str,
+    token_name: Option<&str>,
+    parent: Option<&ParentToken>,
+    role_name: Option<&str>,
+    label: Option<&str>,
+) -> String {
+    match (role_name, label, token_name) {
+        (Some(role), Some(label), _) => format!("{role} ({label})"),
+        (Some(role), None, _) => role.to_string(),
+        (None, _, Some(name)) => format!("{actor} ({})", delegation_label(name, parent)),
+        (None, _, None) => actor.to_string(),
+    }
+}
+
+/// Returns the full identity of a role token for a hover title: its name, its label and the token
+/// that issued it.
+#[must_use]
+pub fn token_title(token_name: &str, label: Option<&str>, parent: Option<&ParentToken>) -> String {
+    let issuer = parent.map(|parent| format!("issued by {}", parent.name));
+    [
+        Some(token_name.to_string()),
+        label.map(str::to_string),
+        issuer,
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(", ")
 }
 
 /// Days a deleted task waits in the recycle bin before the daily cleanup deletes it for good.
@@ -2518,6 +2580,15 @@ pub struct TaskEvent {
     /// and for older events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_token: Option<ParentToken>,
+    /// Id of the agent role the token was issued as, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<String>,
+    /// The role's name when the token was issued, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
+    /// The `agent-N` label of the token's issue, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// The values a history event replaced and set, before they are cut for storage.
@@ -2595,6 +2666,15 @@ pub struct BoardEventRow {
     /// Name of the API token that made the change, or null.
     #[serde(default)]
     pub token_name: Option<String>,
+    /// Id of the agent role the token was issued as, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<String>,
+    /// The role's name when the token was issued, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
+    /// The `agent-N` label of the token's issue, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// RFC3339.
     pub at: String,
 }
@@ -2622,6 +2702,9 @@ impl BoardEventRow {
             labels_removed: Vec::new(),
             actor_kind,
             token_name,
+            role_id: None,
+            role_name: None,
+            label: None,
             at: at.to_string(),
         }
     }
@@ -2767,6 +2850,14 @@ pub struct TimeEntryRow {
     /// written before token names were recorded.
     #[serde(default)]
     pub token_name: Option<String>,
+    /// Id of the agent role of the token that logged the entry. [`None`] for a roleless token and
+    /// for an older row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<String>,
+    /// The role's name when the token was issued. [`None`] for a roleless token and for an older
+    /// row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
 }
 
 impl TimeEntryRow {

@@ -4,9 +4,9 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use crate::AppState;
 use crate::db::{BOARD_COPY_TASK_CAP, ColumnPatch, ColumnWatch, Db};
 use crate::models::{AccountId, Actor, BoardRole, Responsible, TaskRow};
+use crate::{AppState, BODY_LIMIT_BYTES};
 
 struct Fixture {
     app: axum::Router,
@@ -59,7 +59,7 @@ async fn send(fx: &Fixture, method: &str, uri: &str, body: Value) -> (StatusCode
         .expect("request");
     let response = fx.app.clone().oneshot(request).await.expect("oneshot");
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     let text = String::from_utf8_lossy(&bytes).into_owned();

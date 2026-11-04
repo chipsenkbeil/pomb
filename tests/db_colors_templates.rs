@@ -1,4 +1,5 @@
 use pomb::db::{ColorDeleteOutcome, Db, TemplateDeleteOutcome};
+use pomb::labels::{CONFIG_KEY, Highlight, LabelSettings};
 use pomb::layouts::{Category, LAYOUTS};
 use pomb::models::{AccountId, Actor};
 
@@ -734,5 +735,58 @@ fn pomodoro_template_should_keep_its_columns_without_named_swimlanes() {
         tasks
             .iter()
             .all(|task| task.swimlane_id.as_deref() == Some(lanes[0].id.as_str()))
+    );
+}
+
+#[test]
+fn template_should_carry_label_settings_to_a_new_board() {
+    let (_dir, db) = test_db();
+    let owner = AccountId::ownerless();
+    let board_id = db
+        .apply_template(&owner, &builtin_template_id(&db), "Source")
+        .expect("apply")
+        .expect("known template");
+    let settings = LabelSettings {
+        highlights: vec![
+            Highlight {
+                label: "urgent".to_string(),
+                color: "#ff0000".to_string(),
+            },
+            Highlight {
+                label: "idea".to_string(),
+                color: "#00ff00".to_string(),
+            },
+        ],
+        show_all: true,
+        added: vec!["later".to_string()],
+    };
+    let mut updates = serde_json::Map::new();
+    updates.insert(CONFIG_KEY.to_string(), settings.to_config_value());
+    assert!(db.set_board_config(&board_id, &updates).expect("config"));
+
+    let template_id = db
+        .save_board_as_template(&owner, &board_id, "With labels", "labels")
+        .expect("save")
+        .expect("known board");
+
+    let new_board = db
+        .apply_template(&owner, &template_id, "Copy")
+        .expect("apply copy")
+        .expect("known template");
+    let copy = db.board(&new_board).expect("board").expect("exists");
+    assert_eq!(LabelSettings::from_config(&copy.config_json), settings);
+}
+
+#[test]
+fn template_without_label_settings_should_apply_with_default_labels() {
+    let (_dir, db) = test_db();
+    let board_id = db
+        .apply_template(&AccountId::ownerless(), &builtin_template_id(&db), "Plain")
+        .expect("apply")
+        .expect("known template");
+    let board = db.board(&board_id).expect("board").expect("exists");
+    assert_eq!(
+        LabelSettings::from_config(&board.config_json),
+        LabelSettings::default()
     );
 }

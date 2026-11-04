@@ -234,6 +234,8 @@ mod tests {
                 activity_id: None,
                 role: None,
                 token_name: None,
+                role_id: None,
+                role_name: None,
             },
         )
     }

@@ -10,14 +10,13 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{TEST_PUBLIC_URL, passkey_mode};
-use crate::AppState;
 use crate::api_error::ErrorCode;
 use crate::auth::{AuthChoice, AuthMode, SESSION_MAX_AGE_SECONDS, SignIn, new_api_token_record};
 use crate::csrf::REFUSED_BODY;
 use crate::db::{Db, MAX_PASSKEYS_PER_ACCOUNT};
 use crate::models::{AccountId, AuthScope, PasskeyRow};
+use crate::{AppState, BODY_LIMIT_BYTES};
 
-const MAX_BODY_BYTES: usize = 1 << 20;
 const RP_ID: &str = "pomb.test";
 const FLAG_USER_PRESENT: u8 = 0x01;
 const FLAG_USER_VERIFIED: u8 = 0x04;
@@ -179,7 +178,7 @@ pub(super) async fn call(
     let cookie = header("set-cookie");
     let status = response.status();
     let tagged = response.extensions().get::<ErrorCode>().copied();
-    let bytes = axum::body::to_bytes(response.into_body(), MAX_BODY_BYTES)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     let text = String::from_utf8_lossy(&bytes).into_owned();

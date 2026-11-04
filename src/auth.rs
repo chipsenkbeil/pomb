@@ -325,6 +325,9 @@ impl AuthUser {
                 ActorKind::ApiToken
             },
             parent_token: self.parent_token.as_ref(),
+            role_id: self.role_id.as_deref(),
+            role_name: self.role_name.as_deref(),
+            label: self.label.as_deref(),
         }
     }
 }

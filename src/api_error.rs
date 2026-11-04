@@ -131,7 +131,10 @@ pub enum ErrorCode {
     /// The epic has children, so it cannot become a plain task unless the request unlinks them
     /// (409).
     EpicHasChildren,
-    /// An epic holds no work, so nobody can claim it (409).
+    /// The epic has children that are not Done, so it cannot enter a WIP-limited or Done column
+    /// (409).
+    EpicHasOpenChildren,
+    /// An epic has a child that is not done yet, so nobody can claim it (409).
     EpicNotClaimable,
     /// The account has no agent role with that id (404).
     UnknownRole,

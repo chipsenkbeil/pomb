@@ -4,12 +4,12 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{Db, RestoreOutcome};
 use crate::models::{
     AccountId, Actor, AuthScope, BIN_RETENTION_DAYS, HistoryKind, SECONDS_PER_DAY,
 };
+use crate::{AppState, BODY_LIMIT_BYTES};
 
 struct Fixture {
     app: axum::Router,
@@ -76,7 +76,7 @@ async fn send(
         .await
         .expect("oneshot");
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     (status, String::from_utf8_lossy(&bytes).into_owned())

@@ -3,13 +3,11 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::router;
-use crate::AppState;
 use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
 use crate::csrf::REFUSED_BODY;
 use crate::db::Db;
 use crate::models::{AccountId, Actor, AuthScope, BackupSettings};
-
-const MAX_BODY_BYTES: usize = 1 << 20;
+use crate::{AppState, BODY_LIMIT_BYTES};
 
 struct Reply {
     status: StatusCode,
@@ -47,7 +45,7 @@ async fn call_as(
         .await
         .expect("oneshot");
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), MAX_BODY_BYTES)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     let text = String::from_utf8_lossy(&bytes).into_owned();

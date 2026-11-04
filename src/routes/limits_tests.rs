@@ -3954,14 +3954,26 @@ async fn ten_uploads_sent_at_once_should_all_be_stored() {
         let reply = reply.expect("join");
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     }
-    let held = fx
-        .db
-        .task(&task)
-        .expect("read")
-        .expect("task")
-        .attachments
-        .len();
-    assert_eq!(held, usize::from(FILES));
+    let stored = fx.db.task(&task).expect("read").expect("task").attachments;
+    assert_eq!(stored.len(), usize::from(FILES));
+    for n in 0..FILES {
+        let name = format!("file{n}.bin");
+        let attachment = stored
+            .iter()
+            .find(|attachment| attachment.name == name)
+            .unwrap_or_else(|| panic!("{name} was not stored"));
+        let downloaded = get_unread(
+            &fx,
+            &format!("/api/tasks/{task}/attachments/{}/file", attachment.id),
+            &fx.member_bearer,
+        )
+        .await;
+        assert_eq!(downloaded.status(), StatusCode::OK, "{name}");
+        assert!(
+            body_of(downloaded).await[..] == vec![n; 64 * 1024][..],
+            "{name} holds other bytes than were sent"
+        );
+    }
 }
 
 #[tokio::test]

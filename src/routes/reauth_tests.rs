@@ -9,12 +9,10 @@ use super::multi_tests::{Instance, finish, pair, recovery_code, start};
 use super::passkey_tests::{Reply, SoftAuthenticator, add_passkey, call, session_of, sign_in};
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use crate::AppState;
 use crate::auth::REAUTH_WINDOW_SECS;
 use crate::db::Db;
 use crate::passkey::MAX_CEREMONIES_PER_NETWORK;
-
-const MAX_BODY_BYTES: usize = 1 << 20;
+use crate::{AppState, BODY_LIMIT_BYTES};
 
 /// Three sessions of one account: one that just proved a passkey, one that did so past the
 /// window, and one that never did.
@@ -99,7 +97,7 @@ async fn form_post(
         .expect("request");
     let response = app.clone().oneshot(request).await.expect("oneshot");
     let status = response.status();
-    let bytes = to_bytes(response.into_body(), MAX_BODY_BYTES)
+    let bytes = to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     let text = String::from_utf8_lossy(&bytes).into_owned();

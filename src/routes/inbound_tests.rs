@@ -8,11 +8,11 @@ use tower::ServiceExt;
 use super::passkey_tests::{Reply, call, none_mode};
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use crate::AppState;
 use crate::auth::{hash_inbound_address, new_api_token_record};
 use crate::db::{AccountAction, AdminActionOutcome, Db, MAX_INBOUND_PER_BOARD, NewInbound};
 use crate::limit::Limits;
 use crate::models::{AccountId, AuthScope, HistoryKind, TaskRow};
+use crate::{AppState, BODY_LIMIT_BYTES};
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -563,7 +563,7 @@ async fn post_mail(
         .headers()
         .get("retry-after")
         .map(|value| value.to_str().expect("ascii").to_string());
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
     let text = String::from_utf8_lossy(&bytes).into_owned();

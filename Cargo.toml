@@ -74,3 +74,6 @@ tokio = { version = "1", features = ["test-util"] }
 
 [lints]
 workspace = true
+
+[profile.test]
+debug = "line-tables-only"

@@ -4,8 +4,8 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 
 use super::passkey_tests::{Reply, call};
-use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::{history_actor, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{ChildTokenRefusal, Db, MAX_AGENT_ROLES_PER_ACCOUNT, RoleTokenRefusal};
@@ -1190,4 +1190,173 @@ async fn role_child_should_pass_the_child_checks_in_one_write() {
         Err(RoleTokenRefusal::Child(ChildTokenRefusal::IssuerIsIssued))
     );
     assert_eq!(issued(), 1);
+}
+
+fn acting_task(fx: &Fixture) -> String {
+    let column = fx
+        .db
+        .create_column(&fx.boards[ALICE], "Todo", None)
+        .expect("column");
+    fx.db
+        .create_task(&column, None, "Card", 1, None)
+        .expect("task")
+}
+
+async fn act(raw: &str, fx: &Fixture, method: &str, uri: &str, body: Value) -> Reply {
+    let bearer = format!("Bearer {raw}");
+    call(
+        &fx.app,
+        method,
+        uri,
+        &[("authorization", &bearer)],
+        Some(body),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn history_should_show_role_and_label() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let role = fx.create(ALICE, "implementer").await;
+    let (_, raw) = issue_as(&fx, &role, "impl-one");
+    let uri = format!("/api/tasks/{task}/claim");
+    let claim = json!({"claimant": "me", "ttl_seconds": 60});
+    let reply = act(&raw, &fx, "POST", &uri, claim).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+
+    let row = fx.db.task(&task).expect("read").expect("task");
+    let event = row.history.last().expect("event");
+    assert_eq!(event.role_id.as_deref(), role["id"].as_str());
+    assert_eq!(event.role_name.as_deref(), Some("implementer"));
+    assert_eq!(event.label.as_deref(), Some("agent-1"));
+    assert_eq!(history_actor(event), "implementer (agent-1)");
+    let json = serde_json::to_value(event).expect("json");
+    assert_eq!(json["role_name"], "implementer");
+    assert_eq!(json["label"], "agent-1");
+}
+
+#[tokio::test]
+async fn comment_should_record_the_token_snapshot() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let role = fx.create(ALICE, "implementer").await;
+    let (record, raw) = issue_as(&fx, &role, "impl-one");
+    let uri = format!("/api/tasks/{task}/comments");
+    let reply = act(&raw, &fx, "POST", &uri, json!({"body": "done"})).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["role_id"], role["id"]);
+    assert_eq!(reply.body["role_name"], "implementer");
+    assert_eq!(reply.body["label"], "agent-1");
+
+    let row = fx.db.task(&task).expect("read").expect("task");
+    let comment = row.comments.last().expect("comment");
+    assert_eq!(comment.role_name.as_deref(), Some("implementer"));
+    assert_eq!(comment.label, record.label);
+    let event = row.history.last().expect("event");
+    assert_eq!(event.role_name.as_deref(), Some("implementer"));
+
+    let modal = fx
+        .bearer(ALICE, "GET", &format!("/api/tasks/{task}/modal"), None)
+        .await;
+    let html = modal.body.as_str().expect("html");
+    assert!(html.contains(">via implementer</small>"), "{html}");
+    assert!(
+        html.contains("title=\"impl-one, agent-1, issued by issuer\""),
+        "{html}"
+    );
+}
+
+#[tokio::test]
+async fn ten_implementer_tokens_should_each_comment_as_implementer_with_their_own_label() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let role = fx.create(ALICE, "implementer").await;
+    let uri = format!("/api/tasks/{task}/comments");
+    for number in 1..=10 {
+        let (_, raw) = issue_as(&fx, &role, &format!("impl-{number}"));
+        let reply = act(&raw, &fx, "POST", &uri, json!({"body": "hi"})).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    }
+
+    let row = fx.db.task(&task).expect("read").expect("task");
+    let seen: Vec<(Option<&str>, Option<&str>)> = row
+        .comments
+        .iter()
+        .map(|comment| (comment.role_name.as_deref(), comment.label.as_deref()))
+        .collect();
+    let expected: Vec<String> = (1..=10).map(|number| format!("agent-{number}")).collect();
+    assert_eq!(seen.len(), 10);
+    for (found, label) in seen.iter().zip(&expected) {
+        assert_eq!(*found, (Some("implementer"), Some(label.as_str())));
+    }
+}
+
+#[tokio::test]
+async fn claim_should_ignore_a_client_role_for_a_role_token() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let role = fx.create(ALICE, "implementer").await;
+    let (_, raw) = issue_as(&fx, &role, "impl-one");
+    let uri = format!("/api/tasks/{task}/claim");
+    let claim = json!({"claimant": "me", "ttl_seconds": 60, "role": "reviewer"});
+    let reply = act(&raw, &fx, "POST", &uri, claim).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["role"], "implementer");
+}
+
+#[tokio::test]
+async fn time_entry_should_store_the_token_role_id() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let role = fx.create(ALICE, "implementer").await;
+    let (_, raw) = issue_as(&fx, &role, "impl-one");
+    let uri = format!("/api/tasks/{task}/time");
+    let entry = json!({"minutes": 5, "role": "reviewer"});
+    let reply = act(&raw, &fx, "POST", &uri, entry).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let logged = &reply.body[0];
+    assert_eq!(logged["role_id"], role["id"]);
+    assert_eq!(logged["role_name"], "implementer");
+    assert_eq!(logged["role"], "implementer");
+
+    let rows = fx.db.list_entries(&task).expect("entries");
+    assert_eq!(rows[0].role_id.as_deref(), role["id"].as_str());
+    assert_eq!(rows[0].role_name.as_deref(), Some("implementer"));
+}
+
+#[tokio::test]
+async fn roleless_token_should_keep_the_free_text_role() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let raw = &fx.tokens[ALICE];
+
+    let claim = json!({"claimant": "me", "ttl_seconds": 60, "role": "reviewer"});
+    let uri = format!("/api/tasks/{task}/claim");
+    let reply = act(raw, &fx, "POST", &uri, claim).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["role"], "reviewer");
+
+    let uri = format!("/api/tasks/{task}/time");
+    let reply = act(
+        raw,
+        &fx,
+        "POST",
+        &uri,
+        json!({"minutes": 5, "role": "tester"}),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body[0]["role"], "tester");
+    assert!(reply.body[0].get("role_id").is_none());
+
+    let uri = format!("/api/tasks/{task}/comments");
+    let reply = act(raw, &fx, "POST", &uri, json!({"body": "plain"})).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.get("role_name").is_none());
+    assert!(reply.body.get("label").is_none());
+    let row = fx.db.task(&task).expect("read").expect("task");
+    let event = row.history.last().expect("event");
+    assert_eq!(event.role_name, None);
+    assert_eq!(history_actor(event), "api-token (agent)");
 }

@@ -1286,6 +1286,9 @@ mod tests {
                     token_name: Some("worker"),
                     kind: ActorKind::ApiToken,
                     parent_token: None,
+                    role_id: None,
+                    role_name: None,
+                    label: None,
                 },
             )
             .expect("attachment")
@@ -1538,6 +1541,8 @@ mod tests {
                     activity_id: None,
                     role: Some("reviewer"),
                     token_name: Some("ci-bot"),
+                    role_id: None,
+                    role_name: None,
                 },
                 "Logged 10m",
                 Actor::SYSTEM,
