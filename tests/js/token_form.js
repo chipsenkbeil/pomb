@@ -5,12 +5,25 @@ var end = src.indexOf('\n  };\n', start) + '\n  };\n'.length;
 if (start < 0 || end < start) throw new Error('TokenForm not found');
 eval(src.slice(start, end));
 
+var ALL = ['read', 'work', 'lead', 'admin'];
+var UP = ['work', 'lead', 'admin'];
+var LEAD = ['lead', 'admin'];
 var catalog = [
-  { name: 'a.read', group: 'a', description: '', presets: ['low', 'mid', 'top'] },
-  { name: 'a.write', group: 'a', description: '', presets: ['mid', 'top'] },
-  { name: 'b.drop', group: 'b', description: '', presets: ['top'] },
-  { name: 'b.read', group: 'b', description: '', presets: ['low', 'mid', 'top'] }
+  { name: 'boards.read', group: 'boards', description: 'See boards.', presets: ALL, required: true },
+  { name: 'boards.create', group: 'boards', description: 'Make boards.', presets: LEAD },
+  { name: 'tasks.read', group: 'tasks', description: 'Read tasks.', presets: ALL },
+  { name: 'tasks.create', group: 'tasks', description: 'Create tasks.', presets: UP },
+  { name: 'tasks.bin', group: 'tasks', description: 'Bin tasks.', presets: LEAD },
+  { name: 'tasks.delete', group: 'tasks', description: 'Delete tasks.', presets: ['admin'] },
+  { name: 'subtasks.edit', group: 'subtasks', description: 'Edit subtasks.', presets: UP },
+  { name: 'subtasks.delete', group: 'subtasks', description: 'Delete subtasks.', presets: ['admin'] },
+  { name: 'columns.create', group: 'columns', description: 'Make columns.', presets: LEAD },
+  { name: 'settings.read', group: 'settings', description: 'Read settings.', presets: ALL },
+  { name: 'settings.write', group: 'settings', description: 'Write settings.', presets: ['admin'] },
+  { name: 'feeds.manage', group: 'feeds', description: 'Feeds.', presets: ['admin'] }
 ];
+var areas = TokenForm.areas(catalog);
+function area(name) { return areas.filter(function (a) { return a.name === name; })[0]; }
 
 var failures = 0;
 function check(name, got, want) {
@@ -19,17 +32,106 @@ function check(name, got, want) {
   console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got)));
 }
 
-check('groups keep catalog order',
-  TokenForm.groups(catalog).map(function (g) { return g.name + ':' + g.items.length; }), ['a:2', 'b:2']);
-check('presets run smallest first',
-  TokenForm.presets(catalog).map(function (p) { return p.name; }), ['low', 'mid', 'top']);
-check('picking a preset ticks exactly its permissions',
-  TokenForm.presets(catalog)[1].permissions, ['a.read', 'a.write', 'b.read']);
+check('areas keep catalog order',
+  areas.map(function (a) { return a.name + ':' + a.items.length; }),
+  ['boards:2', 'tasks:4', 'subtasks:2', 'columns:1', 'settings:2', 'feeds:1']);
+check('read holds the read-tier permissions',
+  TokenForm.levelPermissions(area('tasks'), 'read'), ['tasks.read']);
+check('write holds read, work and lead',
+  TokenForm.levelPermissions(area('tasks'), 'write'), ['tasks.read', 'tasks.create', 'tasks.bin']);
+check('full holds every permission of the area',
+  TokenForm.levelPermissions(area('tasks'), 'full'), ['tasks.read', 'tasks.create', 'tasks.bin', 'tasks.delete']);
+check('an area with all three tiers offers every level and Custom',
+  TokenForm.levels(area('tasks')), ['read', 'write', 'full', 'custom']);
+check('an area without read-tier permissions skips Read',
+  TokenForm.levels(area('subtasks')), ['write', 'full', 'custom']);
+check('an area with only lead-tier permissions offers Write and Custom',
+  TokenForm.levels(area('columns')), ['write', 'custom']);
+check('an area with only admin-tier permissions offers Full and Custom',
+  TokenForm.levels(area('feeds')), ['full', 'custom']);
+check('a level equal to the one before it is not offered twice',
+  TokenForm.levels(area('settings')), ['read', 'full', 'custom']);
+check('boards offers Read, Write and Custom',
+  TokenForm.levels(area('boards')), ['read', 'write', 'custom']);
+check('a held set that is a level reads as that level',
+  TokenForm.levelOf(area('tasks'), ['tasks.read', 'tasks.create', 'tasks.bin']), 'write');
+check('a held set that is no level reads as Custom',
+  TokenForm.levelOf(area('tasks'), ['tasks.read', 'tasks.delete']), 'custom');
+check('other areas do not change the level',
+  TokenForm.levelOf(area('tasks'), ['tasks.read', 'boards.create']), 'read');
+check('shown lists the areas that hold a permission',
+  TokenForm.shown(areas, ['tasks.read', 'feeds.manage']), ['tasks', 'feeds']);
+check('the required permission is added when absent and kept once',
+  [TokenForm.withRequired(catalog, ['tasks.read']), TokenForm.withRequired(catalog, ['boards.read'])],
+  [['tasks.read', 'boards.read'], ['boards.read']]);
+check('the level note names what a level adds',
+  [TokenForm.levelNote(area('tasks'), 'read'), TokenForm.levelNote(area('tasks'), 'write'),
+    TokenForm.levelNote(area('tasks'), 'full')],
+  ['Includes read', 'Also create, bin', 'Also delete']);
+
+var roles = [
+  { id: 'r1', name: 'planner', permissions: ['boards.read', 'tasks.read', 'tasks.create'] },
+  { id: 'r2', name: 'reviewer', permissions: ['boards.read', 'tasks.read'] },
+  { id: 'r3', name: 'release', permissions: ['tasks.read', 'boards.read'] },
+  { id: 'r4', name: 'solo', permissions: ['feeds.manage'] }
+];
+check('rows that match one role switch back to it',
+  TokenForm.sync(catalog, ['tasks.create', 'tasks.read', 'boards.read'], roles).role.name, 'planner');
+check('a match carries no hint',
+  TokenForm.sync(catalog, ['tasks.create', 'tasks.read', 'boards.read'], roles).hint, '');
+var two = TokenForm.sync(catalog, ['boards.read', 'tasks.read'], roles);
+check('rows that match two roles stay Custom', two.role, null);
+check('the hint names both roles', two.hint, 'These rows match the roles reviewer and release.');
+var none = TokenForm.sync(catalog, ['boards.read', 'tasks.read', 'tasks.bin'], roles);
+check('rows that match no role stay Custom without a hint', [none.role, none.hint], [null, '']);
+check('a role missing one of the rows does not match',
+  TokenForm.matches(catalog, ['boards.read'], roles).length, 0);
+check('three matches are named with commas',
+  TokenForm.sync(catalog, ['boards.read'], [
+    { id: '1', name: 'x', permissions: ['boards.read'] },
+    { id: '2', name: 'y', permissions: ['boards.read'] },
+    { id: '3', name: 'z', permissions: ['boards.read'] }
+  ]).hint, 'These rows match the roles x, y and z.');
+
+check('standard roles list in their fixed order, then custom ones alphabetically',
+  TokenForm.roleOrder([
+    { id: '1', name: 'zed', permissions: [] }, { id: '2', name: 'lead', permissions: [] },
+    { id: '3', name: 'alpha', permissions: [] }, { id: '4', name: 'planner', permissions: [] },
+    { id: '5', name: 'release', permissions: [] }, { id: '6', name: 'verifier', permissions: [] },
+    { id: '7', name: 'implementer', permissions: [] }, { id: '8', name: 'reviewer', permissions: [] }
+  ]).map(function (role) { return role.name; }),
+  ['planner', 'implementer', 'reviewer', 'verifier', 'release', 'lead', 'alpha', 'zed']);
+check('a standard role has its one-line note and a custom role its count',
+  [TokenForm.roleNote({ name: 'verifier', permissions: ['a', 'b'] }),
+    TokenForm.roleNote({ name: 'lead', permissions: ['a'] }),
+    TokenForm.roleNote({ name: 'solo', permissions: ['a', 'b'] })],
+  ['Ticks outcomes', 'Plans and runs the board, issues child tokens', '2 permissions']);
+
+var noRead = [{ id: 'n1', name: 'verifier', permissions: ['tasks.read'] }];
+check('a role without the required permission matches rows that hold it',
+  TokenForm.sync(catalog, ['tasks.read', 'boards.read'], noRead).role.name, 'verifier');
+check('a role with a permission outside the catalog still matches',
+  TokenForm.sync(catalog, ['tasks.read', 'boards.read'],
+    [{ id: 'n2', name: 'old', permissions: ['tasks.read', 'gone.away'] }]).role.name, 'old');
+var named = TokenForm.sync(catalog, ['boards.read', 'tasks.read'], roles, 'release');
+check('a role name picks between two matching roles', [named.role.name, named.hint], ['release', '']);
+check('a role without the required permission holds it once chosen',
+  TokenForm.roleHeld(catalog, noRead[0]), ['tasks.read', 'boards.read']);
+check('an unknown role name between two matches stays Custom with the hint',
+  TokenForm.sync(catalog, ['boards.read', 'tasks.read'], roles, 'gone').hint,
+  'These rows match the roles reviewer and release.');
+check('a token whose rows differ from its role opens as Custom',
+  TokenForm.sync(catalog, ['boards.read', 'tasks.read', 'tasks.bin'], noRead, 'verifier').role, null);
+
 check('a custom set posts exactly the ticked names in catalog order',
-  TokenForm.body(catalog, { name: 'x', ticked: ['b.read', 'a.write', 'nope'], boards: null, expiryDays: 30 }),
-  { name: 'x', permissions: ['a.write', 'b.read'], boards: 'all', expires_in_days: 30 });
+  TokenForm.body(catalog, { name: 'x', ticked: ['tasks.create', 'boards.read', 'nope'], boards: null, expiryDays: 30 }),
+  { name: 'x', permissions: ['boards.read', 'tasks.create'], boards: 'all', expires_in_days: 30 });
+check('a role posts its id with the permissions',
+  TokenForm.body(catalog, { name: 'x', ticked: ['tasks.read'], roleId: 'r1', boards: null, expiryDays: 0 }).role_id, 'r1');
+check('no role posts no role id',
+  'role_id' in TokenForm.body(catalog, { name: 'x', ticked: ['tasks.read'], roleId: null, boards: null, expiryDays: 0 }), false);
 check('the board picker posts the chosen ids',
-  TokenForm.body(catalog, { name: 'x', ticked: ['a.read'], boards: ['b1', 'b2'], expiryDays: 0 }).boards,
+  TokenForm.body(catalog, { name: 'x', ticked: ['tasks.read'], boards: ['b1', 'b2'], expiryDays: 0 }).boards,
   ['b1', 'b2']);
 
 if (failures) process.exit(1);

@@ -646,11 +646,7 @@
       <label>Token name
         <input type="text" id="tk-edit-name" maxlength="80" required>
       </label>
-      <fieldset class="token-scopes">
-        <legend>Permissions</legend>
-        <div id="tk-edit-presets" class="token-presets"></div>
-        <div id="tk-edit-permissions" class="token-permissions"></div>
-      </fieldset>
+      <div id="tk-edit-picker" class="perm-picker"></div>
       <label>Child token lifetime, in hours
         <input type="number" id="tk-edit-child-hours" min="1" max="8" step="1" value="1">
       </label>

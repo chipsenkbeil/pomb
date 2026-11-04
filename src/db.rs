@@ -131,7 +131,7 @@ use crate::models::{
     custom_color_hexes, custom_color_value, format_minutes, is_custom_color, lighter_hex,
     normalize_hex, standard_color, text_contrast,
 };
-use crate::permissions::Permission;
+use crate::permissions::{Permission, STANDARD_ROLES};
 use crate::rules;
 use crate::webhook::{Prober, is_public_address};
 
@@ -1559,8 +1559,11 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 ///
 /// A board's opaque `config_json` gains `blocked_column_id`, the id of its Blocked column.
 ///
+/// Version 69 changes no stored field or table. `boards.read` joins the base every standard role
+/// holds, and the upgrade adds it to each stored role that bears a standard name.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 68;
+pub const SCHEMA_VERSION: u64 = 69;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1634,6 +1637,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "aaaf5ff2b9576404c34b111a8ae33bff2eba289b4f2734c014c791f71cfffe36",
     "4f54b1b8694a065153cb08819ff7a974a9090b5974807113d37f1e188d06255d",
     "bcb728397c770bad9fed1da00e67973b338a43e78744ffd93faf21828277eb5e",
+    "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
     "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
 ];
 
@@ -1805,7 +1809,33 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 67) {
         txn_reindex_role_tokens(txn)?;
     }
+    if from.is_none_or(|version| version < 69) {
+        grant_standard_roles_boards_read(txn)?;
+    }
     Ok(())
+}
+
+/// Gives every stored role that bears a standard name `boards.read`, which the base of the standard
+/// roles gained.
+fn grant_standard_roles_boards_read(txn: &WriteTransaction) -> DbResult<()> {
+    let added = serde_json::Value::from(Permission::BoardsRead.name());
+    rewrite_rows(txn, AGENT_ROLES, |_, role| {
+        let standard = role
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| STANDARD_ROLES.iter().any(|standard| standard.name == name));
+        let Some(held) = role
+            .get_mut("permissions")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return false;
+        };
+        if !standard || held.contains(&added) {
+            return false;
+        }
+        held.push(added.clone());
+        true
+    })
 }
 
 /// The permissions a stored `tasks.write` and `subtasks.write` split into.
@@ -13557,7 +13587,7 @@ mod schema_version_tests {
 
     use super::*;
     use crate::auth::new_api_token_record;
-    use crate::models::{FieldKind, FieldOwner};
+    use crate::models::{AgentRoleRow, FieldKind, FieldOwner};
     use crate::permissions::Preset;
 
     fn temp_path() -> (tempfile::TempDir, String) {
@@ -13744,6 +13774,45 @@ mod schema_version_tests {
         let held = db.list_api_tokens().expect("list");
         assert_eq!(held.len(), 1);
         assert_eq!(held[0].scope, AuthScope::Work);
+        drop(db);
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn version_68_file_should_give_standard_roles_boards_read_and_no_other_role() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let held = BTreeSet::from([Permission::TasksRead, Permission::CommentsWrite]);
+        let (planner, custom, covered) = {
+            let db = Db::connect(&path).expect("connect");
+            let planner = db
+                .create_agent_role(account.as_str(), "planner", held.clone())
+                .expect("planner");
+            let custom = db
+                .create_agent_role(account.as_str(), "scribe", held.clone())
+                .expect("custom");
+            let with_read = BTreeSet::from([Permission::BoardsRead, Permission::TasksRead]);
+            let covered = db
+                .create_agent_role(account.as_str(), "verifier", with_read)
+                .expect("verifier");
+            (planner.id, custom.id, covered.id)
+        };
+        stamp(&path, 68);
+
+        let db = Db::connect(&path).expect("open version 68");
+        let role = |id: &str| -> AgentRoleRow {
+            read_one(&db.db, AGENT_ROLES, id)
+                .expect("read")
+                .expect("row")
+        };
+        let mut expected = held.clone();
+        expected.insert(Permission::BoardsRead);
+        assert_eq!(role(&planner).permissions, expected);
+        assert_eq!(role(&custom).permissions, held);
+        assert_eq!(
+            role(&covered).permissions,
+            BTreeSet::from([Permission::BoardsRead, Permission::TasksRead])
+        );
         drop(db);
         assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
     }

@@ -2707,6 +2707,22 @@ impl AccountDb {
         Ok((record, raw))
     }
 
+    /// Mints and stores an API token for the account as agent role `role_id`, returning its record
+    /// and the raw token, or [`None`] when the account holds no such role.
+    pub fn create_api_token_as_role(
+        &self,
+        role_id: &str,
+        name: &str,
+        grant: TokenGrant,
+        expires_at: Option<i64>,
+    ) -> DbResult<Option<(ApiTokenRecord, String)>> {
+        let (mut record, raw) = new_api_token_record(&self.account, name, grant.scope, expires_at);
+        record.permissions = grant.permissions;
+        record.boards = grant.boards;
+        let stored = self.db.create_owner_token_as_role(role_id, record)?;
+        Ok(stored.map(|record| (record, raw)))
+    }
+
     /// Mints and stores a child API token issued by token `parent` that lives `hours`, returning
     /// its record and the raw token, or the refusal the database gives.
     pub fn create_child_api_token(

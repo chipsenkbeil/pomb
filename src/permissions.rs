@@ -30,6 +30,23 @@ macro_rules! catalog {
                 Self::ALL.iter().copied().find(|held| held.name() == name)
             }
 
+            /// Returns whether the permission is required: every grant carries it.
+            #[must_use]
+            pub const fn is_required(self) -> bool {
+                matches!(self, Permission::BoardsRead)
+            }
+
+            /// Returns `held` with every required permission added.
+            #[must_use]
+            pub fn with_required(held: &BTreeSet<Permission>) -> BTreeSet<Permission> {
+                Self::ALL
+                    .iter()
+                    .copied()
+                    .filter(|permission| permission.is_required())
+                    .chain(held.iter().copied())
+                    .collect()
+            }
+
             /// Returns the stable wire name, `group.action`.
             #[must_use]
             pub const fn name(self) -> &'static str {
@@ -192,9 +209,10 @@ impl StandardRole {
     }
 }
 
-/// The permissions every standard role holds: reading tasks, comments and attachments, and
+/// The permissions every standard role holds: reading boards, tasks, comments and attachments, and
 /// commenting.
 pub const STANDARD_BASE: &[Permission] = &[
+    Permission::BoardsRead,
     Permission::TasksRead,
     Permission::CommentsRead,
     Permission::AttachmentsRead,
@@ -491,6 +509,7 @@ mod tests {
     #[test]
     fn each_standard_role_should_hold_exactly_its_listed_permissions_in_the_table() {
         let base = [
+            "boards.read",
             "tasks.read",
             "comments.read",
             "attachments.read",

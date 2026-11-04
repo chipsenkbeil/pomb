@@ -11287,13 +11287,29 @@ fn token_form_sources_should_not_hard_code_any_permission_name() {
 }
 
 #[tokio::test]
+async fn the_permission_catalog_should_require_only_boards_read() {
+    let (_dir, fx) = fixture();
+    let uri = "/api/v1/auth/permissions";
+    let (status, text) = request(&fx, As::Admin, "GET", uri, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let catalog: Value = serde_json::from_str(&text).expect("json");
+    let required: Vec<&str> = catalog
+        .as_array()
+        .expect("catalog")
+        .iter()
+        .filter(|item| item["required"] == true)
+        .filter_map(|item| item["name"].as_str())
+        .collect();
+    assert_eq!(required, ["boards.read"]);
+}
+
+#[tokio::test]
 async fn the_settings_page_should_hold_the_catalog_form_the_board_picker_and_the_debugger() {
     let (_dir, fx) = fixture();
     let (status, page) = request(&fx, As::Admin, "GET", "/settings", None, false).await;
     assert_eq!(status, StatusCode::OK);
     for id in [
-        "token-presets",
-        "token-permissions",
+        "token-picker",
         "token-board-list",
         "token-inspect-form",
         "token-inspect-result",

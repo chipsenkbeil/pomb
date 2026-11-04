@@ -931,6 +931,41 @@ async fn child_token_should_copy_the_role_template() {
 }
 
 #[tokio::test]
+async fn token_as_any_standard_role_should_list_boards_and_read_a_board() {
+    let fx = Fixture::new();
+    let created = fx
+        .bearer(
+            ALICE,
+            "POST",
+            STANDARD,
+            Some(json!({"boards": [fx.boards[ALICE]]})),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.body);
+    let (_, lead) = issuer_token(&fx, None, BoardAccess::All, None);
+    let board = &fx.boards[ALICE];
+    for role in created.body["roles"].as_array().expect("roles") {
+        let name = role["name"].as_str().expect("name");
+        assert!(
+            permission_names(role).contains("boards.read"),
+            "{name} template"
+        );
+        let body = json!({"name": format!("run-{name}"), "role_id": role["id"]});
+        let issued = issue_child(&fx, &lead, body).await;
+        assert_eq!(issued.status, StatusCode::OK, "{name}: {}", issued.body);
+        let bearer = format!("Bearer {}", issued.body["raw_token"].as_str().expect("raw"));
+        for uri in [
+            "/api/boards".to_string(),
+            format!("/api/boards/{board}/columns"),
+            format!("/api/boards/{board}/colors"),
+        ] {
+            let reply = call(&fx.app, "GET", &uri, &[("authorization", &bearer)], None).await;
+            assert_eq!(reply.status, StatusCode::OK, "{name} {uri}: {}", reply.body);
+        }
+    }
+}
+
+#[tokio::test]
 async fn child_role_beyond_the_issuer_should_be_refused() {
     let fx = Fixture::new();
     let role = standard_role(&fx, "implementer").await;
@@ -1093,7 +1128,7 @@ async fn template_change_should_not_reach_a_live_child() {
     let next = issue_child(&fx, &lead, json!({"name": "later", "role_id": role["id"]})).await;
     assert_eq!(
         permission_names(&next.body),
-        BTreeSet::from(["tasks.read".to_string()])
+        BTreeSet::from(["boards.read", "tasks.read"].map(str::to_string))
     );
 }
 
@@ -1742,4 +1777,260 @@ async fn role_delete_should_keep_the_role_name_on_history_comments_and_time_entr
         .await;
     let html = modal.body.as_str().expect("html");
     assert!(html.contains(">via implementer</small>"), "{html}");
+}
+
+#[tokio::test]
+async fn browser_token_should_issue_as_a_role_within_its_template() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let body = json!({
+        "name": "made",
+        "role_id": role["id"],
+        "permissions": ["tasks.read"],
+    });
+    let made = fx
+        .browse(ALICE, "POST", "/api/v1/auth/tokens", Some(body))
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    let token = listed_token(&fx, made.body["id"].as_str().expect("id")).await;
+    assert_eq!(token["role_name"], "planner");
+    assert_eq!(token["label"], "agent-1");
+    let stored = fx.db.list_account_api_tokens(&fx.alice).expect("list");
+    let stored = stored
+        .iter()
+        .find(|record| record.id == made.body["id"])
+        .expect("stored");
+    assert_eq!(stored.role_id.as_deref(), role["id"].as_str());
+
+    let whole = fx
+        .browse(
+            ALICE,
+            "POST",
+            "/api/v1/auth/tokens",
+            Some(json!({"name": "whole", "role_id": role["id"]})),
+        )
+        .await;
+    assert_eq!(whole.status, StatusCode::OK, "{}", whole.body);
+    let mut held: Vec<&str> = whole.body["permissions"]
+        .as_array()
+        .expect("permissions")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    held.sort_unstable();
+    assert_eq!(held, ["boards.read", "tasks.claim", "tasks.read"]);
+    assert_eq!(whole.body["label"], "agent-2");
+}
+
+#[tokio::test]
+async fn browser_token_should_refuse_a_role_it_cannot_honor() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let above = fx
+        .browse(
+            ALICE,
+            "POST",
+            "/api/v1/auth/tokens",
+            Some(json!({"name": "above", "role_id": role["id"], "preset": "admin"})),
+        )
+        .await;
+    assert_exceeds_grant(&above);
+
+    for (who, id) in [(ALICE, json!("no-such-role")), (BOB, role["id"].clone())] {
+        let unknown = fx
+            .browse(
+                who,
+                "POST",
+                "/api/v1/auth/tokens",
+                Some(json!({"name": "stray", "role_id": id, "preset": "read"})),
+            )
+            .await;
+        assert_eq!(
+            (unknown.status, unknown.code.as_deref()),
+            (StatusCode::BAD_REQUEST, Some("unknown_role")),
+            "{}",
+            unknown.body
+        );
+    }
+    assert_eq!(token_total(&fx), 1, "only the fixture's own token exists");
+}
+
+async fn role_without_boards_read(fx: &Fixture) -> Value {
+    let body = json!({"name": "reader", "permissions": ["tasks.read", "comments.read"]});
+    let made = fx
+        .browse(ALICE, "POST", "/api/v1/agent-roles", Some(body))
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    made.body
+}
+
+#[tokio::test]
+async fn browser_token_as_a_role_should_always_hold_the_required_permissions() {
+    let fx = Fixture::new();
+    let role = role_without_boards_read(&fx).await;
+    let picker = json!({
+        "name": "picked",
+        "role_id": role["id"],
+        "permissions": ["tasks.read", "comments.read", "boards.read"],
+    });
+    let made = fx
+        .browse(ALICE, "POST", "/api/v1/auth/tokens", Some(picker))
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    assert!(permission_names(&made.body).contains("boards.read"));
+    let token = listed_token(&fx, made.body["id"].as_str().expect("id")).await;
+    assert_eq!(token["role_name"], "reader");
+
+    let bare = json!({"name": "bare", "role_id": role["id"]});
+    let made = fx
+        .browse(ALICE, "POST", "/api/v1/auth/tokens", Some(bare))
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    assert_eq!(
+        permission_names(&made.body),
+        BTreeSet::from(["boards.read", "comments.read", "tasks.read"].map(str::to_string))
+    );
+
+    let extra = json!({
+        "name": "extra",
+        "role_id": role["id"],
+        "permissions": ["tasks.read", "boards.read", "tasks.claim"],
+    });
+    let refused = fx
+        .browse(ALICE, "POST", "/api/v1/auth/tokens", Some(extra))
+        .await;
+    assert_exceeds_grant(&refused);
+}
+
+#[tokio::test]
+async fn child_as_a_role_should_get_a_required_permission_only_the_issuer_holds() {
+    let fx = Fixture::new();
+    let role = role_without_boards_read(&fx).await;
+    let id = role["id"].as_str().expect("id");
+    let uri = format!("/api/v1/agent-roles/{id}/boards/{}", fx.boards[ALICE]);
+    let granted = fx.bearer(ALICE, "PUT", &uri, None).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+
+    let (_, lead) = issuer_token(
+        &fx,
+        Some(&[
+            Permission::TokensIssue,
+            Permission::TasksRead,
+            Permission::CommentsRead,
+            Permission::BoardsRead,
+        ]),
+        BoardAccess::All,
+        None,
+    );
+    let body = json!({"name": "with", "role_id": role["id"]});
+    let child = issue_child(&fx, &lead, body).await;
+    assert_eq!(child.status, StatusCode::OK, "{}", child.body);
+    assert!(permission_names(&child.body).contains("boards.read"));
+
+    let (_, narrow) = issuer_token(
+        &fx,
+        Some(&[Permission::TokensIssue, Permission::TasksRead]),
+        BoardAccess::All,
+        None,
+    );
+    let body = json!({"name": "without", "role_id": role["id"]});
+    let child = issue_child(&fx, &narrow, body).await;
+    assert_eq!(child.status, StatusCode::OK, "{}", child.body);
+    assert_eq!(
+        permission_names(&child.body),
+        BTreeSet::from(["tasks.read".to_string()])
+    );
+    let body = json!({
+        "name": "asks",
+        "role_id": role["id"],
+        "permissions": ["tasks.read", "boards.read"],
+    });
+    assert_exceeds_grant(&issue_child(&fx, &narrow, body).await);
+}
+
+#[tokio::test]
+async fn child_as_a_role_should_be_refused_when_the_caller_shares_only_a_required_permission() {
+    let fx = Fixture::new();
+    let role = role_without_boards_read(&fx).await;
+    let id = role["id"].as_str().expect("id");
+    let uri = format!("/api/v1/agent-roles/{id}/boards/{}", fx.boards[ALICE]);
+    let granted = fx.bearer(ALICE, "PUT", &uri, None).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    let (_, caller) = issuer_token(
+        &fx,
+        Some(&[Permission::TokensIssue, Permission::BoardsRead]),
+        BoardAccess::All,
+        None,
+    );
+    let before = token_total(&fx);
+    let body = json!({"name": "idle", "role_id": role["id"]});
+    assert_exceeds_grant(&issue_child(&fx, &caller, body).await);
+    assert_eq!(token_total(&fx), before);
+}
+
+#[tokio::test]
+async fn child_as_a_boards_read_only_role_should_hold_boards_read() {
+    let fx = Fixture::new();
+    let body = json!({"name": "viewer", "permissions": ["boards.read"]});
+    let made = fx
+        .browse(ALICE, "POST", "/api/v1/agent-roles", Some(body))
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    let id = made.body["id"].as_str().expect("id");
+    let uri = format!("/api/v1/agent-roles/{id}/boards/{}", fx.boards[ALICE]);
+    let granted = fx.bearer(ALICE, "PUT", &uri, None).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    let (_, lead) = issuer_token(&fx, None, BoardAccess::All, None);
+    let child = issue_child(&fx, &lead, json!({"name": "view", "role_id": id})).await;
+    assert_eq!(child.status, StatusCode::OK, "{}", child.body);
+    assert_eq!(
+        permission_names(&child.body),
+        BTreeSet::from(["boards.read".to_string()])
+    );
+}
+
+#[tokio::test]
+async fn child_as_a_role_should_narrow_to_a_listed_required_permission() {
+    let fx = Fixture::new();
+    let body = json!({"name": "reader", "permissions": ["tasks.read"]});
+    let made = fx
+        .browse(ALICE, "POST", "/api/v1/agent-roles", Some(body))
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    let id = made.body["id"].as_str().expect("id");
+    let uri = format!("/api/v1/agent-roles/{id}/boards/{}", fx.boards[ALICE]);
+    let granted = fx.bearer(ALICE, "PUT", &uri, None).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    let (_, caller) = issuer_token(
+        &fx,
+        Some(&[
+            Permission::TokensIssue,
+            Permission::TasksRead,
+            Permission::BoardsRead,
+        ]),
+        BoardAccess::All,
+        None,
+    );
+    let body = json!({"name": "narrow", "role_id": id, "permissions": ["boards.read"]});
+    let child = issue_child(&fx, &caller, body).await;
+    assert_eq!(child.status, StatusCode::OK, "{}", child.body);
+    assert_eq!(
+        permission_names(&child.body),
+        BTreeSet::from(["boards.read".to_string()])
+    );
+}
+
+#[tokio::test]
+async fn child_as_a_role_should_refuse_a_bad_preset_before_an_empty_cut() {
+    let fx = Fixture::new();
+    let role = role_without_boards_read(&fx).await;
+    let (_, caller) = issuer_token(
+        &fx,
+        Some(&[Permission::TokensIssue, Permission::BoardsRead]),
+        BoardAccess::All,
+        None,
+    );
+    let body = json!({"name": "bad", "role_id": role["id"], "preset": "nonsense"});
+    let reply = issue_child(&fx, &caller, body).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
 }

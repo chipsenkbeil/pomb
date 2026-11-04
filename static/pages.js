@@ -448,7 +448,38 @@
   var TokenForm = {
     boardsAll: 'all',
     boardsSome: 'some',
-    groups: function (catalog) {
+    levelLabels: { read: 'Read', write: 'Write', full: 'Full', custom: 'Custom' },
+    areaText: {
+      boards: 'Boards, columns, swimlanes, palette, labels and fields.',
+      columns: 'Create, rename, reorder and delete columns.',
+      swimlanes: 'Create, rename, reorder and delete swimlanes.',
+      colors: 'Create, edit, copy and delete palette colors.',
+      fields: 'Create, edit and delete custom fields and their options.',
+      templates: 'Save and delete board templates.',
+      labels: 'Highlight, color and add labels.',
+      epics: 'Close, reopen or turn an epic back into a task.',
+      tasks: 'Create, edit, move, claim, bin and delete tasks.',
+      subtasks: 'A card\'s outcomes.',
+      links: 'Create and delete task links.',
+      comments: 'Read and write comments, edit or delete anyone\'s.',
+      attachments: 'Download, upload, rename and delete files.',
+      time: 'Read, log, edit and delete time and run the timer.',
+      settings: 'Read and change the account settings.',
+      feeds: 'Manage a board\'s calendar feeds.',
+      webhooks: 'Manage a board\'s webhooks.',
+      inbound: 'Manage a board\'s inbound addresses.',
+      tokens: 'Create child tokens.',
+      roles: 'Create the standard roles and grant them on boards.'
+    },
+    areaName: function (group) {
+      return group.charAt(0).toUpperCase() + group.slice(1);
+    },
+    areaDescription: function (area) {
+      return TokenForm.areaText[area.name] || area.items.map(function (item) {
+        return item.name.slice(area.name.length + 1).replace(/_/g, ' ');
+      }).join(', ');
+    },
+    areas: function (catalog) {
       var order = [];
       var byName = {};
       catalog.forEach(function (item) {
@@ -460,19 +491,107 @@
       });
       return order;
     },
-    presets: function (catalog) {
-      var held = {};
-      catalog.forEach(function (item) {
-        item.presets.forEach(function (name) {
-          (held[name] = held[name] || []).push(item.name);
+    tier: function (item) {
+      return item.presets[0];
+    },
+    itemLevel: function (item) {
+      var tier = TokenForm.tier(item);
+      return tier === 'read' ? 'read' : tier === 'admin' ? 'full' : 'write';
+    },
+    levelPermissions: function (area, level) {
+      var reach = { read: ['read'], write: ['read', 'work', 'lead'] }[level];
+      return area.items
+        .filter(function (item) { return !reach || reach.indexOf(TokenForm.tier(item)) >= 0; })
+        .map(function (item) { return item.name; });
+    },
+    levels: function (area) {
+      var kept = [];
+      var last = 0;
+      ['read', 'write', 'full'].forEach(function (level) {
+        var size = TokenForm.levelPermissions(area, level).length;
+        if (size > last) kept.push(level);
+        last = Math.max(last, size);
+      });
+      return kept.concat('custom');
+    },
+    levelOf: function (area, held) {
+      var inArea = area.items.filter(function (item) { return held.indexOf(item.name) >= 0; });
+      var found = TokenForm.levels(area).filter(function (level) {
+        var names = TokenForm.levelPermissions(area, level);
+        return level !== 'custom' && names.length === inArea.length && names.every(function (name) {
+          return held.indexOf(name) >= 0;
         });
       });
-      return Object.keys(held)
-        .map(function (name) { return { name: name, permissions: held[name] }; })
-        .sort(function (a, b) { return a.permissions.length - b.permissions.length; });
+      return found.length ? found[0] : 'custom';
+    },
+    levelNote: function (area, level) {
+      if (level === 'custom') return 'Tick each action yourself';
+      var levels = TokenForm.levels(area);
+      var before = levels[levels.indexOf(level) - 1];
+      var known = before ? TokenForm.levelPermissions(area, before) : [];
+      var names = TokenForm.levelPermissions(area, level)
+        .filter(function (name) { return known.indexOf(name) < 0; })
+        .map(function (name) { return name.slice(area.name.length + 1).replace(/_/g, ' '); });
+      return (before ? 'Also ' : 'Includes ') + names.join(', ');
+    },
+    shown: function (areas, held) {
+      return areas.filter(function (area) {
+        return area.items.some(function (item) { return held.indexOf(item.name) >= 0; });
+      }).map(function (area) { return area.name; });
+    },
+    required: function (catalog) {
+      return catalog.filter(function (item) { return item.required; }).map(function (item) { return item.name; });
+    },
+    withRequired: function (catalog, held) {
+      return held.concat(TokenForm.required(catalog).filter(function (name) { return held.indexOf(name) < 0; }));
+    },
+    standardRoles: [
+      ['planner', 'Shapes cards: create, edit, outcomes, links'],
+      ['implementer', 'Claims and moves cards, logs time'],
+      ['reviewer', 'Claims and moves cards'],
+      ['verifier', 'Ticks outcomes'],
+      ['release', 'Claims and moves cards'],
+      ['lead', 'Plans and runs the board, issues child tokens']
+    ],
+    roleNote: function (role) {
+      var known = TokenForm.standardRoles.filter(function (entry) { return entry[0] === role.name; })[0];
+      return known ? known[1] : role.permissions.length + ' permissions';
+    },
+    roleOrder: function (roles) {
+      var names = TokenForm.standardRoles.map(function (entry) { return entry[0]; });
+      var standard = roles.filter(function (role) { return names.indexOf(role.name) >= 0; })
+        .sort(function (a, b) { return names.indexOf(a.name) - names.indexOf(b.name); });
+      var custom = roles.filter(function (role) { return names.indexOf(role.name) < 0; })
+        .sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+      return standard.concat(custom);
+    },
+    roleHeld: function (catalog, role) {
+      return TokenForm.withRequired(catalog, role.permissions.filter(function (name) {
+        return catalog.some(function (item) { return item.name === name; });
+      }));
+    },
+    matches: function (catalog, held, roles) {
+      return roles.filter(function (role) {
+        var wanted = TokenForm.roleHeld(catalog, role);
+        return wanted.length === held.length && wanted.every(function (name) {
+          return held.indexOf(name) >= 0;
+        });
+      });
+    },
+    sync: function (catalog, held, roles, roleName) {
+      var found = TokenForm.matches(catalog, held, roles);
+      var named = found.filter(function (role) { return role.name === roleName; });
+      var names = found.map(function (role) { return role.name; });
+      var pick = found.length === 1 ? found[0] : named.length === 1 ? named[0] : null;
+      return {
+        role: pick,
+        hint: found.length > 1 && !pick
+          ? 'These rows match the roles ' + names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] + '.'
+          : ''
+      };
     },
     body: function (catalog, form) {
-      return {
+      var request = {
         name: form.name,
         permissions: catalog
           .map(function (item) { return item.name; })
@@ -480,8 +599,402 @@
         boards: form.boards === null ? TokenForm.boardsAll : form.boards,
         expires_in_days: form.expiryDays
       };
+      if (form.roleId) request.role_id = form.roleId;
+      return request;
     }
   };
+
+  var pickerMenu = null;
+
+  function closePickerMenu() {
+    if (!pickerMenu) return;
+    pickerMenu.node.remove();
+    pickerMenu.anchor.setAttribute('aria-expanded', 'false');
+    pickerMenu = null;
+  }
+
+  function openPickerMenu(anchor, node) {
+    closePickerMenu();
+    document.body.appendChild(node);
+    var rect = anchor.getBoundingClientRect();
+    var room = window.innerHeight - rect.bottom - 12;
+    var above = room < node.offsetHeight && rect.top > room;
+    node.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - node.offsetWidth - 8)) + 'px';
+    if (above) {
+      node.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+      node.style.maxHeight = (rect.top - 16) + 'px';
+    } else {
+      node.style.top = (rect.bottom + 4) + 'px';
+      node.style.maxHeight = room + 'px';
+    }
+    anchor.setAttribute('aria-expanded', 'true');
+    pickerMenu = { node: node, anchor: anchor };
+  }
+
+  document.addEventListener('mousedown', function (event) {
+    if (pickerMenu && !pickerMenu.node.contains(event.target) && !pickerMenu.anchor.contains(event.target)) {
+      closePickerMenu();
+    }
+  });
+  document.addEventListener('keydown', function (event) {
+    if (!pickerMenu || event.key !== 'Escape') return;
+    event.stopPropagation();
+    var anchor = pickerMenu.anchor;
+    closePickerMenu();
+    anchor.focus();
+  }, true);
+  window.addEventListener('resize', closePickerMenu);
+
+  function pickerEl(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function pickerChevron(up) {
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', '12');
+    svg.setAttribute('height', '12');
+    svg.setAttribute('viewBox', '0 0 12 12');
+    svg.setAttribute('aria-hidden', 'true');
+    var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', up ? 'M2 8l4-4 4 4' : 'M2 4l4 4 4-4');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '1.6');
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function pickerOption(name, note, active, onPick) {
+    var button = pickerEl('button', 'pk-opt' + (active ? ' pk-opt-on' : ''));
+    button.type = 'button';
+    button.setAttribute('role', 'menuitemradio');
+    button.setAttribute('aria-checked', active ? 'true' : 'false');
+    button.appendChild(pickerEl('span', 'pk-opt-tick', active ? '✓' : ''));
+    var text = pickerEl('span', 'pk-opt-text');
+    text.appendChild(pickerEl('span', 'pk-opt-name', name));
+    text.appendChild(pickerEl('span', 'pk-opt-note', note));
+    button.appendChild(text);
+    button.addEventListener('click', function () {
+      closePickerMenu();
+      onPick();
+    });
+    return button;
+  }
+
+  function mountPermissionPicker(root, catalog, roles) {
+    var areas = TokenForm.areas(catalog);
+    var held = [];
+    var listed = [];
+    var open = [];
+    var role = null;
+    var hint = '';
+    var locked = false;
+    var preferred = null;
+
+    function areaNamed(name) {
+      return areas.filter(function (area) { return area.name === name; })[0];
+    }
+
+    function inArea(area) {
+      return area.items.map(function (item) { return item.name; }).filter(function (name) {
+        return held.indexOf(name) >= 0;
+      });
+    }
+
+    function setArea(area, names) {
+      var inside = area.items.map(function (item) { return item.name; });
+      held = held.filter(function (name) { return inside.indexOf(name) < 0; }).concat(names);
+    }
+
+    function changed() {
+      held = TokenForm.withRequired(catalog, held);
+      TokenForm.shown(areas, TokenForm.required(catalog)).forEach(function (name) {
+        if (listed.indexOf(name) < 0) listed.push(name);
+      });
+      var synced = TokenForm.sync(catalog, held, roles, preferred);
+      role = synced.role;
+      hint = synced.hint;
+      locked = false;
+      render();
+    }
+
+    function actAsButton() {
+      var button = pickerEl('button', 'pk-select');
+      button.type = 'button';
+      button.id = root.id + '-role';
+      button.setAttribute('aria-haspopup', 'menu');
+      button.setAttribute('aria-expanded', 'false');
+      button.appendChild(pickerEl('span', 'pk-select-name', role ? role.name : 'Custom'));
+      button.appendChild(pickerEl('span', 'pk-select-note', role ? 'role' : 'no role'));
+      button.appendChild(pickerChevron(false));
+      button.addEventListener('click', function () {
+        if (pickerMenu && pickerMenu.anchor === button) { closePickerMenu(); return; }
+        var menu = pickerEl('div', 'pk-menu pk-menu-roles');
+        menu.setAttribute('role', 'menu');
+        if (roles.length) menu.appendChild(pickerEl('span', 'pk-menu-title', 'ROLES'));
+        TokenForm.roleOrder(roles).forEach(function (candidate) {
+          menu.appendChild(pickerOption(candidate.name, TokenForm.roleNote(candidate),
+            role !== null && role.id === candidate.id, function () {
+              role = candidate;
+              preferred = candidate.name;
+              hint = '';
+              held = TokenForm.roleHeld(catalog, candidate);
+              listed = TokenForm.shown(areas, held);
+              open = [];
+              locked = true;
+              render();
+            }));
+        });
+        if (roles.length) menu.appendChild(pickerEl('div', 'pk-menu-rule'));
+        menu.appendChild(pickerOption('Custom', 'No role. Pick each area yourself.', role === null, function () {
+          role = null;
+          preferred = null;
+          hint = '';
+          locked = false;
+          render();
+        }));
+        openPickerMenu(button, menu);
+      });
+      return button;
+    }
+
+    function levelButton(area, level) {
+      var button = pickerEl('button', 'pk-access');
+      button.type = 'button';
+      button.setAttribute('aria-haspopup', 'menu');
+      button.setAttribute('aria-expanded', 'false');
+      button.appendChild(pickerEl('span', 'pk-access-label', 'Access:'));
+      button.appendChild(pickerEl('strong', '', TokenForm.levelLabels[level]));
+      button.appendChild(pickerChevron(open.indexOf(area.name) >= 0));
+      button.addEventListener('click', function () {
+        if (pickerMenu && pickerMenu.anchor === button) { closePickerMenu(); return; }
+        var menu = pickerEl('div', 'pk-menu pk-menu-levels');
+        menu.setAttribute('role', 'menu');
+        menu.appendChild(pickerEl('span', 'pk-menu-title', 'ACCESS: ' + TokenForm.areaName(area.name).toUpperCase()));
+        TokenForm.levels(area).forEach(function (choice) {
+          menu.appendChild(pickerOption(TokenForm.levelLabels[choice], TokenForm.levelNote(area, choice),
+            choice === level, function () {
+              if (choice === 'custom') {
+                if (open.indexOf(area.name) < 0) open.push(area.name);
+              } else {
+                open = open.filter(function (name) { return name !== area.name; });
+                setArea(area, TokenForm.levelPermissions(area, choice));
+              }
+              changed();
+            }));
+        });
+        openPickerMenu(button, menu);
+      });
+      return button;
+    }
+
+    function customPanel(area) {
+      var panel = pickerEl('div', 'pk-custom');
+      area.items.forEach(function (item) {
+        var label = pickerEl('label', 'pk-check');
+        var input = document.createElement('input');
+        input.type = 'checkbox';
+        input.value = item.name;
+        input.checked = held.indexOf(item.name) >= 0;
+        input.disabled = item.required === true;
+        input.addEventListener('change', function () {
+          var next = inArea(area).filter(function (name) { return name !== item.name; });
+          if (input.checked) next.push(item.name);
+          setArea(area, next);
+          changed();
+        });
+        label.appendChild(input);
+        var text = pickerEl('span', '', item.description + ' ');
+        text.appendChild(pickerEl('span', 'pk-check-level', TokenForm.levelLabels[TokenForm.itemLevel(item)]));
+        label.appendChild(text);
+        panel.appendChild(label);
+      });
+      return panel;
+    }
+
+    function rowFor(area) {
+      var level = open.indexOf(area.name) >= 0 ? 'custom' : TokenForm.levelOf(area, held);
+      var row = pickerEl('div', 'pk-row');
+      row.dataset.area = area.name;
+      var head = pickerEl('div', 'pk-row-head');
+      var info = pickerEl('div', 'pk-row-info');
+      var title = pickerEl('span', 'pk-row-name', TokenForm.areaName(area.name));
+      var required = area.items.some(function (item) { return item.required; });
+      if (required) title.appendChild(pickerEl('span', 'pk-required', 'Required'));
+      info.appendChild(title);
+      info.appendChild(pickerEl('span', 'pk-row-text', TokenForm.areaDescription(area)));
+      head.appendChild(info);
+      if (locked) {
+        var pill = pickerEl('button', 'pk-pill', TokenForm.levelLabels[TokenForm.levelOf(area, held)]);
+        pill.type = 'button';
+        pill.addEventListener('click', function () {
+          role = null;
+          locked = false;
+          render();
+        });
+        head.appendChild(pill);
+      } else {
+        head.appendChild(levelButton(area, level));
+        if (required) {
+          head.appendChild(pickerEl('span', 'pk-gap'));
+        } else {
+          var remove = pickerEl('button', 'pk-remove', '×');
+          remove.type = 'button';
+          remove.setAttribute('aria-label', 'Remove ' + TokenForm.areaName(area.name));
+          remove.addEventListener('click', function () {
+            setArea(area, []);
+            listed = listed.filter(function (name) { return name !== area.name; });
+            open = open.filter(function (name) { return name !== area.name; });
+            changed();
+          });
+          head.appendChild(remove);
+        }
+      }
+      row.appendChild(head);
+      if (!locked && open.indexOf(area.name) >= 0) {
+        row.classList.add('pk-row-open');
+        row.appendChild(customPanel(area));
+      }
+      return row;
+    }
+
+    function addButton() {
+      var button = pickerEl('button', 'pk-add');
+      button.type = 'button';
+      button.setAttribute('aria-haspopup', 'menu');
+      button.setAttribute('aria-expanded', 'false');
+      var plus = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      plus.setAttribute('width', '12');
+      plus.setAttribute('height', '12');
+      plus.setAttribute('viewBox', '0 0 12 12');
+      plus.setAttribute('aria-hidden', 'true');
+      var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', 'M6 1v10M1 6h10');
+      path.setAttribute('stroke', 'currentColor');
+      path.setAttribute('stroke-width', '1.6');
+      plus.appendChild(path);
+      button.appendChild(plus);
+      button.appendChild(document.createTextNode(' Add permissions'));
+      button.addEventListener('click', function () {
+        if (pickerMenu && pickerMenu.anchor === button) { closePickerMenu(); return; }
+        var offered = areas.filter(function (area) { return listed.indexOf(area.name) < 0; });
+        var menu = pickerEl('div', 'pk-menu pk-menu-add');
+        var top = pickerEl('div', 'pk-menu-top');
+        top.appendChild(pickerEl('span', 'pk-menu-heading', 'Add permissions'));
+        var close = pickerEl('button', 'pk-remove', '×');
+        close.type = 'button';
+        close.setAttribute('aria-label', 'Close');
+        close.addEventListener('click', closePickerMenu);
+        top.appendChild(close);
+        menu.appendChild(top);
+        var search = pickerEl('label', 'pk-search');
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Search areas';
+        input.setAttribute('aria-label', 'Search areas');
+        search.appendChild(input);
+        menu.appendChild(search);
+        var list = pickerEl('div', 'pk-menu-list');
+        var empty = pickerEl('p', 'pk-menu-empty', 'No area left to add.');
+        offered.forEach(function (area) {
+          var label = pickerEl('label', 'pk-menu-check');
+          label.dataset.area = area.name;
+          var box = document.createElement('input');
+          box.type = 'checkbox';
+          box.addEventListener('change', function () {
+            if (box.checked) {
+              listed.push(area.name);
+              var read = TokenForm.levels(area)[0];
+              if (!inArea(area).length && read !== 'custom') setArea(area, TokenForm.levelPermissions(area, read));
+            } else {
+              listed = listed.filter(function (name) { return name !== area.name; });
+              setArea(area, []);
+            }
+            changed();
+          });
+          label.appendChild(box);
+          label.appendChild(document.createTextNode(' ' + TokenForm.areaName(area.name)));
+          list.appendChild(label);
+        });
+        menu.appendChild(list);
+        menu.appendChild(empty);
+        function filter() {
+          var term = input.value.trim().toLowerCase();
+          var count = 0;
+          list.querySelectorAll('label').forEach(function (label) {
+            var match = label.dataset.area.indexOf(term) >= 0;
+            label.hidden = !match;
+            if (match) count++;
+          });
+          empty.hidden = count > 0;
+        }
+        input.addEventListener('input', filter);
+        filter();
+        openPickerMenu(button, menu);
+        input.focus();
+      });
+      return button;
+    }
+
+    function render() {
+      root.textContent = '';
+      var act = pickerEl('div', 'pk-field');
+      var actLabel = pickerEl('label', 'pk-label', 'Act as');
+      actLabel.htmlFor = root.id + '-role';
+      act.appendChild(actLabel);
+      act.appendChild(actAsButton());
+      if (role) act.appendChild(pickerEl('p', 'pk-hint', 'The token acts as this role, and its comments, moves and time show the role’s name.'));
+      else if (hint) act.appendChild(pickerEl('p', 'pk-hint', hint));
+      root.appendChild(act);
+
+      var perms = pickerEl('div', 'pk-field');
+      var heading = pickerEl('div', 'pk-heading');
+      heading.appendChild(pickerEl('span', 'pk-label', 'Permissions'));
+      if (locked) heading.appendChild(pickerEl('span', 'pk-hint', 'From the role. Change any row to switch to Custom.'));
+      perms.appendChild(heading);
+      var box = pickerEl('div', 'pk-box');
+      if (!locked) {
+        var bar = pickerEl('div', 'pk-bar');
+        bar.appendChild(pickerEl('span', 'pk-count', listed.length + (listed.length === 1 ? ' area' : ' areas')));
+        bar.appendChild(addButton());
+        box.appendChild(bar);
+      }
+      var rows = pickerEl('div', 'pk-rows');
+      areas.filter(function (area) { return listed.indexOf(area.name) >= 0; }).forEach(function (area) {
+        rows.appendChild(rowFor(area));
+      });
+      box.appendChild(rows);
+      perms.appendChild(box);
+      root.appendChild(perms);
+    }
+
+    function start(names, roleName) {
+      preferred = roleName || null;
+      held = TokenForm.withRequired(catalog, names.filter(function (name) {
+        return catalog.some(function (item) { return item.name === name; });
+      }));
+      listed = TokenForm.shown(areas, held);
+      open = [];
+      var synced = TokenForm.sync(catalog, held, roles, roleName);
+      role = synced.role;
+      hint = synced.hint;
+      locked = false;
+      render();
+    }
+
+    return {
+      held: function () { return held.slice(); },
+      roleId: function () { return role ? role.id : null; },
+      start: start,
+      reset: function () {
+        start(catalog.filter(function (item) { return TokenForm.tier(item) === 'read'; })
+          .map(function (item) { return item.name; }));
+      }
+    };
+  }
 
   pages['settings'] = function () {
     var panes = document.querySelectorAll('.settings-pane');
@@ -643,18 +1156,14 @@
     var err = document.getElementById('token-error');
     function showError(msg) { err.textContent = msg; err.hidden = false; }
     var catalog = [];
-    var presetsBox = document.getElementById('token-presets');
-    var permsBox = document.getElementById('token-permissions');
+    var pickerBox = document.getElementById('token-picker');
+    var picker = null;
+    var roles = [];
     var boardsBox = document.getElementById('token-board-list');
     var boardMode = document.querySelectorAll('input[name="token-boards"]');
     function checkedValues(box) {
       return Array.prototype.map.call(box.querySelectorAll('input:checked'), function (input) {
         return input.value;
-      });
-    }
-    function applyPreset(names) {
-      permsBox.querySelectorAll('input').forEach(function (input) {
-        input.checked = names.indexOf(input.value) >= 0;
       });
     }
     function checkbox(value, text, title) {
@@ -670,46 +1179,23 @@
     }
     function renderCatalog(items) {
       catalog = items;
-      presetsBox.textContent = '';
-      var presets = TokenForm.presets(items);
-      presets.forEach(function (preset, at) {
-        var label = document.createElement('label');
-        label.className = 'check-label';
-        var radio = document.createElement('input');
-        radio.type = 'radio';
-        radio.name = 'token-preset';
-        radio.value = preset.name;
-        radio.checked = at === 0;
-        radio.addEventListener('change', function () { applyPreset(preset.permissions); });
-        label.appendChild(radio);
-        label.appendChild(document.createTextNode(' ' + preset.name + ' (' + preset.permissions.length + ' permissions)'));
-        presetsBox.appendChild(label);
-      });
-      permsBox.textContent = '';
-      TokenForm.groups(items).forEach(function (group) {
-        var set = document.createElement('fieldset');
-        set.className = 'token-group';
-        var legend = document.createElement('legend');
-        legend.textContent = group.name;
-        set.appendChild(legend);
-        group.items.forEach(function (item) {
-          var box = checkbox(item.name, item.name, item.description);
-          box.querySelector('input').addEventListener('change', function () {
-            presetsBox.querySelectorAll('input').forEach(function (radio) { radio.checked = false; });
-          });
-          set.appendChild(box);
-        });
-        permsBox.appendChild(set);
-      });
-      if (presets.length) applyPreset(presets[0].permissions);
+      picker = mountPermissionPicker(pickerBox, catalog, roles);
+      picker.reset();
     }
-    fetch('/api/v1/auth/permissions', { headers: { 'Accept': 'application/json' } })
-      .then(function (r) {
+    function loadJson(url) {
+      return fetch(url, { headers: { 'Accept': 'application/json' } }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
+      });
+    }
+    loadJson('/api/v1/agent-roles')
+      .catch(function () { return []; })
+      .then(function (found) {
+        roles = found;
+        return loadJson('/api/v1/auth/permissions');
       })
       .then(renderCatalog)
-      .catch(function (ex) { presetsBox.textContent = 'Could not load permissions: ' + ex.message; });
+      .catch(function (ex) { pickerBox.textContent = 'Could not load permissions: ' + ex.message; });
     fetch('/api/boards', { headers: { 'Accept': 'application/json' } })
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -730,7 +1216,8 @@
       var only = document.querySelector('input[name="token-boards"]:checked').value === TokenForm.boardsSome;
       var request = TokenForm.body(catalog, {
         name: document.getElementById('token-name').value.trim(),
-        ticked: checkedValues(permsBox),
+        ticked: picker ? picker.held() : [],
+        roleId: picker ? picker.roleId() : null,
         boards: only ? checkedValues(boardsBox) : null,
         expiryDays: parseInt(document.getElementById('token-expiry').value, 10)
       });
@@ -749,7 +1236,7 @@
         form.reset();
         boardsBox.hidden = true;
         boardsBox.querySelectorAll('input').forEach(function (input) { input.checked = false; });
-        renderCatalog(catalog);
+        picker.reset();
         document.getElementById('token-expiry').value = '365';
 
         // Refresh the Active tokens list in place instead of a delayed full-page reload,
@@ -1819,59 +2306,23 @@
     function fail(error) { errorBox.textContent = error.message; errorBox.hidden = false; }
     function overlay(id) { return document.getElementById(id); }
     var catalog = [];
-    var presetsBox = document.getElementById('tk-edit-presets');
-    var permsBox = document.getElementById('tk-edit-permissions');
+    var pickerBox = document.getElementById('tk-edit-picker');
+    var picker = null;
+    var roles = [];
     var editError = document.getElementById('tk-edit-error');
     var editId = null;
     var deleteId = null;
-    function ticked() {
-      return Array.prototype.map.call(permsBox.querySelectorAll('input:checked'), function (input) {
-        return input.value;
-      });
-    }
-    function option(type, name, value, text, title) {
-      var label = document.createElement('label');
-      label.className = 'check-label';
-      var input = document.createElement('input');
-      input.type = type;
-      if (name) input.name = name;
-      input.value = value;
-      label.appendChild(input);
-      label.appendChild(document.createTextNode(' ' + text));
-      if (title) label.title = title;
-      return label;
-    }
     function renderCatalog(items) {
       catalog = items;
-      presetsBox.textContent = '';
-      TokenForm.presets(items).forEach(function (preset) {
-        var label = option('radio', 'tk-preset', preset.name,
-          preset.name + ' (' + preset.permissions.length + ' permissions)');
-        label.querySelector('input').addEventListener('change', function () {
-          permsBox.querySelectorAll('input').forEach(function (input) {
-            input.checked = preset.permissions.indexOf(input.value) >= 0;
-          });
-        });
-        presetsBox.appendChild(label);
-      });
-      permsBox.textContent = '';
-      TokenForm.groups(items).forEach(function (group) {
-        var set = document.createElement('fieldset');
-        set.className = 'token-group';
-        var legend = document.createElement('legend');
-        legend.textContent = group.name;
-        set.appendChild(legend);
-        group.items.forEach(function (item) {
-          var box = option('checkbox', '', item.name, item.name, item.description);
-          box.querySelector('input').addEventListener('change', function () {
-            presetsBox.querySelectorAll('input').forEach(function (radio) { radio.checked = false; });
-          });
-          set.appendChild(box);
-        });
-        permsBox.appendChild(set);
-      });
+      picker = mountPermissionPicker(pickerBox, catalog, roles);
     }
-    var catalogLoaded = webhookRequest('GET', '/api/v1/auth/permissions').then(renderCatalog);
+    var catalogLoaded = webhookRequest('GET', '/api/v1/agent-roles')
+      .catch(function () { return []; })
+      .then(function (found) {
+        roles = found;
+        return webhookRequest('GET', '/api/v1/auth/permissions');
+      })
+      .then(renderCatalog);
     catalogLoaded.catch(fail);
     function describe(data) {
       document.getElementById('tk-show-expiry').textContent = data.expires_at
@@ -1907,10 +2358,7 @@
           document.getElementById('tk-edit-name').value = data.name;
           document.getElementById('tk-edit-child-hours').value = data.child_lifetime_hours;
           editError.hidden = true;
-          presetsBox.querySelectorAll('input').forEach(function (radio) { radio.checked = false; });
-          permsBox.querySelectorAll('input').forEach(function (input) {
-            input.checked = data.permissions.indexOf(input.value) >= 0;
-          });
+          picker.start(data.permissions, data.role_name);
           overlay('tk-edit-overlay').hidden = false;
           document.getElementById('tk-edit-name').focus();
         }).catch(fail);
@@ -1928,7 +2376,7 @@
       editError.hidden = true;
       var request = TokenForm.body(catalog, {
         name: document.getElementById('tk-edit-name').value.trim(),
-        ticked: ticked(),
+        ticked: picker.held(),
         boards: null,
         expiryDays: null
       });

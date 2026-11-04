@@ -22998,6 +22998,10 @@ struct CreateTokenInput {
     boards: BoardsInput,
     /// Days until expiry; null, absent, or <= 0 means no expiry.
     expires_in_days: Option<i64>,
+    /// The id of an agent role to issue the token as. The token then carries the role's id, its
+    /// name at issue and the next `agent-N` label, and may hold only permissions in the role's
+    /// template. With none of `scopes`, `preset` and `permissions` it holds the whole template.
+    role_id: Option<String>,
 }
 
 /// Reads the one grant of permissions that `scopes`, `preset` and `permissions` name between them.
@@ -23857,6 +23861,8 @@ struct PermissionView {
     description: &'static str,
     /// Names of the presets that include the permission, from the smallest preset to `admin`.
     presets: Vec<&'static str>,
+    /// Whether every other permission needs this one, which keeps a token form from dropping it.
+    required: bool,
 }
 
 /// Lists every token permission with its group, description and the presets that include it.
@@ -23883,6 +23889,7 @@ async fn list_permissions() -> Json<Vec<PermissionView>> {
                 .filter(|preset| preset.contains(*permission))
                 .map(|preset| preset.name())
                 .collect(),
+            required: permission.is_required(),
         })
         .collect();
     Json(views)
@@ -23968,7 +23975,11 @@ fn reauth_required() -> Response {
 
 /// Creates an API token and returns its secret once. Send one of `scopes`, `preset` or
 /// `permissions`, plus `boards`, which defaults to `all`. A board made later joins a set only when
-/// the token itself creates it.
+/// the token itself creates it. Send `role_id` to issue the token as an agent role: it then gets
+/// the role's name and the next `agent-N` label, and holds the role's template plus the required
+/// permissions (`required: true` in `GET /api/v1/auth/permissions`), which always come with a role,
+/// when none of the three is sent. A permission outside them is 403 `exceeds_grant` with no token
+/// made.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/tokens",
@@ -23977,8 +23988,8 @@ fn reauth_required() -> Response {
     request_body = CreateTokenInput,
     responses(
         (status = 200, description = "Created token (raw_token shown once)", body = CreateTokenResponse),
-        (status = 400, description = "Invalid name, more or less than one of `scopes`, `preset` and `permissions`, an unknown preset or permission, or `boards` empty or naming a board the account does not hold"),
-        (status = 403, description = "`session_required`: needs the browser session cookie, so an API token cannot create a hand-made token, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
+        (status = 400, description = "Invalid name, more or less than one of `scopes`, `preset` and `permissions` without a `role_id`, an unknown preset or permission, `unknown_role`: the account has no such role, or `boards` empty or naming a board the account does not hold"),
+        (status = 403, description = "`exceeds_grant`: with a `role_id`, a permission outside the role's template and the required ones, which always come with a role, or `session_required`: needs the browser session cookie, so an API token cannot create a hand-made token, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 409, description = "`quota_exceeded`: the account holds 50 tokens already"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -23991,11 +24002,35 @@ async fn create_api_token(
 ) -> Result<Json<CreateTokenResponse>, AppError> {
     let input: CreateTokenInput = parse_body(&headers, body).await?;
     let name = submitted_token_name(&input.name)?;
-    let (scope, permissions) = submitted_permissions(
-        &input.scopes,
-        input.preset.as_deref(),
-        input.permissions.as_deref(),
-    )?;
+    let role = match input.role_id.as_deref() {
+        Some(id) => Some(
+            account
+                .agent_role(id)
+                .map_err(AppError::from)?
+                .ok_or_else(unknown_role_at_issue)?,
+        ),
+        None => None,
+    };
+    let unnamed = input.scopes.is_empty() && input.preset.is_none() && input.permissions.is_none();
+    let template = role
+        .as_ref()
+        .map(|role| Permission::with_required(&role.permissions));
+    let (scope, permissions) = match &template {
+        Some(template) if unnamed => (AuthScope::label_of(template), template.clone()),
+        _ => submitted_permissions(
+            &input.scopes,
+            input.preset.as_deref(),
+            input.permissions.as_deref(),
+        )?,
+    };
+    if let Some(template) = &template
+        && let Some(extra) = permissions.difference(template).next()
+    {
+        return Err(
+            AppError::forbidden(format!("the role gives no {}", extra.name()))
+                .with_code(ErrorCode::ExceedsGrant),
+        );
+    }
     let expires_at = match input.expires_in_days {
         Some(days) if days > 0 => {
             Some(chrono::Utc::now().timestamp() + days.min(3650) * SECONDS_PER_DAY)
@@ -24008,9 +24043,15 @@ async fn create_api_token(
         permissions,
         boards,
     };
-    let (record, raw) = account
-        .create_api_token(&name, grant, expires_at)
-        .map_err(AppError::from)?;
+    let (record, raw) = match &role {
+        Some(role) => account
+            .create_api_token_as_role(&role.id, &name, grant, expires_at)
+            .map_err(AppError::from)?
+            .ok_or_else(unknown_role_at_issue)?,
+        None => account
+            .create_api_token(&name, grant, expires_at)
+            .map_err(AppError::from)?,
+    };
     Ok(Json(CreateTokenResponse {
         token: ApiTokenView::from(&record),
         grant: GrantView::new(Some(&account), &record.permissions, &record.boards)?,
@@ -24052,9 +24093,9 @@ struct CreateChildTokenInput {
 /// account's 50 tokens, and no limit holds how many live ones a token has, but a token that mints
 /// faster than 20 at once and then one every 2 seconds gets 429 `rate_limited` with `Retry-After`.
 /// Send one of `preset` and `permissions`, plus `boards`, which defaults to `all`. Or send
-/// `role_id` to issue the child as an agent role: it then holds the role's template cut to what
-/// the caller holds, without `tokens.issue`, on the caller's boards the role is granted on, and it
-/// gets the role's name and the next `agent-N` label. With a role, `preset`, `permissions` and
+/// `role_id` to issue the child as an agent role: it then holds the role's template and the
+/// required permissions cut to what the caller holds, without `tokens.issue`, on the caller's
+/// boards the role is granted on, and it gets the role's name and the next `agent-N` label. With a role, `preset`, `permissions` and
 /// `boards` are optional and may only narrow that grant, and a permission or board outside it is
 /// 403 `exceeds_grant` with no child made. A role child always expires, as above. The child's
 /// history entries and comments name the caller beside the child.
@@ -24067,7 +24108,7 @@ struct CreateChildTokenInput {
     responses(
         (status = 200, description = "Created child token (raw_token shown once)", body = CreateTokenResponse),
         (status = 400, description = "Invalid name, both or neither of `preset` and `permissions` without a `role_id`, both with one, an unknown preset, permission or board, empty `boards`, `unknown_role`: the account has no such role, `expires_in_hours` outside 1 to 8, or more hours than the owner allows the caller's children"),
-        (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`, or `forbidden`: the child asks for a permission or board the caller lacks, or for `tokens.issue` while the caller was itself issued, or the caller is not an API token, or `exceeds_grant`: with a `role_id`, the child asks for a permission or board outside the role's template and grants cut to the caller, or the cut leaves no permission"),
+        (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`, or `forbidden`: the child asks for a permission or board the caller lacks, or for `tokens.issue` while the caller was itself issued, or the caller is not an API token, or `exceeds_grant`: with a `role_id`, the child asks for a permission or board outside the role's template and grants cut to the caller, or the cut leaves none of the role's permissions beyond the required ones"),
         (status = 409, description = "Another token of the account has the name, whatever its letter case"),
         (status = 429, description = "`rate_limited`: the caller mints children faster than 20 at once and then one every 2 seconds, so wait the `Retry-After` seconds"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -24177,10 +24218,11 @@ fn child_refusal(refusal: ChildTokenRefusal) -> AppError {
     }
 }
 
-/// Returns the grant of a child issued as `role`: the role's template cut to what the caller holds,
-/// without `tokens.issue`, narrowed by what `input` lists, on the caller's boards the role is
-/// granted on, narrowed the same way. A permission or board the cut leaves out is refused as
-/// `exceeds_grant`, and so is a cut that leaves no permission.
+/// Returns the grant of a child issued as `role`: the role's template and the required permissions
+/// cut to what the caller holds, without `tokens.issue`, narrowed by what `input` lists, on the
+/// caller's boards the role is granted on, narrowed the same way. A permission or board the cut
+/// leaves out is refused as `exceeds_grant`, and so is a cut that leaves none of the role's
+/// permissions beyond the required ones.
 fn role_child_grant(
     account: &AccountDb,
     user: &AuthUser,
@@ -24188,31 +24230,40 @@ fn role_child_grant(
     (preset, listed): (Option<&str>, Option<&[String]>),
     boards: Option<BoardsInput>,
 ) -> Result<(AuthScope, BTreeSet<Permission>, BoardAccess), AppError> {
-    let mut allowed: BTreeSet<Permission> = role
-        .permissions
+    let mut allowed: BTreeSet<Permission> = Permission::with_required(&role.permissions)
         .intersection(user.permissions())
         .copied()
         .collect();
     allowed.remove(&Permission::TokensIssue);
-    let permissions = if preset.is_some() || listed.is_some() {
-        let (_, listed) = named_grant(preset, listed)?;
-        if let Some(extra) = listed.difference(&allowed).next() {
-            return Err(AppError::forbidden(format!(
-                "the role and the calling token give no {}",
-                extra.name()
-            ))
-            .with_code(ErrorCode::ExceedsGrant));
-        }
-        listed
+    let named = if preset.is_some() || listed.is_some() {
+        Some(named_grant(preset, listed)?.1)
     } else {
-        allowed
+        None
     };
-    if permissions.is_empty() {
+    let template_works = role
+        .permissions
+        .iter()
+        .any(|permission| !permission.is_required());
+    let cut_works = allowed.iter().any(|permission| !permission.is_required());
+    if allowed.is_empty() || (template_works && !cut_works) {
         return Err(AppError::forbidden(
-            "the role template and the calling token share no permission",
+            "the role template and the calling token share no permission beyond the required ones",
         )
         .with_code(ErrorCode::ExceedsGrant));
     }
+    let permissions = match named {
+        Some(named) => {
+            if let Some(extra) = named.difference(&allowed).next() {
+                return Err(AppError::forbidden(format!(
+                    "the role and the calling token give no {}",
+                    extra.name()
+                ))
+                .with_code(ErrorCode::ExceedsGrant));
+            }
+            named
+        }
+        None => allowed,
+    };
     let reached: BTreeSet<String> = account.agent_role_boards(role)?.into_iter().collect();
     if reached.is_empty() {
         return Err(outside_role_boards());

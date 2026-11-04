@@ -177,6 +177,31 @@ impl Db {
         Ok(Ok(record))
     }
 
+    /// Stores `record`, a token the account owner made, as issued as agent role `role_id` of the
+    /// account it belongs to, with the role's id and current name and the next `agent-N` label from
+    /// the role's counter, and returns it as stored. Returns [`None`], storing nothing, when that
+    /// account holds no such role. A refused store leaves the counter where it was.
+    pub fn create_owner_token_as_role(
+        &self,
+        role_id: &str,
+        mut record: ApiTokenRecord,
+    ) -> DbResult<Option<ApiTokenRecord>> {
+        let txn = self.db.begin_write()?;
+        let Some(mut role) = txn_read_one::<AgentRoleRow>(&txn, AGENT_ROLES, role_id)?
+            .filter(|role| role.account_id == record.account_id)
+        else {
+            return Ok(None);
+        };
+        role.issued += 1;
+        record.role_id = Some(role.id.clone());
+        record.role_name = Some(role.name.clone());
+        record.label = Some(format!("agent-{}", role.issued));
+        write_one(&txn, AGENT_ROLES, role_id, &role)?;
+        txn_create_token(&txn, &record)?;
+        txn.commit()?;
+        Ok(Some(record))
+    }
+
     /// Returns the ids of the boards agent role `id` is granted on, sorted.
     pub fn agent_role_boards(&self, id: &str) -> DbResult<Vec<String>> {
         let mut boards = mmap_get(&self.db, GRANTS_BY_ROLE, id)?;
