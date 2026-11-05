@@ -2551,3 +2551,191 @@ async fn browser_issued_lead_role_token_should_run_the_lead_actions_and_issue_an
         granted.body
     );
 }
+
+async fn settings_html(fx: &Fixture) -> String {
+    let page = fx.browse(ALICE, "GET", "/settings", None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    page.body.as_str().expect("html").to_string()
+}
+
+fn role_uri(role: &Value) -> String {
+    format!("/api/v1/agent-roles/{}", role["id"].as_str().expect("id"))
+}
+
+#[tokio::test]
+async fn settings_should_list_roles_with_boards_and_live_tokens() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    fx.create(ALICE, "reviewer").await;
+    let granted = fx
+        .browse(
+            ALICE,
+            "PUT",
+            &format!("{}/boards/{}", role_uri(&role), fx.boards[ALICE]),
+            None,
+        )
+        .await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    issue_as(&fx, &role, "agent-a");
+    issue_as(&fx, &role, "agent-b");
+    let (expired, _) = issue_as_at(&fx, &role, "agent-c", 0);
+    assert!(expired.expires_at.is_some());
+
+    let html = settings_html(&fx).await;
+
+    assert!(html.contains("id=\"agent-roles\""), "roles pane");
+    assert!(html.contains("planner <span class=\"role-tokens\">2 live tokens</span>"));
+    assert!(html.contains("reviewer <span class=\"role-tokens\">0 live tokens</span>"));
+    let template: Vec<_> = role["permissions"]
+        .as_array()
+        .expect("permissions")
+        .iter()
+        .map(|name| name.as_str().expect("name"))
+        .collect();
+    assert!(html.contains(&format!("data-permissions=\"{}\"", template.join(","))));
+    assert!(html.contains(&format!("data-board-id=\"{}\"", fx.boards[ALICE])));
+    assert!(html.contains("data-board-name=\"Alice\" checked"));
+    assert!(!html.contains("data-board-name=\"Bob\""));
+    assert!(html.contains("only tokens issued afterwards"));
+}
+
+#[tokio::test]
+async fn settings_role_edit_should_save_the_template() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let uri = role_uri(&role);
+
+    let saved = fx
+        .browse(
+            ALICE,
+            "PATCH",
+            &uri,
+            Some(json!({"name": "architect", "permissions": ["tasks.read"]})),
+        )
+        .await;
+
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    let listed = fx.browse(ALICE, "GET", "/api/v1/agent-roles", None).await;
+    assert_eq!(listed.body[0]["name"], "architect");
+    assert_eq!(listed.body[0]["permissions"], json!(["tasks.read"]));
+    let html = settings_html(&fx).await;
+    assert!(html.contains("data-name=\"architect\" data-permissions=\"tasks.read\""));
+    assert!(html.contains("class=\"kf-btn kf-btn-success role-save\""));
+}
+
+#[tokio::test]
+async fn settings_role_board_toggle_should_grant_and_revoke() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let uri = role_uri(&role);
+    let board_uri = format!("{uri}/boards/{}", fx.boards[ALICE]);
+    issue_as(&fx, &role, "agent-a");
+    assert!(
+        !settings_html(&fx)
+            .await
+            .contains("data-board-name=\"Alice\" checked")
+    );
+
+    let granted = fx.browse(ALICE, "PUT", &board_uri, None).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    assert!(
+        settings_html(&fx)
+            .await
+            .contains("data-board-name=\"Alice\" checked")
+    );
+
+    let revoked = fx.browse(ALICE, "DELETE", &board_uri, None).await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    assert_eq!(revoked.body["revoked"], 1);
+    let html = settings_html(&fx).await;
+    assert!(!html.contains("data-board-name=\"Alice\" checked"));
+    assert!(html.contains("planner <span class=\"role-tokens\">0 live tokens</span>"));
+}
+
+#[tokio::test]
+async fn settings_standard_roles_button_should_create_the_six() {
+    let fx = Fixture::new();
+    let html = settings_html(&fx).await;
+    assert!(html.contains("id=\"roles-standard\""));
+    assert!(html.contains("No agent roles yet."));
+
+    let first = fx
+        .browse(
+            ALICE,
+            "POST",
+            "/api/v1/agent-roles/standard",
+            Some(json!({"boards": []})),
+        )
+        .await;
+    let second = fx
+        .browse(
+            ALICE,
+            "POST",
+            "/api/v1/agent-roles/standard",
+            Some(json!({"boards": []})),
+        )
+        .await;
+
+    assert_eq!(first.body["created"].as_array().expect("created").len(), 6);
+    assert_eq!(second.body["created"], json!([]));
+    let html = settings_html(&fx).await;
+    assert_eq!(html.matches("class=\"role-card\"").count(), 6);
+    for role in STANDARD_ROLES {
+        let name = role.name;
+        assert!(html.contains(&format!("data-name=\"{name}\"")), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn settings_role_delete_should_ask_for_confirmation() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    issue_as(&fx, &role, "agent-a");
+    let html = settings_html(&fx).await;
+    assert!(html.contains("class=\"kf-btn role-delete\""));
+    assert!(html.contains("class=\"kf-btn role-revoke-all\""));
+    assert!(html.contains("id=\"confirm-dialog\""));
+    let script = include_str!("../../static/pages.js");
+    assert!(script.contains("confirmThen('Delete role'"));
+    assert!(script.contains("confirmThen('Revoke all tokens'"));
+
+    let revoked = fx
+        .browse(
+            ALICE,
+            "POST",
+            &format!("{}/revoke-tokens", role_uri(&role)),
+            None,
+        )
+        .await;
+    assert_eq!(revoked.body["revoked"], 1);
+    issue_as(&fx, &role, "agent-b");
+    let deleted = fx.browse(ALICE, "DELETE", &role_uri(&role), None).await;
+
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+    assert_eq!(deleted.body["revoked"], 1);
+    let listed = fx.browse(ALICE, "GET", "/api/v1/agent-roles", None).await;
+    assert_eq!(listed.body, json!([]));
+}
+
+#[tokio::test]
+async fn settings_should_count_tokens_issued_by_a_role_token() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let (parent, _) = issue_as(&fx, &role, "agent-a");
+    let mut child = child_as(&fx, "agent-a-child");
+    child.parent_id = Some(parent.id);
+    fx.db.create_api_token(&child).expect("child");
+
+    let html = settings_html(&fx).await;
+
+    assert!(html.contains("planner <span class=\"role-tokens\">2 live tokens</span>"));
+    let revoked = fx
+        .browse(
+            ALICE,
+            "POST",
+            &format!("{}/revoke-tokens", role_uri(&role)),
+            None,
+        )
+        .await;
+    assert_eq!(revoked.body["revoked"], 2);
+}

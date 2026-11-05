@@ -1253,6 +1253,35 @@ async fn member_settings_should_render_without_instance_panes() {
 }
 
 #[tokio::test]
+async fn roles_section_should_be_hidden_from_a_member() {
+    let fx = pair(None).await;
+    let app = &fx.instance.app;
+    let page = |cookie: &str| {
+        let cookie = cookie.to_string();
+        async move {
+            let reply = call(app, "GET", "/settings", &[("cookie", &cookie)], None).await;
+            assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+            reply.body.as_str().expect("html").to_string()
+        }
+    };
+
+    let member = page(&fx.member).await;
+    let admin = page(&fx.admin).await;
+
+    for marker in [
+        "id=\"agent-roles\"",
+        "href=\"#agent-roles\"",
+        "roles-standard",
+    ] {
+        assert!(
+            !member.contains(marker),
+            "the member's settings show {marker}"
+        );
+        assert!(admin.contains(marker), "the admin's settings lack {marker}");
+    }
+}
+
+#[tokio::test]
 async fn migrated_owner_should_see_the_recovery_banner_until_it_creates_a_code() {
     let instance = Instance::new(None);
     let owner = instance.db.create_user("Chip").expect("owner");

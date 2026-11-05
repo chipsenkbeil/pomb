@@ -9895,13 +9895,122 @@ async fn time_spent_should_group_minutes_by_role() {
     assert_eq!(
         report["roles"],
         json!([
-            {"role": "reviewer", "minutes": 25, "seconds": 1500},
-            {"role": "lead", "minutes": 20, "seconds": 1200},
-            {"role": "quick", "minutes": 0, "seconds": 30},
-            {"role": null, "minutes": 5, "seconds": 300},
+            {"role": "reviewer", "role_id": null, "minutes": 25, "seconds": 1500},
+            {"role": "lead", "role_id": null, "minutes": 20, "seconds": 1200},
+            {"role": "quick", "role_id": null, "minutes": 0, "seconds": 30},
+            {"role": null, "role_id": null, "minutes": 5, "seconds": 300},
         ])
     );
     assert_eq!(report["total_minutes"], 50);
+}
+
+fn role_token(fx: &Fixture, role: &AgentRoleRow, name: &str) -> String {
+    let (mut record, raw) = new_api_token_record(&fx.user_id, name, AuthScope::Work, None);
+    record.permissions = role.permissions.clone();
+    fx.db
+        .create_owner_token_as_role(&role.id, record)
+        .expect("token")
+        .expect("issued as the role");
+    raw
+}
+
+#[tokio::test]
+async fn time_spent_should_group_a_role_under_its_current_name_in_one_line() {
+    let (_dir, fx) = fixture();
+    let role = role_of(&fx, "reviewer", &["tasks.read", "time.write"]);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Timed"})).await;
+    let uri = format!("/api/tasks/{id}/time");
+    let before = role_token(&fx, &role, "before-rename");
+    let (status, reply) = request(
+        &fx,
+        As::Bearer(&before),
+        "POST",
+        &uri,
+        Some(json!({"minutes": 10})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+
+    fx.db
+        .update_agent_role(fx.user_id.as_str(), &role.id, Some("qa"), None)
+        .expect("rename")
+        .expect("role");
+    let after = role_token(&fx, &role, "after-rename");
+    let (status, reply) = request(
+        &fx,
+        As::Bearer(&after),
+        "POST",
+        &uri,
+        Some(json!({"minutes": 5})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+
+    let (status, report) = call(&fx, "GET", "/api/timer/time-spent", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        report["roles"],
+        json!([{"role": "qa", "role_id": role.id, "minutes": 15, "seconds": 900}])
+    );
+}
+
+#[tokio::test]
+async fn time_spent_should_keep_entries_without_a_role_id_under_their_stored_name() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Timed"})).await;
+    let uri = format!("/api/tasks/{id}/time");
+    for (minutes, role) in [(10, Some("reviewer")), (5, None)] {
+        let (status, reply) = call(
+            &fx,
+            "POST",
+            &uri,
+            Some(json!({"minutes": minutes, "role": role})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+    }
+
+    let (status, report) = call(&fx, "GET", "/api/timer/time-spent", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        report["roles"],
+        json!([
+            {"role": "reviewer", "role_id": null, "minutes": 10, "seconds": 600},
+            {"role": null, "role_id": null, "minutes": 5, "seconds": 300},
+        ])
+    );
+}
+
+#[tokio::test]
+async fn time_spent_should_show_the_stored_name_of_a_deleted_role() {
+    let (_dir, fx) = fixture();
+    let role = role_of(&fx, "reviewer", &["tasks.read", "time.write"]);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Timed"})).await;
+    let uri = format!("/api/tasks/{id}/time");
+    let token = role_token(&fx, &role, "logger");
+    let (status, reply) = request(
+        &fx,
+        As::Bearer(&token),
+        "POST",
+        &uri,
+        Some(json!({"minutes": 10})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    fx.db
+        .delete_agent_role(fx.user_id.as_str(), &role.id)
+        .expect("delete")
+        .expect("role");
+
+    let (status, report) = call(&fx, "GET", "/api/timer/time-spent", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        report["roles"],
+        json!([{"role": "reviewer", "role_id": role.id, "minutes": 10, "seconds": 600}])
+    );
 }
 
 #[test]

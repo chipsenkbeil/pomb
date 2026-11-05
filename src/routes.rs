@@ -2130,11 +2130,24 @@ struct DayTotal {
 /// One role's time for the Time spent report.
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct RoleTime {
-    /// The role the time was logged in, or null for entries logged without one.
+    /// The role's current name, or the name stored on its entries when the role is gone. Null for
+    /// entries logged without a role.
     role: Option<String>,
+    /// The agent role the time was logged in, or null for entries logged without one.
+    role_id: Option<String>,
     /// Minutes logged in the role across the report's days.
     minutes: i64,
     /// The exact seconds behind `minutes`, which an entry under a minute adds to.
+    seconds: i64,
+}
+
+/// One role's minutes while the Time spent report is built, with the name stored on its entries.
+struct RoleSpent {
+    /// The name stored on the role's entries, used when the role is gone.
+    stored: Option<String>,
+    /// Minutes logged under the role.
+    minutes: i64,
+    /// The exact seconds behind `minutes`.
     seconds: i64,
 }
 
@@ -2142,8 +2155,8 @@ struct RoleTime {
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TimeSpentReport {
     days: Vec<DayTotal>,
-    /// The same minutes grouped by role, the largest first, with the entries that have no role
-    /// last.
+    /// The same minutes grouped by agent role id, or by the stored role name for an entry without
+    /// a role id, the largest first, with the entries that have no role last.
     roles: Vec<RoleTime>,
     total_minutes: i64,
     /// Total task minutes across all days (excluding breaks).
@@ -15797,7 +15810,7 @@ fn check_report_range(from: chrono::NaiveDate, to: chrono::NaiveDate) -> Result<
     tag = "Timer",
     params(TimeSpentQuery),
     responses(
-        (status = 200, description = "Daily time totals, and the same minutes grouped by role", body = TimeSpentReport),
+        (status = 200, description = "Daily time totals, and the same minutes grouped by agent role", body = TimeSpentReport),
         (status = 400, description = "Invalid date, an end before the start, or a range of more than 3660 days"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -15833,13 +15846,19 @@ async fn api_time_spent(
     let task_of = db
         .task_briefs(entries.iter().map(|entry| entry.task_id.as_str()))
         .map_err(AppError::from)?;
+    let role_names: HashMap<String, String> = db
+        .list_agent_roles()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|role| (role.id, role.name))
+        .collect();
 
     // (date, task_id) -> minutes, plus task metadata for the detailed view
     let mut totals: HashMap<String, i64> = HashMap::new();
     let mut task_totals: HashMap<String, i64> = HashMap::new();
     let mut break_totals: HashMap<String, i64> = HashMap::new();
     let mut per_day: HashMap<String, HashMap<String, i64>> = HashMap::new();
-    let mut per_role: HashMap<Option<String>, (i64, i64)> = HashMap::new();
+    let mut per_role: HashMap<(Option<String>, Option<String>), RoleSpent> = HashMap::new();
     for e in entries {
         if let Some(day) = local_day(&e.started_at) {
             let date = day.as_str();
@@ -15870,9 +15889,17 @@ async fn api_time_spent(
                 continue;
             }
             *totals.entry(date.to_string()).or_insert(0) += e.minutes;
-            let spent = per_role.entry(e.role.clone()).or_insert((0, 0));
-            spent.0 += e.minutes;
-            spent.1 += e.duration_seconds();
+            let key = match &e.role_id {
+                Some(role_id) => (Some(role_id.clone()), None),
+                None => (None, e.role.clone()),
+            };
+            let spent = per_role.entry(key).or_insert_with(|| RoleSpent {
+                stored: e.role_name.clone().or_else(|| e.role.clone()),
+                minutes: 0,
+                seconds: 0,
+            });
+            spent.minutes += e.minutes;
+            spent.seconds += e.duration_seconds();
             if is_break {
                 *break_totals.entry(date.to_string()).or_insert(0) += e.minutes;
             } else {
@@ -15924,10 +15951,17 @@ async fn api_time_spent(
     let total_break_minutes: i64 = days.iter().map(|d| d.break_minutes).sum();
     let mut roles: Vec<RoleTime> = per_role
         .into_iter()
-        .map(|(role, (minutes, seconds))| RoleTime {
-            role,
-            minutes,
-            seconds,
+        .map(|((role_id, name), spent)| {
+            let role = match &role_id {
+                Some(id) => role_names.get(id).cloned().or(spent.stored),
+                None => name,
+            };
+            RoleTime {
+                role,
+                role_id,
+                minutes: spent.minutes,
+                seconds: spent.seconds,
+            }
         })
         .collect();
     roles.sort_by(|a, b| {
@@ -15936,6 +15970,7 @@ async fn api_time_spent(
             .cmp(&b.role.is_none())
             .then_with(|| b.seconds.cmp(&a.seconds))
             .then_with(|| a.role.cmp(&b.role))
+            .then_with(|| a.role_id.cmp(&b.role_id))
     });
 
     Ok(Json(TimeSpentReport {
@@ -22152,6 +22187,8 @@ struct SettingsTemplate {
     admin_link: bool,
     /// The Recovery code and Delete account panes, which multi mode alone has.
     account_panes: Option<AccountPanes>,
+    /// The Agent roles pane, which the owner has.
+    roles: Option<RolesPane>,
     /// The server's base URL, for the agent skill install line.
     base_url: String,
     /// Top bar data.
@@ -22240,6 +22277,106 @@ impl From<&ApiTokenRecord> for ApiTokenListItem {
                 .map(fmt_ts)
                 .unwrap_or_else(|| "never".to_string()),
         }
+    }
+}
+
+/// A board a role's grant can be toggled on, from the Agent roles pane.
+struct RoleBoardChoice {
+    /// The board id.
+    id: String,
+    /// The board name.
+    name: String,
+    /// Whether the role is granted on the board.
+    granted: bool,
+}
+
+/// An agent role row of the Agent roles pane.
+struct RoleItem {
+    /// The stored role id.
+    id: String,
+    /// The role name.
+    name: String,
+    /// The template's permission wire names, comma-separated, for the picker to start from.
+    permissions: String,
+    /// How many unexpired tokens were issued as the role or descend from one that was.
+    live_tokens: usize,
+    /// The boards the role's grant can be toggled on.
+    boards: Vec<RoleBoardChoice>,
+}
+
+/// Counts the unexpired tokens among `records` issued as role `role_id`, with the unexpired tokens
+/// they issued, which revoking the role ends too.
+fn live_role_tokens(records: &[ApiTokenRecord], role_id: &str, now: i64) -> usize {
+    let live = |record: &&ApiTokenRecord| record.expires_at.is_none_or(|end| end > now);
+    let mut counted: BTreeSet<&str> = records
+        .iter()
+        .filter(live)
+        .filter(|record| record.role_id.as_deref() == Some(role_id))
+        .map(|record| record.id.as_str())
+        .collect();
+    loop {
+        let before = counted.len();
+        let issued: Vec<&str> = records
+            .iter()
+            .filter(live)
+            .filter(|record| {
+                record
+                    .parent_id
+                    .as_deref()
+                    .is_some_and(|parent| counted.contains(parent))
+            })
+            .map(|record| record.id.as_str())
+            .collect();
+        counted.extend(issued);
+        if counted.len() == before {
+            return before;
+        }
+    }
+}
+
+/// What the Agent roles pane of the settings page shows, which the owner has.
+struct RolesPane {
+    /// The owner's roles, in listing order.
+    roles: Vec<RoleItem>,
+}
+
+impl RolesPane {
+    /// Lists the roles of `account` with their boards and the live tokens among `records`.
+    fn of(account: &AccountDb, records: &[ApiTokenRecord], now: i64) -> Result<Self, AppError> {
+        let boards: Vec<_> = account
+            .list_reachable_boards()?
+            .into_iter()
+            .map(|(board, _)| board)
+            .filter(|board| !board.config_bool("archived"))
+            .collect();
+        let roles = account
+            .list_agent_roles()?
+            .into_iter()
+            .map(|role| {
+                let granted: BTreeSet<String> =
+                    account.agent_role_boards(&role)?.into_iter().collect();
+                Ok(RoleItem {
+                    live_tokens: live_role_tokens(records, &role.id, now),
+                    boards: boards
+                        .iter()
+                        .map(|board| RoleBoardChoice {
+                            granted: granted.contains(&board.id),
+                            id: board.id.clone(),
+                            name: board.name.clone(),
+                        })
+                        .collect(),
+                    permissions: role
+                        .permissions
+                        .iter()
+                        .map(|permission| permission.name())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    id: role.id,
+                    name: role.name,
+                })
+            })
+            .collect::<Result<_, AppError>>()?;
+        Ok(Self { roles })
     }
 }
 
@@ -22471,8 +22608,17 @@ async fn settings_page(
     } else {
         None
     };
+    let roles = match &instance {
+        Some(_) => Some(RolesPane::of(
+            &account,
+            &records,
+            chrono::Utc::now().timestamp(),
+        )?),
+        None => None,
+    };
     Ok(SettingsTemplate {
         chrome,
+        roles,
         board_id: String::new(),
         notification_groups: NotificationGroup::all(&settings.muted_notifications),
         settings,

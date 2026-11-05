@@ -8,6 +8,9 @@
       <a href="#timer" class="bshell-nav-item" data-pane="timer">Timer</a>
       <a href="#notifications" class="bshell-nav-item" data-pane="notifications">Notifications</a>
       <a href="#api-tokens" class="bshell-nav-item" data-pane="api-tokens">API tokens</a>
+      {% if roles.is_some() %}
+      <a href="#agent-roles" class="bshell-nav-item" data-pane="agent-roles">Agent roles</a>
+      {% endif %}
       <a href="#passkeys" class="bshell-nav-item" data-pane="passkeys">Passkeys</a>
       {% if account_panes.is_some() %}
       <a href="#recovery" class="bshell-nav-item" data-pane="recovery">Recovery code</a>
@@ -201,6 +204,45 @@
     </div>
   </section>
   </div>
+
+  {% if let Some(pane) = roles %}
+  <div id="agent-roles" class="settings-pane" hidden>
+  <section class="settings-section">
+    <h2>Agent roles</h2>
+    <p class="settings-hint">A role names the identity agent tokens act as. Changing a role&rsquo;s
+      permissions or name reaches only tokens issued afterwards, and tokens already issued keep what
+      they were given. Removing a board from a role ends the role&rsquo;s tokens on that board.</p>
+    <p><button type="button" class="kf-btn" id="roles-standard">Add standard roles</button></p>
+    <p class="settings-hint" id="roles-error" hidden></p>
+    {% if pane.roles.is_empty() %}
+    <p class="settings-hint">No agent roles yet.</p>
+    {% endif %}
+    <div id="role-list">
+      {% for role in pane.roles %}
+      <div class="role-card" data-role-id="{{ role.id }}" data-name="{{ role.name }}" data-permissions="{{ role.permissions }}">
+        <h3>{{ role.name }} <span class="role-tokens">{{ role.live_tokens }} live token{% if role.live_tokens != 1 %}s{% endif %}</span></h3>
+        <label>Name
+          <input type="text" class="role-name-input" maxlength="32" value="{{ role.name }}">
+        </label>
+        <div id="role-picker-{{ role.id }}" class="perm-picker role-picker"><p class="settings-hint">Loading permissions&hellip;</p></div>
+        <fieldset class="role-boards">
+          <legend>Boards</legend>
+          {% for board in role.boards %}
+          <label class="role-board"><input type="checkbox" data-board-id="{{ board.id }}" data-board-name="{{ board.name }}"{% if board.granted %} checked{% endif %}> {{ board.name }}</label>
+          {% endfor %}
+          {% if role.boards.is_empty() %}<span class="settings-hint">No boards yet.</span>{% endif %}
+        </fieldset>
+        <p class="role-actions">
+          <button type="button" class="kf-btn kf-btn-success role-save">Save</button>
+          <button type="button" class="kf-btn role-revoke-all">Revoke all tokens</button>
+          <button type="button" class="kf-btn role-delete">Delete role</button>
+        </p>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  </div>
+  {% endif %}
 
   <div id="passkeys" class="settings-pane">
   <section class="settings-section">

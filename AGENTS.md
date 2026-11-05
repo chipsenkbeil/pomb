@@ -65,13 +65,24 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
   registration, recovery, account deletion, the admin page and `/pending`) behind multi mode, so
   single mode answers them 404. A pending account reaches only `/pending` and sign-out.
   Token and passkey management endpoints require the browser. A token never mints a token, with
-  one exception: a token holding `tokens.issue` (the lead preset) creates child tokens that hold a
-  subset of its permissions and boards, never `tokens.issue`, expire in 1 hour by default and 8
-  at most, and are revoked with it (the owner approved this on 28 October). That token also lists
-  and revokes its own children over Bearer, and no other token. A token never adds a passkey.
-  Browser writes (every non-Bearer write, with or without a cookie) must be
-  same-origin (`src/csrf.rs`, the router's outermost layer); Bearer requests
-  skip that check.
+  one exception (the owner approved it on 28 October and the two-level rules on 3 November): a
+  token holding `tokens.issue` (the lead preset, the admin preset and the lead role include it)
+  creates child tokens through
+  `POST /api/v1/auth/tokens/children`, and revoking the issuer revokes them. A child holds a
+  subset of its issuer's permissions and boards. A root token is one made in the browser or by
+  device approval. A child request that sets `preset` or `permissions` may give `tokens.issue`
+  only when its issuer is a root token. A child created with `role_id` gets the role's
+  permissions that its issuer also holds, and never `tokens.issue`. A child of a child never
+  holds `tokens.issue`, so the tree stops at two levels. The owner sets each issuer's
+  `child_lifetime_hours` in the browser (1 to 8, default 1). A child's `expires_in_hours`
+  defaults to 1 and may not exceed the issuer's `child_lifetime_hours` (the API answers 400
+  above it), and a child never expires after its issuer. Child tokens do not count toward an
+  account's 50 tokens and have no count limit. An issuer gets 429 `rate_limited` after a burst
+  of 20 child creations, then one more every 2 seconds. A token holding `tokens.issue` also
+  lists and revokes its own children over Bearer, and no other token's children. A token never
+  adds a passkey. Browser writes (every non-Bearer write, with or without a cookie) must be
+  same-origin (`src/csrf.rs`, the router's outermost layer), and Bearer requests skip that
+  check.
 - API prose lives in the utoipa annotations, `skill.md` covers workflow only,
   and the doc tests enforce both. The OpenAPI spec at `/api/v1/openapi.json`
   and the reference at `/docs/api.md` are generated from the

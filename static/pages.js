@@ -114,20 +114,6 @@
       return function (ex) { element.textContent = prefix + ex.message; element.hidden = false; };
     }
     function reloadAt(pane) { location.hash = pane; location.reload(); }
-    function confirmThen(title, message, label, action) {
-      document.getElementById('confirm-title').textContent = title;
-      document.getElementById('confirm-message').textContent = message;
-      var okBtn = document.getElementById('confirm-ok');
-      var fresh = okBtn.cloneNode(true);
-      fresh.textContent = label;
-      okBtn.parentNode.replaceChild(fresh, okBtn);
-      fresh.addEventListener('click', function () {
-        document.getElementById('confirm-dialog').hidden = true;
-        action();
-      });
-      document.getElementById('confirm-dialog').hidden = false;
-      fresh.focus();
-    }
     var accountError = document.getElementById('account-error');
     function accountRequest(method, url) {
       accountError.hidden = true;
@@ -968,6 +954,21 @@
     };
   }
 
+  function confirmThen(title, message, label, action) {
+    document.getElementById('confirm-title').textContent = title;
+    document.getElementById('confirm-message').textContent = message;
+    var okBtn = document.getElementById('confirm-ok');
+    var fresh = okBtn.cloneNode(true);
+    fresh.textContent = label;
+    okBtn.parentNode.replaceChild(fresh, okBtn);
+    fresh.addEventListener('click', function () {
+      document.getElementById('confirm-dialog').hidden = true;
+      action();
+    });
+    document.getElementById('confirm-dialog').hidden = false;
+    fresh.focus();
+  }
+
   function loadJson(url) {
     return fetch(url, { headers: { 'Accept': 'application/json' } }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -1724,6 +1725,63 @@
       });
     }
     bindTokenSort(document);
+    const rolesPane = document.getElementById('agent-roles');
+    if (rolesPane) {
+      const rolesError = document.getElementById('roles-error');
+      const rolePickers = {};
+      const changeRole = (method, url, body, undo) => {
+        rolesError.hidden = true;
+        return jsonRequest(method, url, body)
+          .then(() => { location.hash = 'agent-roles'; location.reload(); })
+          .catch((ex) => {
+            if (undo) undo();
+            failed(rolesError, 'Could not change the role: ')(ex);
+          });
+      };
+      const roleUrl = (card) => `/api/v1/agent-roles/${encodeURIComponent(card.dataset.roleId)}`;
+      loadJson('/api/v1/auth/permissions').then((catalog) => {
+        rolesPane.querySelectorAll('.role-card').forEach((card) => {
+          const picker = mountPermissionPicker(card.querySelector('.role-picker'), catalog, []);
+          picker.start(card.dataset.permissions.split(','));
+          rolePickers[card.dataset.roleId] = { catalog, picker };
+        });
+      }).catch(failed(rolesError, 'Could not load permissions: '));
+      document.getElementById('roles-standard').addEventListener('click', () => {
+        changeRole('POST', '/api/v1/agent-roles/standard', { boards: [] });
+      });
+      rolesPane.querySelectorAll('.role-card').forEach((card) => {
+        const name = card.dataset.name;
+        card.querySelector('.role-save').addEventListener('click', () => {
+          const loaded = rolePickers[card.dataset.roleId];
+          if (!loaded) return;
+          const held = loaded.picker.held();
+          changeRole('PATCH', roleUrl(card), {
+            name: card.querySelector('.role-name-input').value.trim(),
+            permissions: loaded.catalog.map((item) => item.name).filter((permission) => held.includes(permission))
+          });
+        });
+        card.querySelector('.role-revoke-all').addEventListener('click', () => {
+          confirmThen('Revoke all tokens',
+            `Revoke every live token issued as "${name}"? Anything using them will stop working.`,
+            'Revoke', () => changeRole('POST', `${roleUrl(card)}/revoke-tokens`));
+        });
+        card.querySelector('.role-delete').addEventListener('click', () => {
+          confirmThen('Delete role',
+            `Delete the role "${name}" and revoke every token issued as it? This cannot be undone.`,
+            'Delete', () => changeRole('DELETE', roleUrl(card)));
+        });
+        card.querySelectorAll('.role-board input').forEach((box) => {
+          const boardUrl = `${roleUrl(card)}/boards/${encodeURIComponent(box.dataset.boardId)}`;
+          box.addEventListener('change', () => {
+            if (box.checked) { changeRole('PUT', boardUrl, undefined, () => { box.checked = false; }); return; }
+            box.checked = true;
+            confirmThen('Remove board',
+              `Remove "${box.dataset.boardName}" from "${name}" and revoke its tokens on that board?`,
+              'Remove', () => changeRole('DELETE', boardUrl));
+          });
+        });
+      });
+    }
     var passkeyError = document.getElementById('passkey-error');
     function reloadPasskeys() { location.hash = 'passkeys'; location.reload(); }
     var passkeyForm = document.getElementById('passkey-add-form');
