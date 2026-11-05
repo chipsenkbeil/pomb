@@ -8323,6 +8323,10 @@ impl Db {
         let label_settings = board
             .as_ref()
             .map(|board| LabelSettings::from_config(&board.config_json).to_config_value());
+        let seats = board
+            .as_ref()
+            .map(|board| board.seats.clone())
+            .unwrap_or_default();
 
         // The snapshot is written one task at a time and refused once it passes the cap
         let mut snapshot = Vec::new();
@@ -8338,6 +8342,8 @@ impl Db {
             snapshot.extend_from_slice(format!(",\"{key}\":").as_bytes());
             serde_json::to_writer(&mut snapshot, &value)?;
         }
+        snapshot.extend_from_slice(b",\"seats\":");
+        serde_json::to_writer(&mut snapshot, &seats)?;
         snapshot.extend_from_slice(b",\"tasks\":[");
         let mut wrote_task = false;
         for task_id in task_ids {
@@ -8680,6 +8686,9 @@ impl Db {
             .into_iter()
             .map(|color| (color.value, color.id))
             .collect();
+        let seats: Vec<Seat> = txn_read_one::<BoardRow>(txn, BOARDS, board_id)?
+            .map(|board| board.seats.iter().map(Seat::open).collect())
+            .unwrap_or_default();
         for task in tasks {
             let column_id =
                 resolve_column(task, "column", "column_index").or_else(|| fallback_column.clone());
@@ -8785,7 +8794,7 @@ impl Db {
                 claim: None,
                 claim_fence: 0,
                 owner: None,
-                seats: Vec::new(),
+                seats: seats.clone(),
                 fields: serde_json::Map::new(),
             };
             txn_store_task(txn, &mut txn.open_table(TASKS)?, &row, over, actor)?;
@@ -12449,6 +12458,121 @@ mod template_repeat_tests {
         };
         assert_eq!(state_of("Epic"), (TaskKind::Epic, true));
         assert_eq!(state_of("Old"), (TaskKind::Task, false));
+    }
+
+    fn seat_slots(pairs: &[(&str, &str)]) -> Vec<SeatSlot> {
+        pairs
+            .iter()
+            .map(|(name, role)| SeatSlot {
+                name: (*name).to_string(),
+                role: (*role).to_string(),
+            })
+            .collect()
+    }
+
+    fn store_template_snapshot(db: &Db, id: &str, snapshot: &serde_json::Value) {
+        let mut row = BoardTemplateRow {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            built_in: false,
+            owner_id: Some(String::new()),
+            snapshot_bytes: 0,
+        };
+        let snapshot = serde_json::to_vec(snapshot).expect("json");
+        let txn = db.db.begin_write().expect("write");
+        txn_store_template(&txn, &mut row, &snapshot).expect("template");
+        txn.commit().expect("commit");
+    }
+
+    #[test]
+    fn saved_template_should_keep_seats_and_give_them_to_its_tasks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let owner = AccountId::ownerless();
+        let board = db.create_board(&owner, "Source").expect("board");
+        let column = db.create_column(&board, "Todo", None).expect("column");
+        db.create_task(&column, None, "Work", 1, None)
+            .expect("task");
+        let slots = seat_slots(&[("code", "implementer"), ("verify", "verifier")]);
+        db.set_board_seats(&board, slots.clone()).expect("seats");
+        let template = db
+            .save_board_as_template(&owner, &board, "Seated", "")
+            .expect("save")
+            .expect("template");
+
+        let copy = db
+            .apply_template(&owner, &template, "Copy")
+            .expect("apply")
+            .expect("board");
+
+        let copied = db.board(&copy).expect("board").expect("row");
+        assert_eq!(copied.seats, slots);
+        let tasks = db.board_tasks(&copy).expect("tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(
+            tasks[0].seats,
+            slots.iter().map(Seat::open).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn applying_a_saved_agent_template_should_give_the_board_code_style_and_verify_seats() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let slots = seat_slots(&[
+            ("code", "implementer"),
+            ("style", "reviewer"),
+            ("verify", "verifier"),
+        ]);
+        store_template_snapshot(
+            &db,
+            "agent",
+            &serde_json::json!({ "seats": slots, "columns": [{ "name": "Todo" }] }),
+        );
+
+        let copy = db
+            .apply_template(&AccountId::ownerless(), "agent", "Agents")
+            .expect("apply")
+            .expect("board");
+
+        let copied = db.board(&copy).expect("board").expect("row");
+        let names: Vec<&str> = copied.seats.iter().map(|seat| seat.name.as_str()).collect();
+        assert_eq!(names, vec!["code", "style", "verify"]);
+        assert_eq!(copied.seats, slots);
+    }
+
+    #[test]
+    fn applying_a_saved_template_without_seats_should_give_no_seats() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        store_template_snapshot(
+            &db,
+            "old",
+            &serde_json::json!({
+                "columns": [{ "name": "Todo" }],
+                "tasks": [{ "name": "Old", "column": "Todo" }],
+            }),
+        );
+
+        let copy = db
+            .apply_template(&AccountId::ownerless(), "old", "Copy")
+            .expect("apply")
+            .expect("board");
+
+        assert!(
+            db.board(&copy)
+                .expect("board")
+                .expect("row")
+                .seats
+                .is_empty()
+        );
+        let tasks = db.board_tasks(&copy).expect("tasks");
+        assert_eq!(tasks.len(), 1);
+        assert!(tasks[0].seats.is_empty());
     }
 
     #[test]
