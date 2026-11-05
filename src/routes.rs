@@ -2405,11 +2405,13 @@ struct TaskView {
     /// Card link-chip tooltip: one "Blocked by: …" / "Blocks: …" /
     /// "Related: …" line per kind present.
     links_title: String,
-    /// Holder of the live claim, for the card's claim chip.
-    claimant: Option<String>,
-    /// Claim-chip tooltip, e.g. "Claimed by builder-i until …".
+    /// The owner's circle on the card face, or none without an owner.
+    owner_circle: Option<CardCircle>,
+    /// The circles of the busy reviewer seats on the card face, none once the work is done.
+    seat_circles: Vec<CardCircle>,
+    /// The modal's claim line, e.g. "Claimed by builder-i until …".
     claim_title: String,
-    /// Role of the live claim, which names whose turn the card is on.
+    /// Role of the live claim, which the modal's claim line names.
     claim_role: Option<String>,
     /// Fence of the live claim, which the modal sends back to release it.
     claim_fence: Option<u64>,
@@ -2732,6 +2734,53 @@ fn is_hex_color(color: &str) -> bool {
     color.len() == 7
         && color.starts_with('#')
         && color[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// One circle on a card face: the owner or a busy reviewer, as a member's avatar or an agent's role
+/// initials.
+#[derive(Clone, Debug, Default)]
+struct CardCircle {
+    /// The text on the circle: the member's avatar text or the agent role's initials.
+    text: String,
+    /// The inline style that sets a member's avatar colours, empty for an agent.
+    style: String,
+    /// Where a member's uploaded avatar image is served from.
+    image: Option<String>,
+    /// The name shown on hover: the member's display name or the agent's name.
+    title: String,
+    /// Whether an agent holds the circle, which draws the agent mark.
+    agent: bool,
+    /// Whether the holder's lease lapsed, which greys the circle.
+    idle: bool,
+}
+
+impl CardCircle {
+    /// Returns the circle of the member `id`, or none when no such member is listed.
+    fn member(users: &[UserRow], settings: &Settings, id: &str, idle: bool) -> Option<Self> {
+        let user = users.iter().find(|user| user.id == id)?;
+        let name = settings.display_name(&user.username);
+        let avatar = AvatarView::of(settings, &name);
+        Some(Self {
+            text: avatar.text,
+            style: avatar.style,
+            image: avatar.image,
+            title: name,
+            agent: false,
+            idle,
+        })
+    }
+
+    /// Returns the circle of the agent `name` sitting as `role`, with the role's initials.
+    fn agent(role: &str, name: &str, idle: bool) -> Self {
+        Self {
+            text: user_initials(&role.replace(['-', '_'], " ")),
+            style: String::new(),
+            image: None,
+            title: name.to_string(),
+            agent: true,
+            idle,
+        }
+    }
 }
 
 /// One assigned member as shown on a card: username + avatar.
@@ -3443,7 +3492,8 @@ impl TaskView {
                 .then(|| Size::from_i64(row.size)),
             children: Vec::new(),
             links_title: String::new(),
-            claimant: row.live_claim().map(|claim| claim.claimant.clone()),
+            owner_circle: None,
+            seat_circles: Vec::new(),
             claim_role: row
                 .live_claim()
                 .and_then(|claim| claim.role.clone())
@@ -3605,7 +3655,60 @@ impl TaskView {
                 })
                 .collect();
         }
+        view.fill_circles(db, row)?;
         Ok(view)
+    }
+
+    /// Fills in the owner's circle, and the circles of the busy seats while the work is not done.
+    fn fill_circles(&mut self, db: &AccountDb, row: &TaskCard) -> Result<(), AppError> {
+        let now = Utc::now();
+        let owner = row.face_owner();
+        let seats: Vec<&Seat> = row
+            .seats
+            .iter()
+            .filter(|seat| row.completed_at.is_none() && seat.is_busy(now))
+            .collect();
+        if owner.is_none() && seats.is_empty() {
+            return Ok(());
+        }
+        let users = db.list_users().map_err(AppError::from)?;
+        let settings = db.settings().map_err(AppError::from)?;
+        let circle = |holder: &OwnerHolder,
+                      role: Option<String>,
+                      idle: bool|
+         -> Result<Option<CardCircle>, AppError> {
+            Ok(match holder {
+                OwnerHolder::Human { id } => CardCircle::member(&users, &settings, id, idle),
+                OwnerHolder::Agent { token_id, name } => {
+                    let role = match (role, token_id) {
+                        (Some(role), _) => role,
+                        (None, Some(id)) => db
+                            .token_role_name(id)
+                            .map_err(AppError::from)?
+                            .unwrap_or_else(|| name.clone()),
+                        (None, None) => name.clone(),
+                    };
+                    Some(CardCircle::agent(&role, name, idle))
+                }
+            })
+        };
+        if let Some(owner) = owner {
+            let claim_role = row
+                .owner
+                .is_none()
+                .then(|| row.live_claim().and_then(|claim| claim.role.clone()))
+                .flatten()
+                .filter(|role| !role.is_empty());
+            self.owner_circle = circle(&owner.holder, claim_role, !owner.is_live(now))?;
+        }
+        for seat in seats {
+            if let Some(holder) = &seat.holder
+                && let Some(seat_circle) = circle(holder, Some(seat.role.clone()), false)?
+            {
+                self.seat_circles.push(seat_circle);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -28712,6 +28815,9 @@ mod boards_tests;
 
 #[cfg(test)]
 mod bulk_tests;
+
+#[cfg(test)]
+mod card_face_tests;
 
 #[cfg(test)]
 mod events_tests;

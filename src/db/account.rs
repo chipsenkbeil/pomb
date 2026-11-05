@@ -2821,6 +2821,12 @@ impl AccountDb {
         Ok(stored.map(|record| (record, raw)))
     }
 
+    /// Returns the name of the agent role token `id` was issued as, or none for a token issued as
+    /// no role or one the account does not hold.
+    pub fn token_role_name(&self, id: &str) -> DbResult<Option<String>> {
+        self.db.api_token_role_name(&self.account, id)
+    }
+
     /// Returns the live token `raw` when the account holds it. The bootstrap token has no record,
     /// so it is never found.
     pub fn find_own_token(&self, raw: &str) -> DbResult<Option<ApiTokenRecord>> {

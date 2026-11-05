@@ -1327,6 +1327,16 @@ impl Seat {
         self.holder.as_ref() == Some(holder) && lease_holds(self.lease_expires_at.as_deref(), now)
     }
 
+    /// Returns whether the holder is at work at `now`: the seat has a holder whose lease holds,
+    /// who is not waiting after an ask again and has not answered.
+    #[must_use]
+    pub fn is_busy(&self, now: DateTime<Utc>) -> bool {
+        self.holder.is_some()
+            && !self.idle
+            && self.verdict.is_none()
+            && lease_holds(self.lease_expires_at.as_deref(), now)
+    }
+
     /// Returns whether another taker may sit in the seat at `now` without taking over: it has no
     /// holder, or its holder is at work and the lease has lapsed. A holder that answered, or that
     /// waits after an ask again, keeps the seat.
@@ -1434,6 +1444,12 @@ pub struct TaskCard {
     /// The latest claim, which may have expired.
     #[serde(default)]
     pub claim: Option<TaskClaim>,
+    /// The one holder of the task, or null.
+    #[serde(default)]
+    pub owner: Option<Owner>,
+    /// The review seats of the task.
+    #[serde(default)]
+    pub seats: Vec<Seat>,
     /// Custom field values by field key.
     #[serde(default)]
     pub fields: serde_json::Map<String, serde_json::Value>,
@@ -1455,6 +1471,22 @@ impl TaskCard {
         self.claim
             .as_ref()
             .filter(|claim| claim.is_live(Utc::now()))
+    }
+
+    /// Returns the owner the card face shows: the stored owner, or for a live claim taken before
+    /// the task had an owner field, the claim holder with the claim's lease.
+    #[must_use]
+    pub fn face_owner(&self) -> Option<Owner> {
+        if self.owner.is_some() {
+            return self.owner.clone();
+        }
+        self.live_claim().map(|claim| Owner {
+            holder: OwnerHolder::Agent {
+                token_id: None,
+                name: claim.claimant.clone(),
+            },
+            lease_expires_at: Some(claim.expires_at.clone()),
+        })
     }
 }
 
@@ -1494,6 +1526,8 @@ impl From<&TaskRow> for TaskCard {
             kind: row.kind,
             links: row.links.clone(),
             claim: row.claim.clone(),
+            owner: row.owner.clone(),
+            seats: row.seats.clone(),
             fields: row.fields.clone(),
         }
     }

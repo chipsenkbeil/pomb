@@ -1547,21 +1547,38 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   line-height: 1;
 }
 .card-ico-links.card-links-blocked { color: #b91c1c; }
-/* Live claim chip: lock glyph + claimant, truncated to keep one row. */
-.card-ico-claim {
+/* Owner and busy reviewer circles: two letters on a disc, an agent's circle carries a
+   small square mark at its bottom-right, and a lapsed owner is grey. */
+.card-circle {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 1px solid var(--taskColorBorder, #d4d4d4);
+  color: #ac5d00;
   display: inline-flex;
   align-items: center;
-  gap: 0.2rem;
-  min-width: 0;
-  line-height: 1;
-  color: #222222;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  flex: none;
 }
-.card-claimant {
-  max-width: 8rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.card-circle-seat { border-style: dashed; }
+.card-circle-idle { background: #e5e5e5; border-color: #b0b0b0; color: #808080; }
+.card-circle-agent::after {
+  content: '';
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: #444444;
+  border: 1px solid #ffffff;
 }
+.card-circle img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
 .card-ico-time svg { color: #808080; }
 /* KF-377: the disc's centre sits 19px in from the card's right edge, 2px
    into the padding. */
@@ -7778,9 +7795,6 @@ body.dark .login-error {
   display: block;
   height: 100%;
   background: #285e28;
-}
-.card-claim-role {
-  font-weight: 600;
 }
 
 .card-epic-tag {

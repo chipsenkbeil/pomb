@@ -6571,6 +6571,16 @@ impl Db {
         Ok(out)
     }
 
+    /// Returns the name of the agent role token `id` of `account` was issued as, or none for a
+    /// token issued as no role or one that is gone.
+    pub fn api_token_role_name(&self, account: &AccountId, id: &str) -> DbResult<Option<String>> {
+        let txn = self.db.begin_read()?;
+        let tbl = txn.open_table(API_TOKENS)?;
+        Ok(row_in::<ApiTokenRecord, _>(&tbl, id)?
+            .filter(|token| token.account_id == account.as_str())
+            .and_then(|token| token.role_name))
+    }
+
     /// Finds the live token `raw` is through the index of token SHA-256s. A token still under a
     /// salted hash is found among those that end in the same four characters, and keyed by its
     /// SHA-256 from then on.

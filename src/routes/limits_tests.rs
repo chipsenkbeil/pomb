@@ -4930,7 +4930,7 @@ async fn board_pages_should_render_cards_from_their_slim_view() {
         "Has comments".to_string(),
         r#"<span class="card-progress-fill" style="width:50%"></span>"#.to_string(),
         r#"<span class="card-progress-text">1 of 2</span>"#.to_string(),
-        r#"<span class="card-claim-role">builder</span>"#.to_string(),
+        r#"class="card-circle card-circle-owner card-circle-agent""#.to_string(),
         r#"data-task-count="2""#.to_string(),
         "columnHeader--limitWarning".to_string(),
     ] {
@@ -5155,42 +5155,6 @@ async fn card_faces_should_show_no_block_for_a_blank_description() {
     assert!(
         !card.contains("card-desc tm-md\""),
         "a blank head has no block"
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn board_pages_should_hide_an_empty_claim_role() {
-    let fx = Fixture::multi();
-    let (board, column) = fx.board(&fx.member, "Board");
-    fx.db.create_swimlane(&board, "Lane").expect("lane");
-    let created = fx
-        .member(
-            "POST",
-            "/api/tasks",
-            Some(json!({"column_id": column, "name": "Claimed card"})),
-        )
-        .await;
-    assert!(created.status.is_success(), "{}", created.body);
-    let task = created.body["id"].as_str().expect("id").to_string();
-    let claimed = fx
-        .member(
-            "POST",
-            &format!("/api/tasks/{task}/claim"),
-            Some(json!({"claimant": "agent", "ttl_seconds": 600, "role": ""})),
-        )
-        .await;
-    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
-
-    let page = get_unread(&fx, &format!("/b/{board}"), &fx.member_bearer).await;
-    assert_eq!(page.status(), StatusCode::OK);
-    let page = String::from_utf8(body_of(page).await.to_vec()).expect("utf8");
-    assert!(
-        page.contains(r#"<span class="card-claimant">agent</span>"#),
-        "the claimant is shown"
-    );
-    assert!(
-        !page.contains("card-claim-role\""),
-        "an empty role renders no span"
     );
 }
 

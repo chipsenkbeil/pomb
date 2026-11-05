@@ -1968,8 +1968,8 @@ async fn task_card_should_show_the_live_claimant() {
     )
     .await;
     let (_, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
-    assert!(html.contains("<span class=\"card-claimant\">builder-i</span>"));
-    assert!(html.contains("title=\"Claimed by builder-i until "));
+    assert!(html.contains("card-circle-owner card-circle-agent"));
+    assert!(html.contains("title=\"builder-i\""));
 }
 
 /// History events of one kind on a task, as their detail strings.
