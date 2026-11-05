@@ -22,8 +22,8 @@ pub use spool::Spool;
 use crate::db::{BoardSnapshot, DbResult, OfflineDb};
 use crate::models::{
     ActorKind, BoardRow, ColorRow, ColumnRow, FieldColumn, FieldDefRow, FieldKind, FieldOwner,
-    HistoryKind, LaneLimit, LinkKind, Responsible, SwimlaneRow, TaskClaim, TaskKind, TaskLink,
-    TaskRow, TimeEntryRow,
+    HistoryKind, LaneLimit, LinkKind, OwnerHolder, Responsible, SwimlaneRow, TaskClaim, TaskKind,
+    TaskLink, TaskRow, TimeEntryRow,
 };
 use crate::taskjson::TaskArray;
 
@@ -274,6 +274,9 @@ struct TaskInfo {
     assignees: Vec<String>,
     /// The task's responsible actor, or null.
     responsible: Option<ResponsibleInfo>,
+    /// The task's owner, or null when it has none. A missing key differs from null.
+    #[serde(default, deserialize_with = "present")]
+    owner: Option<Option<OwnerInfo>>,
     /// Whether the owner watches the task.
     watching: bool,
     /// The due date, as RFC 3339, or null.
@@ -339,6 +342,42 @@ enum ResponsibleInfo {
     /// An agent session, by its name.
     Session {
         /// The session's name.
+        name: String,
+    },
+}
+
+/// Reads a key that is present, null or not, as `Some` and leaves a missing key `None`.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// The holder of a task and its lease, as `board.json` describes them.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnerInfo {
+    /// Who holds the task.
+    holder: OwnerHolderInfo,
+    /// The RFC 3339 time the lease ends, or null when it never ends.
+    #[serde(default)]
+    lease_expires_at: Option<String>,
+}
+
+/// Who holds a task, as `board.json` describes it.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum OwnerHolderInfo {
+    /// A member, by the handle of the account.
+    Human {
+        /// The member's handle.
+        handle: String,
+    },
+    /// An agent, by the name it sent. Its token belongs to the exporting instance and is left out.
+    Agent {
+        /// The agent's name.
         name: String,
     },
 }
@@ -711,6 +750,24 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
         }
         None => None,
     };
+    let owner = match &row.owner {
+        Some(owner) => {
+            let holder = match &owner.holder {
+                OwnerHolder::Human { id } => lookup
+                    .handle(snapshot, id)?
+                    .map(|handle| OwnerHolderInfo::Human { handle }),
+                OwnerHolder::Agent { name, .. } => {
+                    Some(OwnerHolderInfo::Agent { name: name.clone() })
+                }
+            };
+            holder.map(|holder| OwnerInfo {
+                holder,
+                lease_expires_at: owner.lease_expires_at.clone(),
+            })
+        }
+        None => None,
+    };
+    let owner = Some(owner);
     let mut attachments = Vec::with_capacity(row.attachments.len());
     for attachment in row.attachments {
         let file = lookup
@@ -811,6 +868,7 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
         labels: row.labels,
         assignees,
         responsible,
+        owner,
         watching: row.watched,
         due_at: row.due_at,
         due_repeat: row.due_repeat,
@@ -1186,7 +1244,7 @@ mod tests {
     use crate::db::{
         AccountDb, ColumnKind, Db, NewComment, NewTimeEntry, SCHEMA_VERSION, SchemaTooNew,
     };
-    use crate::models::{API_TOKEN_ACTOR, AccountId, Actor, EntryKind};
+    use crate::models::{API_TOKEN_ACTOR, AccountId, Actor, EntryKind, Owner};
 
     fn untar(gzipped: &[u8]) -> BTreeMap<String, Vec<u8>> {
         let mut tar = Vec::new();
@@ -1445,6 +1503,33 @@ mod tests {
             read_back(&seeded),
             Some(Responsible::Member {
                 id: "acc".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn owner_should_export_without_its_token() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+        seeded
+            .db
+            .apply_task_change(&seeded.task, Actor::SYSTEM, |row| {
+                row.owner = Some(Owner {
+                    holder: OwnerHolder::Agent {
+                        token_id: Some("tok".to_string()),
+                        name: "builder".to_string(),
+                    },
+                    lease_expires_at: Some("2026-10-01T11:00:00Z".to_string()),
+                });
+                ((), true)
+            })
+            .expect("agent owner");
+
+        assert_eq!(
+            document(&archive_of(&seeded))["tasks"][0]["owner"],
+            json!({
+                "holder": {"kind": "agent", "name": "builder"},
+                "lease_expires_at": "2026-10-01T11:00:00Z"
             })
         );
     }

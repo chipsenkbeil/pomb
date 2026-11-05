@@ -3,7 +3,7 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::{fmt, fs};
 
-use chrono::{DateTime, NaiveDate};
+use chrono::{DateTime, NaiveDate, Utc};
 use flate2::read::GzDecoder;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -14,16 +14,16 @@ use super::spool::Spool;
 use super::tar::{self, Cap, Data, ReadLimits};
 use super::{
     AttachmentInfo, BOARD_JSON, BoardDocument, ColorInfo, ColumnInfo, CommentInfo, EventInfo,
-    FORMAT, FieldInfo, LaneInfo, LinkInfo, ResponsibleInfo, SubtaskInfo, TaskInfo, TimeInfo,
-    VersionInfo, attachment_path, version_path,
+    FORMAT, FieldInfo, LaneInfo, LinkInfo, OwnerHolderInfo, OwnerInfo, ResponsibleInfo,
+    SubtaskInfo, TaskInfo, TimeInfo, VersionInfo, attachment_path, version_path,
 };
 use crate::db::{AccountDb, BoardImport, Db, FileImport, MAX_HISTORY_TEXT_CHARS, TaskImport};
 use crate::models::{
     AccountId, AttachmentVersion, BreakActivity, ColorRow, ColumnRow, EntryKind, FieldDefRow,
-    FieldKind, LaneLimit, LinkKind, MAIN_SWIMLANE_KEY, NUMBERING_KEY, Numbering, Quotas,
-    Responsible, Subtask, SwimlaneRow, TaskAttachment, TaskComment, TaskEvent, TaskKind, TaskLink,
-    TaskRow, TextCap, TimeEntryRow, custom_color_hexes, is_custom_color, parse_due_time,
-    standard_color, valid_field_key,
+    FieldKind, LaneLimit, LinkKind, MAIN_SWIMLANE_KEY, NUMBERING_KEY, Numbering, Owner,
+    OwnerHolder, Quotas, Responsible, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment,
+    TaskEvent, TaskKind, TaskLink, TaskRow, TextCap, TimeEntryRow, custom_color_hexes,
+    is_custom_color, parse_due_time, standard_color, valid_field_key,
 };
 use crate::routes::{
     LANE_HEIGHT_MAX_PX, LANE_HEIGHT_MIN_PX, MAX_COMMENT_AUTHOR_CHARS, MAX_COMMENT_BYTES,
@@ -894,6 +894,12 @@ impl Builder<'_> {
         let (member_ids, metadata) = self.people(&label, assignees, task.metadata)?;
 
         let responsible = self.responsible(task.responsible, &member_ids);
+        let owner = self.owner(
+            task.owner,
+            task.claim.as_ref(),
+            responsible.as_ref(),
+            &member_ids,
+        );
         let row = TaskRow {
             id,
             column_id,
@@ -911,6 +917,7 @@ impl Builder<'_> {
             subtasks,
             member_ids,
             responsible,
+            owner,
             grouping_date: task.grouping_date,
             timeline_start: task.timeline_start,
             timeline_end: task.timeline_end,
@@ -1493,6 +1500,40 @@ impl Builder<'_> {
             }
             Some(ResponsibleInfo::Member { .. }) => None,
         }
+    }
+
+    /// Returns the owner the archive names, mapped to the importing account. An archive that
+    /// names none gets the owner its claim, responsible actor or first member implies.
+    fn owner(
+        &self,
+        archived: Option<Option<OwnerInfo>>,
+        claim: Option<&TaskClaim>,
+        responsible: Option<&Responsible>,
+        member_ids: &[String],
+    ) -> Option<Owner> {
+        let Some(info) = archived else {
+            return Owner::from_holders(claim, responsible, member_ids, Utc::now());
+        };
+        let info = info?;
+        let holder = match info.holder {
+            OwnerHolderInfo::Agent { name } if name.trim().is_empty() => None,
+            OwnerHolderInfo::Agent { name } => Some(OwnerHolder::Agent {
+                token_id: None,
+                name,
+            }),
+            OwnerHolderInfo::Human { handle }
+                if handle.eq_ignore_ascii_case(self.importer.handle) =>
+            {
+                Some(OwnerHolder::Human {
+                    id: self.importer.account.as_str().to_string(),
+                })
+            }
+            OwnerHolderInfo::Human { .. } => None,
+        };
+        holder.map(|holder| Owner {
+            holder,
+            lease_expires_at: info.lease_expires_at,
+        })
     }
 
     /// Returns the ids of the accounts a task is assigned to, which is the importing account when
@@ -2382,6 +2423,101 @@ mod tests {
         let (import, _) = read(&stranger).expect("a board");
         assert!(import.tasks[0].row.member_ids.is_empty());
         assert_eq!(import.tasks[0].row.responsible, None);
+    }
+
+    fn claim_json(claimant: &str, expires_at: &str) -> Value {
+        json!({
+            "claimant": claimant, "role": null, "harness": null, "model": null,
+            "jj_workspace": null, "jj_change_id": null, "session_id": null, "fence": 1,
+            "started_at": "2026-10-01T10:00:00Z", "heartbeat_at": "2026-10-01T10:00:00Z",
+            "expires_at": expires_at
+        })
+    }
+
+    #[test]
+    fn archive_import_maps_old_export_to_owner() {
+        let soon = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let mut document = base();
+        let mut claimed = task("t1", "Claimed");
+        claimed["claim"] = claim_json("agent-a", &soon);
+        claimed["assignees"] = json!(["chip"]);
+        claimed["responsible"] = json!({"kind": "session", "name": "coordinator"});
+        let mut expired = task("t2", "Expired");
+        expired["claim"] = claim_json("agent-b", "2026-10-01T11:00:00Z");
+        expired["responsible"] = json!({"kind": "session", "name": "coordinator"});
+        let mut member = task("t3", "Member");
+        member["assignees"] = json!(["chip"]);
+        document["tasks"] = json!([claimed, expired, member, task("t4", "Bare")]);
+
+        let (import, _) = read(&document).expect("a board");
+
+        let owners: Vec<_> = import
+            .tasks
+            .iter()
+            .map(|task| task.row.owner.clone())
+            .collect();
+        assert_eq!(
+            owners,
+            [
+                Some(Owner {
+                    holder: OwnerHolder::Agent {
+                        token_id: None,
+                        name: "agent-a".to_string()
+                    },
+                    lease_expires_at: Some(soon),
+                }),
+                Some(Owner {
+                    holder: OwnerHolder::Agent {
+                        token_id: None,
+                        name: "coordinator".to_string()
+                    },
+                    lease_expires_at: None,
+                }),
+                Some(Owner {
+                    holder: OwnerHolder::Human {
+                        id: "acc".to_string()
+                    },
+                    lease_expires_at: None,
+                }),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn read_board_should_keep_an_archived_owner_and_map_a_member_to_the_importer() {
+        let mut document = base();
+        document["tasks"][0]["owner"] = json!({
+            "holder": {"kind": "agent", "name": "builder"},
+            "lease_expires_at": "2026-10-01T11:00:00Z"
+        });
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(
+            import.tasks[0].row.owner,
+            Some(Owner {
+                holder: OwnerHolder::Agent {
+                    token_id: None,
+                    name: "builder".to_string()
+                },
+                lease_expires_at: Some("2026-10-01T11:00:00Z".to_string()),
+            })
+        );
+
+        document["tasks"][0]["owner"] = json!({"holder": {"kind": "human", "handle": "CHIP"}});
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(
+            import.tasks[0].row.owner,
+            Some(Owner {
+                holder: OwnerHolder::Human {
+                    id: "acc".to_string()
+                },
+                lease_expires_at: None,
+            })
+        );
+
+        document["tasks"][0]["owner"] = json!({"holder": {"kind": "human", "handle": "ann"}});
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(import.tasks[0].row.owner, None);
     }
 
     #[test]

@@ -124,7 +124,7 @@ use crate::models::{
     EntryKind, EscalationTier, EventChange, FieldDefRow, HistoryKind, InboundAddressRow,
     InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS,
     MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
-    MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NEEDS_HUMAN_LABEL, NUMBERING_KEY, Numbering,
+    MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NEEDS_HUMAN_LABEL, NUMBERING_KEY, Numbering, Owner,
     PasskeyRow, QUESTION_KIND, QuestionAnswer, Quota, Quotas, RecoveryCodeRow, ReportBookmark,
     Responsible, SECONDS_PER_HOUR, SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment,
     TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind, TaskLink, TaskRow, TextCap,
@@ -974,7 +974,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 73;
+pub const SCHEMA_VERSION: u64 = 74;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1054,6 +1054,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
     "a32b88150a45da953d15152e7fda8261d01b3d6acdde4fc865ea6e3f6dd7ee74",
     "a32b88150a45da953d15152e7fda8261d01b3d6acdde4fc865ea6e3f6dd7ee74",
+    "2f1061ac24004e1c00ef04eff0c1d8fecf32cfbd9f9cd51c098e8a9f4b3d7c1d",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1234,6 +1235,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 73) {
         widen_lead_role(txn)?;
     }
+    if from.is_none_or(|version| version < 74) {
+        assign_task_owners(txn)?;
+    }
     Ok(())
 }
 
@@ -1412,6 +1416,37 @@ fn mark_parents_as_epics(txn: &WriteTransaction) -> DbResult<()> {
         task.insert("kind".to_string(), serde_json::Value::from("epic"));
         true
     })
+}
+
+/// Gives each stored task, binned ones included, the owner its live claim, responsible actor or
+/// first member names.
+fn assign_task_owners(txn: &WriteTransaction) -> DbResult<()> {
+    let now = Utc::now();
+    rewrite_rows(txn, TASKS, |_, task| set_owner_of(task, now))?;
+    rewrite_rows(txn, BIN, |_, bin| {
+        bin.get_mut("task")
+            .and_then(serde_json::Value::as_object_mut)
+            .is_some_and(|task| set_owner_of(task, now))
+    })
+}
+
+/// Sets `owner` on a stored task from its claim, responsible actor and members, and returns
+/// whether it changed the row.
+fn set_owner_of(task: &mut JsonObject, now: DateTime<Utc>) -> bool {
+    let field = |name: &str| task.get(name).cloned().unwrap_or_default();
+    let claim: Option<TaskClaim> = serde_json::from_value(field("claim")).ok().flatten();
+    let responsible: Option<Responsible> =
+        serde_json::from_value(field("responsible")).ok().flatten();
+    let members: Vec<String> = serde_json::from_value(field("member_ids")).unwrap_or_default();
+    let Some(owner) = Owner::from_holders(claim.as_ref(), responsible.as_ref(), &members, now)
+    else {
+        return false;
+    };
+    let Ok(owner) = serde_json::to_value(owner) else {
+        return false;
+    };
+    task.insert("owner".to_string(), owner);
+    true
 }
 
 /// Moves each task's `column_added_at` to `column_entered_at`, keeping a value the new name
@@ -8554,6 +8589,7 @@ impl Db {
                 links: Vec::new(),
                 claim: None,
                 claim_fence: 0,
+                owner: None,
                 fields: serde_json::Map::new(),
             };
             txn_store_task(txn, &mut txn.open_table(TASKS)?, &row, over, actor)?;
@@ -8711,6 +8747,7 @@ impl Db {
             links: Vec::new(),
             claim: None,
             claim_fence: 0,
+            owner: None,
             fields: serde_json::Map::new(),
         }
     }
@@ -15212,7 +15249,7 @@ mod schema_fingerprint_tests {
     use crate::models::{
         AgentRoleGrantRow, AgentRoleRow, Avatar, AvatarKind, BoardEventRow, BoardMemberRow,
         BoardRole, BreakActivity, DiskLimits, FieldColumn, InviteRow, NotificationRow, OutboxRow,
-        ParentToken, PruneSettings, PruneStatus, QuestionChoice, Quotas, RateLimits,
+        OwnerHolder, ParentToken, PruneSettings, PruneStatus, QuestionChoice, Quotas, RateLimits,
         RegistrationMode, Responsible, SubtaskTemplate, TimeFormat, TimerMode, WebhookEvent,
         WeekStart,
     };
@@ -15547,6 +15584,8 @@ mod schema_fingerprint_tests {
             shape::<ReportBookmark>("ReportBookmark"),
             shape::<RegistrationMode>("RegistrationMode"),
             shape::<OutboxRow>("OutboxRow"),
+            shape::<Owner>("Owner"),
+            shape::<OwnerHolder>("OwnerHolder"),
             shape::<Responsible>("Responsible"),
             shape::<SessionRow>("SessionRow"),
             shape::<Settings>("Settings"),
@@ -17312,5 +17351,119 @@ mod responsible_fill_tests {
         db.fill_responsible().expect("fill");
 
         assert_eq!(responsible_of(&db, &id), None);
+    }
+}
+
+#[cfg(test)]
+mod owner_migration_tests {
+    use super::*;
+    use crate::models::OwnerHolder;
+
+    fn claim(claimant: &str, expires_at: DateTime<Utc>) -> TaskClaim {
+        TaskClaim {
+            claimant: claimant.to_string(),
+            role: None,
+            harness: None,
+            model: None,
+            jj_workspace: None,
+            jj_change_id: None,
+            session_id: None,
+            fence: 1,
+            started_at: Utc::now().to_rfc3339(),
+            heartbeat_at: Utc::now().to_rfc3339(),
+            expires_at: expires_at.to_rfc3339(),
+        }
+    }
+
+    fn members(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    #[test]
+    fn owner_migration_prefers_live_claim_then_responsible_then_first_member() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let path = path.to_str().expect("utf8 path");
+        let soon = Utc::now() + chrono::Duration::hours(1);
+        let past = Utc::now() - chrono::Duration::hours(1);
+        let human = |id: &str| OwnerHolder::Human { id: id.to_string() };
+        let ids = {
+            let db = Db::connect(path).expect("connect");
+            let board = db
+                .create_board(&AccountId::ownerless(), "Plans")
+                .expect("board");
+            let column = db.create_column(&board, "Todo", None).expect("column");
+            let mut ids = Vec::new();
+            for name in ["claimed", "expired", "session", "member", "none"] {
+                ids.push(db.create_task(&column, None, name, 1, None).expect("task"));
+            }
+            let session = Responsible::Session {
+                name: "coordinator".to_string(),
+            };
+            let rows: [(Option<TaskClaim>, Option<Responsible>, Vec<String>); 5] = [
+                (
+                    Some(claim("agent-a", soon)),
+                    Some(Responsible::Member { id: "x".into() }),
+                    members(&["m1"]),
+                ),
+                (
+                    Some(claim("agent-b", past)),
+                    Some(Responsible::Member { id: "x".into() }),
+                    members(&["m1"]),
+                ),
+                (None, Some(session), members(&["m1"])),
+                (None, None, members(&["m1", "m2"])),
+                (None, None, Vec::new()),
+            ];
+            for (id, (claim, responsible, member_ids)) in ids.iter().zip(rows) {
+                mutate_task(&db.db, id, |row| {
+                    row.claim = claim.clone();
+                    row.responsible = responsible.clone();
+                    row.member_ids = member_ids.clone();
+                    row.owner = None;
+                })
+                .expect("mutate");
+            }
+            let txn = db.db.begin_write().expect("write txn");
+            txn.open_table(META)
+                .expect("meta table")
+                .insert(SCHEMA_VERSION_KEY, 73)
+                .expect("stamp");
+            txn.commit().expect("commit");
+            ids
+        };
+
+        let db = Db::connect(path).expect("reconnect");
+
+        let owners: Vec<Option<Owner>> = ids
+            .iter()
+            .map(|id| db.task(id).expect("read").expect("task").owner.clone())
+            .collect();
+        assert_eq!(
+            owners[0],
+            Some(Owner {
+                holder: OwnerHolder::Agent {
+                    token_id: None,
+                    name: "agent-a".to_string(),
+                },
+                lease_expires_at: Some(soon.to_rfc3339()),
+            })
+        );
+        let unleased = |holder| {
+            Some(Owner {
+                holder,
+                lease_expires_at: None,
+            })
+        };
+        assert_eq!(owners[1], unleased(human("x")));
+        assert_eq!(
+            owners[2],
+            unleased(OwnerHolder::Agent {
+                token_id: None,
+                name: "coordinator".to_string(),
+            })
+        );
+        assert_eq!(owners[3], unleased(human("m1")));
+        assert_eq!(owners[4], None);
     }
 }

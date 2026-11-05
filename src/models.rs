@@ -791,6 +791,9 @@ pub struct TaskRow {
     /// the responsible member, and a session name stays on the task after its token expires.
     #[serde(default)]
     pub responsible: Option<Responsible>,
+    /// The one holder of the task, or null.
+    #[serde(default)]
+    pub owner: Option<Owner>,
     /// Override date used when the column groups tasks by date
     /// ("Edit grouping date"). Null means use the created/completed date.
     #[serde(default)]
@@ -974,6 +977,141 @@ impl Responsible {
         match self {
             Self::Member { id } => Some(id),
             Self::Session { .. } => None,
+        }
+    }
+}
+
+/// Who holds a task: a member account, or an agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    try_from = "OwnerHolderWire",
+    into = "OwnerHolderWire"
+)]
+pub enum OwnerHolder {
+    /// A member account, by user id.
+    Human {
+        /// The member's user id.
+        id: String,
+    },
+    /// An agent, by the name it sent and the token that grabbed the task. Many agents share one
+    /// token. The name is plain text and outlives the token.
+    Agent {
+        /// The id of the API token that grabbed the task, or null when it is not known.
+        token_id: Option<String>,
+        /// The name the agent sent.
+        name: String,
+    },
+}
+
+/// The variant of an [`OwnerHolder`] as stored.
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OwnerHolderKind {
+    /// A member account.
+    Human,
+    /// An agent.
+    Agent,
+}
+
+/// An [`OwnerHolder`] as one flat record with a `kind` tag and the fields its variants use.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct OwnerHolderWire {
+    /// Which variant the record holds.
+    kind: OwnerHolderKind,
+    /// The member's user id of a human.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    /// The id of the token that grabbed the task, for an agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token_id: Option<String>,
+    /// The name an agent sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+impl From<OwnerHolder> for OwnerHolderWire {
+    fn from(holder: OwnerHolder) -> Self {
+        match holder {
+            OwnerHolder::Human { id } => Self {
+                kind: OwnerHolderKind::Human,
+                id: Some(id),
+                token_id: None,
+                name: None,
+            },
+            OwnerHolder::Agent { token_id, name } => Self {
+                kind: OwnerHolderKind::Agent,
+                id: None,
+                token_id,
+                name: Some(name),
+            },
+        }
+    }
+}
+
+impl TryFrom<OwnerHolderWire> for OwnerHolder {
+    type Error = &'static str;
+
+    fn try_from(wire: OwnerHolderWire) -> Result<Self, Self::Error> {
+        match wire.kind {
+            OwnerHolderKind::Human => wire
+                .id
+                .map(|id| Self::Human { id })
+                .ok_or("a human owner needs an id"),
+            OwnerHolderKind::Agent => wire
+                .name
+                .map(|name| Self::Agent {
+                    token_id: wire.token_id,
+                    name,
+                })
+                .ok_or("an agent owner needs a name"),
+        }
+    }
+}
+
+/// The one holder of a task, with the lease that lets someone else grab it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Owner {
+    /// Who holds the task.
+    pub holder: OwnerHolder,
+    /// RFC3339 time the lease ends, or null for a lease that never ends. The task is free to
+    /// grab once it has passed, and the owner stays named.
+    #[serde(default)]
+    pub lease_expires_at: Option<String>,
+}
+
+impl Owner {
+    /// Returns the owner a task with these holders gets: the live claim's holder, else the
+    /// responsible actor, else the first member, else none. A claim carries its lease over.
+    #[must_use]
+    pub fn from_holders(
+        claim: Option<&TaskClaim>,
+        responsible: Option<&Responsible>,
+        member_ids: &[String],
+        now: DateTime<Utc>,
+    ) -> Option<Self> {
+        let unleased = |holder| Self {
+            holder,
+            lease_expires_at: None,
+        };
+        if let Some(claim) = claim.filter(|claim| claim.is_live(now)) {
+            return Some(Self {
+                holder: OwnerHolder::Agent {
+                    token_id: None,
+                    name: claim.claimant.clone(),
+                },
+                lease_expires_at: Some(claim.expires_at.clone()),
+            });
+        }
+        let human = |id: &String| unleased(OwnerHolder::Human { id: id.clone() });
+        match responsible {
+            Some(Responsible::Member { id }) => Some(human(id)),
+            Some(Responsible::Session { name }) => Some(unleased(OwnerHolder::Agent {
+                token_id: None,
+                name: name.clone(),
+            })),
+            None => member_ids.first().map(human),
         }
     }
 }

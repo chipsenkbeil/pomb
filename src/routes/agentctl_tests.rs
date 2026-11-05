@@ -12221,7 +12221,7 @@ async fn unlink_children_should_refuse_a_token_when_a_child_is_locked_but_not_th
 }
 
 #[tokio::test]
-async fn a_card_with_a_live_claim_should_not_become_an_epic() {
+async fn kind_epic_without_the_fence_on_a_claimed_task_should_answer_claim_held() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
     let uri = format!("/api/tasks/{id}/claim");
@@ -12234,6 +12234,27 @@ async fn a_card_with_a_live_claim_should_not_become_an_epic() {
     assert_eq!(status, StatusCode::CONFLICT, "{error}");
     assert_eq!(error["code"], "claim_held");
     assert_eq!(stored(&fx, &id)["kind"], "task");
+}
+
+#[tokio::test]
+async fn kind_epic_with_the_live_claims_fence_should_succeed() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let uri = format!("/api/tasks/{id}/claim");
+    let claim = json!({"claimant": "planner-i", "ttl_seconds": 60});
+    let (status, text) = request(&fx, As::Admin, "POST", &uri, Some(claim), true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let fence = stored(&fx, &id)["claim_fence"].to_string();
+
+    let uri = format!("/api/tasks/{id}");
+    let body = json!({"kind": "epic"});
+    let (status, text) = fenced_request(&fx, "PATCH", &uri, body.clone(), Some("99")).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{text}");
+    assert_eq!(stored(&fx, &id)["kind"], "task");
+
+    let (status, text) = fenced_request(&fx, "PATCH", &uri, body, Some(&fence)).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(stored(&fx, &id)["kind"], "epic");
 }
 
 #[tokio::test]

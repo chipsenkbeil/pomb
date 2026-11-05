@@ -9,6 +9,8 @@
 # Steps, any failure aborts before the push:
 #   1. Refuse unless <remote>/main is the verified commit's base: an ancestor of it,
 #      or sharing its merge-base tree, so applying the diff cannot revert main.
+#      Then refuse unless Cargo.toml's package version differs from <remote>/main's and
+#      Cargo.lock's pomb entry matches it.
 #   2. Apply the diff onto <remote>/main in .dev/worktrees/release-<N> and commit
 #      "Release batch-<N>: <summary>".
 #   3. Run dev lint --remote, dev test --remote, dev nixcheck --remote and dev build --remote,
@@ -125,6 +127,17 @@ if ! git merge-base --is-ancestor "$base" "$cand"; then
     [ "$(git rev-parse "$fork^{tree}")" = "$(git rev-parse "$base^{tree}")" ] ||
         die "$remote/main (${base:0:7}) moved past the verified base (${fork:0:7}); re-verify on the new main"
 fi
+
+guard_dir=$(mktemp -d)
+{
+    git show "$remote/main:Cargo.toml" >"$guard_dir/base.toml" &&
+        git show "$cand:Cargo.toml" >"$guard_dir/cand.toml" &&
+        git show "$cand:Cargo.lock" >"$guard_dir/cand.lock"
+} || { rm -rf "$guard_dir"; die "cannot read Cargo.toml or Cargo.lock at $commit"; }
+guard_ok=0
+"$tools/__version_guard.sh" "$guard_dir/base.toml" "$guard_dir/cand.toml" "$guard_dir/cand.lock" || guard_ok=1
+rm -rf "$guard_dir"
+[ "$guard_ok" = 0 ] || die "version check failed for $commit"
 
 # 2. apply the diff in a fresh worktree and commit
 wt=".dev/worktrees/release-$batch"

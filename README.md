@@ -36,8 +36,7 @@ Everything an agent needs is served by your Pomb instance:
 - `/docs/api.md`: the API reference.
 - `/api/v1/openapi.json`: the OpenAPI contract.
 
-Install the skill for Claude Code (the **Settings** page shows this line
-with your server's URL):
+Install the skill for Claude Code, with your server's URL:
 
 ```sh
 mkdir -p ~/.claude/skills/pomb && curl -fsS https://pomb.example.com/skill.md -o ~/.claude/skills/pomb/SKILL.md

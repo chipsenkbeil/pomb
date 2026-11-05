@@ -1299,8 +1299,7 @@
       roleId: function () { return role ? role.id : null; },
       start: start,
       reset: function () {
-        start(catalog.filter(function (item) { return TokenForm.tier(item) === 'read'; })
-          .map(function (item) { return item.name; }));
+        start([]);
       }
     };
   }

@@ -8457,8 +8457,8 @@ struct UpdateTaskInput {
     /// `epic` turns a task into an epic and needs only `tasks.edit`. `task` turns an epic back
     /// into a plain task, needs `epics.manage`, and is a 409 `epic_has_children` while the epic
     /// has children unless `unlink_children` is true. `epic` is a 409 `claim_held` while the task
-    /// holds a live claim. Naming the kind the task already has is a 400. Absent leaves it
-    /// unchanged.
+    /// holds a live claim, unless the request carries that claim's `If-Claim-Fence`. Naming the
+    /// kind the task already has is a 400. Absent leaves it unchanged.
     kind: Option<TaskKind>,
     /// With `kind` `task`, deletes each child's parent link to the epic in the same write. Without
     /// `kind` `task` it is a 400 when true.
@@ -8817,7 +8817,7 @@ fn update_history(
         (status = 400, description = "Invalid input, including `kind` naming the kind the task already has and `unlink_children` true without `kind` `task`"),
         (status = 403, description = "`permission_denied`: `kind` `task` needs `epics.manage`. `card_locked`: the task carries a locking label"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`stale_fence`: a live claim holds another fence. `epic_has_children`: `kind` `task` on an epic that has children, without `unlink_children`. `claim_held`: `kind` `epic` on a task with a live claim"),
+        (status = 409, description = "`stale_fence`: a live claim holds another fence. `epic_has_children`: `kind` `task` on an epic that has children, without `unlink_children`. `claim_held`: `kind` `epic` on a task with a live claim, without that claim's `If-Claim-Fence`"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -9032,7 +9032,8 @@ async fn update_task(
                         )
                         .with_code(ErrorCode::EpicHasChildren));
                     }
-                    if let (TaskKind::Epic, Some(claim)) = (kind, before.live_claim()) {
+                    if let (TaskKind::Epic, None, Some(claim)) = (kind, fence, before.live_claim())
+                    {
                         return Err(claim_conflict(claim));
                     }
                     if unlink_children {
@@ -22198,8 +22199,6 @@ struct SettingsTemplate {
     account_panes: Option<AccountPanes>,
     /// The Agent roles pane, which the owner has.
     roles: Option<RolesPane>,
-    /// The server's base URL, for the agent skill install line.
-    base_url: String,
     /// Top bar data.
     chrome: ShellChrome,
     board_id: String,
@@ -22715,7 +22714,6 @@ async fn settings_page(
         storage,
         admin_link,
         account_panes,
-        base_url: base_url(&state, &headers),
     })
 }
 
@@ -28520,6 +28518,7 @@ mod tests {
             links: Vec::new(),
             claim: None,
             claim_fence: 0,
+            owner: None,
             fields: serde_json::Map::new(),
         };
         assert_eq!(

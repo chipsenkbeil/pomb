@@ -734,18 +734,3 @@ async fn sign_in_should_refuse_the_eleventh_post_from_one_ip_in_a_minute() {
     let page = send_as(&app, "GET", "/login", &[], Some("203.0.113.9"), "").await;
     assert_eq!(page.status, StatusCode::SEE_OTHER);
 }
-
-#[tokio::test]
-async fn settings_should_show_the_skill_install_line_for_this_server() {
-    let (_dir, db) = open_db();
-    let user = db.owner().expect("lookup").expect("admin");
-    let session = db.create_session(&user.account_id(), "").expect("session");
-    let cookie = format!("session={session}");
-    let app = router(AppState::new(db, None, passkey_mode()));
-    let page = send_as(&app, "GET", "/settings", &[("cookie", &cookie)], None, "").await;
-    assert_eq!(page.status, StatusCode::OK);
-    let line = "mkdir -p ~/.claude/skills/pomb &amp;&amp; curl -fsS \
-                http://pomb.test/skill.md -o ~/.claude/skills/pomb/SKILL.md";
-    assert!(page.body.contains(line), "{}", page.body);
-    assert!(!page.body.contains("/agents.md"));
-}
