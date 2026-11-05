@@ -23161,9 +23161,11 @@ fn submitted_scope(scopes: &[String]) -> Result<AuthScope, AppError> {
     })
 }
 
-/// A device request makes a root token, which the approving browser session grants. Creating,
-/// listing and revoking hand-made tokens stays browser-only, and a token holding `tokens.issue`
-/// may issue narrower children.
+/// A device request makes a root token, which the approving browser session grants. The approver
+/// may issue it as an agent role, drop permissions and limit boards, but never beyond what the
+/// request asks: a role holding a permission the request lacks, or a board outside it, is refused.
+/// Creating, listing and revoking hand-made tokens stays browser-only, and a token holding
+/// `tokens.issue` may issue narrower children.
 #[derive(Deserialize, ToSchema)]
 struct DeviceAuthInput {
     /// Shown to the person approving, and the issued token's name; 1-80
@@ -23207,7 +23209,9 @@ struct DeviceTokenResponse {
 }
 
 /// Starts device pairing (RFC 8628). No auth: the device shows `user_code` and the person approves
-/// it at `verification_url` while logged in.
+/// it at `verification_url` while logged in, where they pick the role to act as, the permissions,
+/// the boards and the expiry within the request. A token issued as a role carries the role's name
+/// and `agent-N` label, which `GET /api/v1/auth/whoami` shows.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/device",
@@ -23257,6 +23261,7 @@ async fn start_device_auth(
         token_expires_at: None,
         account_id: None,
         client_network: Some(client.network().to_string()),
+        role_id: None,
     };
 
     // A user-code collision among live requests is astronomically rare;
@@ -23306,7 +23311,8 @@ fn base_url(state: &AppState, headers: &HeaderMap) -> String {
     format!("{scheme}://{host}")
 }
 
-/// Polls for the token of a device-pairing request.
+/// Polls for the token of a device-pairing request. The token holds what the approver granted,
+/// which may be less than requested, and is issued as the agent role the approver chose, if any.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/device/token",
@@ -23392,43 +23398,19 @@ struct DeviceTemplate {
     client_name: String,
     /// The scope the client requested, as a list of one for the template.
     scopes: Vec<String>,
-    /// Scopes the owner may approve, lowest first, ending with the requested one.
-    choices: Vec<&'static str>,
     /// Whether the request holds a delete permission, which the page warns about.
     requested_admin: bool,
-    /// The permissions the request holds, each ticked for the owner to keep or drop.
-    permissions: Vec<PermissionChoice>,
-    /// The boards the owner may limit the token to.
-    boards: Vec<BoardChoice>,
-    /// Expiries the owner can pick from.
-    expiries: &'static [ExpiryChoice],
-    /// Form value of the expiry selected first.
-    default_expiry: &'static str,
+    /// The permissions the request holds, comma separated, which the picker offers.
+    requested_names: String,
+    /// Days of the expiry the picker selects first.
+    default_days: &'static str,
     error: Option<String>,
-}
-
-/// One requested permission on the approval page.
-struct PermissionChoice {
-    /// The wire name, the form value.
-    name: &'static str,
-    /// The text shown as the checkbox tooltip.
-    description: &'static str,
-}
-
-/// One board the owner may limit a device token to.
-struct BoardChoice {
-    /// The board id, the form value.
-    id: String,
-    /// The board name the page shows.
-    name: String,
 }
 
 /// One expiry the owner can give a device token.
 struct ExpiryChoice {
     /// Form value.
     value: &'static str,
-    /// Text shown in the expiry list.
-    label: &'static str,
     /// Days until expiry, or [`None`] for a token that never expires.
     days: Option<i64>,
 }
@@ -23437,27 +23419,22 @@ struct ExpiryChoice {
 const DEVICE_TOKEN_EXPIRIES: [ExpiryChoice; 5] = [
     ExpiryChoice {
         value: "1",
-        label: "1 day",
         days: Some(1),
     },
     ExpiryChoice {
         value: "30",
-        label: "30 days",
         days: Some(30),
     },
     ExpiryChoice {
         value: "90",
-        label: "90 days",
         days: Some(90),
     },
     ExpiryChoice {
         value: "365",
-        label: "365 days",
         days: Some(365),
     },
     ExpiryChoice {
         value: "never",
-        label: "Never",
         days: None,
     },
 ];
@@ -23483,40 +23460,27 @@ impl DeviceTemplate {
             user_code: user_code.to_string(),
             client_name: String::new(),
             scopes: Vec::new(),
-            choices: Vec::new(),
             requested_admin: false,
-            permissions: Vec::new(),
-            boards: Vec::new(),
-            expiries: &DEVICE_TOKEN_EXPIRIES,
-            default_expiry: "",
+            requested_names: String::new(),
+            default_days: "",
             error: error.map(str::to_string),
         }
     }
 
-    fn with(step: &'static str, row: &DeviceAuthRow, boards: Vec<BoardChoice>) -> Self {
-        let requested = row.scope;
+    fn with(step: &'static str, row: &DeviceAuthRow) -> Self {
         Self {
             step,
             user_code: auth::display_user_code(&row.user_code),
             client_name: row.client_name.clone(),
-            scopes: vec![requested.as_str().to_string()],
-            choices: AuthScope::ALL
-                .into_iter()
-                .filter(|scope| *scope <= requested)
-                .map(AuthScope::as_str)
-                .collect(),
+            scopes: vec![row.scope.as_str().to_string()],
             requested_admin: holds_delete(&row.permissions),
-            permissions: row
+            requested_names: row
                 .permissions
                 .iter()
-                .map(|permission| PermissionChoice {
-                    name: permission.name(),
-                    description: permission.description(),
-                })
-                .collect(),
-            boards,
-            expiries: &DEVICE_TOKEN_EXPIRIES,
-            default_expiry: device_default_expiry(&row.permissions),
+                .map(|permission| permission.name())
+                .collect::<Vec<_>>()
+                .join(","),
+            default_days: device_default_expiry(&row.permissions),
             error: None,
         }
     }
@@ -23528,37 +23492,48 @@ impl DeviceTemplate {
     }
 }
 
-/// Builds what the owner grants from the approval form, refusing permissions or a scope above the
-/// request, an empty grant, a board outside the account and an expiry outside the offered set. A
-/// missing field means the requested permissions, every board and the default expiry for those
-/// permissions.
+/// Builds what the owner grants from the approval form, refusing permissions above the
+/// request, a role of another account or one that gives a permission the request lacks, a
+/// permission the chosen role gives no, an empty grant, a board outside the account or the request
+/// and an expiry outside the offered set. A missing field means the requested permissions, or the
+/// role's when one is chosen, every board and the default expiry for those permissions.
 fn device_grant(
     db: &AccountDb,
     row: &DeviceAuthRow,
     form: &DeviceApproveForm,
     now: i64,
 ) -> Result<DeviceGrant, String> {
-    let mut permissions = match &form.permissions {
-        None => row.permissions.clone(),
-        Some(names) => names
+    let role = match form.role_id.as_deref() {
+        Some(id) => Some(
+            db.agent_role(id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "Choose a role of your account.".to_string())?,
+        ),
+        None => None,
+    };
+    let template = role
+        .as_ref()
+        .map(|role| Permission::with_required(&role.permissions));
+    let permissions = match (&form.permissions, &template) {
+        (None, None) => row.permissions.clone(),
+        (None, Some(template)) => template.clone(),
+        (Some(names), _) => names
             .iter()
             .map(|name| {
                 Permission::named(name).ok_or_else(|| format!("Unknown permission: {name}."))
             })
             .collect::<Result<BTreeSet<_>, _>>()?,
     };
-    if !permissions.is_subset(&row.permissions) {
-        return Err("Permissions can be lowered but never raised above the request.".to_string());
+    if let Some(extra) = permissions.difference(&row.permissions).next() {
+        return Err(format!(
+            "Permissions can be lowered but never raised above the request: it does not ask for {}.",
+            extra.name()
+        ));
     }
-    if let Some(text) = form.scope.as_deref() {
-        let scope = AuthScope::parse(text)
-            .ok_or_else(|| format!("Choose {} as the scope.", AuthScope::choice_list()))?;
-        if scope > row.scope {
-            return Err("The scope can be lowered but never raised above the request.".to_string());
-        }
-        if scope < row.scope {
-            permissions.retain(|permission| scope.permissions().contains(permission));
-        }
+    if let Some(template) = &template
+        && let Some(extra) = permissions.difference(template).next()
+    {
+        return Err(format!("The role gives no {}.", extra.name()));
     }
     if permissions.is_empty() {
         return Err("Grant at least one permission.".to_string());
@@ -23574,6 +23549,9 @@ fn device_grant(
             BoardAccess::Only(ids.iter().cloned().collect())
         }
     };
+    if !boards.within(&row.boards) {
+        return Err("Boards can be narrowed but never widened beyond the request.".to_string());
+    }
     let wanted = form
         .expires_in_days
         .as_deref()
@@ -23587,6 +23565,7 @@ fn device_grant(
         permissions,
         boards,
         expires_at: expiry.days.map(|days| now + days * SECONDS_PER_DAY),
+        role_id: role.map(|role| role.id),
     })
 }
 
@@ -23606,13 +23585,13 @@ struct DeviceCodeForm {
 struct DeviceApproveForm {
     /// The code the person typed, in any case and with or without the dash.
     user_code: String,
-    /// Scope to grant, `read`, `work`, `provision` or `admin`; absent means the requested one.
-    scope: Option<String>,
     /// Permissions to grant, one `permissions` field each; absent means every requested one. The
     /// `permissions_listed` marker the page sends makes it present, so ticking none grants none.
     permissions: Option<Vec<String>>,
     /// Boards to limit the token to, one `boards` field each; absent means every board.
     boards: Option<Vec<String>>,
+    /// The agent role to issue the token as; absent means no role.
+    role_id: Option<String>,
     /// `1`, `30`, `90`, `365` or `never`; absent means the default for the requested permissions.
     expires_in_days: Option<String>,
 }
@@ -23626,31 +23605,18 @@ impl DeviceApproveForm {
         for (key, value) in fields {
             match key.as_str() {
                 "user_code" => form.user_code = value,
-                "scope" => form.scope = Some(value),
                 "expires_in_days" => form.expires_in_days = Some(value),
                 "permissions_listed" => {
                     form.permissions.get_or_insert_with(Vec::new);
                 }
                 "permissions" => form.permissions.get_or_insert_with(Vec::new).push(value),
                 "boards" => form.boards.get_or_insert_with(Vec::new).push(value),
+                "role_id" if !value.is_empty() => form.role_id = Some(value),
                 _ => {}
             }
         }
         Ok(form)
     }
-}
-
-/// Lists the boards of `db` the owner may limit a device token to.
-fn device_board_choices(db: &AccountDb) -> Result<Vec<BoardChoice>, AppError> {
-    Ok(db
-        .list_boards()
-        .map_err(AppError::from)?
-        .into_iter()
-        .map(|board| BoardChoice {
-            id: board.id,
-            name: board.name,
-        })
-        .collect())
 }
 
 async fn device_page(Extension(user): Extension<AuthUser>) -> Result<Response, AppError> {
@@ -23678,10 +23644,7 @@ async fn device_lookup(
         .pending_device_auth(&code, now)
         .map_err(AppError::from)?
     {
-        Some(row) => {
-            let boards = device_board_choices(&account)?;
-            Ok(DeviceTemplate::with("confirm", &row, boards).into_response())
-        }
+        Some(row) => Ok(DeviceTemplate::with("confirm", &row).into_response()),
         None => {
             // An already-decided code is not a guess; only codes that
             // never existed, or expired, count toward the lockout.
@@ -23766,8 +23729,7 @@ fn device_decide(
         (Some(row), Some(form)) => match device_grant(db, row, form, now) {
             Ok(grant) => Some(grant),
             Err(message) => {
-                let boards = device_board_choices(db)?;
-                let page = DeviceTemplate::with("confirm", row, boards).with_error(&message);
+                let page = DeviceTemplate::with("confirm", row).with_error(&message);
                 return Ok((StatusCode::BAD_REQUEST, page).into_response());
             }
         },
@@ -23784,7 +23746,7 @@ fn device_decide(
             } else {
                 "denied"
             };
-            Ok(DeviceTemplate::with(step, &row, Vec::new()).into_response())
+            Ok(DeviceTemplate::with(step, &row).into_response())
         }
         _ => {
             // A racer that lost to another decision, or a double submit,

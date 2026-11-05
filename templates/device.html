@@ -10,7 +10,7 @@
       {% if scopes.len() == 1 %}the <strong>{{ scopes[0] }}</strong> scope{% else %}the <strong>{{ scopes.join(" and ") }}</strong> scopes{% endif %}.</p>
     <p class="device-code">Code <code>{{ user_code }}</code></p>
     {% if requested_admin %}<p class="login-error device-warning">Admin can delete boards, change board
-      structure and settings, and read the calendar feed link. Lower the scope unless this client needs that.</p>{% endif %}
+      structure and settings, and read the calendar feed link. Pick a narrower role or drop permissions unless this client needs that.</p>{% endif %}
     <p class="settings-hint">Approve only if this code matches the one your device shows.
       The token appears under Settings &rarr; API tokens and can be revoked there.</p>
     <form id="device-deny" method="post" action="/device/deny">
@@ -19,33 +19,9 @@
     <p class="login-error" id="device-error" hidden></p>
     <form id="device-approve" method="post" action="/device/approve">
       <input type="hidden" name="user_code" value="{{ user_code }}">
-      <fieldset class="device-permissions" id="device-permissions">
-        <legend>Permissions to grant</legend>
-        <input type="hidden" name="permissions_listed" value="1">
-        {% for permission in permissions %}<label class="device-permission" title="{{ permission.description }}"><input type="checkbox" name="permissions" value="{{ permission.name }}" checked> {{ permission.name }}</label>
-        {% endfor %}
-      </fieldset>
-      {% if !boards.is_empty() %}
-      <fieldset class="device-boards" id="device-boards">
-        <legend>Limit to these boards (none ticked means every board)</legend>
-        {% for board in boards %}<label class="device-board"><input type="checkbox" name="boards" value="{{ board.id }}"> {{ board.name }}</label>
-        {% endfor %}
-      </fieldset>
-      {% endif %}
-      <div class="device-fields">
-        <label>Scope
-          <select name="scope">
-            {% for choice in choices %}<option value="{{ choice }}"{% if loop.last %} selected{% endif %}>{{ choice }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>Expires
-          <select name="expires_in_days">
-            {% for expiry in expiries %}<option value="{{ expiry.value }}"{% if expiry.value == default_expiry %} selected{% endif %}>{{ expiry.label }}</option>
-            {% endfor %}
-          </select>
-        </label>
-      </div>
+      <div id="device-picker" class="perm-picker" data-requested="{{ requested_names }}" data-expiry-days="{{ default_days }}"><p class="settings-hint">Loading permissions&hellip;</p></div>
+      <div id="device-boards" class="perm-picker"></div>
+      <div id="device-expiry" class="perm-picker"></div>
       <div class="device-actions">
         <button type="submit" form="device-deny" class="btn">Deny</button>
         <button type="submit" class="btn btn-primary">Approve</button>

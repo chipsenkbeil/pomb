@@ -3096,9 +3096,11 @@ textarea.tm-field-input { resize: vertical; }
 .device-ask { font-size: 0.95rem; line-height: 1.45; margin: 0 0 0.8rem; overflow-wrap: anywhere; }
 .device-code code { font-size: 1.1rem; letter-spacing: 0.08em; }
 .device-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 0.6rem; margin-top: 1rem; }
-.device-fields { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; }
-.device-fields label { flex: 1 1 6rem; min-width: 0; font-size: 0.85rem; margin-bottom: 0; }
-.device-fields select { display: block; width: 100%; margin-top: 0.3rem; }
+.login-card.device-card { width: min(720px, 100%); }
+.device-card .perm-picker { margin: 1rem 0 0; }
+.login-card .pk-field label.pk-label { margin: 0; font-size: 14px; }
+.login-card .pk-custom label.pk-check { display: flex; align-items: flex-start; gap: 10px; margin: 0; font-size: 13px; font-weight: 400; }
+.login-card .pk-check input { width: auto; margin: 2px 0 0; padding: 0; }
 
 /* ---------- timer pill & popup ---------- */
 

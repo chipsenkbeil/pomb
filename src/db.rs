@@ -117,12 +117,12 @@ use crate::labels::{CONFIG_KEY, LabelSettings};
 use crate::layouts::{LAYOUTS, Layout};
 use crate::limit::{Limits, TrustProxy};
 use crate::models::{
-    AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
-    AttachmentVersion, AuthScope, BLOCKED_COLUMN_KEY, BLOCKED_KIND, BackupSettings, BackupStatus,
-    BinRow, BoardAccess, BoardFeed, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
-    CommentQuestion, CommentReaction, CoverChange, DeviceAuthRow, DeviceAuthStatus, EntryKind,
-    EscalationTier, EventChange, FieldDefRow, HistoryKind, InboundAddressRow, InstanceMode,
-    InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS,
+    AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, AgentRoleRow,
+    ApiTokenRecord, AttachmentVersion, AuthScope, BLOCKED_COLUMN_KEY, BLOCKED_KIND, BackupSettings,
+    BackupStatus, BinRow, BoardAccess, BoardFeed, BoardRole, BoardRow, BoardTemplateRow, ColorRow,
+    ColumnRow, CommentQuestion, CommentReaction, CoverChange, DeviceAuthRow, DeviceAuthStatus,
+    EntryKind, EscalationTier, EventChange, FieldDefRow, HistoryKind, InboundAddressRow,
+    InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS,
     MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
     MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NEEDS_HUMAN_LABEL, NUMBERING_KEY, Numbering,
     PasskeyRow, QUESTION_KIND, QuestionAnswer, Quota, Quotas, RecoveryCodeRow, ReportBookmark,
@@ -847,6 +847,8 @@ pub struct DeviceGrant {
     pub boards: BoardAccess,
     /// Unix seconds, or [`None`] for a token that never expires.
     pub expires_at: Option<i64>,
+    /// The agent role the token is issued as, or [`None`] for a token issued as no role.
+    pub role_id: Option<String>,
 }
 
 /// Typed outcome for [`Db::claim_first_passkey`].
@@ -1591,8 +1593,16 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// lead uses, and the upgrade sets the stored role named `lead` to that set. Stored tokens keep
 /// their permissions.
 ///
+/// Version 72 adds, over version 71 (additive, read from older rows through a serde default):
+///
+/// 1. `DeviceAuthRow`: `role_id`, the agent role the owner approved the request as.
+///
+/// The upgrade rewrites no row, so an older request reads as approved as no role. The new stamp
+/// makes a version-71 binary refuse a file whose approved requests it would save without their
+/// role.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 71;
+pub const SCHEMA_VERSION: u64 = 72;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1670,6 +1680,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
     "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
     "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
+    "a32b88150a45da953d15152e7fda8261d01b3d6acdde4fc865ea6e3f6dd7ee74",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -4652,6 +4663,27 @@ fn txn_role_token_ids(
         }
     }
     Ok(ids)
+}
+
+/// Stamps `record` as issued as agent role `role_id` of its account, with the role's current name and
+/// the next `agent-N` label, inside an open write transaction. Returns `false`, writing nothing,
+/// when the account holds no such role.
+fn txn_issue_as_role(
+    txn: &WriteTransaction,
+    record: &mut ApiTokenRecord,
+    role_id: &str,
+) -> DbResult<bool> {
+    let role = txn_read_one::<AgentRoleRow>(txn, AGENT_ROLES, role_id)?
+        .filter(|role| role.account_id == record.account_id);
+    let Some(mut role) = role else {
+        return Ok(false);
+    };
+    role.issued += 1;
+    record.role_id = Some(role.id.clone());
+    record.role_name = Some(role.name.clone());
+    record.label = Some(format!("agent-{}", role.issued));
+    write_one(txn, AGENT_ROLES, role_id, &role)?;
+    Ok(true)
 }
 
 /// Stores a new `token` when its account is active and below the per-account token cap, inside an
@@ -10536,6 +10568,7 @@ impl Db {
                             row.permissions = grant.permissions.clone();
                             row.boards = grant.boards.clone();
                             row.token_expires_at = grant.expires_at;
+                            row.role_id = grant.role_id.clone();
                             row.account_id = Some(account.as_str().to_string());
                             mmap_insert(&txn, DEVICES_BY_ACCOUNT, account.as_str(), &key)?;
                             DeviceAuthStatus::Approved
@@ -10599,9 +10632,14 @@ impl Db {
                         DevicePoll::Denied
                     }
                     DeviceAuthStatus::Approved => {
-                        let record = mint(&row);
+                        let mut record = mint(&row);
                         if let Some(refusal) = txn_token_cap_reached(&txn, &record.account_id)? {
                             DevicePoll::TooManyTokens(refusal)
+                        } else if let Some(role_id) = row.role_id.as_deref()
+                            && !txn_issue_as_role(&txn, &mut record, role_id)?
+                        {
+                            row.status = DeviceAuthStatus::Denied;
+                            DevicePoll::Denied
                         } else {
                             txn_store_token(&txn, &record)?;
                             row.status = DeviceAuthStatus::Issued;
@@ -14244,6 +14282,7 @@ mod schema_version_tests {
             token_expires_at: None,
             account_id: None,
             client_network: None,
+            role_id: None,
         };
         let value = serde_json::to_value(&device).expect("json");
         put_raw(&path, DEVICE_AUTHS, &device.device_code_hash, &value);
@@ -14696,6 +14735,7 @@ mod schema_version_tests {
             token_expires_at: None,
             account_id: None,
             client_network: None,
+            role_id: None,
         };
         put_raw(
             &path,
@@ -14774,6 +14814,7 @@ mod schema_version_tests {
                 token_expires_at: approved.then_some(99),
                 account_id: approved.then(|| account.as_str().to_string()),
                 client_network: Some("net".to_string()),
+                role_id: None,
             };
             let value = serde_json::to_value(&row).expect("json");
             put_raw(&path, DEVICE_AUTHS, &row.device_code_hash, &value);
@@ -17013,6 +17054,7 @@ mod device_tests {
             token_expires_at: None,
             account_id: None,
             client_network: Some(network.to_string()),
+            role_id: None,
         }
     }
 
@@ -17139,6 +17181,7 @@ mod device_tests {
             permissions: AuthScope::Read.permissions(),
             boards: BoardAccess::All,
             expires_at: None,
+            role_id: None,
         };
         assert!(
             db.decide_device_auth(&admin, &asked.user_code, Some(&grant), now)
@@ -17169,6 +17212,7 @@ mod device_tests {
             permissions: AuthScope::Read.permissions(),
             boards: BoardAccess::All,
             expires_at: None,
+            role_id: None,
         };
         assert!(
             db.decide_device_auth(&admin, &approved.user_code, Some(&grant), now)
@@ -17288,6 +17332,7 @@ mod token_index_tests {
             token_expires_at: None,
             account_id: None,
             client_network: None,
+            role_id: None,
         }
     }
 
@@ -17482,6 +17527,7 @@ mod token_index_tests {
             permissions: AuthScope::Read.permissions(),
             boards: BoardAccess::All,
             expires_at: None,
+            role_id: None,
         };
         assert!(
             db.decide_device_auth(&admin, "BCDFGHJK", Some(&grant), now)

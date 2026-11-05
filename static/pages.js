@@ -261,12 +261,42 @@
     var form = document.getElementById('device-approve');
     if (!form) return;
     var error = document.getElementById('device-error');
+    var pickerBox = document.getElementById('device-picker');
+    var requested = pickerBox.dataset.requested.split(',');
+    var boardPicker = mountBoardPicker(document.getElementById('device-boards'));
+    var expiryMenu = mountExpiryMenu(document.getElementById('device-expiry'), Number(pickerBox.dataset.expiryDays), TokenForm.deviceExpiryChoices);
+    var catalog = [];
+    var picker = null;
+    loadJson('/api/v1/agent-roles')
+      .catch(function () { return []; })
+      .then(function (roles) {
+        return loadJson('/api/v1/auth/permissions').then(function (all) {
+          catalog = TokenForm.deviceCatalog(all, requested);
+          picker = mountPermissionPicker(pickerBox, catalog, TokenForm.deviceRoles(all, roles, requested));
+          picker.start(requested);
+        });
+      })
+      .catch(function (ex) { pickerBox.textContent = 'Could not load permissions: ' + ex.message; });
+    loadJson('/api/boards')
+      .then(function (boards) { boardPicker.setBoards(boards); })
+      .catch(function (ex) { error.textContent = 'Could not load boards: ' + ex.message; error.hidden = false; });
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       window.pombPasskey.attempt(error, 'Could not approve: ', function () {
+        if (!picker) throw new Error('the permissions have not loaded');
+        var chosen = boardPicker.value();
+        var fields = TokenForm.deviceFields(catalog, {
+          userCode: form.elements.user_code.value,
+          ticked: picker.held(),
+          roleId: picker.roleId(),
+          boards: chosen,
+          expiryDays: expiryMenu.days()
+        });
+        if (!fields.some(function (field) { return field[0] === 'permissions'; })) throw new Error('tick at least one permission');
+        if (chosen !== null && !chosen.length) throw new Error('pick at least one board');
         return window.pombPasskey.fetch('/device/approve', {
           method: 'POST',
-          body: new URLSearchParams(new FormData(form))
+          body: new URLSearchParams(fields)
         }).then(function (r) {
           return r.text().then(function (text) {
             var page = new DOMParser().parseFromString(text, 'text/html').querySelector('main');
@@ -601,6 +631,25 @@
       if (form.roleId) request.role_id = form.roleId;
       return request;
     },
+    deviceCatalog: function (catalog, requested) {
+      return catalog.filter(function (item) { return requested.indexOf(item.name) >= 0; });
+    },
+    deviceRoles: function (catalog, roles, requested) {
+      var needed = TokenForm.required(catalog);
+      return roles.filter(function (role) {
+        return role.permissions.concat(needed).every(function (name) { return requested.indexOf(name) >= 0; });
+      });
+    },
+    deviceFields: function (catalog, form) {
+      var fields = [['user_code', form.userCode], ['permissions_listed', '1']];
+      catalog.forEach(function (item) {
+        if (form.ticked.indexOf(item.name) >= 0) fields.push(['permissions', item.name]);
+      });
+      (form.boards || []).forEach(function (id) { fields.push(['boards', id]); });
+      if (form.roleId) fields.push(['role_id', form.roleId]);
+      fields.push(['expires_in_days', form.expiryDays > 0 ? String(form.expiryDays) : 'never']);
+      return fields;
+    },
     boardMatches: function (boards, term) {
       var needle = term.trim().toLowerCase();
       return boards.filter(function (board) { return board.name.toLowerCase().indexOf(needle) >= 0; });
@@ -623,6 +672,13 @@
             : 'Ends ' + new Date(now + entry[0] * 86400000).toISOString().slice(0, 10) + ' UTC'
         };
       });
+    },
+    deviceExpiryChoices: function (now) {
+      return [{
+        days: 1,
+        label: '1 day',
+        ends: 'Ends ' + new Date(now + 86400000).toISOString().slice(0, 10) + ' UTC'
+      }].concat(TokenForm.expiryChoices(now));
     },
     expiryDefault: 365
   };
@@ -867,8 +923,10 @@
     };
   }
 
-  function mountExpiryMenu(root) {
-    var days = TokenForm.expiryDefault;
+  function mountExpiryMenu(root, first, choicesOf) {
+    var start = first === undefined ? TokenForm.expiryDefault : first;
+    choicesOf = choicesOf || TokenForm.expiryChoices;
+    var days = start;
 
     function render() {
       root.textContent = '';
@@ -876,7 +934,7 @@
       var label = pickerEl('label', 'pk-label', 'Expires');
       label.htmlFor = root.id + '-choice';
       field.appendChild(label);
-      var choices = TokenForm.expiryChoices(Date.now());
+      var choices = choicesOf(Date.now());
       var current = choices.filter(function (choice) { return choice.days === days; })[0];
       var button = pickerEl('button', 'pk-select');
       button.type = 'button';
@@ -891,7 +949,7 @@
         if (pickerMenu && pickerMenu.anchor === button) { closePickerMenu(); return; }
         var menu = pickerEl('div', 'pk-menu pk-menu-roles');
         menu.setAttribute('role', 'menu');
-        TokenForm.expiryChoices(Date.now()).forEach(function (choice) {
+        choicesOf(Date.now()).forEach(function (choice) {
           menu.appendChild(pickerOption(choice.label, choice.ends, choice.days === days, function () {
             days = choice.days;
             render();
@@ -906,8 +964,15 @@
     render();
     return {
       days: function () { return days; },
-      reset: function () { days = TokenForm.expiryDefault; render(); }
+      reset: function () { days = start; render(); }
     };
+  }
+
+  function loadJson(url) {
+    return fetch(url, { headers: { 'Accept': 'application/json' } }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    });
   }
 
   function mountPermissionPicker(root, catalog, roles) {
@@ -1476,12 +1541,6 @@
       catalog = items;
       picker = mountPermissionPicker(pickerBox, catalog, roles);
       picker.reset();
-    }
-    function loadJson(url) {
-      return fetch(url, { headers: { 'Accept': 'application/json' } }).then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      });
     }
     loadJson('/api/v1/agent-roles')
       .catch(function () { return []; })

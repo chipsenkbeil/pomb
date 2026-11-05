@@ -4761,6 +4761,10 @@ pub struct DeviceAuthRow {
     /// request stored before the cap counted per network.
     #[serde(default)]
     pub client_network: Option<String>,
+    /// The agent role the owner approved the request as, which the issued token is issued as.
+    /// Absent for a request approved as no role and for one stored before roles could approve.
+    #[serde(default)]
+    pub role_id: Option<String>,
 }
 
 /// A named API token for agent/script access. The raw token is shown once
@@ -5000,16 +5004,6 @@ impl AuthScope {
             .map(|scope| format!("\"{}\"", scope.as_str()))
             .collect();
         format!("[{}]", quoted.join(", "))
-    }
-
-    /// Returns the scope names as prose for messages, e.g. `read, work or admin`.
-    #[must_use]
-    pub fn choice_list() -> String {
-        let names: Vec<&str> = Self::ALL.into_iter().map(Self::as_str).collect();
-        match names.split_last() {
-            Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
-            None => String::new(),
-        }
     }
 
     /// Returns the highest of the submitted scope strings, or [`None`] when the list is empty or

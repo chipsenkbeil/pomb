@@ -813,6 +813,7 @@ mod tests {
             token_expires_at: None,
             account_id: Some(fx.member.as_str().to_string()),
             client_network: None,
+            role_id: None,
         };
         let txn = fx.db.db.begin_write().expect("write");
         move_row_to(
@@ -873,6 +874,7 @@ mod tests {
             token_expires_at: None,
             account_id: None,
             client_network: None,
+            role_id: None,
         };
         fx.db.create_device_auth(&request, now).expect("request");
         let grant = DeviceGrant {
@@ -880,6 +882,7 @@ mod tests {
             permissions: AuthScope::Read.permissions(),
             boards: BoardAccess::All,
             expires_at: None,
+            role_id: None,
         };
         assert!(
             fx.db

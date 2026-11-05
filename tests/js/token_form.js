@@ -157,4 +157,33 @@ check('each expiry choice shows the date it ends on',
 check('the default expiry is one of the choices',
   TokenForm.expiryChoices(day).some(function (choice) { return choice.days === TokenForm.expiryDefault; }), true);
 
+var asked = ['boards.read', 'tasks.read', 'tasks.create'];
+check('the device picker offers only the requested permissions',
+  TokenForm.deviceCatalog(catalog, asked).map(function (item) { return item.name; }), asked);
+var deviceRoleList = [
+  { id: 'r1', name: 'reviewer', permissions: ['tasks.read', 'tasks.create'] },
+  { id: 'r2', name: 'lead', permissions: ['tasks.read', 'tasks.bin'] },
+  { id: 'r3', name: 'tiny', permissions: ['tasks.read'] }
+];
+check('the device picker keeps only roles within the request',
+  TokenForm.deviceRoles(catalog, deviceRoleList, asked).map(function (role) { return role.id; }), ['r1', 'r3']);
+check('a request without the required permission leaves no role',
+  TokenForm.deviceRoles(catalog, deviceRoleList, ['tasks.read', 'tasks.create']), []);
+check('the device fields post the permissions in catalog order, the boards, the role and the expiry',
+  TokenForm.deviceFields(catalog, {
+    userCode: 'ABCD-EFGH', ticked: ['tasks.create', 'boards.read'], boards: ['b1', 'b2'], roleId: 'r1', expiryDays: 90
+  }),
+  [['user_code', 'ABCD-EFGH'], ['permissions_listed', '1'], ['permissions', 'boards.read'],
+    ['permissions', 'tasks.create'], ['boards', 'b1'], ['boards', 'b2'], ['role_id', 'r1'], ['expires_in_days', '90']]);
+check('the device fields post no boards for all boards, no role id for no role and never for zero days',
+  TokenForm.deviceFields(catalog, { userCode: 'X', ticked: [], boards: null, roleId: null, expiryDays: 0 }),
+  [['user_code', 'X'], ['permissions_listed', '1'], ['expires_in_days', 'never']]);
+check('the device menu adds a one day choice with its end date before the Settings choices',
+  TokenForm.deviceExpiryChoices(day).map(function (choice) { return [choice.days, choice.label, choice.ends]; }),
+  [[1, '1 day', 'Ends 2026-11-05 UTC']].concat(TokenForm.expiryChoices(day).map(function (choice) {
+    return [choice.days, choice.label, choice.ends];
+  })));
+check('the Settings choices stay without a one day choice',
+  TokenForm.expiryChoices(day).some(function (choice) { return choice.days === 1; }), false);
+
 if (failures) process.exit(1);

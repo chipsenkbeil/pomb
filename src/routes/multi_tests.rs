@@ -890,6 +890,7 @@ async fn device_poll_should_deny_a_request_approved_before_a_recovery() {
         permissions: AuthScope::Read.permissions(),
         boards: BoardAccess::All,
         expires_at: None,
+        role_id: None,
     };
     let now = chrono::Utc::now().timestamp();
     assert!(
@@ -1101,6 +1102,7 @@ async fn delete_account_should_remove_every_owned_row() {
         permissions: AuthScope::Read.permissions(),
         boards: BoardAccess::All,
         expires_at: None,
+        role_id: None,
     };
     assert!(
         owned
@@ -2360,6 +2362,7 @@ async fn device_poll_should_deny_a_suspended_approver() {
         permissions: AuthScope::Read.permissions(),
         boards: BoardAccess::All,
         expires_at: None,
+        role_id: None,
     };
     let now = chrono::Utc::now().timestamp();
     assert!(
