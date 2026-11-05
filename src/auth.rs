@@ -977,6 +977,12 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/tasks/:id/umbrella",
         Permission::LinksDelete,
     ),
+    (Method::POST, "/api/tasks/:id/seats", Permission::TasksEdit),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/seats",
+        Permission::TasksEdit,
+    ),
     (Method::POST, "/api/tasks/:id/close", Permission::TasksEdit),
     (Method::POST, "/api/tasks/:id/reopen", Permission::TasksEdit),
     (Method::POST, "/api/tasks/:id/claim", Permission::TasksClaim),
@@ -988,6 +994,17 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::POST,
         "/api/tasks/:id/claim/release",
+        Permission::TasksClaim,
+    ),
+    (Method::POST, "/api/tasks/:id/owner", Permission::TasksClaim),
+    (
+        Method::POST,
+        "/api/tasks/:id/owner/renew",
+        Permission::TasksClaim,
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/owner/release",
         Permission::TasksClaim,
     ),
     (
@@ -1167,6 +1184,12 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::PUT,
         "/api/boards/:id/rules",
+        Permission::BoardsConfigure,
+    ),
+    (Method::GET, "/api/boards/:id/seats", Permission::BoardsRead),
+    (
+        Method::PUT,
+        "/api/boards/:id/seats",
         Permission::BoardsConfigure,
     ),
     (
@@ -2249,6 +2272,8 @@ mod tests {
             AuthScope::Work,
         ),
         (Method::PUT, "/api/tasks/:id/umbrella", AuthScope::Admin),
+        (Method::POST, "/api/tasks/:id/seats", AuthScope::Work),
+        (Method::DELETE, "/api/tasks/:id/seats", AuthScope::Work),
         (Method::POST, "/api/tasks/:id/close", AuthScope::Work),
         (Method::POST, "/api/tasks/:id/reopen", AuthScope::Work),
         (Method::POST, "/api/tasks/:id/claim", AuthScope::Work),
@@ -2260,6 +2285,13 @@ mod tests {
         (
             Method::POST,
             "/api/tasks/:id/claim/release",
+            AuthScope::Work,
+        ),
+        (Method::POST, "/api/tasks/:id/owner", AuthScope::Work),
+        (Method::POST, "/api/tasks/:id/owner/renew", AuthScope::Work),
+        (
+            Method::POST,
+            "/api/tasks/:id/owner/release",
             AuthScope::Work,
         ),
         (Method::POST, "/api/tasks/:id/comments", AuthScope::Work),

@@ -572,6 +572,12 @@
       var known = TokenForm.standardRoles.filter(function (entry) { return entry[0] === role.name; })[0];
       return known ? known[1] : role.permissions.length + ' permissions';
     },
+    loadRoles: function (load) {
+      return load().then(
+        function (roles) { return { roles: roles, error: '' }; },
+        function (ex) { return { roles: [], error: 'Could not load roles: ' + ex.message }; }
+      );
+    },
     roleOrder: function (roles) {
       var names = TokenForm.standardRoles.map(function (entry) { return entry[0]; });
       var standard = roles.filter(function (role) { return names.indexOf(role.name) >= 0; })
@@ -1551,10 +1557,10 @@
       picker = mountPermissionPicker(pickerBox, catalog, roles);
       picker.reset();
     }
-    loadJson('/api/v1/agent-roles')
-      .catch(function () { return []; })
+    TokenForm.loadRoles(function () { return loadJson('/api/v1/agent-roles'); })
       .then(function (found) {
-        roles = found;
+        roles = found.roles;
+        if (found.error) showError(found.error);
         return loadJson('/api/v1/auth/permissions');
       })
       .then(renderCatalog)

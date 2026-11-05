@@ -18,10 +18,10 @@ use super::{
     ChildLinks, ChildTokenRefusal, ClaimOutcome, ClaimRequest, ColorDeleteOutcome,
     ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Commit, CopyTasks, Db, DbResult,
     DeviceGrant, EntryEdit, EpicCloseOutcome, EventRead, FIELD_DEFS, FeedAdd, FencedWrite,
-    FieldCreateOutcome, INBOUND_ADDRESSES, Incoming, IssuedInbound, LINKS_BY_TARGET,
+    FieldCreateOutcome, GrabRequest, INBOUND_ADDRESSES, Incoming, IssuedInbound, LINKS_BY_TARGET,
     LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkRefusal, MemberSet, MoveGuards, MoveOutcome,
     NewComment, NewInbound, NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage,
-    OwnerChange, PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome, QuestionMove,
+    OwnerChange, OwnerOutcome, PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome, QuestionMove,
     QuestionWrite, Reads, RestoreOutcome, RoleTokenRefusal, Rows, SWIMLANES, SessionEndOutcome,
     SessionListing, SessionToken, StandardRoles, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
     SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
@@ -36,9 +36,10 @@ use crate::models::{
     AccountId, AccountStatus, ActiveTimer, Actor, AgentRoleRow, ApiTokenRecord, Avatar, BinRow,
     BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CommentQuestion,
     CoverChange, DeviceAuthRow, EscalationTier, EventKind, FieldDefRow, InboundAddressRow,
-    LinkKind, Numbering, ParentToken, PasskeyRow, PruneNotice, QuestionAnswer, RecoveryCodeRow,
-    ReportBookmark, Settings, SwimlaneRow, TaskAttachment, TaskBrief, TaskCard, TaskComment,
-    TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow, WebhookRow,
+    LinkKind, Numbering, OwnerHolder, ParentToken, PasskeyRow, PruneNotice, QuestionAnswer,
+    RecoveryCodeRow, ReportBookmark, SeatSlot, Settings, SwimlaneRow, TaskAttachment, TaskBrief,
+    TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
+    WebhookRow,
 };
 use crate::permissions::Permission;
 
@@ -1059,6 +1060,11 @@ impl AccountDb {
         updates: &serde_json::Map<String, serde_json::Value>,
     ) -> DbResult<bool> {
         self.db.set_board_config(&board.row().id, updates)
+    }
+
+    /// Replaces the seats a board offers, as [`Db::set_board_seats`] does.
+    pub fn set_board_seats(&self, board: &OwnedBoard, seats: Vec<SeatSlot>) -> DbResult<bool> {
+        self.db.set_board_seats(&board.row().id, seats)
     }
 
     /// Gives a board a task numbering, as [`Db::activate_numbering`] does.
@@ -2110,6 +2116,39 @@ impl AccountDb {
         actor: Actor<'_>,
     ) -> DbResult<ClaimOutcome> {
         self.db.claim_task(&task.row().id, request, actor)
+    }
+
+    /// Makes a holder the owner of a task in one write transaction.
+    pub fn grab_owner(
+        &self,
+        task: &OwnedTask,
+        request: &GrabRequest,
+        actor: Actor<'_>,
+    ) -> DbResult<OwnerOutcome> {
+        self.db.grab_owner(&task.row().id, request, actor)
+    }
+
+    /// Extends the live lease of a holder.
+    pub fn renew_owner(
+        &self,
+        task: &OwnedTask,
+        holder: &OwnerHolder,
+        fence: u64,
+        ttl_seconds: i64,
+    ) -> DbResult<OwnerOutcome> {
+        self.db
+            .renew_owner(&task.row().id, holder, fence, ttl_seconds)
+    }
+
+    /// Ends the live lease of a holder and keeps the name.
+    pub fn release_owner(
+        &self,
+        task: &OwnedTask,
+        holder: &OwnerHolder,
+        fence: u64,
+        actor: Actor<'_>,
+    ) -> DbResult<OwnerOutcome> {
+        self.db.release_owner(&task.row().id, holder, fence, actor)
     }
 
     /// Sets or clears an epic's closed flag in one write transaction.

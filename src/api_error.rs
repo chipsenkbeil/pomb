@@ -79,6 +79,8 @@ pub enum ErrorCode {
     Conflict,
     /// A live claim by another holder blocks the request (409).
     ClaimHeld,
+    /// Another holder's live owner lease blocks the request (409).
+    OwnerHeld,
     /// The claim fence is stale, mismatched or expired (409).
     StaleFence,
     /// The target column is at its WIP limit (409).

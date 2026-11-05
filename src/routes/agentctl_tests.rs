@@ -38,6 +38,10 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let path = dir.path().join("agentctl.redb");
     let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
     let user_id = db.create_user("admin").expect("create user");
+    for role in db.list_agent_roles(user_id.as_str()).expect("roles") {
+        db.delete_agent_role(user_id.as_str(), &role.id)
+            .expect("delete");
+    }
     let session = db.create_session(&user_id, "").expect("session");
     let (record, read_token) = new_api_token_record(&user_id, "reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
@@ -736,7 +740,7 @@ fn openapi_should_keep_optional_params_and_the_json_task_responses() {
         .iter()
         .filter_map(|p| p["name"].as_str())
         .collect();
-    assert_eq!(names, vec!["id", "If-Claim-Fence"]);
+    assert_eq!(names, vec!["id", "If-Claim-Fence", "If-Owner-Fence"]);
     let create = &spec["paths"]["/api/tasks"]["post"]["responses"];
     assert!(create["201"]["content"].get("application/json").is_some());
     assert!(
@@ -766,6 +770,9 @@ fn openapi_should_list_agentctl_paths_and_schemas() {
         "/api/tasks/{id}/claim",
         "/api/tasks/{id}/claim/heartbeat",
         "/api/tasks/{id}/claim/release",
+        "/api/tasks/{id}/owner",
+        "/api/tasks/{id}/owner/renew",
+        "/api/tasks/{id}/owner/release",
         "/api/boards/{id}/fields",
         "/api/fields/{id}",
         "/api/v1/auth/device",
@@ -1505,6 +1512,15 @@ async fn claim(fx: &Fixture, task: &str, body: Value) -> (StatusCode, Value) {
     claim_call(fx, task, "", body).await
 }
 
+/// Creates a Todo card named `name`, claims it for `claimant` and returns its id and the claim.
+async fn claim_task(fx: &Fixture, name: &str, claimant: &str, ttl_seconds: u64) -> (String, Value) {
+    let id = create(fx, json!({"column_id": fx.col_todo, "name": name})).await;
+    let body = json!({"claimant": claimant, "ttl_seconds": ttl_seconds});
+    let (status, granted) = claim(fx, &id, body).await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+    (id, granted)
+}
+
 /// History event kinds on a task, oldest first.
 fn event_kinds(fx: &Fixture, task: &str) -> Vec<HistoryKind> {
     let row = fx.db.task(task).expect("read").expect("task");
@@ -1571,8 +1587,7 @@ async fn claim_should_grant_a_lease_and_refuse_other_claimants() {
 #[tokio::test]
 async fn claim_should_renew_only_with_the_current_fence_and_bump_it_per_new_claim() {
     let (_dir, fx) = fixture();
-    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
-    let (_, first) = claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 60})).await;
+    let (id, first) = claim_task(&fx, "Work", "a", 60).await;
 
     let renew = json!({"claimant": "a", "ttl_seconds": 3600, "fence": 1});
     let (status, renewed) = claim(&fx, &id, renew).await;
@@ -1648,8 +1663,7 @@ async fn claim_should_reject_bad_input_and_unknown_tasks() {
 #[tokio::test]
 async fn heartbeat_should_extend_the_live_claim_or_conflict() {
     let (_dir, fx) = fixture();
-    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
-    let (_, first) = claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 60})).await;
+    let (id, first) = claim_task(&fx, "Work", "a", 60).await;
     std::thread::sleep(std::time::Duration::from_millis(5));
 
     let (status, beat) = claim_call(
@@ -1707,8 +1721,7 @@ async fn heartbeat_should_extend_the_live_claim_or_conflict() {
 #[tokio::test]
 async fn release_should_clear_the_claim_and_be_idempotent_for_its_fence() {
     let (_dir, fx) = fixture();
-    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
-    claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 60})).await;
+    let (id, _) = claim_task(&fx, "Work", "a", 60).await;
     let uri = format!("/api/tasks/{id}/claim/release");
 
     let (status, text) = request(
@@ -1776,8 +1789,7 @@ async fn release_should_clear_the_claim_and_be_idempotent_for_its_fence() {
 #[tokio::test]
 async fn expired_claims_should_read_as_null_and_log_one_expiry_event() {
     let (_dir, fx) = fixture();
-    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
-    claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 1})).await;
+    let (id, _) = claim_task(&fx, "Work", "a", 1).await;
     let base = format!("/api/boards/{}/tasks", fx.board_id);
     let (_, claimed) = call_list(&fx, "GET", &format!("{base}?claimed=true"), None).await;
     assert_eq!(ids(&claimed), vec![id.as_str()]);
@@ -1826,8 +1838,7 @@ async fn expired_claims_should_read_as_null_and_log_one_expiry_event() {
 #[tokio::test]
 async fn a_new_claim_should_log_the_expiry_of_the_old_one_first() {
     let (_dir, fx) = fixture();
-    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
-    claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 1})).await;
+    let (id, _) = claim_task(&fx, "Work", "a", 1).await;
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let (status, next) = claim(&fx, &id, json!({"claimant": "b", "ttl_seconds": 60})).await;
     assert_eq!(status, StatusCode::OK);
@@ -4486,8 +4497,7 @@ async fn heartbeats_should_leave_updated_at_alone_but_claims_and_releases_change
 #[tokio::test]
 async fn a_heartbeat_that_finds_an_expired_claim_should_record_the_expiry() {
     let (_dir, fx) = fixture();
-    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Lapsed"})).await;
-    claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 1})).await;
+    let (id, _) = claim_task(&fx, "Lapsed", "a", 1).await;
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let before = updated_at(&fx, &id);
     let (status, _) = claim_call(&fx, &id, "/heartbeat", json!({"fence": 1})).await;
@@ -5123,8 +5133,7 @@ async fn the_loser_of_an_approve_deny_race_should_not_be_counted() {
 #[tokio::test]
 async fn a_same_claimant_renewal_should_change_only_the_lease() {
     let (_dir, fx) = fixture();
-    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Renew"})).await;
-    claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 60})).await;
+    let (id, _) = claim_task(&fx, "Renew", "a", 60).await;
     let claimed = updated_at(&fx, &id);
     tick();
     let (status, renewed) = claim(
@@ -11203,18 +11212,8 @@ async fn the_modal_should_offer_release_with_the_fence_of_an_agents_live_claim()
 #[tokio::test]
 async fn a_person_should_claim_and_release_an_agents_stuck_claim_from_the_browser() {
     let (_dir, fx) = fixture();
-    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Stuck"})).await;
+    let (id, _) = claim_task(&fx, "Stuck", "admin", 14400).await;
     let uri = format!("/api/tasks/{id}/claim");
-    let (status, _) = request(
-        &fx,
-        As::Admin,
-        "POST",
-        &uri,
-        Some(json!({"claimant": "admin", "ttl_seconds": 14400})),
-        true,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
     let html = modal_html(&fx, &id).await;
     assert!(html.contains("Claimed by admin until"));
 
@@ -11724,8 +11723,7 @@ async fn a_restricted_token_archive_should_not_hold_the_names_of_a_board_outside
 #[tokio::test]
 async fn a_lapsed_person_claim_should_leave_the_modal_unclaimed_and_the_history_should_record_it() {
     let (_dir, fx) = fixture();
-    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Lapse"})).await;
-    claim(&fx, &id, json!({"claimant": "admin", "ttl_seconds": 1})).await;
+    let (id, _) = claim_task(&fx, "Lapse", "admin", 1).await;
     let held = modal_html(&fx, &id).await;
     assert!(held.contains("data-claim-release"));
     std::thread::sleep(std::time::Duration::from_millis(1100));
@@ -12252,11 +12250,7 @@ async fn unlink_children_should_refuse_a_token_when_a_child_is_locked_but_not_th
 #[tokio::test]
 async fn kind_epic_without_the_fence_on_a_claimed_task_should_answer_claim_held() {
     let (_dir, fx) = fixture();
-    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
-    let uri = format!("/api/tasks/{id}/claim");
-    let claim = json!({"claimant": "builder-i", "ttl_seconds": 60});
-    let (status, text) = request(&fx, As::Admin, "POST", &uri, Some(claim), true).await;
-    assert_eq!(status, StatusCode::OK, "{text}");
+    let (id, _) = claim_task(&fx, "Card", "builder-i", 60).await;
     let work = token_with(&fx, "worker", AuthScope::Work);
 
     let (status, error) = patch_kind(&fx, As::Bearer(&work), &id, json!({"kind": "epic"})).await;
@@ -12268,12 +12262,8 @@ async fn kind_epic_without_the_fence_on_a_claimed_task_should_answer_claim_held(
 #[tokio::test]
 async fn kind_epic_with_the_live_claims_fence_should_succeed() {
     let (_dir, fx) = fixture();
-    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
-    let uri = format!("/api/tasks/{id}/claim");
-    let claim = json!({"claimant": "planner-i", "ttl_seconds": 60});
-    let (status, text) = request(&fx, As::Admin, "POST", &uri, Some(claim), true).await;
-    assert_eq!(status, StatusCode::OK, "{text}");
-    let fence = stored(&fx, &id)["claim_fence"].to_string();
+    let (id, granted) = claim_task(&fx, "Card", "planner-i", 60).await;
+    let fence = granted["fence"].to_string();
 
     let uri = format!("/api/tasks/{id}");
     let body = json!({"kind": "epic"});

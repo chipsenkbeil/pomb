@@ -115,6 +115,29 @@ pub(crate) fn txn_remove_grants_of_board(txn: &WriteTransaction, board_id: &str)
     Ok(())
 }
 
+/// Creates every role of [`STANDARD_ROLES`] for `account` when it holds no role, with no board
+/// granted, inside an open write transaction.
+pub(crate) fn txn_seed_standard_roles(txn: &WriteTransaction, account: &str) -> DbResult<()> {
+    if !txn_mmap_get(txn, AGENT_ROLES_BY_ACCOUNT, account)?.is_empty() {
+        return Ok(());
+    }
+    let now = Utc::now().timestamp();
+    for standard in STANDARD_ROLES {
+        let role = AgentRoleRow {
+            id: Uuid::new_v4().to_string(),
+            account_id: account.to_string(),
+            name: standard.name.to_string(),
+            permissions: standard.permissions(),
+            created_at: now,
+            updated_at: now,
+            issued: 0,
+        };
+        write_one(txn, AGENT_ROLES, &role.id, &role)?;
+        mmap_insert(txn, AGENT_ROLES_BY_ACCOUNT, account, &role.id)?;
+    }
+    Ok(())
+}
+
 /// Removes every agent role of `account` with its grants, inside an open write transaction.
 pub(crate) fn txn_remove_agent_roles_of(txn: &WriteTransaction, account: &str) -> DbResult<()> {
     for role_id in txn_mmap_get(txn, AGENT_ROLES_BY_ACCOUNT, account)? {

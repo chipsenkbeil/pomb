@@ -72,8 +72,8 @@ pub use self::account::{
     UmbrellaPart, UmbrellaRef,
 };
 use self::activity::Activity;
-use self::agents::txn_remove_grants_of_board;
 pub use self::agents::{AgentRoleNameTaken, StandardRoles};
+use self::agents::{txn_remove_grants_of_board, txn_seed_standard_roles};
 use self::bin::txn_remove_board_bin;
 pub use self::bin::{PurgeOutcome, RestoreOutcome};
 pub use self::dispatch::Delivery;
@@ -125,11 +125,12 @@ use crate::models::{
     InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS,
     MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
     MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NEEDS_HUMAN_LABEL, NUMBERING_KEY, Numbering, Owner,
-    PasskeyRow, QUESTION_KIND, QuestionAnswer, Quota, Quotas, RecoveryCodeRow, ReportBookmark,
-    Responsible, SECONDS_PER_HOUR, SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment,
-    TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind, TaskLink, TaskRow, TextCap,
-    TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes, custom_color_value,
-    format_minutes, is_custom_color, lighter_hex, normalize_hex, standard_color, text_contrast,
+    OwnerHolder, PasskeyRow, QUESTION_KIND, QuestionAnswer, Quota, Quotas, RecoveryCodeRow,
+    ReportBookmark, Responsible, SECONDS_PER_HOUR, Seat, SeatSlot, SessionRow, Settings, Subtask,
+    SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind, TaskLink,
+    TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes,
+    custom_color_value, format_minutes, is_custom_color, lighter_hex, normalize_hex,
+    standard_color, text_contrast,
 };
 use crate::permissions::{Permission, STANDARD_ROLES};
 use crate::rules;
@@ -514,6 +515,8 @@ pub struct ClaimRequest {
     pub jj_change_id: Option<String>,
     pub session_id: Option<String>,
     pub fence: Option<u64>,
+    /// The id of the token that claims, which the owner records.
+    pub token_id: Option<String>,
 }
 
 /// Typed outcome for the claim operations on [`Db`].
@@ -526,8 +529,36 @@ pub enum ClaimOutcome {
     NotFound,
     /// Refused: another live claim holds the task.
     Held(TaskClaim),
+    /// Refused: another holder's live owner lease holds the task.
+    OwnerHeld(Owner),
     /// Refused: the fence does not match a live claim.
     FenceMismatch,
+}
+
+/// Fields of an owner grab.
+#[derive(Clone, Debug)]
+pub struct GrabRequest {
+    /// Who grabs the task.
+    pub holder: OwnerHolder,
+    /// Lease length in seconds, or none for a lease that never ends.
+    pub ttl_seconds: Option<i64>,
+    /// Whether a live lease of another holder is replaced.
+    pub take_over: bool,
+}
+
+/// Typed outcome for the owner operations on [`Db`].
+#[derive(Clone, Debug)]
+pub enum OwnerOutcome {
+    /// The owner as stored after the call, with the fence of its grab.
+    Granted(Owner, u64),
+    /// The lease ended, or had already ended.
+    Released,
+    /// The task does not exist.
+    NotFound,
+    /// Refused: another holder's live lease holds the task.
+    Held(Owner),
+    /// Refused: the fence is not the task's latest, or the lease lapsed.
+    StaleFence,
 }
 
 /// Typed outcome of [`Db::set_epic_closed`].
@@ -974,7 +1005,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 74;
+pub const SCHEMA_VERSION: u64 = 76;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1055,6 +1086,8 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "a32b88150a45da953d15152e7fda8261d01b3d6acdde4fc865ea6e3f6dd7ee74",
     "a32b88150a45da953d15152e7fda8261d01b3d6acdde4fc865ea6e3f6dd7ee74",
     "2f1061ac24004e1c00ef04eff0c1d8fecf32cfbd9f9cd51c098e8a9f4b3d7c1d",
+    "2f1061ac24004e1c00ef04eff0c1d8fecf32cfbd9f9cd51c098e8a9f4b3d7c1d",
+    "332b9168cd35300e66a5e0a6bed3e8b755406698a9995661fcceaf615e746428",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1237,6 +1270,18 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     }
     if from.is_none_or(|version| version < 74) {
         assign_task_owners(txn)?;
+    }
+    if from.is_none_or(|version| version < 75) {
+        seed_standard_roles(txn)?;
+    }
+    Ok(())
+}
+
+/// Gives each account that holds no agent role the standard roles.
+fn seed_standard_roles(txn: &WriteTransaction) -> DbResult<()> {
+    let users: Vec<UserRow> = rows_in(&txn.open_table(USERS)?)?;
+    for user in users {
+        txn_seed_standard_roles(txn, &user.id)?;
     }
     Ok(())
 }
@@ -3625,6 +3670,13 @@ fn expire_claim(task: &mut TaskRow, now: chrono::DateTime<Utc>) -> bool {
     }
 }
 
+/// Ends the owner's lease at `now`, which keeps its name.
+fn end_lease(task: &mut TaskRow, now: chrono::DateTime<Utc>) {
+    if let Some(owner) = task.owner.as_mut() {
+        owner.lease_expires_at = Some(now.to_rfc3339());
+    }
+}
+
 fn lease_end(now: chrono::DateTime<Utc>, ttl_seconds: i64) -> String {
     (now + chrono::Duration::seconds(ttl_seconds)).to_rfc3339()
 }
@@ -3880,6 +3932,7 @@ fn txn_insert_user(txn: &WriteTransaction, user: &UserRow) -> DbResult<()> {
     if first {
         claim_ownerless_rows(txn, &user.account_id())?;
     }
+    txn_seed_standard_roles(txn, &user.id)?;
     Ok(())
 }
 
@@ -5300,6 +5353,7 @@ fn txn_insert_board(
         owner_id: owner.as_str().to_string(),
         config_json: "{}".to_string(),
         report_bookmarks: Vec::new(),
+        seats: Vec::new(),
     };
     txn_store_owned(txn, BOARDS, &id, &row, over)?;
     mmap_insert(txn, BOARDS_BY_OWNER, owner.as_str(), &id)?;
@@ -6820,6 +6874,19 @@ impl Db {
         txn_store_board(&txn, &row, OverQuota::Allow)?;
         txn.commit()?;
         Ok(FeedAdd::Added(feed))
+    }
+
+    /// Replaces the seats a board offers, which tasks created later copy, in one transaction.
+    /// Returns `false` when the board is unknown.
+    pub fn set_board_seats(&self, id: &str, seats: Vec<SeatSlot>) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        let Some(mut row) = txn_read_one::<BoardRow>(&txn, BOARDS, id)? else {
+            return Ok(false);
+        };
+        row.seats = seats;
+        txn_store_board(&txn, &row, OverQuota::Allow)?;
+        txn.commit()?;
+        Ok(true)
     }
 
     /// Checks a numbering name and prefix and returns both trimmed.
@@ -8363,6 +8430,16 @@ impl Db {
             txn_merge_board_config(txn, &board_id, updates)?;
         }
 
+        if let Some(seats) = snapshot
+            .get("seats")
+            .and_then(|value| serde_json::from_value::<Vec<SeatSlot>>(value.clone()).ok())
+            .and_then(|seats| SeatSlot::normalize_all(seats).ok())
+            && let Some(mut board) = txn_read_one::<BoardRow>(txn, BOARDS, &board_id)?
+        {
+            board.seats = seats;
+            txn_store_board(txn, &board, over)?;
+        }
+
         if let Some(colors) = snapshot.get("colors").and_then(|value| value.as_array()) {
             let mut colors: Vec<&serde_json::Value> = colors.iter().collect();
             colors.sort_by_key(|color| {
@@ -8623,6 +8700,7 @@ impl Db {
                 claim: None,
                 claim_fence: 0,
                 owner: None,
+                seats: Vec::new(),
                 fields: serde_json::Map::new(),
             };
             txn_store_task(txn, &mut txn.open_table(TASKS)?, &row, over, actor)?;
@@ -8781,6 +8859,7 @@ impl Db {
             claim: None,
             claim_fence: 0,
             owner: None,
+            seats: Vec::new(),
             fields: serde_json::Map::new(),
         }
     }
@@ -8810,6 +8889,11 @@ impl Db {
             let held = txn_board_task_count(&txn, &column.board_id)?;
             txn_refuse_board_over_quota(&txn, &column.board_id, Quota::TasksPerBoard, held + 1)?;
             txn_ensure_board_colors(&txn, &column.board_id)?;
+            if row.seats.is_empty()
+                && let Some(board) = txn_read_one::<BoardRow>(&txn, BOARDS, &column.board_id)?
+            {
+                row.seats = board.seats.iter().map(Seat::open).collect();
+            }
             if row.number.is_none() {
                 row.number = txn_take_task_number(&txn, &column.board_id)?;
             }
@@ -10905,9 +10989,24 @@ impl Db {
                 }
                 live.heartbeat_at = now.to_rfc3339();
                 live.expires_at = lease_end(now, request.ttl_seconds);
+                if let Some(owner) = task.owner.as_mut() {
+                    owner.lease_expires_at = Some(live.expires_at.clone());
+                }
 
                 // A renewal changes only the lease, like a heartbeat
                 return (ClaimOutcome::Granted(live.clone()), RowWrite::Keep);
+            }
+            let holds = |owner: &Owner| match &owner.holder {
+                OwnerHolder::Agent { name, .. } => *name == request.claimant,
+                OwnerHolder::Human { .. } => false,
+            };
+            if let Some(owner) = task.live_owner(now).filter(|owner| !holds(owner)) {
+                let write = if expired {
+                    RowWrite::Stamp
+                } else {
+                    RowWrite::Skip
+                };
+                return (ClaimOutcome::OwnerHeld(owner.clone()), write);
             }
             task.claim_fence += 1;
             let claim = TaskClaim {
@@ -10928,6 +11027,13 @@ impl Db {
                 claim.claimant, claim.fence, claim.expires_at
             );
             push_event(task, HistoryKind::Claimed, detail, actor);
+            task.owner = Some(Owner {
+                holder: OwnerHolder::Agent {
+                    token_id: request.token_id.clone(),
+                    name: claim.claimant.clone(),
+                },
+                lease_expires_at: Some(claim.expires_at.clone()),
+            });
             task.claim = Some(claim.clone());
             (ClaimOutcome::Granted(claim), RowWrite::Stamp)
         })?;
@@ -11008,6 +11114,9 @@ impl Db {
                 if let Some(session_id) = session_id {
                     live.session_id = Some(session_id.to_string());
                 }
+                if let Some(owner) = task.owner.as_mut() {
+                    owner.lease_expires_at = Some(live.expires_at.clone());
+                }
 
                 // A heartbeat is not a change to the task, so `?since=` pollers
                 // do not see every claimed task on every tick.
@@ -11032,6 +11141,7 @@ impl Db {
                 Some(live) if live.fence == fence => {
                     let detail = format!("Claim by {} (fence {}) released", live.claimant, fence);
                     task.claim = None;
+                    end_lease(task, now);
                     push_event(task, HistoryKind::ClaimReleased, detail, actor);
                     (ClaimOutcome::Released, true)
                 }
@@ -11042,6 +11152,152 @@ impl Db {
             }
         })?;
         Ok(outcome.unwrap_or(ClaimOutcome::NotFound))
+    }
+
+    /// Makes `request.holder` the owner of a task in one write transaction. A task with no live
+    /// lease, or with the holder's own, is granted. A live lease of another holder is returned as
+    /// [`OwnerOutcome::Held`] unless `request.take_over` is set. A new owner gets the next fence
+    /// and ends any live claim. The holder's own live lease keeps its fence and only changes its
+    /// end.
+    pub fn grab_owner(
+        &self,
+        task_id: &str,
+        request: &GrabRequest,
+        actor: Actor<'_>,
+    ) -> DbResult<OwnerOutcome> {
+        let outcome = self.change_task(task_id, false, ChildLinks::Keep, actor, |task, _| {
+            let now = Utc::now();
+            let expired = expire_claim(task, now);
+            let lease = request.ttl_seconds.map(|ttl| lease_end(now, ttl));
+            if let Some(live) = task.live_owner(now).cloned() {
+                if live.holder == request.holder {
+                    let renewed = Owner {
+                        holder: live.holder,
+                        lease_expires_at: lease,
+                    };
+                    if let (Some(claim), Some(end)) =
+                        (task.claim.as_mut(), renewed.lease_expires_at.as_ref())
+                    {
+                        claim.expires_at.clone_from(end);
+                    }
+                    task.owner = Some(renewed.clone());
+                    return (
+                        OwnerOutcome::Granted(renewed, task.claim_fence),
+                        RowWrite::Keep,
+                    );
+                }
+                if !request.take_over {
+                    let write = if expired {
+                        RowWrite::Stamp
+                    } else {
+                        RowWrite::Skip
+                    };
+                    return (OwnerOutcome::Held(live), write);
+                }
+            }
+            task.claim_fence += 1;
+            task.claim = None;
+            let owner = Owner {
+                holder: request.holder.clone(),
+                lease_expires_at: lease,
+            };
+            let detail = format!(
+                "Owner grabbed by {} (fence {}){}",
+                owner.holder.label(),
+                task.claim_fence,
+                owner
+                    .lease_expires_at
+                    .as_ref()
+                    .map(|end| format!(" until {end}"))
+                    .unwrap_or_default()
+            );
+            push_event(task, HistoryKind::Claimed, detail, actor);
+            task.owner = Some(owner.clone());
+            (
+                OwnerOutcome::Granted(owner, task.claim_fence),
+                RowWrite::Stamp,
+            )
+        })?;
+        Ok(outcome.unwrap_or(OwnerOutcome::NotFound))
+    }
+
+    /// Extends the live lease of `holder` to `ttl_seconds` from now, when `fence` is the task's
+    /// latest. A lapsed lease is [`OwnerOutcome::StaleFence`], and the lease of another holder is
+    /// [`OwnerOutcome::Held`].
+    pub fn renew_owner(
+        &self,
+        task_id: &str,
+        holder: &OwnerHolder,
+        fence: u64,
+        ttl_seconds: i64,
+    ) -> DbResult<OwnerOutcome> {
+        let outcome = self.change_task(
+            task_id,
+            false,
+            ChildLinks::Keep,
+            Actor::SYSTEM,
+            |task, _| {
+                let now = Utc::now();
+                let expired = expire_claim(task, now);
+                let stale = if expired {
+                    RowWrite::Stamp
+                } else {
+                    RowWrite::Skip
+                };
+                let Some(owner) = task.owner.as_mut().filter(|owner| owner.is_live(now)) else {
+                    return (OwnerOutcome::StaleFence, stale);
+                };
+                if fence != task.claim_fence {
+                    return (OwnerOutcome::StaleFence, stale);
+                }
+                if owner.holder != *holder {
+                    return (OwnerOutcome::Held(owner.clone()), stale);
+                }
+                owner.lease_expires_at = Some(lease_end(now, ttl_seconds));
+                let renewed = owner.clone();
+                if let Some(claim) = task.claim.as_mut() {
+                    claim.heartbeat_at = now.to_rfc3339();
+                    claim.expires_at = lease_end(now, ttl_seconds);
+                }
+                (OwnerOutcome::Granted(renewed, fence), RowWrite::Keep)
+            },
+        )?;
+        Ok(outcome.unwrap_or(OwnerOutcome::NotFound))
+    }
+
+    /// Ends the live lease of `holder`, which keeps the name, when `fence` is the task's latest.
+    /// With no live lease, any fence the task has issued counts as already released.
+    pub fn release_owner(
+        &self,
+        task_id: &str,
+        holder: &OwnerHolder,
+        fence: u64,
+        actor: Actor<'_>,
+    ) -> DbResult<OwnerOutcome> {
+        let outcome = self.apply_task_change(task_id, actor, |task| {
+            let now = Utc::now();
+            let expired = expire_claim(task, now);
+            let Some(live) = task.owner.clone().filter(|owner| owner.is_live(now)) else {
+                let outcome = if (1..=task.claim_fence).contains(&fence) {
+                    OwnerOutcome::Released
+                } else {
+                    OwnerOutcome::StaleFence
+                };
+                return (outcome, expired);
+            };
+            if fence != task.claim_fence {
+                return (OwnerOutcome::StaleFence, expired);
+            }
+            if live.holder != *holder {
+                return (OwnerOutcome::Held(live), expired);
+            }
+            task.claim = None;
+            end_lease(task, now);
+            let detail = format!("Owner {} (fence {fence}) released", live.holder.label());
+            push_event(task, HistoryKind::ClaimReleased, detail, actor);
+            (OwnerOutcome::Released, true)
+        })?;
+        Ok(outcome.unwrap_or(OwnerOutcome::NotFound))
     }
 
     /// Distinct labels of a board: task labels, time entry labels, and the labels its settings
@@ -13560,6 +13816,7 @@ mod schema_version_tests {
         let (_dir, path) = temp_path();
         let db = Db::connect(&path).expect("connect");
         let account = db.create_user("alice").expect("account");
+        drop_seeded_roles(&db, &account);
         let a = db.create_board(&account, "A").expect("board");
         let b = db.create_board(&account, "B").expect("board");
         let role = db
@@ -13614,6 +13871,7 @@ mod schema_version_tests {
         let (account, kept_role, kept_token) = {
             let db = Db::connect(&path).expect("connect");
             let account = db.create_user("alice").expect("account");
+            drop_seeded_roles(&db, &account);
             let a = db.create_board(&account, "A").expect("board");
             let b = db.create_board(&account, "B").expect("board");
             let role = db
@@ -13669,6 +13927,87 @@ mod schema_version_tests {
         );
     }
 
+    fn drop_seeded_roles(db: &Db, account: &AccountId) {
+        for role in db.list_agent_roles(account.as_str()).expect("roles") {
+            db.delete_agent_role(account.as_str(), &role.id)
+                .expect("delete");
+        }
+    }
+
+    fn role_names(db: &Db, account: &AccountId) -> Vec<String> {
+        let mut names: Vec<String> = db
+            .list_agent_roles(account.as_str())
+            .expect("roles")
+            .into_iter()
+            .map(|role| role.name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn standard_names() -> Vec<String> {
+        let mut names: Vec<String> = STANDARD_ROLES
+            .iter()
+            .map(|standard| standard.name.to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A new account holds the standard roles, and a version-74 account with none gets them while
+    /// an account that holds a role keeps only that one.
+    #[test]
+    fn standard_roles_added_once_on_upgrade_and_account_creation() {
+        let (_dir, path) = temp_path();
+        let (bare, custom) = {
+            let db = Db::connect(&path).expect("connect");
+            let bare = db.create_user("bare").expect("bare");
+            assert_eq!(role_names(&db, &bare), standard_names());
+            let custom = db.create_user("custom").expect("custom");
+            drop_seeded_roles(&db, &bare);
+            for role in db.list_agent_roles(custom.as_str()).expect("roles") {
+                if role.name != "planner" {
+                    db.delete_agent_role(custom.as_str(), &role.id)
+                        .expect("delete");
+                }
+            }
+            (bare, custom)
+        };
+        stamp(&path, 74);
+        let db = Db::connect(&path).expect("open version 74");
+        assert_eq!(role_names(&db, &bare), standard_names());
+        assert_eq!(role_names(&db, &custom), ["planner"]);
+        drop(db);
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+    }
+
+    /// A standard role the owner deleted or edited stays that way after a later start.
+    #[test]
+    fn deleted_standard_role_is_not_re_added() {
+        let (_dir, path) = temp_path();
+        let (account, edited) = {
+            let db = Db::connect(&path).expect("connect");
+            let account = db.create_user("owner").expect("account");
+            let roles = db.list_agent_roles(account.as_str()).expect("roles");
+            let find = |name: &str| roles.iter().find(|role| role.name == name).expect(name);
+            db.delete_agent_role(account.as_str(), &find("planner").id)
+                .expect("delete");
+            let held = BTreeSet::from([Permission::TasksRead]);
+            db.update_agent_role(account.as_str(), &find("lead").id, None, Some(held))
+                .expect("edit");
+            (account, find("lead").id.clone())
+        };
+        let db = Db::connect(&path).expect("reopen");
+        let names = role_names(&db, &account);
+        assert!(!names.contains(&"planner".to_string()));
+        assert_eq!(names.len(), STANDARD_ROLES.len() - 1);
+        let lead = db
+            .agent_role(account.as_str(), &edited)
+            .expect("read")
+            .expect("lead");
+        assert_eq!(lead.permissions, BTreeSet::from([Permission::TasksRead]));
+    }
+
     /// A version-66 file opens with the role index filled from its role tokens.
     #[test]
     fn version_66_file_should_open_with_its_role_tokens_indexed() {
@@ -13676,6 +14015,7 @@ mod schema_version_tests {
         let expected = {
             let db = Db::connect(&path).expect("connect");
             let account = db.create_user("alice").expect("account");
+            drop_seeded_roles(&db, &account);
             let board = db.create_board(&account, "A").expect("board");
             let role = db
                 .create_agent_role(account.as_str(), "planner", BTreeSet::new())
@@ -15283,8 +15623,8 @@ mod schema_fingerprint_tests {
         AgentRoleGrantRow, AgentRoleRow, Avatar, AvatarKind, BoardEventRow, BoardMemberRow,
         BoardRole, BreakActivity, DiskLimits, FieldColumn, InviteRow, NotificationRow, OutboxRow,
         OwnerHolder, ParentToken, PruneSettings, PruneStatus, QuestionChoice, Quotas, RateLimits,
-        RegistrationMode, Responsible, SubtaskTemplate, TimeFormat, TimerMode, WebhookEvent,
-        WeekStart,
+        RegistrationMode, Responsible, SeatVerdict, SubtaskTemplate, TimeFormat, TimerMode,
+        WebhookEvent, WeekStart,
     };
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
@@ -15620,6 +15960,9 @@ mod schema_fingerprint_tests {
             shape::<Owner>("Owner"),
             shape::<OwnerHolder>("OwnerHolder"),
             shape::<Responsible>("Responsible"),
+            shape::<Seat>("Seat"),
+            shape::<SeatSlot>("SeatSlot"),
+            shape::<SeatVerdict>("SeatVerdict"),
             shape::<SessionRow>("SessionRow"),
             shape::<Settings>("Settings"),
             shape::<Avatar>("Avatar"),
@@ -15824,6 +16167,7 @@ mod first_board_tests {
                 owner_id: String::new(),
                 config_json: serde_json::json!({ "archived": archived }).to_string(),
                 report_bookmarks: Vec::new(),
+                seats: Vec::new(),
             };
             write_one(&txn, BOARDS, id, &row).expect("write board");
             mmap_insert(&txn, BOARDS_BY_OWNER, "", id).expect("index board");

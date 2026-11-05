@@ -9,7 +9,7 @@ use utoipa::ToSchema;
 use webauthn_rs::prelude::Passkey;
 
 use crate::disk::MIB;
-use crate::permissions::{Permission, Preset};
+use crate::permissions::{Permission, Preset, STANDARD_ROLES};
 
 /// Pomodoro size of a task. `Many` (stored as 4) means ">3 pomodori".
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -452,6 +452,9 @@ pub struct BoardRow {
     /// The report bookmarks of the board, oldest first.
     #[serde(default)]
     pub report_bookmarks: Vec<ReportBookmark>,
+    /// The seats the board offers, which a new task copies, in the order the board lists them.
+    #[serde(default)]
+    pub seats: Vec<SeatSlot>,
 }
 
 /// The chart reports that keep bookmarks, by the last segment of their page path.
@@ -794,6 +797,9 @@ pub struct TaskRow {
     /// The one holder of the task, or null.
     #[serde(default)]
     pub owner: Option<Owner>,
+    /// The review seats of the task, which start as the board's seats.
+    #[serde(default)]
+    pub seats: Vec<Seat>,
     /// Override date used when the column groups tasks by date
     /// ("Edit grouping date"). Null means use the created/completed date.
     #[serde(default)]
@@ -1005,6 +1011,17 @@ pub enum OwnerHolder {
     },
 }
 
+impl OwnerHolder {
+    /// Returns the holder as history and errors name it.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Human { id } => format!("member {id}"),
+            Self::Agent { name, .. } => name.clone(),
+        }
+    }
+}
+
 /// The variant of an [`OwnerHolder`] as stored.
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1082,6 +1099,15 @@ pub struct Owner {
 }
 
 impl Owner {
+    /// Returns whether the lease still holds at `now`. A lease with no end always holds, and an
+    /// unparseable end counts as lapsed.
+    #[must_use]
+    pub fn is_live(&self, now: DateTime<Utc>) -> bool {
+        self.lease_expires_at
+            .as_deref()
+            .is_none_or(|end| DateTime::parse_from_rfc3339(end).is_ok_and(|end| end > now))
+    }
+
     /// Returns the owner a task with these holders gets: the live claim's holder, else the
     /// responsible actor, else the first member, else none. A claim carries its lease over.
     #[must_use]
@@ -1112,6 +1138,116 @@ impl Owner {
                 name: name.clone(),
             })),
             None => member_ids.first().map(human),
+        }
+    }
+}
+
+/// Most seats one board or one task holds.
+pub const MAX_SEATS: usize = 20;
+
+/// A seat a board offers: a name and the standard role that sits in it, as in `code (reviewer)`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SeatSlot {
+    /// The seat's name, such as `code`.
+    pub name: String,
+    /// The name of the standard role that sits in the seat.
+    pub role: String,
+}
+
+impl SeatSlot {
+    /// Most characters in a seat's name.
+    pub const MAX_NAME_CHARS: usize = 50;
+
+    /// Returns the slot with its name and role trimmed, or why it is refused: a blank or long
+    /// name, a name holding a slash, or a role that is not a standard one.
+    pub fn normalized(self) -> Result<Self, String> {
+        let name = self.name.trim().to_string();
+        if name.is_empty() {
+            return Err("a seat needs a name".to_string());
+        }
+        if name.chars().count() > Self::MAX_NAME_CHARS {
+            return Err(format!(
+                "a seat name holds at most {} characters",
+                Self::MAX_NAME_CHARS
+            ));
+        }
+        if name.contains('/') {
+            return Err("a seat name cannot hold a slash".to_string());
+        }
+        let role = self.role.trim().to_string();
+        if !STANDARD_ROLES.iter().any(|standard| standard.name == role) {
+            return Err(format!("unknown role \"{role}\""));
+        }
+        Ok(Self { name, role })
+    }
+
+    /// Returns `slots` normalized, or why they are refused: more than [`MAX_SEATS`], a refused
+    /// slot, or a name listed twice.
+    pub fn normalize_all(slots: Vec<Self>) -> Result<Vec<Self>, String> {
+        if slots.len() > MAX_SEATS {
+            return Err(format!("a board holds at most {MAX_SEATS} seats"));
+        }
+        let mut kept: Vec<Self> = Vec::with_capacity(slots.len());
+        for slot in slots {
+            let slot = slot.normalized()?;
+            if kept
+                .iter()
+                .any(|held| held.name.eq_ignore_ascii_case(&slot.name))
+            {
+                return Err(format!("seat \"{}\" is listed twice", slot.name));
+            }
+            kept.push(slot);
+        }
+        Ok(kept)
+    }
+}
+
+/// A reviewer's answer on a card.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SeatVerdict {
+    /// The reviewer accepts the card.
+    Approved,
+    /// The reviewer wants a change before the card goes on.
+    ChangesNeeded,
+}
+
+/// One seat on a card: who holds it, how long, and what they answered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Seat {
+    /// The seat's name, which is unique on the card.
+    pub name: String,
+    /// The name of the standard role that sits in the seat.
+    pub role: String,
+    /// The one taker of the seat, or null while it is open.
+    #[serde(default)]
+    pub holder: Option<OwnerHolder>,
+    /// RFC3339 time the holder's lease ends, or null.
+    #[serde(default)]
+    pub lease_expires_at: Option<String>,
+    /// Whether the holder is waiting rather than working.
+    #[serde(default)]
+    pub idle: bool,
+    /// The holder's answer, or null before one.
+    #[serde(default)]
+    pub verdict: Option<SeatVerdict>,
+    /// The change the holder suggests with a verdict, or null.
+    #[serde(default)]
+    pub revision: Option<String>,
+}
+
+impl Seat {
+    /// Returns an open seat for `slot`.
+    #[must_use]
+    pub fn open(slot: &SeatSlot) -> Self {
+        Self {
+            name: slot.name.clone(),
+            role: slot.role.clone(),
+            holder: None,
+            lease_expires_at: None,
+            idle: false,
+            verdict: None,
+            revision: None,
         }
     }
 }
@@ -1433,10 +1569,21 @@ impl TaskRow {
         }
     }
 
-    /// False when `fence` is given and a live claim holds another fence.
+    /// Returns the owner whose lease holds at `now`. An owner with no claim fence behind it holds
+    /// nothing.
+    #[must_use]
+    pub fn live_owner(&self, now: DateTime<Utc>) -> Option<&Owner> {
+        self.owner
+            .as_ref()
+            .filter(|owner| self.claim_fence > 0 && owner.is_live(now))
+    }
+
+    /// Returns false when `fence` is given, a live claim or owner lease holds the task, and
+    /// `fence` is not the task's latest.
     pub fn fence_allows(&self, fence: Option<u64>) -> bool {
-        match (fence, self.live_claim()) {
-            (Some(fence), Some(claim)) => claim.fence == fence,
+        let held = self.live_claim().is_some() || self.live_owner(Utc::now()).is_some();
+        match fence {
+            Some(fence) if held => self.claim_fence == fence,
             _ => true,
         }
     }

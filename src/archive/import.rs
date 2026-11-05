@@ -939,6 +939,7 @@ impl Builder<'_> {
             links,
             claim: None,
             claim_fence: 0,
+            seats: Vec::new(),
             cover_id,
             kind: task.kind,
             closed: task.closed,

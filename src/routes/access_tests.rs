@@ -814,12 +814,18 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
             json!({"kind": "blocks", "target_id": body_ids.task2})
         }
         (&Method::PUT, "/api/tasks/:id/umbrella") => json!({"target_id": body_ids.task2}),
+        (&Method::POST, "/api/tasks/:id/seats") => json!({"name": "qa", "role": "reviewer"}),
+        (&Method::PUT, "/api/boards/:id/seats") => json!({"seats": []}),
         (&Method::POST, "/api/tasks/:id/claim") => {
             json!({"claimant": "agent", "ttl_seconds": 60})
         }
         (&Method::POST, "/api/tasks/:id/claim/heartbeat" | "/api/tasks/:id/claim/release") => {
             json!({"fence": 1})
         }
+        (&Method::POST, "/api/tasks/:id/owner" | "/api/tasks/:id/owner/renew") => {
+            json!({"name": "agent", "ttl_seconds": 60})
+        }
+        (&Method::POST, "/api/tasks/:id/owner/release") => json!({"name": "agent"}),
         (&Method::POST, "/api/tasks/:id/comments") => json!({"body": "hello"}),
         (&Method::PATCH, "/api/tasks/:id/comments/:comment_id") => json!({"body": "edited"}),
         (&Method::POST, "/api/tasks/:id/comments/:comment_id/reactions") => {
@@ -1619,6 +1625,21 @@ fn bad_body_cases() -> Vec<(Method, UriOf, BodyOf)> {
         (
             Method::POST,
             task_uri("/claim/release"),
+            Box::new(|_: &Ids| json!({})),
+        ),
+        (
+            Method::POST,
+            task_uri("/owner"),
+            Box::new(|_: &Ids| json!({"name": "agent", "ttl_seconds": 0})),
+        ),
+        (
+            Method::POST,
+            task_uri("/owner/renew"),
+            Box::new(|_: &Ids| json!({})),
+        ),
+        (
+            Method::POST,
+            task_uri("/owner/release"),
             Box::new(|_: &Ids| json!({})),
         ),
         (Method::POST, task_uri("/subtasks"), blank_body("name")),

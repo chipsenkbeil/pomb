@@ -63,17 +63,18 @@ use crate::db::{
     ColumnDeleteOutcome, ColumnKind, ColumnWatch, CommentWrite, Commit, CopyTasks,
     DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment, EntryEdit,
     EpicCloseOutcome, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome,
-    InboundColumnMissing, InstanceDb, LargestUse, LinkAddOutcome, LinkDeleteOutcome, LinkEdit,
-    LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards,
-    MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement,
-    NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedColumn, OwnedTask, OwnerChange,
-    PaletteStrandsColor, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome,
-    QuestionMove, QuestionWrite, QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome,
-    Revoked, RoleDenied, RoleTokenRefusal, SessionEndOutcome, SessionListing, SessionRefused,
-    SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
-    SwimlaneUpdateOutcome, TaskContext, TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart,
-    UmbrellaRef, WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels, local_day,
-    merge_metadata, push_change_event, push_column_event, push_event, round_estimate,
+    GrabRequest, InboundColumnMissing, InstanceDb, LargestUse, LinkAddOutcome, LinkDeleteOutcome,
+    LinkEdit, LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MemberSet,
+    MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment,
+    NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedColumn,
+    OwnedTask, OwnerChange, OwnerOutcome, PaletteStrandsColor, PasskeyAddOutcome,
+    PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuestionMove, QuestionWrite, QuotaExceeded,
+    RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked, RoleDenied, RoleTokenRefusal,
+    SessionEndOutcome, SessionListing, SessionRefused, SessionToken, SwimlaneDeleteOutcome,
+    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext, TokenEdit,
+    TokenNameTaken, UmbrellaChange, UmbrellaPart, UmbrellaRef, WebhookColumnMissing, WebhookPatch,
+    carry_fields, clean_labels, local_day, merge_metadata, push_change_event, push_column_event,
+    push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -173,11 +174,18 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/tasks/:id/links/:link_id", delete(delete_task_link))
         .route("/api/tasks/:id/umbrella", put(change_task_umbrella))
+        .route(
+            "/api/tasks/:id/seats",
+            post(add_task_seat).delete(drop_task_seat),
+        )
         .route("/api/tasks/:id/close", post(close_task))
         .route("/api/tasks/:id/reopen", post(reopen_task))
         .route("/api/tasks/:id/claim", post(claim_task))
         .route("/api/tasks/:id/claim/heartbeat", post(heartbeat_claim))
         .route("/api/tasks/:id/claim/release", post(release_claim))
+        .route("/api/tasks/:id/owner", post(grab_owner))
+        .route("/api/tasks/:id/owner/renew", post(renew_owner))
+        .route("/api/tasks/:id/owner/release", post(release_owner))
         .route("/api/tasks/:id/subtasks/order", put(reorder_subtasks))
         .route(
             "/api/tasks/:id/subtasks/:sub_id",
@@ -304,6 +312,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/boards/:id/rules",
             get(get_board_rules).put(update_board_rules),
+        )
+        .route(
+            "/api/boards/:id/seats",
+            get(get_board_seats).put(update_board_seats),
         )
         .route(
             "/api/boards/:id/label-settings",
@@ -898,6 +910,8 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::POST, "/api/tasks/:id/links", Task, Grows),
         (Method::GET, "/api/tasks/:id/links", Task, No),
         (Method::PUT, "/api/tasks/:id/umbrella", Task, Grows),
+        (Method::POST, "/api/tasks/:id/seats", Task, Grows),
+        (Method::DELETE, "/api/tasks/:id/seats", Task, Exempt),
         (
             Method::DELETE,
             "/api/tasks/:id/links/:link_id",
@@ -909,6 +923,9 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::POST, "/api/tasks/:id/claim", Task, Grows),
         (Method::POST, "/api/tasks/:id/claim/heartbeat", Task, Grows),
         (Method::POST, "/api/tasks/:id/claim/release", Task, Grows),
+        (Method::POST, "/api/tasks/:id/owner", Task, Grows),
+        (Method::POST, "/api/tasks/:id/owner/renew", Task, Grows),
+        (Method::POST, "/api/tasks/:id/owner/release", Task, Grows),
         (Method::PUT, "/api/tasks/:id/subtasks/order", Task, Grows),
         (
             Method::PATCH,
@@ -1072,6 +1089,8 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::PUT, "/api/boards/:id/label-settings", Board, Grows),
         (Method::GET, "/b/:board_id/settings/labels", Board, No),
         (Method::GET, "/api/boards/:id/rules", Board, No),
+        (Method::GET, "/api/boards/:id/seats", Board, No),
+        (Method::PUT, "/api/boards/:id/seats", Board, Grows),
         (Method::PUT, "/api/boards/:id/rules", Board, Grows),
         (Method::GET, "/b/:board_id/settings/rules", Board, No),
         (Method::GET, "/api/boards/:id/columns", Board, No),
@@ -8819,6 +8838,7 @@ fn update_history(
     params(
         ("id" = String, Path, description = "Task id"),
         ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim (see Claims)"),
+        ("If-Owner-Fence" = Option<u64>, Header, description = "Fence of the caller's owner grab (see Owner)"),
     ),
     request_body = UpdateTaskInput,
     responses(
@@ -8874,7 +8894,7 @@ async fn update_task(
     let entry_rule = entry_rule_of(db, owned.board_id(), &owned.row().column_id)?;
     let metadata = check_task_metadata(input.metadata.as_ref().map(Option::as_ref), body_len)?;
 
-    let fence = claim_fence_header(&headers)?;
+    let fence = write_fence_header(&headers)?;
     if let Some(name) = input.name.as_deref()
         && name.trim().is_empty()
     {
@@ -9468,6 +9488,7 @@ struct MoveTaskInput {
     params(
         ("id" = String, Path, description = "Task id"),
         ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim (see Claims)"),
+        ("If-Owner-Fence" = Option<u64>, Header, description = "Fence of the caller's owner grab (see Owner)"),
         MoveTaskQuery,
     ),
     request_body = MoveTaskInput,
@@ -9491,7 +9512,7 @@ async fn move_task(
     let db = &account;
 
     let before = found(db.task(&id), "task not found")?;
-    let fence = claim_fence_header(&headers)?;
+    let fence = write_fence_header(&headers)?;
     let from_column = db.column(&before.row().column_id).map_err(AppError::from)?;
     let from_name = from_column
         .as_ref()
@@ -10926,6 +10947,9 @@ struct TaskDetail {
     blocked: bool,
     /// The live claim, or null when unclaimed, released, or expired.
     claim: Option<TaskClaim>,
+    /// The owner with its lease state and fence, or null when the task never had one. A lapsed or
+    /// released lease keeps the owner, with `live` false.
+    owner: Option<OwnerView>,
     /// Custom field values by key.
     #[schema(value_type = Object)]
     fields: serde_json::Map<String, serde_json::Value>,
@@ -11024,6 +11048,10 @@ impl TaskDetail {
             children: children.into_iter().map(ChildDetail::from).collect(),
             parent: parent.map(UmbrellaDetail::from),
             claim: task.live_claim().cloned(),
+            owner: task
+                .owner
+                .clone()
+                .map(|owner| OwnerView::new(owner, task.claim_fence)),
             description_hash: markdown::hash(&task.description),
             updated_at: task.last_updated().to_string(),
             column_entered_at: task.column_entered_at().to_string(),
@@ -11301,18 +11329,34 @@ async fn delete_task_link(
 /// Optional header on move, update, and comment requests.
 const IF_CLAIM_FENCE: &str = "if-claim-fence";
 
-/// Parses the optional `If-Claim-Fence` header. The fence is checked
-/// against the live claim inside the write transaction.
-fn claim_fence_header(headers: &HeaderMap) -> Result<Option<u64>, AppError> {
+/// Header that carries the fence of an owner grab: optional on move, update and comment
+/// requests, required on renew and release.
+const IF_OWNER_FENCE: &str = "if-owner-fence";
+
+/// Parses the optional integer header `name`, which `label` names in the refusal.
+fn fence_header(headers: &HeaderMap, name: &str, label: &str) -> Result<Option<u64>, AppError> {
     headers
-        .get(IF_CLAIM_FENCE)
+        .get(name)
         .map(|raw| {
             raw.to_str()
                 .ok()
                 .and_then(|value| value.trim().parse().ok())
-                .ok_or_else(|| AppError::bad_request("invalid If-Claim-Fence: use an integer"))
+                .ok_or_else(|| AppError::bad_request(format!("invalid {label}: use an integer")))
         })
         .transpose()
+}
+
+/// Parses the optional `If-Claim-Fence` or `If-Owner-Fence` header. The fence is checked
+/// against the task's live claim or owner lease inside the write transaction.
+fn write_fence_header(headers: &HeaderMap) -> Result<Option<u64>, AppError> {
+    let claim = fence_header(headers, IF_CLAIM_FENCE, "If-Claim-Fence")?;
+    let owner = fence_header(headers, IF_OWNER_FENCE, "If-Owner-Fence")?;
+    match (claim, owner) {
+        (Some(claim), Some(owner)) if claim != owner => Err(AppError::bad_request(
+            "If-Claim-Fence and If-Owner-Fence differ: send one",
+        )),
+        (claim, owner) => Ok(claim.or(owner)),
+    }
 }
 
 fn stale_fence() -> AppError {
@@ -11522,6 +11566,7 @@ async fn claim_task(
         jj_change_id: input.jj_change_id,
         session_id: input.session_id,
         fence: input.fence,
+        token_id: user.token_id.clone(),
     };
     match account
         .claim_task(&task, &request, user.actor())
@@ -11529,6 +11574,7 @@ async fn claim_task(
     {
         ClaimOutcome::Granted(claim) => Ok(Json(claim)),
         ClaimOutcome::Held(claim) => Err(claim_conflict(&claim)),
+        ClaimOutcome::OwnerHeld(owner) => Err(owner_conflict(&owner)),
         ClaimOutcome::NotFound => Err(AppError::not_found("task not found")),
         ClaimOutcome::Released | ClaimOutcome::FenceMismatch => {
             Err(AppError::internal("unexpected claim outcome"))
@@ -11615,6 +11661,233 @@ async fn release_claim(
         ClaimOutcome::Released => Ok(StatusCode::OK),
         ClaimOutcome::NotFound => Err(AppError::not_found("task not found")),
         _ => Err(AppError::conflict("claim fence mismatch").with_code(ErrorCode::StaleFence)),
+    }
+}
+
+/// Who a request holds a task as: the signed-in member for the browser, and an agent made of the
+/// token and the name the request sends for any other credential.
+fn owner_holder(user: &AuthUser, name: Option<&str>) -> Result<OwnerHolder, AppError> {
+    if user.kind == CredentialKind::Session {
+        return Ok(OwnerHolder::Human {
+            id: user.account_id().as_str().to_string(),
+        });
+    }
+    let name = name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| AppError::bad_request("name is required"))?;
+    TextCap::CLAIMANT.check(name)?;
+    Ok(OwnerHolder::Agent {
+        token_id: user.token_id.clone(),
+        name: name.to_string(),
+    })
+}
+
+/// Parses the `If-Owner-Fence` header of a renew or release, which must carry one.
+fn owner_fence_required(headers: &HeaderMap) -> Result<u64, AppError> {
+    fence_header(headers, IF_OWNER_FENCE, "If-Owner-Fence")?
+        .ok_or_else(|| AppError::bad_request("If-Owner-Fence is required"))
+}
+
+/// Refuses a request that meets another holder's live lease.
+fn owner_conflict(owner: &Owner) -> AppError {
+    let holder = owner.holder.label();
+    let until = owner
+        .lease_expires_at
+        .as_ref()
+        .map(|end| format!(" until {end}"))
+        .unwrap_or_default();
+    AppError::conflict(format!("task owned by {holder}{until}")).with_code(ErrorCode::OwnerHeld)
+}
+
+/// The owner of a task with its lease state and the fence its writers send.
+#[derive(serde::Serialize, ToSchema)]
+struct OwnerView {
+    /// Who holds the task.
+    holder: OwnerHolder,
+    /// RFC3339 time the lease ends, or null for a lease that never ends.
+    lease_expires_at: Option<String>,
+    /// True while the lease holds. A task whose lease lapsed or was released keeps its owner, and
+    /// anyone may grab it.
+    live: bool,
+    /// The fence to send as `If-Owner-Fence`, which goes up by one on every new owner.
+    fence: u64,
+}
+
+impl OwnerView {
+    /// Builds the view of an owner at `fence`, with `live` taken from the lease now.
+    fn new(owner: Owner, fence: u64) -> Self {
+        Self {
+            live: fence > 0 && owner.is_live(Utc::now()),
+            holder: owner.holder,
+            lease_expires_at: owner.lease_expires_at,
+            fence,
+        }
+    }
+}
+
+/// The body of `POST /api/tasks/{id}/owner`.
+#[derive(Deserialize, ToSchema)]
+struct GrabInput {
+    /// The agent's name, required for a token and ignored for the browser, which grabs as the
+    /// signed-in member.
+    name: Option<String>,
+    /// Lease length in seconds, 1 to 86400. Without it the lease never ends.
+    ttl_seconds: Option<i64>,
+    /// Replace a live owner. Only the browser may.
+    #[serde(default)]
+    take_over: bool,
+}
+
+/// The body of `POST /api/tasks/{id}/owner/renew`.
+#[derive(Deserialize, ToSchema)]
+struct RenewInput {
+    /// The agent's name, required for a token.
+    name: Option<String>,
+    /// New lease length in seconds, 1 to 86400. Required.
+    #[schema(value_type = i64, required = true)]
+    ttl_seconds: Option<i64>,
+}
+
+/// The body of `POST /api/tasks/{id}/owner/release`.
+#[derive(Deserialize, ToSchema)]
+struct OwnerReleaseInput {
+    /// The agent's name, required for a token.
+    name: Option<String>,
+}
+
+/// Answers a grab or renew with the owner, or the refusal its outcome holds.
+fn owner_result(outcome: OwnerOutcome) -> Result<Json<OwnerView>, AppError> {
+    match outcome {
+        OwnerOutcome::Granted(owner, fence) => Ok(Json(OwnerView::new(owner, fence))),
+        OwnerOutcome::Held(owner) => Err(owner_conflict(&owner)),
+        OwnerOutcome::NotFound => Err(AppError::not_found("task not found")),
+        OwnerOutcome::StaleFence => Err(stale_fence()),
+        OwnerOutcome::Released => Err(AppError::internal("unexpected owner outcome")),
+    }
+}
+
+/// Grabs a task, or renews the caller's own live lease.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/owner",
+    operation_id = "grab_task_owner",
+    tag = "Owner",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = GrabInput,
+    responses(
+        (status = 200, description = "The owner and its fence", body = OwnerView),
+        (status = 400, description = "Missing name for a token, ttl_seconds outside 1..86400, or a name over 200 characters"),
+        (status = 403, description = "`take_over` sent with a token"),
+        (status = 404, description = "Task not found"),
+        (status = 409, description = "`owner_held`: another holder's live lease holds the task, and the request does not take over"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn grab_owner(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<OwnerView>, AppError> {
+    let input: GrabInput = parse_body(&headers, body).await?;
+    let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    if input.take_over && user.kind != CredentialKind::Session {
+        return Err(AppError::forbidden("only a signed-in member can take over"));
+    }
+    let request = GrabRequest {
+        holder: owner_holder(&user, input.name.as_deref())?,
+        ttl_seconds: claim_ttl(input.ttl_seconds)?,
+        take_over: input.take_over,
+    };
+    owner_result(
+        account
+            .grab_owner(&task, &request, user.actor())
+            .map_err(AppError::from)?,
+    )
+}
+
+/// Extends the lease of the caller's live ownership.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/owner/renew",
+    operation_id = "renew_task_owner",
+    tag = "Owner",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("If-Owner-Fence" = u64, Header, description = "Fence of the caller's grab"),
+    ),
+    request_body = RenewInput,
+    responses(
+        (status = 200, description = "The owner and its fence", body = OwnerView),
+        (status = 400, description = "Missing If-Owner-Fence, name or ttl_seconds, or ttl_seconds outside 1..86400"),
+        (status = 404, description = "Task not found"),
+        (status = 409, description = "`stale_fence`: the fence is not the task's latest or the lease lapsed. `owner_held`: another holder owns the task"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn renew_owner(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<OwnerView>, AppError> {
+    let input: RenewInput = parse_body(&headers, body).await?;
+    let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let fence = owner_fence_required(&headers)?;
+    let holder = owner_holder(&user, input.name.as_deref())?;
+    let ttl_seconds = claim_ttl(input.ttl_seconds)?
+        .ok_or_else(|| AppError::bad_request("ttl_seconds is required"))?;
+    owner_result(
+        account
+            .renew_owner(&task, &holder, fence, ttl_seconds)
+            .map_err(AppError::from)?,
+    )
+}
+
+/// Ends the lease of the caller's ownership and keeps the owner's name.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/owner/release",
+    operation_id = "release_task_owner",
+    tag = "Owner",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("If-Owner-Fence" = u64, Header, description = "Fence of the caller's grab"),
+    ),
+    request_body = OwnerReleaseInput,
+    responses(
+        (status = 200, description = "Released, and the owner keeps its name with a lease that is no longer live"),
+        (status = 400, description = "Missing If-Owner-Fence or name"),
+        (status = 404, description = "Task not found"),
+        (status = 409, description = "`stale_fence`: the fence is not the task's latest. `owner_held`: another holder owns the task"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn release_owner(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AppError> {
+    let input: OwnerReleaseInput = parse_body(&headers, body).await?;
+    let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let fence = owner_fence_required(&headers)?;
+    let holder = owner_holder(&user, input.name.as_deref())?;
+    match account
+        .release_owner(&task, &holder, fence, user.actor())
+        .map_err(AppError::from)?
+    {
+        OwnerOutcome::Released => Ok(StatusCode::OK),
+        OwnerOutcome::Held(owner) => Err(owner_conflict(&owner)),
+        OwnerOutcome::NotFound => Err(AppError::not_found("task not found")),
+        OwnerOutcome::StaleFence | OwnerOutcome::Granted(..) => Err(stale_fence()),
     }
 }
 
@@ -12954,6 +13227,7 @@ async fn list_comments(
     params(
         ("id" = String, Path, description = "Task id"),
         ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim (see Claims)"),
+        ("If-Owner-Fence" = Option<u64>, Header, description = "Fence of the caller's owner grab (see Owner)"),
     ),
     request_body = CreateCommentInput,
     responses(
@@ -12974,7 +13248,7 @@ async fn create_comment(
     let input: CreateCommentInput = parse_body(&headers, body).await?;
     let task = found(account.task(&id), "task not found")?;
     ensure_unlocked(&account, &user, task.board_id(), task.row())?;
-    let fence = claim_fence_header(&headers)?;
+    let fence = write_fence_header(&headers)?;
     let question = input
         .question
         .as_ref()
@@ -13356,6 +13630,7 @@ struct EscalateInput {
     params(
         ("id" = String, Path, description = "Task id"),
         ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim (see Claims)"),
+        ("If-Owner-Fence" = Option<u64>, Header, description = "Fence of the caller's owner grab (see Owner)"),
     ),
     request_body = EscalateInput,
     responses(
@@ -13384,7 +13659,7 @@ async fn escalate_task(
     let text = comment_text(input.reason.as_deref().unwrap_or_default())?;
     let task = found(account.task(&id), "task not found")?;
     ensure_unlocked(&account, &user, task.board_id(), task.row())?;
-    let fence = claim_fence_header(&headers)?;
+    let fence = write_fence_header(&headers)?;
     let new = NewComment {
         author: &user.username,
         body: text,
@@ -20776,6 +21051,181 @@ async fn update_board_rules(
     Ok(Json(stored))
 }
 
+/// The seats a board offers.
+#[derive(Serialize, ToSchema)]
+struct BoardSeatsView {
+    /// The seats in the order the board lists them. A task created later starts with a copy.
+    seats: Vec<SeatSlot>,
+}
+
+/// The seats to store for a board.
+#[derive(Deserialize, ToSchema)]
+struct BoardSeatsInput {
+    /// Each seat is a name, unique on the board, and the name of a standard role. The list
+    /// replaces the board's seats and changes no task.
+    seats: Vec<SeatSlot>,
+}
+
+/// Returns the seats the board offers: a name and a role each, which a task created later copies.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/seats",
+    operation_id = "get_board_seats",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "The board's seats", body = BoardSeatsView),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn get_board_seats(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<BoardSeatsView>, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    Ok(Json(BoardSeatsView {
+        seats: board.row().seats.clone(),
+    }))
+}
+
+/// Replaces the seats the board offers. Only the owner's browser session may call it. Tasks that
+/// exist keep the seats they hold, and tasks created later start with the new ones.
+#[utoipa::path(
+    put,
+    path = "/api/boards/{id}/seats",
+    operation_id = "update_board_seats",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = BoardSeatsInput,
+    responses(
+        (status = 200, description = "The seats as stored", body = BoardSeatsView),
+        (status = 400, description = "A role that is not a standard role, a blank or repeated name, a name over 50 characters or holding a slash, or more than 20 seats"),
+        (status = 403, description = "`session_required`: the request came from an API token"),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn update_board_seats(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<BoardSeatsView>, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    require_cookie_auth(&user)?;
+    let input: BoardSeatsInput = parse_body(&headers, body).await?;
+    let seats = SeatSlot::normalize_all(input.seats).map_err(AppError::bad_request)?;
+    account
+        .set_board_seats(&board, seats.clone())
+        .map_err(AppError::from)?;
+    Ok(Json(BoardSeatsView { seats }))
+}
+
+/// Adds a seat to one task, which changes no other task and not the board's seats.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/seats",
+    operation_id = "add_task_seat",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = SeatSlot,
+    responses(
+        (status = 200, description = "The task's seats", body = Vec<Seat>),
+        (status = 400, description = "A role that is not a standard role, a blank name, a name over 50 characters or holding a slash, a name the task already has, or the task already holds 20 seats"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn add_task_seat(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Vec<Seat>>, AppError> {
+    let input: SeatSlot = parse_body(&headers, body).await?;
+    let slot = input.normalized().map_err(AppError::bad_request)?;
+    let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let outcome = account
+        .apply_task_change(&task, user.actor(), |row| {
+            if row
+                .seats
+                .iter()
+                .any(|seat| seat.name.eq_ignore_ascii_case(&slot.name))
+            {
+                let refusal = format!("the task already has a seat named \"{}\"", slot.name);
+                return (Err(AppError::bad_request(refusal)), false);
+            }
+            if row.seats.len() >= MAX_SEATS {
+                let refusal = format!("a task holds at most {MAX_SEATS} seats");
+                return (Err(AppError::bad_request(refusal)), false);
+            }
+            row.seats.push(Seat::open(&slot));
+            (Ok(row.seats.clone()), true)
+        })
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(Json(outcome?))
+}
+
+/// Parameters of `DELETE /api/tasks/{id}/seats`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct DropSeatQuery {
+    /// The name of the seat to drop. Required.
+    name: Option<String>,
+}
+
+/// Drops a seat from one task, with whoever holds it and whatever verdict it holds, and leaves
+/// every other task and the board's seats unchanged.
+#[utoipa::path(
+    delete,
+    path = "/api/tasks/{id}/seats",
+    operation_id = "drop_task_seat",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id"), DropSeatQuery),
+    responses(
+        (status = 200, description = "The task's seats", body = Vec<Seat>),
+        (status = 400, description = "No `name`"),
+        (status = 404, description = "Task not found, or it has no seat of that name"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn drop_task_seat(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    Query(query): Query<DropSeatQuery>,
+) -> Result<Json<Vec<Seat>>, AppError> {
+    let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let name = query
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| AppError::bad_request("name is required"))?;
+    let outcome = account
+        .apply_task_change(&task, user.actor(), |row| {
+            let Some(index) = row
+                .seats
+                .iter()
+                .position(|seat| seat.name.eq_ignore_ascii_case(name))
+            else {
+                return (Err(AppError::not_found("the task has no such seat")), false);
+            };
+            row.seats.remove(index);
+            (Ok(row.seats.clone()), true)
+        })
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(Json(outcome?))
+}
+
 /// Returns the board's label settings: the highlighted labels with their colors, the show-all
 /// flag, and the labels kept before any card uses them.
 #[utoipa::path(
@@ -26771,6 +27221,34 @@ A claim, a release and an expiry each change the task's `updated_at`. A heartbea
 change only the lease, so `?since=` polling does not return every claimed task on every tick.
 `GET /api/boards/{id}/export-data` shows the stored claim without lazy expiry."#;
 
+/// Concept prose for the `Owner` tag.
+const OWNER_DOC: &str = r#"A task has one owner at a time, who is a member or an agent. An agent owner is its token plus the
+`name` it sends, and the name is plain text that outlives the token. Anyone can still move or edit
+a task: owning it restricts no move and no edit.
+
+1. Grab with `ttl_seconds` (1 to 86400) for a lease, or without it for a lease that never ends.
+   The answer holds the owner and its `fence`. While another holder's lease is live the answer is
+   409 `owner_held`, and of two simultaneous grabs exactly one gets 200. A holder that grabs again
+   keeps its fence and only moves the end of its lease.
+2. Renew with `ttl_seconds` and `If-Owner-Fence` to extend the lease, which is a 409 `stale_fence`
+   once the lease has lapsed or another grab has raised the fence.
+3. Release with `If-Owner-Fence`. The lease ends and the owner keeps its name, so the task is free
+   to grab and the name still shows. Finishing a task never clears its owner either.
+
+A signed-in member takes over with `take_over: true`, which replaces a live owner and raises the
+fence. A token never takes over, and a member who grabs needs no `name`.
+
+The `fence` goes up by one on every new owner and on every new claim, and the claim routes share
+it. `If-Owner-Fence: <fence>` on `PATCH /api/tasks/{id}`, `POST /api/tasks/{id}/move` and
+`POST /api/tasks/{id}/comments` refuses the write with 409 `stale_fence` when a live owner lease or
+claim holds a different fence. Without a live lease the header passes, and without the header
+nothing is checked.
+
+A lapsed lease is free to grab, with the name still on the task and `live` false. Lapse is checked
+on use, with no background job running. `GET /api/tasks/{id}` shows the `owner` with `live` and
+the fence. A claim also writes the owner: a claim is a grab with its lease, a heartbeat renews it
+and a release ends it."#;
+
 /// Concept prose for the `Links` tag.
 const LINKS_DOC: &str = r#"A link joins two tasks: `blocked_by`, its inverse `blocks`, or `related`. A `blocks` link is
 stored as `blocked_by` on its target, so both forms of one dependency are one link with one id. A
@@ -27246,6 +27724,9 @@ them, which the Backups section of the settings page calls after a confirmation.
         claim_task,
         heartbeat_claim,
         release_claim,
+        grab_owner,
+        renew_owner,
+        release_owner,
         update_subtask,
         delete_subtask,
         convert_subtask,
@@ -27299,6 +27780,10 @@ them, which the Backups section of the settings page calls after a confirmation.
         update_label_settings,
         get_board_rules,
         update_board_rules,
+        get_board_seats,
+        update_board_seats,
+        add_task_seat,
+        drop_task_seat,
         create_column,
         update_column,
         move_column,
@@ -27546,6 +28031,10 @@ them, which the Backups section of the settings page calls after a confirmation.
             ClaimInput,
             HeartbeatInput,
             ReleaseInput,
+            GrabInput,
+            RenewInput,
+            OwnerReleaseInput,
+            OwnerView,
             ManualTimeInput,
             UpdateTimeEntryInput,
             CreateColumnInput,
@@ -27630,6 +28119,7 @@ them, which the Backups section of the settings page calls after a confirmation.
     tags(
         (name = "Tasks", description = TASKS_DOC),
         (name = "Claims", description = CLAIMS_DOC),
+        (name = "Owner", description = OWNER_DOC),
         (name = "Links", description = LINKS_DOC),
         (name = "Fields", description = FIELDS_DOC),
         (name = "Webhooks", description = WEBHOOKS_DOC),
@@ -27712,6 +28202,9 @@ mod limits_tests;
 mod members_tests;
 
 #[cfg(test)]
+mod owner_tests;
+
+#[cfg(test)]
 mod multi_tests;
 
 #[cfg(test)]
@@ -27737,6 +28230,9 @@ mod labels_tests;
 
 #[cfg(test)]
 mod rules_tests;
+
+#[cfg(test)]
+mod seats_tests;
 
 #[cfg(test)]
 mod webhook_tests;
@@ -28516,6 +29012,7 @@ mod tests {
             claim: None,
             claim_fence: 0,
             owner: None,
+            seats: Vec::new(),
             fields: serde_json::Map::new(),
         };
         assert_eq!(
@@ -29879,6 +30376,7 @@ mod tests {
             owner_id: "u1".into(),
             config_json: "{}".into(),
             report_bookmarks: Vec::new(),
+            seats: Vec::new(),
         };
         let columns = vec![ColumnRow {
             id: "c1".into(),

@@ -29,6 +29,13 @@ struct Fixture {
 const ALICE: usize = 0;
 const BOB: usize = 1;
 
+fn drop_seeded_roles(db: &Db, account: &AccountId) {
+    for role in db.list_agent_roles(account.as_str()).expect("roles") {
+        db.delete_agent_role(account.as_str(), &role.id)
+            .expect("delete");
+    }
+}
+
 impl Fixture {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -36,6 +43,8 @@ impl Fixture {
         let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
         let alice = db.create_user("alice").expect("alice");
         let bob = db.create_user("bob").expect("bob");
+        drop_seeded_roles(&db, &alice);
+        drop_seeded_roles(&db, &bob);
         let cookie = |account: &AccountId| {
             format!(
                 "session={}",
