@@ -17,11 +17,11 @@ const COMPOSITIONS: [&str; 3] = ["oneOf", "anyOf", "allOf"];
 pub const SKILL: &str = include_str!("docs/skill.md");
 
 /// Version of [`SKILL`], carried in its frontmatter and reported as `skill_version`.
-pub const SKILL_VERSION: &str = "30";
+pub const SKILL_VERSION: &str = "31";
 
 /// SHA-256 of [`SKILL`] per version, oldest first.
 #[cfg(test)]
-const SKILL_FINGERPRINTS: [(&str, &str); 30] = [
+const SKILL_FINGERPRINTS: [(&str, &str); 31] = [
     (
         "1",
         "c935bab15837c98040da423a9e4479bee899b60c4a8eb39a8cad0338d4c2e57e",
@@ -141,6 +141,10 @@ const SKILL_FINGERPRINTS: [(&str, &str); 30] = [
     (
         "30",
         "cd43ca29911034f728cd0e33ed76546c825ac53c76c681623e2778c8d2c7aa26",
+    ),
+    (
+        "31",
+        "df349447d6764d621d36026ac87ac3dc267bdcbd7dc26e57acdfc587bbc5860e",
     ),
 ];
 
@@ -523,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn skill_should_match_the_fingerprint_of_its_version() {
+    fn skill_should_match_its_fingerprint() {
         let actual = format!("{:x}", Sha256::digest(SKILL.as_bytes()));
         let recorded = SKILL_FINGERPRINTS
             .iter()
@@ -554,8 +558,8 @@ mod tests {
         let version = format!("metadata:\n  version: \"{SKILL_VERSION}\"");
         assert!(frontmatter.contains(&version), "{frontmatter}");
         assert!(
-            SKILL.lines().count() <= 160,
-            "the skill runs past 160 lines"
+            SKILL.lines().count() <= 176,
+            "the skill runs past 176 lines"
         );
         assert!(
             LLMS_TXT.lines().count() <= 20,

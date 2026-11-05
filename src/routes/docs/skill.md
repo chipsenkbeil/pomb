@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "30"
+  version: "31"
 ---
 
 # Pomb
@@ -81,10 +81,26 @@ credentials gets every 4xx that way. Match on `code` and show `message` to the u
 - `claim_held`: another agent holds the task, so pick a different one.
 - `stale_fence`: your claim is gone, so stop working the task.
 - `wip_limit_reached`: the target column is full, so ask the user.
-- `token_invalid` or `token_expired`: ask the user to pair again.
+- `token_invalid`, or `token_expired` on a token with no lead: ask the user to pair again.
+- `exceeds_grant`: you asked for more than your grant holds, so ask for less.
 - `permission_denied`: tell the user the `permission` it names. A null `board_id` means the token
   lacks it entirely, and a `board_id` means it may not use that board.
 - `rate_limited`: wait the `Retry-After` seconds, then retry once.
+
+## Acting as a role
+
+A token may be issued as an agent role: from the owner's Settings form, by device approval, or as
+a lead token's child. `GET /api/v1/auth/whoami` shows your `role_name`, `label`, `parent_token`
+(the issuer chain) and `drift`. Your comments and claims carry the role and label, so leave
+`role` unset.
+
+A role is copied when a token is issued. A non-empty `drift` means the role changed after the
+token was issued, or the token was issued with fewer permissions than the role: report it, and
+don't assume the template.
+
+A lead token issues a subagent with `POST /api/v1/auth/tokens/children` and a `role_id`. On 403
+`exceeds_grant`, ask for less and never retry wider. A role child always expires, so on 401
+`token_expired` it asks its lead for a new child, and a token with no lead asks the user.
 
 ## Find, claim, work, release
 

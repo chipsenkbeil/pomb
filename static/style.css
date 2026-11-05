@@ -9586,3 +9586,4 @@ body.dark .tlp-panel-bar { background: #333; }
 .role-tokens { font-size: 0.85rem; font-weight: normal; opacity: 0.7; }
 .role-boards { border: 1px solid var(--card-border); border-radius: 6px; display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .role-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+.role-token-drifted td { background: rgba(255, 170, 0, 0.12); }

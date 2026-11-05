@@ -185,5 +185,18 @@ check('the device menu adds a one day choice with its end date before the Settin
   })));
 check('the Settings choices stay without a one day choice',
   TokenForm.expiryChoices(day).some(function (choice) { return choice.days === 1; }), false);
+check('a role token reaches a board when it is all boards or holds it',
+  TokenForm.reachingTokens(['all', 'b1,b2', 'b3', ''], 'b2'), 2);
+check('an all-boards role token reaches a board it does not list',
+  TokenForm.reachingTokens(['all', 'b1'], 'b9'), 1);
+check('the remove board message names zero tokens plainly',
+  TokenForm.removeBoardMessage('lead', 'Beta', 0),
+  'Remove "Beta" from "lead"? No live token of this role reaches Beta, so none will stop working.');
+check('the remove board message names one token as it',
+  TokenForm.removeBoardMessage('lead', 'Beta', 1),
+  'Remove "Beta" from "lead"? 1 live token of this role reaches Beta, and it will stop working on every board, along with the tokens it issued. Issue a new one afterwards.');
+check('the remove board message names several tokens as they',
+  TokenForm.removeBoardMessage('lead', 'Beta', 2),
+  'Remove "Beta" from "lead"? 2 live tokens of this role reach Beta, and they will stop working on every board, along with the tokens they issued. Issue new ones afterwards.');
 
 if (failures) process.exit(1);

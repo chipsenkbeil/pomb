@@ -656,6 +656,62 @@ fn reference_should_show_each_operations_permission() {
     assert!(section("\n### PATCH /api/columns/{id}\n").contains("Permission: `columns.edit`."));
 }
 
+fn prose_of(operation: &Value) -> String {
+    one_line(&format!(
+        "{} {}",
+        operation["summary"].as_str().unwrap_or_default(),
+        operation["description"].as_str().unwrap_or_default()
+    ))
+}
+
+#[test]
+fn openapi_should_describe_every_agent_role_route() {
+    let spec = spec();
+    let mut seen = 0;
+    for (method, path, operation) in all_operations(&spec) {
+        if operation["tags"][0] != "Agent roles" {
+            continue;
+        }
+        seen += 1;
+        let text = prose_of(operation);
+        let verb = Method::from_bytes(method.to_uppercase().as_bytes()).expect("method");
+        let session_only = !is_bearer_secured(&spec, operation);
+        let needed = if session_only {
+            "browser session".to_string()
+        } else {
+            let permission = auth::required_permission(&verb, path).expect("permission");
+            format!("`{}`", permission.name())
+        };
+        assert!(
+            text.contains(&needed),
+            "{method} {path} does not name {needed}"
+        );
+    }
+    assert_eq!(seen, 10);
+    let tags = spec["tags"].as_array().expect("tags");
+    let tag = tags
+        .iter()
+        .find(|tag| tag["name"] == "Agent roles")
+        .expect("Agent roles tag");
+    assert!(
+        tag["description"]
+            .as_str()
+            .expect("description")
+            .contains("`drift`")
+    );
+    for (method, path) in [
+        ("post", "/api/v1/auth/tokens/children"),
+        ("delete", "/api/v1/auth/tokens/children/{id}"),
+        ("delete", "/api/v1/auth/tokens/children"),
+    ] {
+        let operation = &spec["paths"][path][method];
+        assert!(
+            prose_of(operation).contains("`tokens.issue`"),
+            "{method} {path}"
+        );
+    }
+}
+
 #[test]
 fn spec_should_list_is_done_on_column_create() {
     let spec = spec();

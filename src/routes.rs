@@ -22302,6 +22302,73 @@ struct RoleItem {
     live_tokens: usize,
     /// The boards the role's grant can be toggled on.
     boards: Vec<RoleBoardChoice>,
+    /// The unexpired tokens issued as the role.
+    tokens: Vec<RoleTokenItem>,
+}
+
+/// A live token issued as a role, a row of the Agent roles pane.
+struct RoleTokenItem {
+    /// The stored token id.
+    id: String,
+    /// The token's name.
+    name: String,
+    /// The `agent-N` label of its issue.
+    label: String,
+    /// The boards it reaches, `all` or the comma-separated ids of the boards it holds.
+    boards: String,
+    /// The role name when it was issued.
+    role_name: String,
+    /// The lead tokens that issued it, the first one first, joined with arrows, or empty.
+    issuer: String,
+    /// The expiry date, or "never".
+    expires: String,
+    /// The permissions it holds beyond the role's template, comma-separated.
+    beyond: String,
+    /// The template permissions it lacks, comma-separated.
+    lacks: String,
+    /// Whether it differs from the template.
+    drifted: bool,
+}
+
+/// Returns the names of the lead tokens above `record` among `records`, the first lead first.
+#[must_use]
+fn issuer_chain(records: &[ApiTokenRecord], record: &ApiTokenRecord) -> String {
+    let mut names = Vec::new();
+    let mut current = record;
+    while let (Some(name), Some(parent)) = (&current.parent_name, &current.parent_id) {
+        names.push(name.as_str());
+        match records.iter().find(|candidate| &candidate.id == parent) {
+            Some(next) if names.len() < records.len() => current = next,
+            _ => break,
+        }
+    }
+    names.reverse();
+    names.join(" > ")
+}
+
+impl RoleTokenItem {
+    /// Describes `record`, a live token issued as `role`, against the role's current template.
+    fn new(records: &[ApiTokenRecord], record: &ApiTokenRecord, role: &AgentRoleRow) -> Self {
+        let drift = Drift::of(&record.permissions, role);
+        let join = |names: &[&'static str]| names.join(",");
+        Self {
+            id: record.id.clone(),
+            name: record.name.clone(),
+            label: record.label.clone().unwrap_or_default(),
+            boards: match &record.boards {
+                BoardAccess::All => "all".to_string(),
+                BoardAccess::Only(ids) => ids.iter().cloned().collect::<Vec<_>>().join(","),
+            },
+            role_name: record.role_name.clone().unwrap_or_default(),
+            issuer: issuer_chain(records, record),
+            expires: record
+                .expires_at
+                .map_or_else(|| "never".to_string(), fmt_ts),
+            beyond: join(&drift.beyond),
+            lacks: join(&drift.lacks),
+            drifted: !drift.is_clear(),
+        }
+    }
 }
 
 /// Counts the unexpired tokens among `records` issued as role `role_id`, with the unexpired tokens
@@ -22355,7 +22422,14 @@ impl RolesPane {
             .map(|role| {
                 let granted: BTreeSet<String> =
                     account.agent_role_boards(&role)?.into_iter().collect();
+                let tokens = records
+                    .iter()
+                    .filter(|record| record.role_id.as_deref() == Some(role.id.as_str()))
+                    .filter(|record| record.expires_at.is_none_or(|end| end > now))
+                    .map(|record| RoleTokenItem::new(records, record, &role))
+                    .collect();
                 Ok(RoleItem {
+                    tokens,
                     live_tokens: live_role_tokens(records, &role.id, now),
                     boards: boards
                         .iter()
@@ -23932,9 +24006,46 @@ struct Whoami {
     /// The lead token that issued the token, with its name as it was then, null for any other
     /// credential.
     parent_token: Option<ParentToken>,
+    /// How far the token's permissions have moved from its role's current template, null for a
+    /// credential issued as no role and for one whose role is gone.
+    drift: Option<Drift>,
     /// What the credential may do and where.
     #[serde(flatten)]
     grant: GrantView,
+}
+
+/// How far a token's permissions have moved from the current template of its role.
+#[derive(serde::Serialize, ToSchema)]
+struct Drift {
+    /// The wire names of the permissions the token holds that the template, with the required
+    /// permissions, does not.
+    beyond: Vec<&'static str>,
+    /// The wire names of the permissions the template, with the required permissions, holds that
+    /// the token lacks.
+    lacks: Vec<&'static str>,
+}
+
+impl Drift {
+    /// Compares the permissions `held` with the current template of `role`.
+    #[must_use]
+    fn of(held: &BTreeSet<Permission>, role: &AgentRoleRow) -> Self {
+        let template = Permission::with_required(&role.permissions);
+        let names = |side: &BTreeSet<Permission>, other: &BTreeSet<Permission>| {
+            side.difference(other)
+                .map(|permission| permission.name())
+                .collect()
+        };
+        Self {
+            beyond: names(held, &template),
+            lacks: names(&template, held),
+        }
+    }
+
+    /// Returns whether the token matches the template.
+    #[must_use]
+    fn is_clear(&self) -> bool {
+        self.beyond.is_empty() && self.lacks.is_empty()
+    }
 }
 
 /// The string `all`: every board of the account.
@@ -24003,8 +24114,13 @@ impl GrantView {
 
 /// Returns the kind, name, scope, expiry and grant of the credential that made the request, with
 /// the role name and `agent-N` label of a token issued as a role and the `parent_token` that
-/// issued it, each null when it has none. `permissions` lists every permission it holds, and
-/// `boards` is the string `all` or an array of the `id` and `name` of each board assigned to it.
+/// issued it, each null when it has none. For a token issued as a role, `drift` lists the
+/// permissions it holds beyond the role's current template (`beyond`) and the template permissions
+/// it lacks (`lacks`), both counting the required permissions as part of the template, and is
+/// null for any other credential. A token issued with fewer permissions than the template, such
+/// as a child cut to its issuer's grant, lists the difference in `lacks`. `permissions` lists
+/// every permission it holds, and `boards` is the string `all` or an array of the `id` and `name`
+/// of each board assigned to it.
 /// Every token reaches this route whatever it holds. A revoked or expired token is a 401.
 #[utoipa::path(
     get,
@@ -24021,6 +24137,13 @@ async fn whoami(
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Whoami>, AppError> {
     let grant = GrantView::new(account.as_ref(), user.permissions(), user.boards())?;
+    let drift = match (&account, user.role_id.as_deref()) {
+        (Some(account), Some(role_id)) => account
+            .agent_role(role_id)
+            .map_err(AppError::from)?
+            .map(|role| Drift::of(user.permissions(), &role)),
+        _ => None,
+    };
     let name = match user.token_name {
         Some(token_name) => token_name,
         None if user.kind == CredentialKind::Bootstrap => "bootstrap".to_string(),
@@ -24035,6 +24158,7 @@ async fn whoami(
         role_name: user.role_name,
         label: user.label,
         parent_token: user.parent_token,
+        drift,
         grant,
     }))
 }
@@ -24917,7 +25041,7 @@ fn submitted_template(names: &[String]) -> Result<BTreeSet<Permission>, AppError
     Ok(permissions)
 }
 
-/// Lists the agent roles of the account, by name.
+/// Lists the agent roles of the account, by name. Needs `settings.read`.
 #[utoipa::path(
     get,
     path = "/api/v1/agent-roles",
@@ -24937,7 +25061,7 @@ async fn list_agent_roles(account: AccountDb) -> Result<Json<Vec<AgentRoleView>>
         .map(Json)
 }
 
-/// Shows one agent role of the account.
+/// Shows one agent role of the account. Needs `settings.read`.
 #[utoipa::path(
     get,
     path = "/api/v1/agent-roles/{id}",
@@ -24966,7 +25090,8 @@ fn role_or_404(
         .ok_or_else(|| AppError::not_found("no such agent role").with_code(ErrorCode::UnknownRole))
 }
 
-/// Creates an agent role. Only the owner's browser session creates one, so an API token cannot.
+/// Creates an agent role. Only the owner's browser session creates one, so an API token cannot:
+/// it needs the browser session, not a token permission.
 #[utoipa::path(
     post,
     path = "/api/v1/agent-roles",
@@ -24997,7 +25122,8 @@ async fn create_agent_role(
 }
 
 /// Renames an agent role or replaces its permission template, keeping its id and grants. A change
-/// reaches only the tokens issued afterwards. Only the owner's browser session edits a role.
+/// reaches only the tokens issued afterwards. Only the owner's browser session edits a role, so
+/// it needs the browser session, not a token permission.
 #[utoipa::path(
     patch,
     path = "/api/v1/agent-roles/{id}",
@@ -25113,7 +25239,7 @@ async fn ensure_standard_roles(
 }
 
 /// Grants an agent role on a board, and does nothing when it holds the grant already. A token
-/// grants only a board it holds. The owner's browser grants any board.
+/// grants only a board it holds, and needs `roles.grant`. The owner's browser grants any board.
 #[utoipa::path(
     put,
     path = "/api/v1/agent-roles/{id}/boards/{board_id}",
@@ -25151,8 +25277,8 @@ struct RevokedRoleTokens {
 
 /// Withdraws an agent role's grant on a board and revokes, in the same write, every live token
 /// issued as the role that reaches the board, with the tokens they issued. The role's tokens on
-/// other boards stay live. The owner's browser revokes any board's grant. A token revokes only
-/// the grant on a board it holds.
+/// other boards stay live. The owner's browser revokes any board's grant. A token needs
+/// `roles.grant` and revokes only the grant on a board it holds.
 #[utoipa::path(
     delete,
     path = "/api/v1/agent-roles/{id}/boards/{board_id}",
@@ -25185,7 +25311,8 @@ async fn revoke_agent_role_grant(
 }
 
 /// Revokes every live token issued as an agent role that reaches a board, with the tokens they
-/// issued, and keeps the role's grant on the board. A token revokes only on a board it holds.
+/// issued, and keeps the role's grant on the board. A token needs `roles.grant` and revokes only
+/// on a board it holds.
 #[utoipa::path(
     post,
     path = "/api/v1/agent-roles/{id}/boards/{board_id}/revoke-tokens",
@@ -25218,7 +25345,7 @@ async fn revoke_agent_role_board_tokens(
 
 /// Revokes every live token issued as an agent role on every board of the account, with the tokens
 /// they issued, and keeps the role and its grants. Only the owner's browser session does this, so
-/// an API token cannot.
+/// an API token cannot: it needs the browser session, not a token permission.
 #[utoipa::path(
     post,
     path = "/api/v1/agent-roles/{id}/revoke-tokens",
@@ -25255,7 +25382,8 @@ struct DeletedAgentRole {
 
 /// Deletes an agent role with its grants and revokes, in the same write, every live token issued
 /// as it with the tokens they issued. History keeps the role name stored on each entry. Only the
-/// owner's browser session does this, so an API token cannot.
+/// owner's browser session does this, so an API token cannot: it needs the browser session, not
+/// a token permission.
 #[utoipa::path(
     delete,
     path = "/api/v1/agent-roles/{id}",
@@ -26972,6 +27100,30 @@ A server started with `POMB_BOOTSTRAP_TOKEN` set also accepts that value as a to
 access that acts as the admin account, which works before the owner exists, for headless setup.
 `whoami` reports it as `kind` `bootstrap`."#;
 
+/// Concept prose for the `Agent roles` tag.
+const AGENT_ROLES_DOC: &str = r#"An agent role is a name with a permission template, such as `implementer` or `reviewer`, that
+tokens act as. The owner makes and edits roles in the browser (Settings > Agent roles), and a
+token with `roles.grant`, which the `lead` preset holds, creates the six standard roles
+(planner, implementer, reviewer, verifier, release and lead) and grants a role on the boards it
+holds. A lead's child issued as a role reaches only the boards the role is granted on and the
+lead holds.
+
+A role is a template copied when a token is issued, so editing a role never changes a token that
+exists: it reaches only the tokens issued afterwards. Every token issued as a role also holds the
+permissions marked `required` in `GET /api/v1/auth/permissions`. `GET /api/v1/auth/whoami` on such
+a token shows `role_name`, `label` (`agent-N`), `parent_token`, the lead token that issued it, and
+`drift`, which lists the permissions the token holds beyond the role's current template
+(`beyond`) and the template permissions it lacks (`lacks`).
+
+A token comes to act as a role in three ways: the owner issues it with `role_id` in
+`POST /api/v1/auth/tokens`, the owner picks the role when approving a device request, or a lead
+token calls `POST /api/v1/auth/tokens/children` with `role_id` for a child that holds the role's
+permissions that the lead also holds, never `tokens.issue`, and that always expires. A permission
+or board outside what the caller may give is 403 `exceeds_grant`. Revoking a role's tokens on a
+board or on every board, or deleting the role, revokes each live token issued as it and the
+tokens those issued. Each operation below names the permission it needs, or says it needs the
+browser session."#;
+
 /// Concept prose for the `Sign-in` tag.
 const SIGN_IN_DOC: &str = r#"How a browser signs in depends on the mode the server started with. Under `--auth none`
 the server listens on loopback only, every browser request without a Bearer token is the owner's,
@@ -27489,7 +27641,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         (name = "Settings", description = "App settings"),
         (name = "Notifications", description = "Notifications of the signed-in account"),
         (name = "Tokens", description = TOKENS_DOC),
-        (name = "Agent roles", description = "Named identities with a permission template, which only the owner edits in the browser"),
+        (name = "Agent roles", description = AGENT_ROLES_DOC),
         (name = "Sign-in", description = SIGN_IN_DOC),
         (name = "Accounts", description = ACCOUNTS_DOC),
         (name = "Backups", description = BACKUPS_DOC),

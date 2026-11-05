@@ -2420,17 +2420,6 @@ async fn lead_role_token_should_run_the_cards_and_be_refused_the_board_structure
             format!("/api/boards/{board}/save-as-template"),
             "templates.save",
         ),
-        (
-            "PUT",
-            format!("/api/boards/{board}/label-settings"),
-            "labels.manage",
-        ),
-        (
-            "POST",
-            format!("/api/tasks/{task}/attachments"),
-            "attachments.write",
-        ),
-        ("POST", format!("/api/tasks/{task}/time"), "time.write"),
         ("POST", format!("/api/tasks/{task}/close"), "epics.manage"),
     ];
     for (method, uri, permission) in refused {
@@ -2464,20 +2453,56 @@ async fn lead_role_token_should_run_the_cards_and_be_refused_the_board_structure
         "{}",
         reply.body
     );
-    let extra = fx
+}
+
+fn lead_set_issuer(fx: &Fixture) -> String {
+    let lead_set: Vec<Permission> = STANDARD_ROLES
+        .iter()
+        .find(|role| role.name == "lead")
+        .expect("lead")
+        .permissions()
+        .into_iter()
+        .collect();
+    issuer_token(fx, Some(&lead_set), BoardAccess::All, None).1
+}
+
+#[tokio::test]
+async fn lead_role_token_should_mint_each_standard_role_with_its_full_set() {
+    let fx = Fixture::new();
+    let lead_bearer = lead_set_issuer(&fx);
+    for name in ["verifier", "implementer", "planner"] {
+        let role = standard_role(&fx, name).await;
+        let body = json!({"name": name, "role_id": role["id"]});
+        let child = issue_child(&fx, &lead_bearer, body).await;
+        assert_eq!(child.status, StatusCode::OK, "{name}: {}", child.body);
+        assert_eq!(
+            permission_names(&child.body),
+            permission_names(&role),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn verifier_child_of_a_lead_role_token_should_tick_a_subtask() {
+    let fx = Fixture::new();
+    let verifier = standard_role(&fx, "verifier").await;
+    let lead_bearer = lead_set_issuer(&fx);
+    let body = json!({"name": "verifier", "role_id": verifier["id"]});
+    let child = issue_child(&fx, &lead_bearer, body).await;
+    assert_eq!(child.status, StatusCode::OK, "{}", child.body);
+    let raw = child.body["raw_token"].as_str().expect("raw");
+
+    let task = acting_task(&fx);
+    let sub = fx
         .db
         .add_subtask(&task, "tick")
         .expect("subtask")
         .expect("task")
         .id;
-    let tick = format!("/api/tasks/{task}/subtasks/{extra}");
-    let reply = call_as("PATCH", tick, Some(json!({"done": true}))).await;
-    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
-    assert!(
-        reply.body.to_string().contains("subtasks.check"),
-        "{}",
-        reply.body
-    );
+    let uri = format!("/api/tasks/{task}/subtasks/{sub}");
+    let reply = subtask_call(&fx, raw, "PATCH", &uri, Some(json!({"done": true}))).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
 }
 
 #[tokio::test]
@@ -2558,6 +2583,13 @@ async fn settings_html(fx: &Fixture) -> String {
     page.body.as_str().expect("html").to_string()
 }
 
+fn roles_pane(html: &str) -> &str {
+    let pane = html.split("id=\"agent-roles\"").nth(1).expect("roles pane");
+    pane.split("class=\"settings-pane\"")
+        .nth(1)
+        .expect("pane end")
+}
+
 fn role_uri(role: &Value) -> String {
     format!("/api/v1/agent-roles/{}", role["id"].as_str().expect("id"))
 }
@@ -2586,6 +2618,7 @@ async fn settings_should_list_roles_with_boards_and_live_tokens() {
     assert!(html.contains("id=\"agent-roles\""), "roles pane");
     assert!(html.contains("planner <span class=\"role-tokens\">2 live tokens</span>"));
     assert!(html.contains("reviewer <span class=\"role-tokens\">0 live tokens</span>"));
+    assert!(html.contains("data-boards=\"all\""), "{html}");
     let template: Vec<_> = role["permissions"]
         .as_array()
         .expect("permissions")
@@ -2738,4 +2771,163 @@ async fn settings_should_count_tokens_issued_by_a_role_token() {
         )
         .await;
     assert_eq!(revoked.body["revoked"], 2);
+}
+
+fn owner_role_token(fx: &Fixture, role: &Value, name: &str) -> (ApiTokenRecord, String) {
+    let id = role["id"].as_str().expect("role id");
+    let row = fx
+        .db
+        .agent_role(fx.alice.as_str(), id)
+        .expect("role")
+        .expect("exists");
+    let (mut record, raw) = new_api_token_record(&fx.alice, name, AuthScope::Work, None);
+    record.permissions = Permission::with_required(&row.permissions);
+    let stored = fx
+        .db
+        .create_owner_token_as_role(id, record)
+        .expect("issue")
+        .expect("role");
+    (stored, raw)
+}
+
+#[tokio::test]
+async fn whoami_should_report_no_drift_for_a_fresh_token() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let (_, raw) = owner_role_token(&fx, &role, "fresh");
+
+    let who = whoami(&fx, &raw).await;
+
+    assert_eq!(who["drift"], json!({"beyond": [], "lacks": []}));
+
+    let patched = fx
+        .browse(
+            ALICE,
+            "PATCH",
+            &role_uri(&role),
+            Some(json!({"permissions": ["tasks.read", "tasks.edit"]})),
+        )
+        .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let (_, after) = owner_role_token(&fx, &role, "after");
+    assert_eq!(
+        whoami(&fx, &after).await["drift"],
+        json!({"beyond": [], "lacks": []})
+    );
+
+    let (plain, plain_raw) = new_api_token_record(&fx.alice, "plain", AuthScope::Work, None);
+    fx.db.create_api_token(&plain).expect("token");
+    assert_eq!(whoami(&fx, &plain_raw).await["drift"], Value::Null);
+}
+
+#[tokio::test]
+async fn whoami_should_report_drift_after_a_template_change() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let (_, raw) = owner_role_token(&fx, &role, "old");
+
+    let patched = fx
+        .browse(
+            ALICE,
+            "PATCH",
+            &role_uri(&role),
+            Some(json!({"permissions": ["tasks.read", "tasks.edit"]})),
+        )
+        .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+
+    let who = whoami(&fx, &raw).await;
+    assert_eq!(
+        who["drift"],
+        json!({"beyond": ["tasks.claim"], "lacks": ["tasks.edit"]})
+    );
+}
+
+#[tokio::test]
+async fn roles_page_should_list_live_tokens_with_issuer_chain() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let lead = issuer(&fx);
+    let (mut mid, _) = new_api_token_record(&fx.alice, "mid", AuthScope::Provision, None);
+    mid.parent_id = Some(lead.id.clone());
+    mid.parent_name = Some(lead.name.clone());
+    fx.db.create_api_token(&mid).expect("mid");
+    let (mut record, _) = new_api_token_record(&fx.alice, "deep", AuthScope::Work, None);
+    record.parent_id = Some(mid.id.clone());
+    record.parent_name = Some(mid.name.clone());
+    let deep = fx
+        .db
+        .create_api_token_as_role(
+            role["id"].as_str().expect("id"),
+            record,
+            1,
+            chrono::Utc::now().timestamp(),
+        )
+        .expect("issue")
+        .expect("role");
+    let (fresh, _) = owner_role_token(&fx, &role, "fresh");
+    let (expired, _) = issue_as_at(&fx, &role, "gone", 0);
+    assert!(expired.expires_at.is_some());
+
+    let page = settings_html(&fx).await;
+    let html = roles_pane(&page);
+
+    assert!(html.contains("<td>deep</td>"), "{html}");
+    assert!(html.contains("<td>issuer &gt; mid</td>"));
+    assert!(html.contains("<td>agent-1</td>"));
+    assert!(html.contains("<td>planner</td>"));
+    assert!(html.contains("<td>owner</td>"));
+    assert!(html.contains("<strong>Drifted</strong>"));
+    assert!(html.contains("beyond: "));
+    assert!(!html.contains("<td>gone</td>"));
+    assert!(html.contains(&format!(
+        "class=\"kf-btn token-revoke\" data-id=\"{}\"",
+        deep.id
+    )));
+    let fresh_row = html.split("<td>fresh</td>").nth(1).expect("fresh row");
+    let fresh_row = fresh_row.split("</tr>").next().expect("row end");
+    assert!(fresh_row.contains("<td>None</td>"), "{fresh_row}");
+
+    let revoked = fx
+        .browse(
+            ALICE,
+            "DELETE",
+            &format!("/api/v1/auth/tokens/{}", fresh.id),
+            None,
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    let after = settings_html(&fx).await;
+    assert!(!roles_pane(&after).contains("<td>fresh</td>"));
+}
+
+#[test]
+fn drift_should_not_be_computed_by_the_auth_middleware() {
+    let auth = include_str!("../auth.rs");
+    for forbidden in ["Drift", "drift", "agent_role(", "AgentRoleRow"] {
+        assert!(
+            !auth.contains(forbidden),
+            "src/auth.rs mentions {forbidden}, which the request path must not touch"
+        );
+    }
+}
+
+#[tokio::test]
+async fn whoami_should_list_a_narrowed_grant_as_lacking() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let id = role["id"].as_str().expect("role id");
+    let (mut record, raw) = new_api_token_record(&fx.alice, "narrow", AuthScope::Work, None);
+    record.permissions = Permission::with_required(&BTreeSet::from([Permission::TasksRead]));
+    fx.db
+        .create_owner_token_as_role(id, record)
+        .expect("issue")
+        .expect("role");
+
+    let who = whoami(&fx, &raw).await;
+
+    assert_eq!(
+        who["drift"],
+        json!({"beyond": [], "lacks": ["tasks.claim"]})
+    );
 }

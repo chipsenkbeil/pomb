@@ -648,6 +648,15 @@
         ? picked.filter(function (other) { return other !== id; })
         : picked.concat([id]);
     },
+    reachingTokens: (tokenBoards, boardId) => tokenBoards.filter((boards) =>
+      boards === TokenForm.boardsAll || boards.split(',').includes(boardId)).length,
+    removeBoardMessage: (roleName, boardName, count) => {
+      const head = `Remove "${boardName}" from "${roleName}"? `;
+      if (count === 0) return `${head}No live token of this role reaches ${boardName}, so none will stop working.`;
+      const one = count === 1;
+      const reach = one ? `1 live token of this role reaches ${boardName}, and it` : `${count} live tokens of this role reach ${boardName}, and they`;
+      return `${head}${reach} will stop working on every board, along with the tokens ${one ? 'it' : 'they'} issued. Issue ${one ? 'a new one' : 'new ones'} afterwards.`;
+    },
     expiryChoices: function (now) {
       return [[0, 'Never'], [30, '30 days'], [90, '90 days'], [365, '1 year']].map(function (entry) {
         return {
@@ -1775,8 +1784,10 @@
           box.addEventListener('change', () => {
             if (box.checked) { changeRole('PUT', boardUrl, undefined, () => { box.checked = false; }); return; }
             box.checked = true;
+            const tokenBoards = Array.from(card.querySelectorAll('.role-token-table tbody tr'), (row) => row.dataset.boards);
+            const count = TokenForm.reachingTokens(tokenBoards, box.dataset.boardId);
             confirmThen('Remove board',
-              `Remove "${box.dataset.boardName}" from "${name}" and revoke its tokens on that board?`,
+              TokenForm.removeBoardMessage(name, box.dataset.boardName, count),
               'Remove', () => changeRole('DELETE', boardUrl));
           });
         });

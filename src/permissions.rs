@@ -266,8 +266,12 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
             Permission::TasksClaim,
             Permission::TasksBin,
             Permission::SubtasksEdit,
+            Permission::SubtasksCheck,
             Permission::SubtasksDelete,
             Permission::LinksWrite,
+            Permission::LabelsManage,
+            Permission::AttachmentsWrite,
+            Permission::TimeWrite,
             Permission::ColumnsEdit,
             Permission::SettingsRead,
             Permission::TokensIssue,
@@ -515,6 +519,23 @@ mod tests {
     }
 
     #[test]
+    fn lead_role_should_hold_every_standard_role_permission() {
+        let lead = STANDARD_ROLES
+            .iter()
+            .find(|role| role.name == "lead")
+            .expect("lead")
+            .permissions();
+        for role in STANDARD_ROLES {
+            let lacking: Vec<_> = role.permissions().difference(&lead).copied().collect();
+            assert!(
+                lacking.is_empty(),
+                "lead lacks {lacking:?} of {}",
+                role.name
+            );
+        }
+    }
+
+    #[test]
     fn each_standard_role_should_hold_exactly_its_listed_permissions_in_the_table() {
         let base = [
             "boards.read",
@@ -556,8 +577,12 @@ mod tests {
                     "tasks.claim",
                     "tasks.bin",
                     "subtasks.edit",
+                    "subtasks.check",
                     "subtasks.delete",
                     "links.write",
+                    "labels.manage",
+                    "attachments.write",
+                    "time.write",
                     "columns.edit",
                     "settings.read",
                     "tokens.issue",

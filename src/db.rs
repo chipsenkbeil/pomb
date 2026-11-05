@@ -1601,8 +1601,13 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// makes a version-71 binary refuse a file whose approved requests it would save without their
 /// role.
 ///
+/// Version 73 changes no stored field or table. The lead standard role regains `subtasks.check`,
+/// `labels.manage`, `attachments.write` and `time.write`, and the upgrade adds them to the stored
+/// role named `lead` only while it holds exactly the version-72 lead set. The version stamp guards
+/// it, so a lead role the owner later sets back to that set is not changed again.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 72;
+pub const SCHEMA_VERSION: u64 = 73;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1680,6 +1685,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
     "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
     "a3b189a2e52ffed93957495b282579a2df966d0f356324742c99512c4c841158",
+    "a32b88150a45da953d15152e7fda8261d01b3d6acdde4fc865ea6e3f6dd7ee74",
     "a32b88150a45da953d15152e7fda8261d01b3d6acdde4fc865ea6e3f6dd7ee74",
 ];
 
@@ -1858,7 +1864,66 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 71) {
         fit_lead_role(txn)?;
     }
+    if from.is_none_or(|version| version < 73) {
+        widen_lead_role(txn)?;
+    }
     Ok(())
+}
+
+/// The permissions the lead standard role held in version 72.
+const LEAD_ROLE_V72: [&str; 17] = [
+    "boards.read",
+    "tasks.read",
+    "comments.read",
+    "attachments.read",
+    "comments.write",
+    "tasks.create",
+    "tasks.edit",
+    "tasks.move",
+    "tasks.claim",
+    "tasks.bin",
+    "subtasks.edit",
+    "subtasks.delete",
+    "links.write",
+    "columns.edit",
+    "settings.read",
+    "tokens.issue",
+    "roles.grant",
+];
+
+/// The permissions the lead standard role gained in version 73.
+const LEAD_ROLE_V73_ADDED: [Permission; 4] = [
+    Permission::SubtasksCheck,
+    Permission::LabelsManage,
+    Permission::AttachmentsWrite,
+    Permission::TimeWrite,
+];
+
+/// Adds [`LEAD_ROLE_V73_ADDED`] to each stored role named `lead` whose permissions are exactly
+/// [`LEAD_ROLE_V72`], and leaves any other lead role as the owner set it.
+fn widen_lead_role(txn: &WriteTransaction) -> DbResult<()> {
+    let old = BTreeSet::from(LEAD_ROLE_V72);
+    rewrite_rows(txn, AGENT_ROLES, |_, role| {
+        if role.get("name").and_then(serde_json::Value::as_str) != Some("lead") {
+            return false;
+        }
+        let Some(held) = role
+            .get_mut("permissions")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return false;
+        };
+        let names: BTreeSet<&str> = held.iter().filter_map(serde_json::Value::as_str).collect();
+        if names != old || names.len() != held.len() {
+            return false;
+        }
+        held.extend(
+            LEAD_ROLE_V73_ADDED
+                .iter()
+                .map(|permission| serde_json::Value::from(permission.name())),
+        );
+        true
+    })
 }
 
 /// Sets the stored role named `lead` to exactly the permissions of the lead standard role.
@@ -14655,6 +14720,51 @@ mod schema_version_tests {
             .expect("read")
             .expect("row");
         assert_eq!(kept.permissions, token.permissions);
+    }
+
+    #[test]
+    fn version_72_file_should_widen_an_untouched_lead_role_and_keep_an_edited_one() {
+        let held = |extra: &[Permission]| -> BTreeSet<Permission> {
+            let mut set: BTreeSet<Permission> = STANDARD_ROLES
+                .iter()
+                .find(|standard| standard.name == "lead")
+                .expect("lead")
+                .permissions()
+                .difference(&BTreeSet::from(LEAD_ROLE_V73_ADDED))
+                .copied()
+                .collect();
+            set.extend(extra.iter().copied());
+            set
+        };
+        let edited = held(&[Permission::TimeRead]);
+        let (_dir, path) = temp_path();
+        let (untouched, owned, other) = {
+            let db = Db::connect(&path).expect("connect");
+            let untouched = db.create_agent_role("a", "lead", held(&[])).expect("lead");
+            let owned = db
+                .create_agent_role("b", "lead", edited.clone())
+                .expect("lead");
+            let other = db
+                .create_agent_role("a", "planner", held(&[]))
+                .expect("planner");
+            (untouched.id, owned.id, other.id)
+        };
+        stamp(&path, 72);
+
+        let db = Db::connect(&path).expect("open version 72");
+        let role = |id: &str| -> AgentRoleRow {
+            read_one(&db.db, AGENT_ROLES, id)
+                .expect("read")
+                .expect("row")
+        };
+        let widened = STANDARD_ROLES
+            .iter()
+            .find(|standard| standard.name == "lead")
+            .expect("lead")
+            .permissions();
+        assert_eq!(role(&untouched).permissions, widened);
+        assert_eq!(role(&owned).permissions, edited);
+        assert_eq!(role(&other).permissions, held(&[]));
     }
 
     fn upgraded_token_holding(held: &[&str]) -> ApiTokenRecord {

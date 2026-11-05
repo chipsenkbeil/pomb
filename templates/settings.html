@@ -211,7 +211,7 @@
     <h2>Agent roles</h2>
     <p class="settings-hint">A role names the identity agent tokens act as. Changing a role&rsquo;s
       permissions or name reaches only tokens issued afterwards, and tokens already issued keep what
-      they were given. Removing a board from a role ends the role&rsquo;s tokens on that board.</p>
+      they were given. Removing a board from a role stops every live token of that role that reaches the board from working on any board, along with the tokens they issued.</p>
     <p><button type="button" class="kf-btn" id="roles-standard">Add standard roles</button></p>
     <p class="settings-hint" id="roles-error" hidden></p>
     {% if pane.roles.is_empty() %}
@@ -232,6 +232,24 @@
           {% endfor %}
           {% if role.boards.is_empty() %}<span class="settings-hint">No boards yet.</span>{% endif %}
         </fieldset>
+        {% if !role.tokens.is_empty() %}
+        <div class="bshell-scroll"><table class="bshell-table role-token-table">
+          <thead><tr><th>Label</th><th>Name</th><th>Role then</th><th>Issued by</th><th>Expires</th><th>Drift</th><th></th></tr></thead>
+          <tbody>
+            {% for token in role.tokens %}
+            <tr data-boards="{{ token.boards }}"{% if token.drifted %} class="role-token-drifted"{% endif %}>
+              <td>{{ token.label }}</td>
+              <td>{{ token.name }}</td>
+              <td>{{ token.role_name }}</td>
+              <td>{% if token.issuer.is_empty() %}owner{% else %}{{ token.issuer }}{% endif %}</td>
+              <td>{{ token.expires }}</td>
+              <td>{% if token.drifted %}<strong>Drifted</strong>{% if !token.beyond.is_empty() %} <span class="role-token-beyond">beyond: {{ token.beyond }}</span>{% endif %}{% if !token.lacks.is_empty() %} <span class="role-token-lacks">lacks: {{ token.lacks }}</span>{% endif %}{% else %}None{% endif %}</td>
+              <td><button type="button" class="kf-btn token-revoke" data-id="{{ token.id }}" data-name="{{ token.name }}">Revoke</button></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table></div>
+        {% endif %}
         <p class="role-actions">
           <button type="button" class="kf-btn kf-btn-success role-save">Save</button>
           <button type="button" class="kf-btn role-revoke-all">Revoke all tokens</button>
