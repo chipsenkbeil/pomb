@@ -84,7 +84,19 @@ impl Fixture {
         write_script(
             &bin.join("jj-git-guard"),
             &format!(
-                "echo \"$*\" >>'{root}/pushes'\nif [ -e '{root}/fail-push' ]; then echo 'remote: denied' >&2; exit 1; fi\nn=$(cat '{root}/refuse' 2>/dev/null || echo 0)\nif [ \"$n\" -gt 0 ]; then\necho $((n - 1)) >'{root}/refuse'\ng='{root}/remote.git'\nc=$(git --git-dir=\"$g\" commit-tree -p main -m moved \"$(git --git-dir=\"$g\" rev-parse 'main^{{tree}}')\")\ngit --git-dir=\"$g\" update-ref refs/heads/main \"$c\"\necho '! [rejected] main -> main (fetch first)' >&2\nexit 1\nfi\nshift 2\nexec git push \"$@\""
+                r#"echo "$*" >>'{root}/pushes'
+if [ -e '{root}/fail-push' ]; then echo 'remote: denied' >&2; exit 1; fi
+n=$(cat '{root}/refuse' 2>/dev/null || echo 0)
+if [ "$n" -gt 0 ]; then
+echo $((n - 1)) >'{root}/refuse'
+g='{root}/remote.git'
+c=$(git --git-dir="$g" commit-tree -p main -m moved "$(git --git-dir="$g" rev-parse 'main^{{tree}}')")
+git --git-dir="$g" update-ref refs/heads/main "$c"
+echo '! [rejected] main -> main (fetch first)' >&2
+exit 1
+fi
+shift 2
+exec git push "$@""#
             ),
         );
     }
@@ -119,6 +131,10 @@ impl Fixture {
 
     fn fail_gate(&self, verb: &str) {
         fs::write(self.dir.path().join(format!("fail-{verb}")), "").expect("write fail marker");
+    }
+
+    fn deny_push(&self) {
+        fs::write(self.dir.path().join("fail-push"), "").expect("write push denial marker");
     }
 
     fn candidate(&self, files: &[(&str, &str)], message: &str) -> String {
@@ -219,6 +235,13 @@ fn show(dir: &Path, spec: &str) -> String {
 
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+fn refused_candidate(refusals: u32) -> (Fixture, String) {
+    let fixture = Fixture::new();
+    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
+    fixture.refuse_pushes(refusals);
+    (fixture, cand)
 }
 
 #[test]
@@ -333,9 +356,7 @@ fn land_should_refuse_a_commit_that_is_more_than_one_commit_past_main() {
 
 #[test]
 fn land_should_reapply_and_rerun_both_gates_when_the_first_push_is_refused() {
-    let fixture = Fixture::new();
-    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
-    fixture.refuse_pushes(1);
+    let (fixture, cand) = refused_candidate(1);
     let out = fixture.land(&cand);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(fixture.calls(), ["lint", "test", "lint", "test"]);
@@ -353,9 +374,7 @@ fn land_should_reapply_and_rerun_both_gates_when_the_first_push_is_refused() {
 
 #[test]
 fn land_should_give_up_after_three_refused_pushes_without_forcing() {
-    let fixture = Fixture::new();
-    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
-    fixture.refuse_pushes(3);
+    let (fixture, cand) = refused_candidate(3);
     let out = fixture.land(&cand);
     assert!(!out.status.success());
     assert!(
@@ -377,9 +396,7 @@ fn land_should_give_up_after_three_refused_pushes_without_forcing() {
 
 #[test]
 fn land_should_never_pass_a_force_flag_to_the_push() {
-    let fixture = Fixture::new();
-    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
-    fixture.refuse_pushes(2);
+    let (fixture, cand) = refused_candidate(2);
     let out = fixture.land(&cand);
     assert!(out.status.success(), "{}", stderr(&out));
     let pushes = fixture.lines("pushes");
@@ -396,9 +413,7 @@ fn land_should_never_pass_a_force_flag_to_the_push() {
 
 #[test]
 fn land_should_note_the_landed_sha_on_the_card() {
-    let fixture = Fixture::new();
-    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
-    fixture.refuse_pushes(1);
+    let (fixture, cand) = refused_candidate(1);
     let out = fixture.land(&cand);
     assert!(out.status.success(), "{}", stderr(&out));
     let notes = fixture.lines("notes");
@@ -416,7 +431,7 @@ fn land_should_note_the_landed_sha_on_the_card() {
 fn land_should_not_retry_on_an_exit_one_push_failure() {
     let fixture = Fixture::new();
     let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
-    fixture.fail_gate("push");
+    fixture.deny_push();
     let before = fixture.remote_main();
     let out = fixture.land(&cand);
     assert!(!out.status.success());
