@@ -9,7 +9,7 @@
          data-task-id="{{ task.id }}"{% if task.is_epic() %} data-kind="epic"{% endif %} data-color-value="{{ task.color_value }}"
          data-task-name="{{ task.name }}" data-grouping-date="{{ task.grouping_date.as_deref().unwrap_or("") }}" data-group-day="{{ task.group_day() }}"
          data-total-minutes="{{ task.total_minutes }}" data-due-at="{{ task.due_at.as_deref().unwrap_or("") }}"
-         data-labels="{{ task.labels_json }}" data-filter-fields="{{ task.filter_fields_json }}" data-member-ids="{{ task.member_ids.join(",") }}"
+         data-labels="{{ task.labels_json }}" data-filter-fields="{{ task.filter_fields_json }}" data-member-ids="{{ task.member_ids.join(",") }}" data-owner="{{ task.owner_key }}"
          data-subtasks-total="{{ task.subtasks.len() }}" data-subtasks-done="{{ task.subtasks_done }}"
          data-estimate-minutes="{{ task.estimate_minutes }}"{% if task.due_state.overdue %} data-overdue="1"{% endif %}{% if task.due_state.done %} data-due-done="1"{% endif %}
          tabindex="0" title="{% if task.is_epic() %}Epic{% else %}{{ task.color_label }}{% endif %}"{% if task.archive_hidden() %} hidden{% endif %}>

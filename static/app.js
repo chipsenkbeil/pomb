@@ -17675,9 +17675,14 @@
         self.applyFilter();
         self.maybeSaveFilter();
       });
+      panel.addEventListener('input', (e) => {
+        if (e.target.id !== 'f-owner') return;
+        self.applyFilter();
+        self.maybeSaveFilter();
+      });
       panel.addEventListener('change', function (e) {
         // KF-175: handle both select dropdowns (by id) and radio buttons (by name)
-        if (e.target.id === 'f-user' || e.target.id === 'f-color' || e.target.id === 'f-date' ||
+        if (e.target.id === 'f-user' || e.target.id === 'f-owner' || e.target.id === 'f-color' || e.target.id === 'f-date' ||
             e.target.id === 'f-label-mode' || e.target.classList.contains('f-field') ||
             e.target.name === 'f-fold' || e.target.name === 'f-user' || e.target.name === 'f-color' || e.target.name === 'f-date' || e.target.name === 'f-label') {
           self.applyFilter();
@@ -17724,6 +17729,7 @@
         apply.textContent = b.name;
         apply.addEventListener('click', function () {
           self.setRadio('f-user', b.user);
+          self.setOwner(b.owner);
           self.setRadio('f-color', b.color);
           self.setRadio('f-date', b.date);
           self.setLabelMode(b.labelMode);
@@ -17766,6 +17772,7 @@
         list.push({
           name: label,
           user: self.filterValue('f-user'),
+          owner: self.ownerValue(),
           color: self.filterValue('f-color'),
           date: self.filterValue('f-date'),
           labels: self.filterLabels(),
@@ -18514,6 +18521,7 @@
     },
     isFiltering: function () {
       return this.columnLabelFiltering() || this.filterValue('f-user') !== 'all' ||
+        this.ownerValue() !== 'all' ||
         this.filterValue('f-color') !== 'all' ||
         this.filterValue('f-date') !== 'all' ||
         this.epicFilter !== '' ||
@@ -18547,6 +18555,7 @@
     },
     resetFilter: function () {
       this.setRadio('f-user', 'all');
+      this.setOwner('all');
       this.setRadio('f-color', 'all');
       this.setRadio('f-date', 'all');
       this.setLabelMode(this.LABEL_MODE.AND);
@@ -18565,6 +18574,20 @@
       if (select && select.tagName === 'SELECT') return select.value;
       var el = document.querySelector('input[name="' + name + '"]:checked');
       return el ? el.value : 'all';
+    },
+    ownerChoice: (match) => [...document.querySelectorAll('#f-owner-list option')].find(match),
+    ownerValue: function () {
+      const input = document.getElementById('f-owner');
+      const typed = input ? input.value.trim().toLowerCase() : '';
+      if (!typed) return 'all';
+      const found = this.ownerChoice((option) => option.value.toLowerCase() === typed);
+      return found ? found.dataset.owner : 'all';
+    },
+    setOwner: function (key) {
+      const input = document.getElementById('f-owner');
+      if (!input) return;
+      const found = this.ownerChoice((option) => option.dataset.owner === key);
+      input.value = found ? found.value : '';
     },
     setRadio: function (name, value) {
       if (!value) return;
@@ -18645,6 +18668,7 @@
     applyFilter: function () {
       const places = this.noteScroll();
       var user = this.filterValue('f-user');
+      const owner = this.ownerValue();
       var color = this.filterValue('f-color');
       var date = this.filterValue('f-date');
       var labels = this.filterLabels();
@@ -18666,6 +18690,8 @@
         var members = (card.dataset.memberIds || '').split(',').filter(Boolean);
         if (user === 'unassigned' && members.length) show = false;
         if (user.indexOf('user:') === 0 && members.indexOf(user.slice(5)) === -1) show = false;
+        const cardOwner = card.dataset.owner || '';
+        if (owner === 'none' ? cardOwner !== '' : owner !== 'all' && cardOwner !== owner) show = false;
         // KF-159: date filters evaluate the card's data-due-at (RFC3339).
         if (!self.dateMatches(date, card.dataset.dueAt, card.dataset.dueDone === '1')) show = false;
         // KF-165: label filters match the card's data-labels JSON array.
@@ -19021,6 +19047,7 @@
       var remember = document.getElementById('filter-remember');
       var state = JSON.stringify({
         user: this.filterValue('f-user'),
+        owner: this.ownerValue(),
         color: this.filterValue('f-color'),
         date: this.filterValue('f-date'),
         labels: this.filterLabels(),
@@ -19047,6 +19074,7 @@
       try {
         var f = JSON.parse(kept || raw);
         this.setRadio('f-user', f.user);
+        this.setOwner(f.owner);
         this.setRadio('f-color', f.color);
         this.setRadio('f-date', f.date);
         this.setLabelMode(f.labelMode);

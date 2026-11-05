@@ -1159,6 +1159,28 @@ fn lease_holds(end: Option<&str>, now: DateTime<Utc>) -> bool {
     end.is_none_or(|end| DateTime::parse_from_rfc3339(end).is_ok_and(|end| end > now))
 }
 
+/// Returns the owner whose lease holds at `now`, or for a live `claim` taken before the task had
+/// an owner field, the claim holder with the claim's lease. An `owner` with no `claim_fence`
+/// behind it holds nothing.
+fn live_holder_of(
+    owner: Option<&Owner>,
+    claim_fence: u64,
+    claim: Option<&TaskClaim>,
+    now: DateTime<Utc>,
+) -> Option<Owner> {
+    if let Some(owner) = owner.filter(|owner| claim_fence > 0 && owner.is_live(now)) {
+        return Some(owner.clone());
+    }
+    let claim = claim.filter(|claim| claim.is_live(now))?;
+    owner.is_none().then(|| Owner {
+        holder: OwnerHolder::Agent {
+            token_id: None,
+            name: claim.claimant.clone(),
+        },
+        lease_expires_at: Some(claim.expires_at.clone()),
+    })
+}
+
 /// The one holder of a task, with the lease that lets someone else grab it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Owner {
@@ -1447,6 +1469,9 @@ pub struct TaskCard {
     /// The one holder of the task, or null.
     #[serde(default)]
     pub owner: Option<Owner>,
+    /// Fence of the latest successful claim, or 0 when never claimed.
+    #[serde(default)]
+    pub claim_fence: u64,
     /// The review seats of the task.
     #[serde(default)]
     pub seats: Vec<Seat>,
@@ -1488,6 +1513,18 @@ impl TaskCard {
             lease_expires_at: Some(claim.expires_at.clone()),
         })
     }
+
+    /// Returns the live owner, or for a live claim taken before the task had an owner field, the
+    /// claim holder with the claim's lease.
+    #[must_use]
+    pub fn live_holder(&self, now: DateTime<Utc>) -> Option<Owner> {
+        live_holder_of(
+            self.owner.as_ref(),
+            self.claim_fence,
+            self.claim.as_ref(),
+            now,
+        )
+    }
 }
 
 impl From<&TaskRow> for TaskCard {
@@ -1527,6 +1564,7 @@ impl From<&TaskRow> for TaskCard {
             links: row.links.clone(),
             claim: row.claim.clone(),
             owner: row.owner.clone(),
+            claim_fence: row.claim_fence,
             seats: row.seats.clone(),
             fields: row.fields.clone(),
         }
@@ -1700,17 +1738,12 @@ impl TaskRow {
     /// claim holder with the claim's lease.
     #[must_use]
     pub fn live_holder(&self, now: DateTime<Utc>) -> Option<Owner> {
-        if let Some(owner) = self.live_owner(now) {
-            return Some(owner.clone());
-        }
-        let claim = self.claim.as_ref().filter(|claim| claim.is_live(now))?;
-        self.owner.is_none().then(|| Owner {
-            holder: OwnerHolder::Agent {
-                token_id: None,
-                name: claim.claimant.clone(),
-            },
-            lease_expires_at: Some(claim.expires_at.clone()),
-        })
+        live_holder_of(
+            self.owner.as_ref(),
+            self.claim_fence,
+            self.claim.as_ref(),
+            now,
+        )
     }
 
     /// Returns false when `fence` is given, a live claim or owner lease holds the task, and

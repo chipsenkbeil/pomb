@@ -2415,6 +2415,9 @@ struct TaskView {
     claim_role: Option<String>,
     /// Fence of the live claim, which the modal sends back to release it.
     claim_fence: Option<u64>,
+    /// The key of the live owner as the board's Owner filter lists it, or empty when the card is
+    /// free.
+    owner_key: String,
     /// True while a required "user" custom field is empty (card badge).
     fields_incomplete: bool,
     /// The values of the dropdown custom fields as a JSON object, rendered as the card's
@@ -3499,6 +3502,7 @@ impl TaskView {
                 .and_then(|claim| claim.role.clone())
                 .filter(|role| !role.is_empty()),
             claim_fence: row.live_claim().map(|claim| claim.fence),
+            owner_key: String::new(),
             claim_title: row
                 .live_claim()
                 .map(|claim| {
@@ -3555,6 +3559,7 @@ impl TaskView {
         let required = required_fields(db, board_id)?;
         let incomplete = fields_incomplete(&required, &row.fields);
         let mut reads = db.link_reads().map_err(AppError::from)?;
+        let owners = OwnerKeys::load(db)?;
         let mut card = TaskCard::from(row);
         let select_keys = select_field_keys(db, board_id)?;
         card.fields.retain(|key, _| select_keys.contains(key));
@@ -3562,8 +3567,9 @@ impl TaskView {
         let unit = board
             .as_ref()
             .map_or(EstimateUnit::Hours, |board| EstimateUnit::of(board.row()));
-        let mut view = Self::from_card_in_board(db, &mut reads, board_id, &card, incomplete, unit)?
-            .with_full(row, handle);
+        let mut view =
+            Self::from_card_in_board(db, &mut reads, &owners, board_id, &card, incomplete, unit)?
+                .with_full(row, handle);
         if let Some(board) = &board {
             view.mark_labels(&LabelSettings::from_config(&board.row().config_json));
         }
@@ -3580,12 +3586,17 @@ impl TaskView {
     fn from_card_in_board(
         db: &AccountDb,
         reads: &mut LinkReads,
+        owners: &OwnerKeys,
         board_id: &str,
         row: &TaskCard,
         incomplete: bool,
         unit: EstimateUnit,
     ) -> Result<Self, AppError> {
         let mut view = Self::from_card(row);
+        view.owner_key = row
+            .live_holder(Utc::now())
+            .map(|owner| owners.key(&owner.holder))
+            .unwrap_or_default();
         if unit.is_points() {
             view.unit = unit;
             view.time_kf = format_time_kf(row.total_minutes, None);
@@ -4507,6 +4518,66 @@ struct BoardTemplate {
     estimate_unit: EstimateUnit,
     /// The board's dropdown custom fields, one filter select each.
     filter_fields: Vec<FilterField>,
+    /// The choices of the Owner filter: the signed-in account, the other members, each agent
+    /// role and No owner.
+    owner_choices: Vec<OwnerChoice>,
+}
+
+/// Names the owners a board's cards can have, by the key its Owner filter matches.
+struct OwnerKeys {
+    /// The id of the role each role token was issued as, by token id.
+    token_roles: HashMap<String, String>,
+}
+
+impl OwnerKeys {
+    /// Key prefix of an agent whose token holds no role.
+    const AGENT: &'static str = "agent:";
+    /// Key of the choice that matches a card with no owner.
+    const NONE: &'static str = "none";
+    /// Key prefix of an agent role.
+    const ROLE: &'static str = "role:";
+    /// Key prefix of a member account.
+    const USER: &'static str = "user:";
+
+    /// Reads which role each of the account's tokens was issued as.
+    fn load(db: &AccountDb) -> Result<Self, AppError> {
+        let token_roles = db
+            .list_api_tokens()
+            .map_err(AppError::from)?
+            .into_iter()
+            .filter_map(|record| record.role_id.map(|role| (record.id, role)))
+            .collect();
+        Ok(Self { token_roles })
+    }
+
+    /// Returns the key of a member account.
+    fn user(id: &str) -> String {
+        format!("{}{id}", Self::USER)
+    }
+
+    /// Returns the key of an agent role.
+    fn role(id: &str) -> String {
+        format!("{}{id}", Self::ROLE)
+    }
+
+    /// Returns the key of `holder`: its role when its token was issued as one, else its name.
+    fn key(&self, holder: &OwnerHolder) -> String {
+        match holder {
+            OwnerHolder::Human { id } => Self::user(id),
+            OwnerHolder::Agent { token_id, name } => token_id
+                .as_deref()
+                .and_then(|token| self.token_roles.get(token))
+                .map_or_else(|| format!("{}{name}", Self::AGENT), |role| Self::role(role)),
+        }
+    }
+}
+
+/// One choice of the board's Owner filter.
+struct OwnerChoice {
+    /// The key a card's `data-owner` holds.
+    key: String,
+    /// What the typeahead shows.
+    label: String,
 }
 
 /// A dropdown custom field as the board filter offers it.
@@ -5273,6 +5344,7 @@ fn board_template(
         .collect();
 
     let mut reads = db.link_reads().map_err(AppError::from)?;
+    let owners = OwnerKeys::load(db)?;
     let mut bands = Vec::new();
     for lane in &swimlanes {
         let mut cells = Vec::new();
@@ -5293,6 +5365,7 @@ fn board_template(
                     TaskView::from_card_in_board(
                         db,
                         &mut reads,
+                        &owners,
                         &board_id,
                         task,
                         is_incomplete,
@@ -5368,6 +5441,27 @@ fn board_template(
 
     let chrome = shell_chrome(&state, db, &user.username)?;
     let profile = db.settings().map_err(AppError::from)?;
+    let members: Vec<MemberDetail> = db
+        .board_members(&board)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|member| {
+            let own = member.user.id == db.account_id().as_str();
+            let settings = if own {
+                profile.clone()
+            } else {
+                Settings::default()
+            };
+            let display_name = settings.display_name(&member.user.username);
+            MemberDetail {
+                id: member.user.id,
+                avatar: AvatarView::of(&settings, &display_name),
+                display_name,
+                username: member.user.username,
+                role: Some(member.role),
+            }
+        })
+        .collect();
     Ok(BoardTemplate {
         board_id: board.row().id.clone(),
         board_name: board.row().name.clone(),
@@ -5395,6 +5489,7 @@ fn board_template(
             .filter(|color| color.enabled)
             .map(ColorView::from)
             .collect(),
+        owner_choices: owner_choices(db, &members)?,
         chrome,
         filter_fields: select_field_defs(db, &board_id)?
             .into_iter()
@@ -5404,29 +5499,44 @@ fn board_template(
                 options: def.options,
             })
             .collect(),
-        members: db
-            .board_members(&board)
-            .map_err(AppError::from)?
-            .into_iter()
-            .map(|member| {
-                let own = member.user.id == db.account_id().as_str();
-                let settings = if own {
-                    profile.clone()
-                } else {
-                    Settings::default()
-                };
-                let display_name = settings.display_name(&member.user.username);
-                MemberDetail {
-                    id: member.user.id,
-                    avatar: AvatarView::of(&settings, &display_name),
-                    display_name,
-                    username: member.user.username,
-                    role: Some(member.role),
-                }
-            })
-            .collect(),
+        members,
         role,
     })
+}
+
+/// Returns the choices of the board's Owner filter: the signed-in account, the other `members`,
+/// each agent role and No owner.
+fn owner_choices(db: &AccountDb, members: &[MemberDetail]) -> Result<Vec<OwnerChoice>, AppError> {
+    let me = db.account_id().as_str();
+    let person = |member: &MemberDetail, label: String| OwnerChoice {
+        key: OwnerKeys::user(&member.id),
+        label,
+    };
+    let mut choices: Vec<OwnerChoice> = members
+        .iter()
+        .filter(|member| member.id == me)
+        .map(|member| person(member, "Me".to_string()))
+        .collect();
+    choices.extend(
+        members
+            .iter()
+            .filter(|member| member.id != me)
+            .map(|member| person(member, member.display_name.clone())),
+    );
+    choices.extend(
+        db.list_agent_roles()
+            .map_err(AppError::from)?
+            .into_iter()
+            .map(|role| OwnerChoice {
+                key: OwnerKeys::role(&role.id),
+                label: format!("{} (role)", role.name),
+            }),
+    );
+    choices.push(OwnerChoice {
+        key: OwnerKeys::NONE.to_string(),
+        label: "No owner".to_string(),
+    });
+    Ok(choices)
 }
 
 /// What the board page says when the visit kept a board that was close to being deleted for lack
@@ -28847,6 +28957,9 @@ mod limits_tests;
 mod members_tests;
 
 #[cfg(test)]
+mod owner_filter_tests;
+
+#[cfg(test)]
 mod owner_tests;
 
 #[cfg(test)]
@@ -31450,6 +31563,7 @@ mod tests {
             members: Vec::new(),
             role,
             filter_fields: Vec::new(),
+            owner_choices: Vec::new(),
         }
         .render()
         .expect("render board");

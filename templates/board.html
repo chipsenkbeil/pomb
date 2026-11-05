@@ -84,6 +84,15 @@
         {% endfor %}
       </select>
     </section>
+    <section class="filter-section" aria-label="Filter by owner">
+      <h4>Owner</h4>
+      <input type="text" id="f-owner" class="filter-select" list="f-owner-list" placeholder="Anyone" autocomplete="off">
+      <datalist id="f-owner-list">
+        {% for choice in owner_choices %}
+        <option value="{{ choice.label }}" data-owner="{{ choice.key }}"></option>
+        {% endfor %}
+      </datalist>
+    </section>
     <section class="filter-section" aria-label="Filter by color">
       <h4>Color</h4>
       <!-- KF-175: dropdown (KanbanFlow parity) — was radio buttons -->

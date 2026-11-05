@@ -30,6 +30,7 @@ ignores:
   - src/routes/multi_tests.rs
   - src/routes/notifications_tests.rs
   - src/routes/openapi.rs
+  - src/routes/owner_filter_tests.rs
   - src/routes/owner_tests.rs
   - src/routes/passkey_tests.rs
   - src/routes/prune_tests.rs
