@@ -1,4 +1,4 @@
-{% if !custom_css.is_empty() %}<style>{{ custom_css|safe }}</style>{% endif %}
+{% import "circle.html" as c %}{% if !custom_css.is_empty() %}<style>{{ custom_css|safe }}</style>{% endif %}
 <div class="modal-overlay" id="modal-overlay">
   <div class="task-modal-wrap">
     <div class="task-modal taskColorVars-{{ task.color_value }}{% if self.is_bare() %} tm-bare{% endif %}{% if is_epic %} tm-epic{% endif %}" data-estimate-unit="{% if task.unit.is_points() %}points{% else %}hours{% endif %}"
@@ -313,25 +313,37 @@
           </div>
         </section>
 
-        <section class="tm-side-group" id="tm-group-claim" data-claim-as="{{ claim_as }}">
-          <h3 class="tm-side-title"><button type="button" class="tm-fold" data-fold-group="claim" aria-expanded="true" aria-controls="tm-body-claim">Claim</button></h3>
-          <div class="tm-side-body" id="tm-body-claim">
-            {% if let Some(fence) = task.claim_fence %}
-            <p class="tm-side-note" id="modal-claim">{{ task.claim_title }}{% if let Some(role) = task.claim_role %} ({{ role }}){% endif %}</p>
-            {% if role.writes() %}<button type="button" class="tm-side-btn" data-claim-release="{{ fence }}">Release claim</button>{% endif %}
-            {% else %}
-            <p class="tm-side-note" id="modal-claim">Not claimed</p>
-            {% if role.writes() && (!is_epic || task.children_done == task.children_total) %}<label class="tm-claim-lease">Lease
-              <select id="tm-claim-ttl" aria-label="Claim lease">
-                <option value="3600">1 hour</option>
-                <option value="14400" selected>4 hours</option>
-                <option value="28800">8 hours</option>
-                <option value="86400">24 hours</option>
-              </select>
-            </label>
-            <button type="button" class="tm-side-btn" data-claim-take>Claim</button>{% endif %}
-            {% endif %}
-            <div class="tm-field-error" id="tm-claim-error" role="alert" hidden></div>
+        <section class="tm-side-group" id="tm-group-owner">
+          <h3 class="tm-side-title"><button type="button" class="tm-fold" data-fold-group="owner" aria-expanded="true" aria-controls="tm-body-owner">Owner</button></h3>
+          <div class="tm-side-body" id="tm-body-owner">
+            <div class="tm-owner-row" id="modal-owner">{% if let Some(circle) = panel.owner.circle %}{% call c::circle(circle, "owner") %}{% endif %}<span class="tm-owner-name">{{ panel.owner.name }}</span></div>
+            {% if let Some(lease) = panel.owner.lease %}<p class="tm-side-note" id="modal-owner-lease">{{ lease }}</p>{% endif %}
+            {% if let Some(fence) = panel.owner.release_fence %}<button type="button" class="tm-side-btn" data-owner-act="release" data-fence="{{ fence }}">Release</button>{% endif %}
+            {% if let Some(take) = panel.owner.take %}<button type="button" class="tm-side-btn" data-owner-act="owner-take"{% if take.over %} data-over="1"{% endif %}{% if take.live_agent %} data-live-agent="1"{% endif %}>{{ take.label() }}</button>
+            <details class="tm-take-menu">
+              <summary>Timed</summary>
+              {% for lease in leases %}<button type="button" class="tm-side-btn" data-owner-act="owner-take" data-ttl="{{ lease.0 }}"{% if take.over %} data-over="1"{% endif %}{% if take.live_agent %} data-live-agent="1"{% endif %}>{{ take.label() }} for {{ lease.1 }}</button>{% endfor %}
+            </details>{% endif %}
+            <div class="tm-field-error" id="tm-owner-error" role="alert" hidden></div>
+          </div>
+        </section>
+
+        <section class="tm-side-group" id="tm-group-seats">
+          <h3 class="tm-side-title"><button type="button" class="tm-fold" data-fold-group="seats" aria-expanded="true" aria-controls="tm-body-seats">Reviewers</button></h3>
+          <div class="tm-side-body" id="tm-body-seats">
+            {% for seat in panel.seats %}<div class="tm-seat-row" data-seat-row="{{ seat.name }}">
+              {% if let Some(circle) = seat.circle %}{% call c::circle(circle, "seat") %}{% endif %}<span class="tm-seat-name">{{ seat.name }}</span> <span class="tm-seat-role">({{ seat.role }})</span>
+              <span class="tm-seat-state">{{ seat.state.label() }}</span>{% if let Some(revision) = seat.revision %} <code class="tm-seat-revision" title="{{ revision }}">{{ revision }}</code>{% endif %}
+              {% if let Some(take) = seat.take %}<button type="button" class="tm-side-btn" data-owner-act="seat-take" data-seat="{{ seat.name }}"{% if take.over %} data-over="1"{% endif %}{% if take.live_agent %} data-live-agent="1"{% endif %}>{{ take.label() }}</button>{% endif %}
+              {% if panel.can_drop %}<button type="button" class="tm-side-btn" data-owner-act="seat-drop" data-seat="{{ seat.name }}">Drop</button>{% endif %}
+            </div>{% else %}<p class="tm-side-note">No seats</p>{% endfor %}
+            {% if panel.can_ask_again %}<button type="button" class="tm-side-btn" data-owner-act="ask-again">Ask again</button>{% endif %}
+            {% if role.writes() %}<div class="tm-seat-add">
+              <input type="text" id="tm-seat-name" maxlength="50" placeholder="Seat name" aria-label="Seat name" autocomplete="off">
+              <select id="tm-seat-role" aria-label="Seat role">{% for seat_role in seat_roles %}<option value="{{ seat_role }}">{{ seat_role }}</option>{% endfor %}</select>
+              <button type="button" class="tm-side-btn" data-owner-act="seat-add">Add seat</button>
+            </div>{% endif %}
+            <div class="tm-field-error" id="tm-seat-error" role="alert" hidden></div>
           </div>
         </section>
 

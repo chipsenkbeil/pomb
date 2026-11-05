@@ -11282,19 +11282,19 @@ fn the_calendar_grid_should_have_fixed_rows_and_scroll_inside_the_dialog() {
 }
 
 #[tokio::test]
-async fn the_modal_should_offer_claim_with_a_lease_choice_on_an_unclaimed_task() {
+async fn the_modal_should_offer_take_with_a_timed_menu_on_an_unowned_task() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Free"})).await;
     let html = modal_html(&fx, &id).await;
-    assert!(html.contains(r#"id="tm-group-claim" data-claim-as="admin""#));
-    assert!(html.contains("data-claim-take"));
-    assert!(html.contains(r#"<option value="14400" selected>4 hours</option>"#));
-    assert!(!html.contains("data-claim-release"));
-    assert!(html.contains("Not claimed"));
+    assert!(html.contains(r#"id="tm-group-owner""#));
+    assert!(html.contains(r#"data-owner-act="owner-take">Take</button>"#));
+    assert!(html.contains(r#"data-ttl="14400""#));
+    assert!(!html.contains(r#"data-owner-act="release""#));
+    assert!(html.contains("No owner"));
 }
 
 #[tokio::test]
-async fn the_modal_should_offer_release_with_the_fence_of_an_agents_live_claim() {
+async fn the_modal_should_offer_take_over_with_a_confirm_mark_for_an_agents_live_claim() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Held"})).await;
     claim(
@@ -11304,10 +11304,12 @@ async fn the_modal_should_offer_release_with_the_fence_of_an_agents_live_claim()
     )
     .await;
     let html = modal_html(&fx, &id).await;
-    assert!(html.contains(r#"data-claim-release="1""#));
-    assert!(html.contains("Claimed by builder-i until"));
-    assert!(html.contains("(builder)"));
-    assert!(!html.contains("data-claim-take"));
+    assert!(
+        html.contains(r#"data-owner-act="owner-take" data-over="1" data-live-agent="1">Take over"#)
+    );
+    assert!(html.contains(r#"title="builder-i""#));
+    assert!(html.contains("Until "));
+    assert!(!html.contains(r#"data-owner-act="release""#));
 }
 
 #[tokio::test]
@@ -11316,7 +11318,7 @@ async fn a_person_should_claim_and_release_an_agents_stuck_claim_from_the_browse
     let (id, _) = claim_task(&fx, "Stuck", "admin", 14400).await;
     let uri = format!("/api/tasks/{id}/claim");
     let html = modal_html(&fx, &id).await;
-    assert!(html.contains("Claimed by admin until"));
+    assert!(html.contains("Until "));
 
     let (status, text) = request(
         &fx,
@@ -11340,7 +11342,11 @@ async fn a_person_should_claim_and_release_an_agents_stuck_claim_from_the_browse
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(modal_html(&fx, &id).await.contains("Not claimed"));
+    assert!(
+        modal_html(&fx, &id)
+            .await
+            .contains(r#"data-owner-act="owner-take">Take</button>"#)
+    );
     let kinds = event_kinds(&fx, &id);
     assert_eq!(count(&kinds, HistoryKind::Claimed), 1);
     assert_eq!(count(&kinds, HistoryKind::ClaimReleased), 1);
@@ -11826,11 +11832,11 @@ async fn a_lapsed_person_claim_should_leave_the_modal_unclaimed_and_the_history_
     let (_dir, fx) = fixture();
     let (id, _) = claim_task(&fx, "Lapse", "admin", 1).await;
     let held = modal_html(&fx, &id).await;
-    assert!(held.contains("data-claim-release"));
+    assert!(held.contains(r#"data-live-agent="1""#));
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let lapsed = modal_html(&fx, &id).await;
-    assert!(lapsed.contains("data-claim-take"));
-    assert!(lapsed.contains("Not claimed"));
+    assert!(lapsed.contains(r#"data-owner-act="owner-take">Take</button>"#));
+    assert!(lapsed.contains("Lease lapsed"));
     let (status, _) = claim(&fx, &id, json!({"claimant": "admin", "ttl_seconds": 60})).await;
     assert_eq!(status, StatusCode::OK);
     let kinds = event_kinds(&fx, &id);

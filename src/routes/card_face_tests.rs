@@ -115,6 +115,13 @@ impl Fixture {
         made.body["id"].as_str().expect("id").to_string()
     }
 
+    async fn modal(&self, task: &str) -> String {
+        let html = self
+            .browse("GET", &format!("/api/tasks/{task}/modal"), None)
+            .await;
+        html.as_str().expect("html").to_string()
+    }
+
     async fn face(&self, task: &str) -> String {
         let html = self
             .browse("GET", &format!("/api/tasks/{task}/card"), None)
@@ -243,4 +250,75 @@ async fn card_face_should_show_only_the_owner_on_a_done_card() {
     let html = fx.face(&task).await;
     assert_eq!(circles(&html, "card-circle-seat"), 0, "{html}");
     assert_eq!(circles(&html, "card-circle-owner"), 1, "{html}");
+}
+
+#[tokio::test]
+async fn panel_should_show_owner_and_reviewer_rows() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let html = fx.modal(&task).await;
+    assert!(html.contains("No owner"), "{html}");
+    assert!(html.contains(r#"data-owner-act="owner-take">Take</button>"#));
+    assert_eq!(html.matches("data-seat-row=").count(), 2, "{html}");
+    assert_eq!(html.matches("tm-seat-state\">Open<").count(), 2, "{html}");
+    assert!(html.contains(r#"data-owner-act="seat-add""#));
+    assert!(html.contains(r#"data-owner-act="seat-drop" data-seat="code""#));
+    assert!(!html.contains(r#"data-owner-act="release""#));
+    assert!(!html.contains("Ask again"));
+
+    fx.browse("POST", &format!("/api/tasks/{task}/owner"), Some(json!({})))
+        .await;
+    let reviewer = fx.token(None);
+    let take = format!("/api/tasks/{task}/seats/take");
+    let body = json!({"seat": "code", "name": "rev-bot", "ttl_seconds": 600});
+    fx.agent(&reviewer, &take, body).await;
+
+    let html = fx.modal(&task).await;
+    assert!(
+        html.contains("card-circle-owner\" title=\"admin\" style=\"\">AD</span>"),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"data-owner-act="release" data-fence="1""#),
+        "{html}"
+    );
+    assert!(!html.contains(r#"data-owner-act="owner-take""#));
+    assert!(html.contains("card-circle-seat card-circle-agent\" title=\"rev-bot\""));
+    assert!(html.contains("tm-seat-state\">Working<"), "{html}");
+    assert!(html.contains(
+        r#"data-owner-act="seat-take" data-seat="code" data-over="1" data-live-agent="1">Take over"#
+    ));
+    assert!(!html.contains("Ask again"));
+
+    let verdict = format!("/api/tasks/{task}/seats/verdict");
+    let body = json!({"seat": "code", "name": "rev-bot", "verdict": "changes_needed", "revision": "abc123"});
+    fx.agent(&reviewer, &verdict, body).await;
+    let html = fx.modal(&task).await;
+    assert!(html.contains("tm-seat-state\">Changes needed<"), "{html}");
+    assert!(html.contains(">abc123</code>"), "{html}");
+    assert!(html.contains(r#"data-owner-act="ask-again""#), "{html}");
+}
+
+#[tokio::test]
+async fn panel_should_offer_a_plain_take_for_a_lapsed_owner() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    fx.browse("POST", &format!("/api/tasks/{task}/owner"), Some(json!({})))
+        .await;
+    fx.db
+        .apply_task_change(&task, Actor::SYSTEM, |row| {
+            let owner = row.owner.as_mut().expect("owner");
+            owner.lease_expires_at = Some("2020-01-01T00:00:00+00:00".to_string());
+            ((), true)
+        })
+        .expect("change")
+        .expect("task");
+
+    let html = fx.modal(&task).await;
+    assert!(html.contains("Lease lapsed"), "{html}");
+    assert!(
+        html.contains(r#"data-owner-act="owner-take">Take</button>"#),
+        "{html}"
+    );
+    assert!(!html.contains(r#"data-owner-act="release""#), "{html}");
 }

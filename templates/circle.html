@@ -1,0 +1,3 @@
+{%- macro circle(disc, kind) -%}
+<span class="card-circle card-circle-{{ kind }}{% if disc.agent %} card-circle-agent{% endif %}{% if disc.idle %} card-circle-idle{% endif %}" title="{{ disc.title }}" style="{{ disc.style }}">{% if let Some(url) = disc.image %}<img src="{{ url }}" alt="">{% else %}{{ disc.text }}{% endif %}</span>
+{%- endmacro -%}

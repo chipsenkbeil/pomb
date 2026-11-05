@@ -3601,44 +3601,90 @@
       });
   }
 
-  function showClaimError(message) {
-    var box = document.getElementById('tm-claim-error');
+  function showOwnerPanelError(boxId, message) {
+    const box = document.getElementById(boxId);
     if (!box) return;
     box.textContent = message || '';
     box.hidden = !message;
   }
 
-  function sendClaim(id, path, data, failure) {
-    return api('/api/tasks/' + encodeURIComponent(id) + '/claim' + path, 'POST', data)
-      .then(function (res) {
+  function ownerPanelSend(spec) {
+    const id = modalTaskId();
+    if (!id) return Promise.resolve();
+    const headers = { 'Content-Type': 'application/json' };
+    if (spec.fence) headers['If-Owner-Fence'] = spec.fence;
+    return fetch('/api/tasks/' + encodeURIComponent(id) + spec.path, {
+      method: spec.method,
+      headers,
+      body: spec.data === undefined ? undefined : JSON.stringify(spec.data)
+    })
+      .then((res) => {
         if (res.ok) {
           modalDirty = true;
           refreshModal();
-          return;
+          return undefined;
         }
-        return res.text().then(function (text) { showClaimError(errorMessage(text) || failure); });
+        return res.text().then((text) => {
+          showOwnerPanelError(spec.boxId, errorMessage(text) || spec.failure);
+        });
       })
-      .catch(function () { showClaimError(failure); });
+      .catch(() => { showOwnerPanelError(spec.boxId, spec.failure); });
   }
 
-  function wireClaim(overlay) {
-    var group = overlay.querySelector('#tm-group-claim');
-    if (!group) return;
-    group.addEventListener('click', function (e) {
-      var id = modalTaskId();
-      if (!id) return;
-      var release = e.target.closest('[data-claim-release]');
-      if (release) {
-        sendClaim(id, '/release', { fence: Number(release.getAttribute('data-claim-release')) },
-          'Could not release the claim.');
-        return;
-      }
-      if (e.target.closest('[data-claim-take]')) {
-        sendClaim(id, '', {
-          claimant: group.getAttribute('data-claim-as'),
-          ttl_seconds: Number(document.getElementById('tm-claim-ttl').value)
-        }, 'Could not claim the task.');
-      }
+  function ownerPanelSpec(button) {
+    const act = button.getAttribute('data-owner-act');
+    const seat = button.getAttribute('data-seat');
+    const ttl = button.getAttribute('data-ttl');
+    const take = { take_over: button.getAttribute('data-over') === '1' };
+    if (ttl) take.ttl_seconds = Number(ttl);
+    if (act === 'owner-take') {
+      return { path: '/owner', method: 'POST', data: take, boxId: 'tm-owner-error', failure: 'Could not take the card.' };
+    }
+    if (act === 'release') {
+      return {
+        path: '/owner/release', method: 'POST', data: {}, fence: button.getAttribute('data-fence'),
+        boxId: 'tm-owner-error', failure: 'Could not release the card.'
+      };
+    }
+    if (act === 'seat-take') {
+      take.seat = seat;
+      return { path: '/seats/take', method: 'POST', data: take, boxId: 'tm-seat-error', failure: 'Could not take the seat.' };
+    }
+    if (act === 'ask-again') {
+      return { path: '/seats/ask-again', method: 'POST', data: {}, boxId: 'tm-seat-error', failure: 'Could not ask again.' };
+    }
+    if (act === 'seat-add') {
+      return {
+        path: '/seats', method: 'POST', boxId: 'tm-seat-error', failure: 'Could not add the seat.',
+        data: {
+          name: document.getElementById('tm-seat-name').value.trim(),
+          role: document.getElementById('tm-seat-role').value
+        }
+      };
+    }
+    if (act === 'seat-drop') {
+      return {
+        path: '/seats?name=' + encodeURIComponent(seat), method: 'DELETE',
+        boxId: 'tm-seat-error', failure: 'Could not drop the seat.'
+      };
+    }
+    return null;
+  }
+
+  function runOwnerPanelAction(button) {
+    const spec = ownerPanelSpec(button);
+    if (!spec) return Promise.resolve();
+    if (button.getAttribute('data-live-agent') === '1') {
+      showConfirmDialog('Take over', 'An agent holds this with a live lease. Take it over anyway?', 'Take over',
+        () => { ownerPanelSend(spec); });
+      return Promise.resolve();
+    }
+    return ownerPanelSend(spec);
+  }
+
+  function wireOwnerPanel(overlay) {
+    overlay.querySelectorAll('[data-owner-act]').forEach((button) => {
+      button.addEventListener('click', () => { runOwnerPanelAction(button); });
     });
   }
 
@@ -5774,7 +5820,7 @@
     wireSubtasks();
     wireChildren(overlay);
     wireRelations(overlay);
-    wireClaim(overlay);
+    wireOwnerPanel(overlay);
     wireMetadata(overlay);
 
     // KF-278: Time spent hover menu with tooltip and action menu

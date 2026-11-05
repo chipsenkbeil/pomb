@@ -710,12 +710,12 @@ async fn board_page_should_keep_the_owner_every_column_and_card_menu_entry() {
 }
 
 const MODAL_WRITE_CONTROLS: [&str; 8] = [
-    "data-claim-take",
+    "data-owner-act=\"owner-take\"",
     "tm-add-menu",
     "data-tm-act=\"move\"",
     "tm-timer-menu",
     "data-tm-act=\"delete\"",
-    "tm-claim-ttl",
+    "tm-seat-add",
     "data-tm-act=\"make-epic\"",
     "data-tm-act=\"add-to-epic\"",
 ];

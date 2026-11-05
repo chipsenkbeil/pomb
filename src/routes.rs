@@ -2409,12 +2409,6 @@ struct TaskView {
     owner_circle: Option<CardCircle>,
     /// The circles of the busy reviewer seats on the card face, none once the work is done.
     seat_circles: Vec<CardCircle>,
-    /// The modal's claim line, e.g. "Claimed by builder-i until …".
-    claim_title: String,
-    /// Role of the live claim, which the modal's claim line names.
-    claim_role: Option<String>,
-    /// Fence of the live claim, which the modal sends back to release it.
-    claim_fence: Option<u64>,
     /// The key of the live owner as the board's Owner filter lists it, or empty when the card is
     /// free.
     owner_key: String,
@@ -2773,6 +2767,32 @@ impl CardCircle {
         })
     }
 
+    /// Returns the circle of `holder`: a member's avatar, or an agent's role initials, where the
+    /// role is `role` or else the role of the agent's token. A member no longer listed has none.
+    fn of_holder(
+        db: &AccountDb,
+        users: &[UserRow],
+        settings: &Settings,
+        holder: &OwnerHolder,
+        role: Option<String>,
+        idle: bool,
+    ) -> Result<Option<Self>, AppError> {
+        Ok(match holder {
+            OwnerHolder::Human { id } => Self::member(users, settings, id, idle),
+            OwnerHolder::Agent { token_id, name } => {
+                let role = match (role, token_id) {
+                    (Some(role), _) => role,
+                    (None, Some(id)) => db
+                        .token_role_name(id)
+                        .map_err(AppError::from)?
+                        .unwrap_or_else(|| name.clone()),
+                    (None, None) => name.clone(),
+                };
+                Some(Self::agent(&role, name, idle))
+            }
+        })
+    }
+
     /// Returns the circle of the agent `name` sitting as `role`, with the role's initials.
     fn agent(role: &str, name: &str, idle: bool) -> Self {
         Self {
@@ -2792,6 +2812,244 @@ struct MemberChip {
     username: String,
     /// How the member's avatar renders.
     avatar: AvatarView,
+}
+
+/// The leases a timed take offers in the side panel, as seconds and the label shown.
+const PANEL_LEASES: &[(i64, &str)] = &[
+    (3600, "1 hour"),
+    (14400, "4 hours"),
+    (28800, "8 hours"),
+    (86400, "24 hours"),
+];
+
+/// The button that takes an owner or a seat in the side panel.
+#[derive(Clone, Debug)]
+struct PanelTake {
+    /// Whether the request replaces another holder.
+    over: bool,
+    /// Whether an agent's lease is live, so the browser asks once before it takes over.
+    live_agent: bool,
+}
+
+impl PanelTake {
+    /// Returns the button that takes a free owner or seat.
+    const fn take() -> Self {
+        Self {
+            over: false,
+            live_agent: false,
+        }
+    }
+
+    /// Returns the button that replaces a holder, which asks first while `live_agent` is set.
+    const fn take_over(live_agent: bool) -> Self {
+        Self {
+            over: true,
+            live_agent,
+        }
+    }
+
+    /// Returns the button's label.
+    const fn label(&self) -> &'static str {
+        if self.over { "Take over" } else { "Take" }
+    }
+}
+
+/// What a seat on a card is doing.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum PanelSeatState {
+    /// Nobody holds the seat.
+    Open,
+    /// The holder is at work.
+    Working,
+    /// The holder waits for the owner to ask again.
+    Waiting,
+    /// The holder's lease lapsed before an answer.
+    Lapsed,
+    /// The holder approved.
+    Approved,
+    /// The holder asked for changes.
+    ChangesNeeded,
+}
+
+impl PanelSeatState {
+    /// Returns the text the panel shows.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Open => "Open",
+            Self::Working => "Working",
+            Self::Waiting => "Waiting",
+            Self::Lapsed => "Lapsed",
+            Self::Approved => "Approved",
+            Self::ChangesNeeded => "Changes needed",
+        }
+    }
+}
+
+/// The owner group of the side panel.
+#[derive(Clone, Debug)]
+struct PanelOwner {
+    /// The owner's circle, or none while the card has no owner or the member is gone.
+    circle: Option<CardCircle>,
+    /// The owner's name, or `No owner` while the card has none.
+    name: String,
+    /// How long the lease lasts, or none while the card has no owner.
+    lease: Option<String>,
+    /// The fence a release sends, set only while the signed-in member holds the card.
+    release_fence: Option<u64>,
+    /// The take button, or none to a viewer and to the live owner.
+    take: Option<PanelTake>,
+}
+
+/// One seat row of the side panel.
+#[derive(Clone, Debug)]
+struct PanelSeat {
+    /// The seat's name.
+    name: String,
+    /// The standard role that sits in the seat.
+    role: String,
+    /// The holder's circle, or none while the seat is open.
+    circle: Option<CardCircle>,
+    /// What the seat is doing.
+    state: PanelSeatState,
+    /// The revision the holder sent with its verdict.
+    revision: Option<String>,
+    /// The take button, or none to a viewer and to a holder at work.
+    take: Option<PanelTake>,
+}
+
+/// What the signed-in member may do in the side panel of one card.
+#[derive(Copy, Clone, Debug)]
+struct PanelAccess {
+    /// The role the member holds on the card's board.
+    role: BoardRole,
+    /// The fence of the card's latest grab.
+    claim_fence: u64,
+    /// Whether the member may drop a seat from the card.
+    can_drop: bool,
+    /// Whether the card can be taken now, which is false for an epic with open children.
+    takes_owner: bool,
+}
+
+/// The owner and seat groups of the side panel.
+#[derive(Clone, Debug)]
+struct SidePanel {
+    /// The owner group.
+    owner: PanelOwner,
+    /// One row per seat on the card.
+    seats: Vec<PanelSeat>,
+    /// Whether the signed-in member owns the card and a seat asked for changes.
+    can_ask_again: bool,
+    /// Whether the account may drop a seat from the card.
+    can_drop: bool,
+}
+
+impl SidePanel {
+    /// Builds the panel for `row` as `viewer` sees it, with the board role and the grab state taken
+    /// from `access`.
+    fn of(
+        db: &AccountDb,
+        row: &TaskCard,
+        viewer: &OwnerHolder,
+        access: PanelAccess,
+    ) -> Result<Self, AppError> {
+        let PanelAccess {
+            role,
+            claim_fence,
+            can_drop,
+            takes_owner,
+        } = access;
+        let now = Utc::now();
+        let users = db.list_users().map_err(AppError::from)?;
+        let settings = db.settings().map_err(AppError::from)?;
+        let live_agent =
+            |holder: &OwnerHolder, live: bool| live && matches!(holder, OwnerHolder::Agent { .. });
+        let owner = row.face_owner();
+        let live = row.live_holder(now).is_some();
+        let claim_role = row
+            .owner
+            .is_none()
+            .then(|| row.live_claim().and_then(|claim| claim.role.clone()))
+            .flatten()
+            .filter(|role| !role.is_empty());
+        let mine = live && owner.as_ref().is_some_and(|owner| &owner.holder == viewer);
+        let circle = match &owner {
+            Some(owner) => {
+                CardCircle::of_holder(db, &users, &settings, &owner.holder, claim_role, !live)?
+            }
+            None => None,
+        };
+        let take = (role.writes() && takes_owner && !mine).then(|| match &owner {
+            Some(owner) if live => PanelTake::take_over(live_agent(&owner.holder, true)),
+            _ => PanelTake::take(),
+        });
+        let lease = owner
+            .as_ref()
+            .map(|owner| match (&owner.lease_expires_at, live) {
+                (_, false) => "Lease lapsed".to_string(),
+                (Some(end), true) => format!("Until {}", format_datetime(end)),
+                (None, true) => "No end".to_string(),
+            });
+        let name = circle
+            .as_ref()
+            .map(|circle| circle.title.clone())
+            .or_else(|| owner.as_ref().map(|owner| owner.holder.label()))
+            .unwrap_or_else(|| "No owner".to_string());
+        let mut seats = Vec::with_capacity(row.seats.len());
+        for seat in &row.seats {
+            let circle = match &seat.holder {
+                Some(holder) => CardCircle::of_holder(
+                    db,
+                    &users,
+                    &settings,
+                    holder,
+                    Some(seat.role.clone()),
+                    false,
+                )?,
+                None => None,
+            };
+            let busy = seat.is_busy(now);
+            let state = match (&seat.holder, seat.verdict) {
+                (None, _) => PanelSeatState::Open,
+                (Some(_), Some(SeatVerdict::Approved)) => PanelSeatState::Approved,
+                (Some(_), Some(SeatVerdict::ChangesNeeded)) => PanelSeatState::ChangesNeeded,
+                (Some(_), None) if busy => PanelSeatState::Working,
+                (Some(_), None) if seat.idle => PanelSeatState::Waiting,
+                (Some(_), None) => PanelSeatState::Lapsed,
+            };
+            let own = seat.holder.as_ref() == Some(viewer);
+            let take = (role.writes() && !(own && busy)).then(|| match &seat.holder {
+                Some(holder) if !seat.is_takeable(now) && !own => {
+                    PanelTake::take_over(live_agent(holder, busy))
+                }
+                _ => PanelTake::take(),
+            });
+            seats.push(PanelSeat {
+                name: seat.name.clone(),
+                role: seat.role.clone(),
+                circle,
+                state,
+                revision: seat.revision.clone(),
+                take,
+            });
+        }
+        let release_fence = (mine && claim_fence > 0).then_some(claim_fence);
+        Ok(Self {
+            can_ask_again: mine
+                && row
+                    .seats
+                    .iter()
+                    .any(|seat| seat.verdict == Some(SeatVerdict::ChangesNeeded)),
+            can_drop: can_drop && role.writes(),
+            owner: PanelOwner {
+                circle,
+                name,
+                lease,
+                release_fence,
+                take,
+            },
+            seats,
+        })
+    }
 }
 
 /// Which task properties a column shows on its cards: the "Task properties to display on board"
@@ -3497,22 +3755,7 @@ impl TaskView {
             links_title: String::new(),
             owner_circle: None,
             seat_circles: Vec::new(),
-            claim_role: row
-                .live_claim()
-                .and_then(|claim| claim.role.clone())
-                .filter(|role| !role.is_empty()),
-            claim_fence: row.live_claim().map(|claim| claim.fence),
             owner_key: String::new(),
-            claim_title: row
-                .live_claim()
-                .map(|claim| {
-                    format!(
-                        "Claimed by {} until {}",
-                        claim.claimant,
-                        format_datetime(&claim.expires_at)
-                    )
-                })
-                .unwrap_or_default(),
             fields_incomplete: false,
             filter_fields_json: serde_json::to_string(&row.fields)
                 .unwrap_or_else(|_| "{}".to_string()),
@@ -3684,24 +3927,8 @@ impl TaskView {
         }
         let users = db.list_users().map_err(AppError::from)?;
         let settings = db.settings().map_err(AppError::from)?;
-        let circle = |holder: &OwnerHolder,
-                      role: Option<String>,
-                      idle: bool|
-         -> Result<Option<CardCircle>, AppError> {
-            Ok(match holder {
-                OwnerHolder::Human { id } => CardCircle::member(&users, &settings, id, idle),
-                OwnerHolder::Agent { token_id, name } => {
-                    let role = match (role, token_id) {
-                        (Some(role), _) => role,
-                        (None, Some(id)) => db
-                            .token_role_name(id)
-                            .map_err(AppError::from)?
-                            .unwrap_or_else(|| name.clone()),
-                        (None, None) => name.clone(),
-                    };
-                    Some(CardCircle::agent(&role, name, idle))
-                }
-            })
+        let circle = |holder: &OwnerHolder, role: Option<String>, idle: bool| {
+            CardCircle::of_holder(db, &users, &settings, holder, role, idle)
         };
         if let Some(owner) = owner {
             let claim_role = row
@@ -4782,8 +5009,12 @@ struct ModalTemplate {
     created_short: String,
     /// Two-letter uppercase initials of the signed-in user, for the comment composer avatar circle.
     composer_initials: String,
-    /// The signed-in username, which a claim made from the modal names as its claimant.
-    claim_as: String,
+    /// The owner and seat groups of the side panel.
+    panel: SidePanel,
+    /// The leases a timed take offers.
+    leases: &'static [(i64, &'static str)],
+    /// The standard roles a new seat can take.
+    seat_roles: Vec<&'static str>,
     /// The board's "user" custom fields, editable in the dialog.
     user_fields: Vec<FieldInputView>,
     /// The board's "system" custom fields, shown read-only.
@@ -4838,7 +5069,8 @@ impl ModalTemplate {
             && task.total_minutes == 0
             && task.umbrella.is_none()
             && task.children_total == 0
-            && task.claim_fence.is_none()
+            && self.panel.owner.lease.is_none()
+            && self.panel.seats.iter().all(|seat| seat.circle.is_none())
             && self.assigned_members.is_empty()
             && self.responsible_session.is_none()
             && self.relation_count == 0
@@ -15478,6 +15710,16 @@ async fn task_modal(
     let groups = relation_groups(db, &board_id, &id)?;
     let custom_css = board_custom_css(db, &board_id)?;
     let is_epic = row.row().kind == TaskKind::Epic;
+    let viewer = OwnerHolder::Human {
+        id: user.account_id().as_str().to_string(),
+    };
+    let access = PanelAccess {
+        role,
+        claim_fence: row.row().claim_fence,
+        can_drop: user.has(Permission::SeatsManage),
+        takes_owner: !is_epic || task.children_done == task.children_total,
+    };
+    let panel = SidePanel::of(db, &TaskCard::from(row.row()), &viewer, access)?;
     let seed_template = is_epic && task.description.is_empty();
     let description_seed = if seed_template {
         EPIC_TEMPLATE.to_string()
@@ -15514,7 +15756,9 @@ async fn task_modal(
         column_name,
         created_short,
         composer_initials: user_initials(&settings.display_name(&user.username)),
-        claim_as: user.username.clone(),
+        panel,
+        leases: PANEL_LEASES,
+        seat_roles: STANDARD_ROLES.iter().map(|role| role.name).collect(),
         user_fields,
         system_fields,
         description_html,

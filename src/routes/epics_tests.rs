@@ -312,9 +312,12 @@ async fn a_claim_should_refuse_an_epic_with_an_open_child_and_grant_it_once_all_
     let path = format!("/api/tasks/{epic}/claim");
 
     let modal = modal_of(&fx, &epic).await;
-    let claim_group = section(&modal, "tm-group-claim");
-    assert!(!claim_group.contains("data-claim-take"), "{claim_group}");
-    assert!(!claim_group.contains("tm-claim-lease"), "{claim_group}");
+    let owner_group = section(&modal, "tm-group-owner");
+    assert!(
+        !owner_group.contains(r#"data-owner-act="owner-take""#),
+        "{owner_group}"
+    );
+    assert!(!owner_group.contains("tm-take-menu"), "{owner_group}");
     let (status, error) = call(&fx, "POST", &path, Some(body.clone())).await;
     assert_eq!(status, StatusCode::CONFLICT, "claiming an epic: {error}");
     assert_eq!(
@@ -331,15 +334,18 @@ async fn a_claim_should_refuse_an_epic_with_an_open_child_and_grant_it_once_all_
     .await;
     assert_eq!(status, StatusCode::OK, "{moved}");
     let modal = modal_of(&fx, &epic).await;
-    let claim_group = section(&modal, "tm-group-claim");
-    assert!(claim_group.contains("data-claim-take"), "{claim_group}");
-    assert!(claim_group.contains("tm-claim-lease"), "{claim_group}");
+    let owner_group = section(&modal, "tm-group-owner");
+    assert!(
+        owner_group.contains(r#"data-owner-act="owner-take""#),
+        "{owner_group}"
+    );
+    assert!(owner_group.contains("tm-take-menu"), "{owner_group}");
     let (status, claim) = call(&fx, "POST", &path, Some(body)).await;
     assert_eq!(status, StatusCode::OK, "claiming a finished epic: {claim}");
     assert_eq!(claim["claimant"], "agent");
     let modal = modal_of(&fx, &epic).await;
-    let claim_group = section(&modal, "tm-group-claim");
-    assert!(claim_group.contains("data-claim-release"), "{claim_group}");
+    let owner_group = section(&modal, "tm-group-owner");
+    assert!(owner_group.contains("data-live-agent"), "{owner_group}");
 }
 
 #[tokio::test]
