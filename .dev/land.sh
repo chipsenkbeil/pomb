@@ -13,11 +13,15 @@
 #   3. Refuse attribution trailers through __push_main.sh --check, before any gate.
 #   4. Run dev lint --remote, then dev test --remote, through __gate.sh, one at a time on ci,
 #      logging to a temp dir. The first failing gate aborts.
-#   5. Push to main through __push_main.sh, remove the worktree and print the landed sha.
+#   5. Push to main through __push_main.sh, remove the worktree, print the landed sha and note
+#      it on the card with dev board note.
+#   6. A push refused because main moved on (exit 3) removes the worktree, fetches, and repeats
+#      steps 2 to 5 on the new main, 3 attempts in all. It never forces the push.
 #
 # The remote of record is forge.remote, else gerrit when that remote exists, else origin.
 # A failed land leaves its worktree behind; remove it before landing the card again.
-# A push refused because main moved on exits 1 with the worktree left behind.
+# A push refused a third time exits 1 with the worktree left behind, and so does any other push
+# failure, which is not retried.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -77,36 +81,50 @@ count=$(git rev-list --count "$fork..$cand")
 
 wt=".dev/worktrees/land-$card"
 [ ! -e "$wt" ] || die "$wt already exists; remove it first"
-git worktree add -q --detach "$wt" "$base"
-cd "$wt"
-if [ "$fork" = "$base" ]; then
-    git reset -q --hard "$cand"
-else
-    git cherry-pick "$cand" >/dev/null || {
-        git cherry-pick --abort || true
-        die "$commit does not apply onto $remote/main (worktree left at $main_repo/$wt)"
-    }
-fi
-if [ "$remote" = gerrit ]; then
-    message=$(git log -1 --format=%B HEAD | git interpret-trailers --parse)
-    case "$message" in *Change-Id:*) ;; *) add_change_id ;; esac
-fi
-sha=$(git rev-parse HEAD)
+attempts=3
+attempt=1
+while :; do
+    base=$(git rev-parse "$remote/main")
+    git worktree add -q --detach "$wt" "$base"
+    cd "$wt"
+    if [ "$fork" = "$base" ]; then
+        git reset -q --hard "$cand"
+    else
+        git cherry-pick "$cand" >/dev/null || {
+            git cherry-pick --abort || true
+            die "$commit does not apply onto $remote/main (worktree left at $main_repo/$wt)"
+        }
+    fi
+    if [ "$remote" = gerrit ]; then
+        message=$(git log -1 --format=%B HEAD | git interpret-trailers --parse)
+        case "$message" in *Change-Id:*) ;; *) add_change_id ;; esac
+    fi
+    sha=$(git rev-parse HEAD)
 
-bash "$tools/__push_main.sh" "$PWD" --check || die "attribution check failed (worktree left at $main_repo/$wt)"
+    bash "$tools/__push_main.sh" "$PWD" --check || die "attribution check failed (worktree left at $main_repo/$wt)"
 
-logs=$(mktemp -d "${TMPDIR:-/tmp}/land-$card.XXXXXX")
-printf 'land: logs in %s\n' "$logs"
-for gate in lint test; do
-    printf 'land: dev %s --remote ...\n' "$gate"
-    ran=$(bash "$tools/__gate.sh" "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
-        die "dev $gate --remote did not pass on this worktree: $(cat "$logs/$gate.err"), see $logs/$gate.log (worktree left at $main_repo/$wt)"
-    printf 'land: %s ci run %s\n' "$gate" "$ran"
+    logs=$(mktemp -d "${TMPDIR:-/tmp}/land-$card.XXXXXX")
+    printf 'land: attempt %s of %s, logs in %s\n' "$attempt" "$attempts" "$logs"
+    for gate in lint test; do
+        printf 'land: dev %s --remote ...\n' "$gate"
+        ran=$(bash "$tools/__gate.sh" "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
+            die "dev $gate --remote did not pass on this worktree: $(cat "$logs/$gate.err"), see $logs/$gate.log (worktree left at $main_repo/$wt)"
+        printf 'land: %s ci run %s\n' "$gate" "$ran"
+    done
+
+    status=0
+    bash "$tools/__push_main.sh" "$PWD" || status=$?
+    [ "$status" -eq 0 ] && break
+    [ "$status" -eq 3 ] || die "push failed with status $status (worktree left at $main_repo/$wt)"
+    [ "$attempt" -lt "$attempts" ] || die "$remote/main moved on $attempts times; nothing was pushed, land the card again (worktree left at $main_repo/$wt)"
+    printf 'land: %s/main moved on, applying again\n' "$remote"
+    cd "$main_repo"
+    git worktree remove --force "$wt"
+    git fetch -q "$remote"
+    attempt=$((attempt + 1))
 done
-
-status=0
-bash "$tools/__push_main.sh" "$PWD" || status=$?
-[ "$status" -eq 0 ] || die "push failed with status $status; 3 means $remote/main moved on (worktree left at $main_repo/$wt)"
 cd "$main_repo"
 git worktree remove --force "$wt"
 printf 'land: landed %s\n' "$sha"
+dev board note "$card" "landed $sha on $remote/main" ||
+    printf 'land: landed, but dev board note %s failed; note %s on the card yourself\n' "$card" "$sha" >&2

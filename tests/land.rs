@@ -3,7 +3,10 @@
 //! and pushes only after both pass. Each test copies the land script and its helpers into a clone
 //! of a bare remote in a tempdir, and puts stub `dev`, `ci` and `jj-git-guard` scripts first on
 //! `PATH`: the stub `dev` records each verb and adds a ci run row that passed unless a
-//! `fail-<verb>` file exists, and the stub `jj-git-guard` forwards to `git push`.
+//! `fail-<verb>` file exists, and keeps each `dev board` call apart in `notes`. The stub
+//! `jj-git-guard` logs its arguments in `pushes` and forwards to `git push`, except that it
+//! first moves the remote's main and refuses the push as many times as the `refuse` file says,
+//! and refuses with a plain denial while a `fail-push` file exists.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -58,12 +61,14 @@ impl Fixture {
         fs::create_dir(&bin).expect("create bin");
         let state = self.dir.path().join("runs.jsonl");
         let calls = self.calls_path();
+        let notes = self.dir.path().join("notes");
         let fails = self.dir.path();
         write_script(
             &bin.join("dev"),
             &format!(
-                "touch '{state}'\necho \"$1\" >>'{calls}'\nstatus=passed\nexit_code=0\nif [ -e '{fails}/fail-'\"$1\" ]; then status=failed; exit_code=1; fi\nprintf '{{\"run\":\"r%s\",\"repo\":\"%s-0123456789abcdef\",\"source\":\"local\",\"status\":\"%s\"}}\\n' \"$(wc -l <'{state}')\" \"$(basename \"$PWD\")\" \"$status\" >>'{state}'\nexit $exit_code",
+                "if [ \"$1\" = board ]; then echo \"$*\" >>'{notes}'; exit 0; fi\ntouch '{state}'\necho \"$1\" >>'{calls}'\nstatus=passed\nexit_code=0\nif [ -e '{fails}/fail-'\"$1\" ]; then status=failed; exit_code=1; fi\nprintf '{{\"run\":\"r%s\",\"repo\":\"%s-0123456789abcdef\",\"source\":\"local\",\"status\":\"%s\"}}\\n' \"$(wc -l <'{state}')\" \"$(basename \"$PWD\")\" \"$status\" >>'{state}'\nexit $exit_code",
                 calls = calls.display(),
+                notes = notes.display(),
                 fails = fails.display(),
                 state = state.display(),
             ),
@@ -75,7 +80,13 @@ impl Fixture {
                 state = state.display()
             ),
         );
-        write_script(&bin.join("jj-git-guard"), "shift 2\nexec git push \"$@\"");
+        let root = self.dir.path().display();
+        write_script(
+            &bin.join("jj-git-guard"),
+            &format!(
+                "echo \"$*\" >>'{root}/pushes'\nif [ -e '{root}/fail-push' ]; then echo 'remote: denied' >&2; exit 1; fi\nn=$(cat '{root}/refuse' 2>/dev/null || echo 0)\nif [ \"$n\" -gt 0 ]; then\necho $((n - 1)) >'{root}/refuse'\ng='{root}/remote.git'\nc=$(git --git-dir=\"$g\" commit-tree -p main -m moved \"$(git --git-dir=\"$g\" rev-parse 'main^{{tree}}')\")\ngit --git-dir=\"$g\" update-ref refs/heads/main \"$c\"\necho '! [rejected] main -> main (fetch first)' >&2\nexit 1\nfi\nshift 2\nexec git push \"$@\""
+            ),
+        );
     }
 
     fn work(&self) -> PathBuf {
@@ -92,6 +103,18 @@ impl Fixture {
             .lines()
             .map(str::to_owned)
             .collect()
+    }
+
+    fn lines(&self, name: &str) -> Vec<String> {
+        fs::read_to_string(self.dir.path().join(name))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn refuse_pushes(&self, count: u32) {
+        fs::write(self.dir.path().join("refuse"), count.to_string()).expect("write refuse count");
     }
 
     fn fail_gate(&self, verb: &str) {
@@ -305,5 +328,100 @@ fn land_should_refuse_a_commit_that_is_more_than_one_commit_past_main() {
         stderr(&out)
     );
     assert!(fixture.calls().is_empty());
+    assert_eq!(fixture.remote_main(), before);
+}
+
+#[test]
+fn land_should_reapply_and_rerun_both_gates_when_the_first_push_is_refused() {
+    let fixture = Fixture::new();
+    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
+    fixture.refuse_pushes(1);
+    let out = fixture.land(&cand);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(fixture.calls(), ["lint", "test", "lint", "test"]);
+    assert_eq!(fixture.lines("pushes").len(), 2);
+    let remote = fixture.remote();
+    assert_eq!(show(&remote, "refs/heads/main:feature.txt"), "feature");
+    assert!(show(&remote, "refs/heads/main^").contains("moved"));
+    assert!(
+        !fixture
+            .work()
+            .join(format!(".dev/worktrees/land-{CARD}"))
+            .exists()
+    );
+}
+
+#[test]
+fn land_should_give_up_after_three_refused_pushes_without_forcing() {
+    let fixture = Fixture::new();
+    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
+    fixture.refuse_pushes(3);
+    let out = fixture.land(&cand);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("moved on 3 times"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(fixture.calls().len(), 6);
+    assert_eq!(fixture.lines("pushes").len(), 3);
+    assert!(fixture.lines("notes").is_empty());
+    let tree = Command::new("git")
+        .arg("-C")
+        .arg(fixture.remote())
+        .args(["ls-tree", "--name-only", "refs/heads/main"])
+        .output()
+        .expect("run git ls-tree");
+    assert!(!String::from_utf8_lossy(&tree.stdout).contains("feature.txt"));
+}
+
+#[test]
+fn land_should_never_pass_a_force_flag_to_the_push() {
+    let fixture = Fixture::new();
+    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
+    fixture.refuse_pushes(2);
+    let out = fixture.land(&cand);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let pushes = fixture.lines("pushes");
+    assert_eq!(pushes.len(), 3);
+    for push in pushes {
+        let args: Vec<&str> = push.split_whitespace().collect();
+        assert!(
+            args.iter()
+                .all(|arg| !arg.starts_with('+') && !arg.contains("force") && *arg != "-f"),
+            "{push}"
+        );
+    }
+}
+
+#[test]
+fn land_should_note_the_landed_sha_on_the_card() {
+    let fixture = Fixture::new();
+    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
+    fixture.refuse_pushes(1);
+    let out = fixture.land(&cand);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let notes = fixture.lines("notes");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].starts_with(&format!(
+            "board note {CARD} landed {} ",
+            fixture.remote_main()
+        )),
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn land_should_not_retry_on_an_exit_one_push_failure() {
+    let fixture = Fixture::new();
+    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
+    fixture.fail_gate("push");
+    let before = fixture.remote_main();
+    let out = fixture.land(&cand);
+    assert!(!out.status.success());
+    assert_eq!(fixture.calls(), ["lint", "test"]);
+    assert_eq!(fixture.lines("pushes").len(), 1);
+    assert!(fixture.lines("notes").is_empty());
     assert_eq!(fixture.remote_main(), before);
 }
