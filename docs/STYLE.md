@@ -302,8 +302,8 @@ PascalCase.
 In a single crate every type is re-exported at the root, so the prefix is the
 namespace and `clippy::module_name_repetitions` stays off.
 
-A type that never reaches the crate root (`pub(super)`, private, or
-`pub(crate)` used only inside its module) is named for its role in its own
+A type that never reaches the crate root (private, or `pub(crate)` used
+only inside its module) is named for its role in its own
 file, with no module prefix: `wire.rs` holds `WireTask` and `WireComment`
 (agentctl `src/board/pomb/wire.rs:115`). The prefix keeps a name
 unambiguous at the root, and a type that stays in its file never meets another

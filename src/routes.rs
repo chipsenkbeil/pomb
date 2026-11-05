@@ -85,7 +85,7 @@ use crate::passkey::{
     CEREMONY_TTL_SECONDS, CeremoniesFull, Enrollment, MAX_SETUP_CODE_GUESSES, PasskeyError,
     Registered, RelyingParty, SignedIn,
 };
-use crate::permissions::{Permission, Preset};
+use crate::permissions::{Permission, Preset, STANDARD_ROLES};
 use crate::rules::{self, ColumnRules, EntryRule};
 use crate::webhook::{HostCheck, ProbeError};
 use crate::{AppState, image, markdown, search, webhook};
@@ -478,6 +478,7 @@ pub fn router(state: AppState) -> Router {
                 .delete(revoke_api_token),
         )
         .route("/api/v1/auth/tokens/inspect", post(inspect_api_token))
+        .route("/api/v1/auth/tokens/revoke-self", post(revoke_own_token))
         .route(
             "/api/v1/auth/tokens/children",
             post(create_child_token)
@@ -1288,6 +1289,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             Method::DELETE,
             "/api/v1/auth/tokens/:id",
             AccountSession,
+            Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/v1/auth/tokens/revoke-self",
+            Account,
             Exempt,
         ),
         (Method::POST, "/api/v1/auth/tokens/children", Account, Grows),
@@ -23702,8 +23709,7 @@ struct ApiTokenView {
     role_name: Option<String>,
     /// The `agent-N` label of the token's issue, absent for a token issued as no role.
     label: Option<String>,
-    /// The most hours a child of this token may live, from 1 to 8. Only the owner sets it, in the
-    /// browser.
+    /// The most hours a child of this token may live, from 1 to 8. A token edit cannot change it.
     child_lifetime_hours: i64,
 }
 
@@ -23866,12 +23872,17 @@ struct DeviceAuthInput {
     #[schema(value_type = String, required = true)]
     client_name: Option<String>,
     /// Non-empty subset of ["read", "work", "provision", "admin"], of which the highest is requested.
-    /// Send exactly one of `scopes`, `preset` and `permissions`.
+    /// Send exactly one of `scopes`, `preset`, `permissions` and `role`.
     scopes: Option<Vec<String>>,
     /// A preset from `GET /api/v1/auth/permissions`: "read", "work", "lead" or "admin".
     preset: Option<String>,
     /// A custom, non-empty set of permission wire names from `GET /api/v1/auth/permissions`.
     permissions: Option<Vec<String>>,
+    /// The name of a standard role: "planner", "implementer", "reviewer", "verifier", "release"
+    /// or "lead". Requests that role's permissions, and the approval page preselects the
+    /// approver's role of that name. An unknown name gets 400, as does a role sent with `scopes`,
+    /// `preset` or `permissions`.
+    role: Option<String>,
 }
 
 #[derive(serde::Serialize, ToSchema)]
@@ -23914,7 +23925,7 @@ struct DeviceTokenResponse {
     security(()),
     responses(
         (status = 200, description = "Codes for the device", body = DeviceAuthResponse),
-        (status = 400, description = "Bad client_name or scopes"),
+        (status = 400, description = "Bad client_name or scopes, an unknown role, or a role sent with scopes, preset or permissions"),
         (status = 429, description = "`rate_limited`: 5 device requests from this client network, or 1000 in all, already wait for approval, or more than 10 starts a minute came from one client IP"),
     ),
 )]
@@ -23933,11 +23944,35 @@ async fn start_device_auth(
         .filter(|name| !name.is_empty() && name.len() <= 80)
         .ok_or_else(|| AppError::bad_request("client_name must be 1-80 characters"))?
         .to_string();
-    let (scope, permissions) = submitted_permissions(
-        &input.scopes.unwrap_or_default(),
-        input.preset.as_deref(),
-        input.permissions.as_deref(),
-    )?;
+    let (scope, permissions) = match input.role.as_deref() {
+        Some(name) => {
+            if input.scopes.is_some() || input.preset.is_some() || input.permissions.is_some() {
+                return Err(AppError::bad_request(
+                    "send exactly one of scopes, preset, permissions and role",
+                ));
+            }
+            let role = STANDARD_ROLES
+                .iter()
+                .find(|role| role.name == name)
+                .ok_or_else(|| {
+                    AppError::bad_request(format!(
+                        "role must be one of {}",
+                        STANDARD_ROLES
+                            .iter()
+                            .map(|role| role.name)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                })?;
+            let permissions = role.permissions();
+            (AuthScope::label_of(&permissions), permissions)
+        }
+        None => submitted_permissions(
+            &input.scopes.unwrap_or_default(),
+            input.preset.as_deref(),
+            input.permissions.as_deref(),
+        )?,
+    };
     let now = chrono::Utc::now().timestamp();
     let device_code = auth::generate_device_code();
     let mut row = DeviceAuthRow {
@@ -23955,6 +23990,7 @@ async fn start_device_auth(
         account_id: None,
         client_network: Some(client.network().to_string()),
         role_id: None,
+        requested_role: input.role,
     };
 
     // A user-code collision among live requests is astronomically rare;
@@ -24095,6 +24131,9 @@ struct DeviceTemplate {
     requested_admin: bool,
     /// The permissions the request holds, comma separated, which the picker offers.
     requested_names: String,
+    /// The standard role the request named when the account holds a role of that name, which the
+    /// picker preselects. Empty when there is none.
+    role_name: String,
     /// Days of the expiry the picker selects first.
     default_days: &'static str,
     error: Option<String>,
@@ -24155,6 +24194,7 @@ impl DeviceTemplate {
             scopes: Vec::new(),
             requested_admin: false,
             requested_names: String::new(),
+            role_name: String::new(),
             default_days: "",
             error: error.map(str::to_string),
         }
@@ -24174,8 +24214,21 @@ impl DeviceTemplate {
                 .collect::<Vec<_>>()
                 .join(","),
             default_days: device_default_expiry(&row.permissions),
+            role_name: String::new(),
             error: None,
         }
+    }
+
+    /// Returns the page preselecting the standard role `row` asked for, when `db` holds a role of
+    /// that name.
+    fn with_role(mut self, db: &AccountDb, row: &DeviceAuthRow) -> Result<Self, AppError> {
+        if let Some(name) = &row.requested_role {
+            let held = db.list_agent_roles().map_err(AppError::from)?;
+            if held.iter().any(|role| &role.name == name) {
+                self.role_name.clone_from(name);
+            }
+        }
+        Ok(self)
     }
 
     /// Returns the page with `error` shown above the form.
@@ -24337,7 +24390,9 @@ async fn device_lookup(
         .pending_device_auth(&code, now)
         .map_err(AppError::from)?
     {
-        Some(row) => Ok(DeviceTemplate::with("confirm", &row).into_response()),
+        Some(row) => Ok(DeviceTemplate::with("confirm", &row)
+            .with_role(&account, &row)?
+            .into_response()),
         None => {
             // An already-decided code is not a guess; only codes that
             // never existed, or expired, count toward the lockout.
@@ -24422,7 +24477,9 @@ fn device_decide(
         (Some(row), Some(form)) => match device_grant(db, row, form, now) {
             Ok(grant) => Some(grant),
             Err(message) => {
-                let page = DeviceTemplate::with("confirm", row).with_error(&message);
+                let page = DeviceTemplate::with("confirm", row)
+                    .with_role(db, row)?
+                    .with_error(&message);
                 return Ok((StatusCode::BAD_REQUEST, page).into_response());
             }
         },
@@ -25293,15 +25350,13 @@ fn checked_token_hours(field: &str, hours: i64) -> Result<i64, AppError> {
     }
 }
 
-/// The body of a token edit: an optional new name and an optional child lifetime. A field of any
-/// other kind, such as permissions, boards, scope or expiry, is refused.
+/// The body of a token edit: an optional new name. A field of any other kind, such as permissions,
+/// boards, scope, expiry or the child lifetime, is refused.
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 struct EditTokenInput {
     /// The new name, 1-80 characters. Absent keeps the name.
     name: Option<String>,
-    /// The most hours a child of this token may live, from 1 to 8. Absent keeps it.
-    child_lifetime_hours: Option<i64>,
 }
 
 /// Describes `record` without its secret.
@@ -25343,10 +25398,10 @@ async fn get_api_token(
     token_reply(&account, record)
 }
 
-/// Renames an API token and sets the most hours its children may live, keeping its secret,
-/// permissions, boards and expiry. A permission or board change is a revoke and a new token, so
-/// the body takes no field for one. Only the browser sets that lifetime: an issuing token never
-/// raises its own. The reply never holds the secret, which was shown once at creation.
+/// Renames an API token, keeping its secret, permissions, boards, expiry and child lifetime. The
+/// name is the only edit: a permission, board or lifetime change is a revoke and a new token, so
+/// the body takes no field for one. The reply never holds the secret, which was shown once at
+/// creation.
 #[utoipa::path(
     patch,
     path = "/api/v1/auth/tokens/{id}",
@@ -25356,7 +25411,7 @@ async fn get_api_token(
     request_body = EditTokenInput,
     responses(
         (status = 200, description = "The token, without its secret", body = InspectTokenResponse),
-        (status = 400, description = "Invalid name, a field other than `name` and `child_lifetime_hours` (permissions, boards, scope and expiry cannot change), or `child_lifetime_hours` outside 1 to 8"),
+        (status = 400, description = "Invalid name, or a field other than `name` (permissions, boards, scope, expiry and `child_lifetime_hours` cannot change)"),
         (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot change tokens, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 404, description = "No such token on this account"),
         (status = 409, description = "Another token of the account has that name, whatever its letter case"),
@@ -25376,13 +25431,9 @@ async fn update_api_token(
         .as_deref()
         .map(submitted_token_name)
         .transpose()?;
-    let child_lifetime_hours = input
-        .child_lifetime_hours
-        .map(|hours| checked_token_hours("child_lifetime_hours", hours))
-        .transpose()?;
     let edit = TokenEdit {
         name,
-        child_lifetime_hours,
+        ..TokenEdit::default()
     };
     let record = found(account.edit_api_token(&id, edit), "no such token")?;
     token_reply(&account, &record)
@@ -25413,6 +25464,34 @@ async fn revoke_api_token(
         return Err(AppError::not_found("no such token"));
     }
     Ok(Json(RevokeResult { revoked: id }))
+}
+
+/// Revokes the calling API token and every token it issued, and no other token. It needs no
+/// permission, so any token may end itself, and the browser session cannot use it.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/tokens/revoke-self",
+    operation_id = "revoke_own_token",
+    tag = "Tokens",
+    responses(
+        (status = 200, description = "Revoked token id. The token and its children answer `token_invalid` from now on", body = RevokeResult),
+        (status = 403, description = "`forbidden`: the caller is not an API token"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn revoke_own_token(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<RevokeResult>, AppError> {
+    let id = user
+        .token_id
+        .as_deref()
+        .filter(|_| user.kind == CredentialKind::Token)
+        .ok_or_else(|| AppError::forbidden("only an API token revokes itself"))?;
+    account.delete_api_token(id).map_err(AppError::from)?;
+    Ok(Json(RevokeResult {
+        revoked: id.to_string(),
+    }))
 }
 
 // ---- Agent roles ----
@@ -27573,13 +27652,12 @@ narrower child: a token with `tokens.issue`, which the `lead` and `admin` preset
 boards, and expires in 1 hour unless asked for up to the hours the owner allows the caller's
 children, 8 at most, and no later than the caller. A token that was not itself issued may give its child
 `tokens.issue`, so a lead issues subagents, but an issued token never issues a token that issues:
-the tree stops at two levels. The owner sets the hours in the browser with `PATCH
-/api/v1/auth/tokens/{id}` and `child_lifetime_hours`, 1 by default. A child cannot create tokens or
-add passkeys, and revoking a token revokes everything below it. Issued tokens at either level do
-not count toward the 50 tokens of an account and have no count limit, but a token that mints more
-than 20 children at once, then one every 2 seconds, gets 429 `rate_limited` with `Retry-After`. An
-expired issued token is deleted. A child's name must differ from every other token's name on the account,
-whatever the letter case (409). A child's `parent_id` names the token that issued it, and its
+the tree stops at two levels. The hours are 1 by default, and a token edit cannot change them. A
+child cannot create tokens or add passkeys, and revoking a token revokes everything below
+it. Issued tokens at either level do not count toward the 50 tokens of an account and have no
+count limit, but a token that mints more than 20 children at once, then one every 2 seconds,
+gets 429 `rate_limited` with `Retry-After`. An expired issued token is deleted. A child's
+name must differ from every other token's name on the account, whatever the letter case (409). A child's `parent_id` names the token that issued it, and its
 history entries and comments carry a `parent_token` with the caller's `id` and `name`. A token issued
 as a role stamps the role's `role_id`, `role_name` and its `label` on every history entry, comment,
 attachment and time entry it makes, and a claim or time entry by it takes the role name as its
@@ -27890,6 +27968,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         list_permissions,
         list_api_tokens,
         revoke_api_token,
+        revoke_own_token,
         get_api_token,
         update_api_token,
         start_device_auth,

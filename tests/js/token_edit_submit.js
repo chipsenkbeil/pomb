@@ -40,13 +40,13 @@ var prevented = 0;
 function press() { submit({ preventDefault: function () { prevented++; } }); }
 
 element('tk-edit-name').value = '  Renamed  ';
-element('tk-edit-child-hours').value = '4';
 press();
 check('the edit submit sends one PATCH', sent.length, 1);
-check('the edit submit holds only name and child_lifetime_hours',
-  Object.keys(JSON.parse(sent[0].options.body)).sort(), ['child_lifetime_hours', 'name']);
-check('the edit submit trims the name and sends the hours as a number',
-  JSON.parse(sent[0].options.body), { name: 'Renamed', child_lifetime_hours: 4 });
+check('the edit submit holds only name',
+  Object.keys(JSON.parse(sent[0].options.body)), ['name']);
+check('the edit submit trims the name',
+  JSON.parse(sent[0].options.body), { name: 'Renamed' });
+check('the edit dialog has no child lifetime field', 'tk-edit-child-hours' in elements, false);
 check('the edit submit stops the browser submitting the form', prevented, 1);
 
 element('tk-edit-name').value = '   ';

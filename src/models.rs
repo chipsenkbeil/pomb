@@ -1020,6 +1020,22 @@ impl OwnerHolder {
             Self::Agent { name, .. } => name.clone(),
         }
     }
+
+    /// Returns whether `other` is the same holder. An agent with no token id matches an agent of
+    /// the same name.
+    #[must_use]
+    pub fn is_same_as(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Agent {
+                    token_id: None,
+                    name,
+                },
+                Self::Agent { name: other, .. },
+            ) => name == other,
+            _ => self == other,
+        }
+    }
 }
 
 /// The variant of an [`OwnerHolder`] as stored.
@@ -1576,6 +1592,23 @@ impl TaskRow {
         self.owner
             .as_ref()
             .filter(|owner| self.claim_fence > 0 && owner.is_live(now))
+    }
+
+    /// Returns the live owner, or for a live claim taken before the task had an owner field, the
+    /// claim holder with the claim's lease.
+    #[must_use]
+    pub fn live_holder(&self, now: DateTime<Utc>) -> Option<Owner> {
+        if let Some(owner) = self.live_owner(now) {
+            return Some(owner.clone());
+        }
+        let claim = self.claim.as_ref().filter(|claim| claim.is_live(now))?;
+        self.owner.is_none().then(|| Owner {
+            holder: OwnerHolder::Agent {
+                token_id: None,
+                name: claim.claimant.clone(),
+            },
+            lease_expires_at: Some(claim.expires_at.clone()),
+        })
     }
 
     /// Returns false when `fence` is given, a live claim or owner lease holds the task, and
@@ -5050,6 +5083,10 @@ pub struct DeviceAuthRow {
     /// Absent for a request approved as no role and for one stored before roles could approve.
     #[serde(default)]
     pub role_id: Option<String>,
+    /// The name of the standard role the request asked for, which the approval page preselects.
+    /// Absent for a request that named no role and for one stored before requests could name one.
+    #[serde(default)]
+    pub requested_role: Option<String>,
 }
 
 /// A named API token for agent/script access. The raw token is shown once

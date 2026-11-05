@@ -814,6 +814,7 @@ mod tests {
             account_id: Some(fx.member.as_str().to_string()),
             client_network: None,
             role_id: None,
+            requested_role: None,
         };
         let txn = fx.db.db.begin_write().expect("write");
         move_row_to(
@@ -875,6 +876,7 @@ mod tests {
             account_id: None,
             client_network: None,
             role_id: None,
+            requested_role: None,
         };
         fx.db.create_device_auth(&request, now).expect("request");
         let grant = DeviceGrant {

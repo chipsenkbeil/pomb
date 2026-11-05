@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "32"
+  version: "33"
 ---
 
 # Pomb
@@ -99,8 +99,8 @@ token was issued, or the token was issued with fewer permissions than the role: 
 don't assume the template.
 
 A lead token issues a subagent with `POST /api/v1/auth/tokens/children` and a `role_id`. On 403
-`exceeds_grant`, ask for less and never retry wider. A role child always expires, so on 401
-`token_expired` it asks its lead for a new child, and a token with no lead asks the user.
+`exceeds_grant`, ask for less. On 401 `token_expired` a role child asks its lead for a new one,
+else the user. `POST /api/v1/auth/tokens/revoke-self` revokes your token and its children.
 
 ## Find, claim, work, release
 

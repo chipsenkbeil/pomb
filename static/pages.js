@@ -259,7 +259,7 @@
         return loadJson('/api/v1/auth/permissions').then(function (all) {
           catalog = TokenForm.deviceCatalog(all, requested);
           picker = mountPermissionPicker(pickerBox, catalog, TokenForm.deviceRoles(all, roles, requested));
-          picker.start(requested);
+          picker.start(requested, pickerBox.dataset.role || null);
         });
       })
       .catch(function (ex) { pickerBox.textContent = 'Could not load permissions: ' + ex.message; });
@@ -2789,7 +2789,6 @@
         tokenRequest('GET', id).then(function (data) {
           editId = id;
           document.getElementById('tk-edit-name').value = data.name;
-          document.getElementById('tk-edit-child-hours').value = data.child_lifetime_hours;
           editError.hidden = true;
           overlay('tk-edit-overlay').hidden = false;
           document.getElementById('tk-edit-name').focus();
@@ -2808,11 +2807,7 @@
       editError.hidden = true;
       var name = document.getElementById('tk-edit-name').value.trim();
       if (!name) { editError.textContent = 'Give the token a name.'; editError.hidden = false; return; }
-      var patch = {
-        name: name,
-        child_lifetime_hours: Number(document.getElementById('tk-edit-child-hours').value)
-      };
-      tokenRequest('PATCH', editId, patch)
+      tokenRequest('PATCH', editId, { name: name })
         .then(function () { window.location.reload(); })
         .catch(function (error) { editError.textContent = error.message; editError.hidden = false; });
     });

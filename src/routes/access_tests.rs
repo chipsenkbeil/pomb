@@ -1129,6 +1129,22 @@ fn board_rows(db: &Db, ids: &Ids) -> String {
     .to_string()
 }
 
+/// B's token revokes only itself: A's token and session still answer.
+#[tokio::test]
+async fn revoking_a_token_should_not_touch_another_accounts_tokens() {
+    let fx = accounts().await;
+    let revoke = "/api/v1/auth/tokens/revoke-self";
+    let revoked = Who::Token(&fx.b_token);
+    let (status, text) = send(&fx.app, revoked, &Method::POST, revoke, None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, _) = send(&fx.app, revoked, &Method::GET, "/api/boards", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    for who in [Who::Token(&fx.a_token), Who::Session(&fx.a_cookie)] {
+        let (status, text) = send(&fx.app, who, &Method::GET, "/api/boards", None).await;
+        assert_eq!(status, StatusCode::OK, "{who:?}: {text}");
+    }
+}
+
 /// A route whose path names B's own board or task and a row of A's inside it answers exactly as
 /// it answers a missing row, and changes nothing.
 #[tokio::test]

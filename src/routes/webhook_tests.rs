@@ -889,6 +889,8 @@ async fn settings_page_should_show_the_docs_button_and_the_token_list_above_the_
     for class in ["tk-show", "tk-edit", "tk-delete"] {
         assert!(html.contains(class), "{class}");
     }
+    assert!(html.contains("id=\"tk-edit-name\""));
+    assert!(!html.contains("tk-edit-child-hours"));
     let tokens = html.find("Personal tokens").expect("tokens heading");
     let webhooks = html.find("<h3>Webhooks</h3>").expect("webhooks heading");
     assert!(tokens < webhooks);

@@ -7,7 +7,7 @@ use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
-use crate::models::{Actor, AuthScope, Owner, OwnerHolder};
+use crate::models::{Actor, AuthScope, Owner, OwnerHolder, TaskClaim};
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -402,4 +402,51 @@ async fn owner_migrated_owner_should_not_block_a_claim_or_a_fence() {
     assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
     let detail = fx.detail(&task).await;
     assert_eq!(detail["owner"]["holder"]["name"], "builder");
+}
+
+#[tokio::test]
+async fn owner_grab_should_refuse_a_live_claim_from_before_the_owner_field() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let seed = |expires_at: &str| {
+        let expires_at = expires_at.to_string();
+        fx.db
+            .apply_task_change(&task, Actor::SYSTEM, |row| {
+                row.owner = None;
+                row.claim_fence = 1;
+                row.claim = Some(TaskClaim {
+                    claimant: "builder".to_string(),
+                    role: None,
+                    harness: None,
+                    model: None,
+                    jj_workspace: None,
+                    jj_change_id: None,
+                    session_id: None,
+                    fence: 1,
+                    started_at: "2020-01-01T00:00:00+00:00".to_string(),
+                    heartbeat_at: "2020-01-01T00:00:00+00:00".to_string(),
+                    expires_at,
+                });
+                ((), true)
+            })
+            .expect("change")
+            .expect("task");
+    };
+
+    seed("2999-01-01T00:00:00+00:00");
+    let held = fx.grab(BETA, &task, "reviewer", Some(60)).await;
+    assert_refused(&held, StatusCode::CONFLICT, "owner_held");
+    let renamed = fx.grab(ALPHA, &task, "other", Some(60)).await;
+    assert_refused(&renamed, StatusCode::CONFLICT, "owner_held");
+    let own = fx.grab(ALPHA, &task, "builder", Some(600)).await;
+    assert_eq!(own.status, StatusCode::OK, "{}", own.body);
+    assert_eq!(fence_of(&own), "1");
+    let detail = fx.detail(&task).await;
+    assert_eq!(detail["owner"]["holder"]["name"], "builder");
+    assert_eq!(detail["owner"]["live"], true);
+
+    seed("2020-01-02T00:00:00+00:00");
+    let next = fx.grab(BETA, &task, "reviewer", Some(60)).await;
+    assert_eq!(next.status, StatusCode::OK, "{}", next.body);
+    assert_eq!(next.body["holder"]["name"], "reviewer");
 }

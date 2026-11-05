@@ -1494,6 +1494,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     ),
     (
         Method::POST,
+        "/api/v1/auth/tokens/revoke-self",
+        Permission::SettingsWrite,
+    ),
+    (
+        Method::POST,
         "/api/v1/auth/tokens/children",
         Permission::TokensIssue,
     ),
@@ -1657,8 +1662,12 @@ pub(crate) fn path_matches(pattern: &str, path: &str) -> bool {
 }
 
 /// The routes a token reaches whatever it holds, so it can read its own grant and the catalog a
-/// refusal names.
-const OPEN_TO_EVERY_TOKEN: &[&str] = &["/api/v1/auth/whoami", "/api/v1/auth/permissions"];
+/// refusal names, and end itself.
+const OPEN_TO_EVERY_TOKEN: &[&str] = &[
+    "/api/v1/auth/whoami",
+    "/api/v1/auth/permissions",
+    "/api/v1/auth/tokens/revoke-self",
+];
 
 /// Returns whether a token reaches route `path` whatever it holds.
 #[must_use]

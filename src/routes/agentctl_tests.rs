@@ -3282,6 +3282,105 @@ async fn device_pairing_should_start_without_auth_and_validate_input() {
     }
 }
 
+fn standard_role_permission_names(name: &str) -> String {
+    STANDARD_ROLES
+        .iter()
+        .find(|role| role.name == name)
+        .expect("standard role")
+        .permissions()
+        .iter()
+        .map(|permission| permission.name())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+#[tokio::test]
+async fn device_request_should_accept_a_standard_role() {
+    let (_dir, fx) = fixture();
+    let (status, started) =
+        start_device(&fx, json!({"client_name": "agentctl", "role": "lead"})).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let user_code = started["user_code"].as_str().expect("user code");
+    let (status, page) =
+        form_post(&fx, As::Admin, "/device", &format!("user_code={user_code}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        page.contains(&format!(
+            "data-requested=\"{}\"",
+            standard_role_permission_names("lead")
+        )),
+        "{page}"
+    );
+}
+
+#[tokio::test]
+async fn device_request_should_refuse_an_unknown_role() {
+    let (_dir, fx) = fixture();
+    let (status, body) =
+        start_device(&fx, json!({"client_name": "agentctl", "role": "scout"})).await;
+    assert_error(
+        status,
+        &body,
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+        "role must be one of planner, implementer, reviewer, verifier, release, lead",
+    );
+    for extra in [
+        json!({"scopes": ["read"]}),
+        json!({"preset": "read"}),
+        json!({"permissions": ["tasks.read"]}),
+    ] {
+        let mut body = json!({"client_name": "agentctl", "role": "lead"});
+        body.as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
+        let (status, body) = start_device(&fx, body).await;
+        assert_error(
+            status,
+            &body,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "send exactly one of scopes, preset, permissions and role",
+        );
+    }
+}
+
+#[tokio::test]
+async fn device_approval_page_should_preselect_the_named_role() {
+    let (_dir, fx) = fixture();
+    let permissions = standard_role_permission_names("lead");
+    let names: Vec<&str> = permissions.split(',').collect();
+    role_of(&fx, "lead", &names);
+    let (status, started) =
+        start_device(&fx, json!({"client_name": "agentctl", "role": "lead"})).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let user_code = started["user_code"].as_str().expect("user code");
+    let (status, page) =
+        form_post(&fx, As::Admin, "/device", &format!("user_code={user_code}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("data-role=\"lead\""), "{page}");
+}
+
+#[tokio::test]
+async fn device_approval_page_should_fall_back_without_the_role() {
+    let (_dir, fx) = fixture();
+    let (status, started) =
+        start_device(&fx, json!({"client_name": "agentctl", "role": "lead"})).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let user_code = started["user_code"].as_str().expect("user code");
+    let (status, page) =
+        form_post(&fx, As::Admin, "/device", &format!("user_code={user_code}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("data-role=\"\""), "{page}");
+    assert!(
+        page.contains(&format!(
+            "data-requested=\"{}\"",
+            standard_role_permission_names("lead")
+        )),
+        "{page}"
+    );
+}
+
 #[tokio::test]
 async fn device_pairing_should_issue_a_named_revocable_token_once_after_approval() {
     let (_dir, fx) = fixture();
@@ -3417,6 +3516,7 @@ async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
         account_id: None,
         client_network: None,
         role_id: None,
+        requested_role: None,
     };
     fx.db.create_device_auth(&row, now).expect("insert");
     let (status, text) = poll_device(&fx, expired_code).await;
@@ -3509,6 +3609,7 @@ async fn device_pairing_should_limit_pending_requests_wrong_codes_and_clean_up()
         account_id: None,
         client_network: None,
         role_id: None,
+        requested_role: None,
     };
     fx.db.create_device_auth(&stale, now).expect("insert");
     assert_eq!(poll_device(&fx, "stale").await.0, StatusCode::GONE);
@@ -5833,6 +5934,7 @@ async fn approving_should_refuse_the_role_of_another_account() {
         account_id: None,
         client_network: None,
         role_id: None,
+        requested_role: None,
     };
     let form = DeviceApproveForm {
         user_code: "BCDFGHJK".into(),
@@ -5895,6 +5997,7 @@ async fn device_grant_should_refuse_boards_outside_the_request() {
         account_id: None,
         client_network: None,
         role_id: None,
+        requested_role: None,
     };
     let form = |boards: Option<Vec<String>>| DeviceApproveForm {
         user_code: "BCDFGHJK".into(),
@@ -10818,10 +10921,9 @@ async fn token_edit_should_accept_an_unchanged_name_next_to_a_same_named_token()
     token_record(&fx, "ci", AuthScope::Read);
     let (id, _) = token_record(&fx, "ci", AuthScope::Read);
     let uri = format!("/api/v1/auth/tokens/{id}");
-    let body = json!({"name": "ci", "child_lifetime_hours": 3});
-    let (status, reply) = call(&fx, "PATCH", &uri, Some(body)).await;
+    let (status, reply) = call(&fx, "PATCH", &uri, Some(json!({"name": "ci"}))).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
-    assert_eq!(reply["child_lifetime_hours"], 3);
+    assert_eq!(reply["child_lifetime_hours"], 1);
 }
 
 #[tokio::test]
@@ -13135,6 +13237,84 @@ async fn revoking_a_parent_should_make_every_child_answer_token_invalid() {
     );
 }
 
+const REVOKE_SELF: &str = "/api/v1/auth/tokens/revoke-self";
+
+fn is_token_invalid(status: StatusCode, text: &str) -> bool {
+    status == StatusCode::UNAUTHORIZED
+        && serde_json::from_str::<Value>(text).expect("json")["code"] == "token_invalid"
+}
+
+#[tokio::test]
+async fn a_token_should_revoke_itself_without_a_permission_and_then_answer_token_invalid() {
+    let (_dir, fx) = fixture();
+    let (id, reader) = token_record(&fx, "reader", AuthScope::Read);
+    let (status, text) = bare(&fx, &reader, "GET", "/api/boards").await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    let (status, text) = bare(&fx, &reader, "POST", REVOKE_SELF).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json"),
+        json!({"revoked": id})
+    );
+
+    for uri in ["/api/boards", REVOKE_SELF] {
+        let method = if uri == REVOKE_SELF { "POST" } else { "GET" };
+        let (status, text) = bare(&fx, &reader, method, uri).await;
+        assert!(is_token_invalid(status, &text), "{uri}: {status} {text}");
+    }
+}
+
+#[tokio::test]
+async fn a_token_revoking_itself_should_make_every_token_it_issued_answer_token_invalid() {
+    let (_dir, fx) = fixture();
+    let before = token_count(&fx);
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let mut children = Vec::new();
+    for name in ["one", "two"] {
+        let (status, reply) = issue(&fx, &lead, json!({"name": name, "preset": "read"})).await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        children.push(raw_of(&reply));
+    }
+    for child in &children {
+        let (status, text) = bare(&fx, child, "GET", "/api/boards").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    let (status, text) = bare(&fx, &lead, "POST", REVOKE_SELF).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    for token in children.iter().chain([&lead]) {
+        let (status, text) = bare(&fx, token, "GET", "/api/boards").await;
+        assert!(is_token_invalid(status, &text), "{status} {text}");
+    }
+    assert_eq!(token_count(&fx), before);
+}
+
+#[tokio::test]
+async fn a_token_revoking_itself_should_leave_other_tokens_alone_and_refuse_a_browser_session() {
+    let (_dir, fx) = fixture();
+    let (_, quitter) = token_record(&fx, "quitter", AuthScope::Work);
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (_, bystander) = token_record(&fx, "bystander", AuthScope::Read);
+    let (status, reply) = issue(&fx, &lead, json!({"name": "kid", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let kid = raw_of(&reply);
+    let held = token_count(&fx);
+
+    let (status, text) = request(&fx, As::Admin, "POST", REVOKE_SELF, None, true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(token_count(&fx), held);
+
+    let (status, text) = bare(&fx, &quitter, "POST", REVOKE_SELF).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(token_count(&fx), held - 1);
+    for token in [&lead, &bystander, &kid] {
+        let (status, text) = bare(&fx, token, "GET", "/api/boards").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+}
+
 #[tokio::test]
 async fn a_child_should_not_create_browser_tokens_or_issue_without_the_right() {
     let (_dir, fx) = fixture();
@@ -13267,37 +13447,25 @@ async fn child_should_not_outlive_its_issuer() {
 }
 
 #[tokio::test]
-async fn the_owner_should_set_the_child_lifetime_of_an_issuer_in_the_browser() {
+async fn token_edit_should_refuse_the_child_lifetime_and_keep_it() {
     let (_dir, fx) = fixture();
     let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
     let uri = format!("/api/v1/auth/tokens/{lead_id}");
-    let three = json!({"name": "three", "preset": "read", "expires_in_hours": 3});
-
-    let (status, reply) = issue(&fx, &lead, three.clone()).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
-    for hours in [0, 9] {
-        let body = json!({"child_lifetime_hours": hours});
-        let (status, reply) = call(&fx, "PATCH", &uri, Some(body)).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{hours}: {reply}");
+    for body in [
+        json!({"child_lifetime_hours": 3}),
+        json!({"name": "renamed", "child_lifetime_hours": 3}),
+        json!({"child_lifetime_hours": 0}),
+    ] {
+        let (status, reply) = call(&fx, "PATCH", &uri, Some(body.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {reply}");
     }
-    let (status, text) = bearer_json(
-        &fx,
-        &lead,
-        "PATCH",
-        &uri,
-        json!({"child_lifetime_hours": 8}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let (status, shown) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!(shown["child_lifetime_hours"], 1);
+    assert_eq!(shown["name"], "lead");
 
-    let (status, reply) = call(&fx, "PATCH", &uri, Some(json!({"child_lifetime_hours": 3}))).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
-    assert_eq!(reply["child_lifetime_hours"], 3);
-    assert_eq!(reply["name"], "lead");
+    let three = json!({"name": "three", "preset": "read", "expires_in_hours": 3});
     let (status, reply) = issue(&fx, &lead, three).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
-    let four = json!({"name": "four", "preset": "read", "expires_in_hours": 4});
-    let (status, reply) = issue(&fx, &lead, four).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
 }
 

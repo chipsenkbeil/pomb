@@ -19,11 +19,11 @@ const COMPOSITIONS: [&str; 3] = ["oneOf", "anyOf", "allOf"];
 pub const SKILL: &str = include_str!("docs/skill.md");
 
 /// Version of [`SKILL`], carried in its frontmatter and reported as `skill_version`.
-pub const SKILL_VERSION: &str = "32";
+pub const SKILL_VERSION: &str = "33";
 
 /// SHA-256 of [`SKILL`] per version, oldest first.
 #[cfg(test)]
-const SKILL_FINGERPRINTS: [(&str, &str); 32] = [
+const SKILL_FINGERPRINTS: [(&str, &str); 33] = [
     (
         "1",
         "c935bab15837c98040da423a9e4479bee899b60c4a8eb39a8cad0338d4c2e57e",
@@ -151,6 +151,10 @@ const SKILL_FINGERPRINTS: [(&str, &str); 32] = [
     (
         "32",
         "f01f76721a16054bcb9c57bbdc50493570ac2532adb8726064c47b2eb7828172",
+    ),
+    (
+        "33",
+        "065607a31806f23c93a17c4c6abb9db1c82832486900e526e246d1f8b08113d9",
     ),
 ];
 

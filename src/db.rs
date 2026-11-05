@@ -1005,7 +1005,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 76;
+pub const SCHEMA_VERSION: u64 = 77;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1088,6 +1088,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "2f1061ac24004e1c00ef04eff0c1d8fecf32cfbd9f9cd51c098e8a9f4b3d7c1d",
     "2f1061ac24004e1c00ef04eff0c1d8fecf32cfbd9f9cd51c098e8a9f4b3d7c1d",
     "332b9168cd35300e66a5e0a6bed3e8b755406698a9995661fcceaf615e746428",
+    "2ede0a454c015ba8cb29d4d975460326645220f6c4751abfa01773ea7d97af62",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -11169,10 +11170,10 @@ impl Db {
             let now = Utc::now();
             let expired = expire_claim(task, now);
             let lease = request.ttl_seconds.map(|ttl| lease_end(now, ttl));
-            if let Some(live) = task.live_owner(now).cloned() {
-                if live.holder == request.holder {
+            if let Some(live) = task.live_holder(now) {
+                if live.holder.is_same_as(&request.holder) {
                     let renewed = Owner {
-                        holder: live.holder,
+                        holder: request.holder.clone(),
                         lease_expires_at: lease,
                     };
                     if let (Some(claim), Some(end)) =
@@ -14142,6 +14143,7 @@ mod schema_version_tests {
             account_id: None,
             client_network: None,
             role_id: None,
+            requested_role: None,
         };
         let value = serde_json::to_value(&device).expect("json");
         put_raw(&path, DEVICE_AUTHS, &device.device_code_hash, &value);
@@ -14628,6 +14630,7 @@ mod schema_version_tests {
             account_id: None,
             client_network: None,
             role_id: None,
+            requested_role: None,
         };
         put_raw(
             &path,
@@ -14707,6 +14710,7 @@ mod schema_version_tests {
                 account_id: approved.then(|| account.as_str().to_string()),
                 client_network: Some("net".to_string()),
                 role_id: None,
+                requested_role: None,
             };
             let value = serde_json::to_value(&row).expect("json");
             put_raw(&path, DEVICE_AUTHS, &row.device_code_hash, &value);
@@ -16960,6 +16964,7 @@ mod device_tests {
             account_id: None,
             client_network: Some(network.to_string()),
             role_id: None,
+            requested_role: None,
         }
     }
 
@@ -17238,6 +17243,7 @@ mod token_index_tests {
             account_id: None,
             client_network: None,
             role_id: None,
+            requested_role: None,
         }
     }
 
