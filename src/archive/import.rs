@@ -67,7 +67,7 @@ pub enum ImportError {
 
 impl ImportError {
     /// Returns the refusal of an archive that is not in the format, for `message`.
-    pub(super) fn invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self::Invalid(message.into())
     }
 }

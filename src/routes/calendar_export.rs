@@ -23,7 +23,7 @@ const RELATIONSHIPS: &str = "http://schemas.openxmlformats.org/officeDocument/20
 
 /// The file format of a due date export.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) enum Format {
+pub(crate) enum Format {
     /// An Excel workbook.
     Xlsx,
     /// Comma-separated values.
@@ -32,7 +32,7 @@ pub(super) enum Format {
 
 impl Format {
     /// Returns the format a request names.
-    pub(super) fn parse(name: &str) -> Option<Self> {
+    pub(crate) fn parse(name: &str) -> Option<Self> {
         match name {
             "xlsx" => Some(Self::Xlsx),
             "csv" => Some(Self::Csv),
@@ -41,7 +41,7 @@ impl Format {
     }
 
     /// Returns the file extension.
-    pub(super) fn extension(self) -> &'static str {
+    pub(crate) fn extension(self) -> &'static str {
         match self {
             Self::Xlsx => "xlsx",
             Self::Csv => "csv",
@@ -49,7 +49,7 @@ impl Format {
     }
 
     /// Returns the content type of the file.
-    pub(super) fn content_type(self) -> &'static str {
+    pub(crate) fn content_type(self) -> &'static str {
         match self {
             Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             Self::Csv => "text/csv; charset=utf-8",
@@ -59,7 +59,7 @@ impl Format {
 
 /// Which due dates an export holds.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) enum Level {
+pub(crate) enum Level {
     /// Task and subtask due dates.
     All,
     /// Task due dates only.
@@ -70,7 +70,7 @@ pub(super) enum Level {
 
 impl Level {
     /// Returns the level a request names.
-    pub(super) fn parse(name: &str) -> Option<Self> {
+    pub(crate) fn parse(name: &str) -> Option<Self> {
         match name {
             "all" => Some(Self::All),
             "task" => Some(Self::Task),
@@ -90,11 +90,11 @@ impl Level {
 
 /// The days an export spans, either end open.
 #[derive(Copy, Clone, Debug)]
-pub(super) struct Range {
+pub(crate) struct Range {
     /// The first day, included.
-    pub(super) from: Option<NaiveDate>,
+    pub(crate) from: Option<NaiveDate>,
     /// The last day, included.
-    pub(super) to: Option<NaiveDate>,
+    pub(crate) to: Option<NaiveDate>,
 }
 
 impl Range {
@@ -109,13 +109,13 @@ impl Range {
 }
 
 /// Returns the header row of an export.
-pub(super) fn header_row() -> Vec<String> {
+pub(crate) fn header_row() -> Vec<String> {
     HEADER.iter().map(ToString::to_string).collect()
 }
 
 /// Adds to `rows` a row for each due date the `tasks` of the board `board` hold in `range` at
 /// `level`.
-pub(super) fn due_rows(
+pub(crate) fn due_rows(
     rows: &mut Vec<Vec<String>>,
     board: &str,
     columns: &[ColumnRow],
@@ -161,7 +161,7 @@ pub(super) fn due_rows(
 }
 
 /// Returns `rows` as CSV with a byte order mark, every field quoted and formulas made text.
-pub(super) fn csv_bytes(rows: &[Vec<String>]) -> Vec<u8> {
+pub(crate) fn csv_bytes(rows: &[Vec<String>]) -> Vec<u8> {
     let mut csv = String::from('\u{feff}');
     for row in rows {
         let fields: Vec<String> = row.iter().map(|field| csv_field(field)).collect();
@@ -207,7 +207,7 @@ fn xml_text(text: &str) -> String {
 }
 
 /// Returns `rows` as an Excel workbook of one sheet named `sheet_name` of text cells.
-pub(super) fn xlsx_bytes(rows: &[Vec<String>], sheet_name: &str) -> Vec<u8> {
+pub(crate) fn xlsx_bytes(rows: &[Vec<String>], sheet_name: &str) -> Vec<u8> {
     let mut sheet = format!(
         r#"{XML_HEAD}<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#
     );

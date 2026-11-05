@@ -71,9 +71,9 @@ use crate::db::{
     QuestionMove, QuestionWrite, QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome,
     Revoked, RoleDenied, RoleTokenRefusal, SessionEndOutcome, SessionListing, SessionRefused,
     SessionToken, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
-    SwimlaneUpdateOutcome, TaskContext, UmbrellaChange, UmbrellaPart, UmbrellaRef,
-    WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels, local_day, merge_metadata,
-    push_change_event, push_column_event, push_event, round_estimate,
+    SwimlaneUpdateOutcome, TaskContext, TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart,
+    UmbrellaRef, WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels, local_day,
+    merge_metadata, push_change_event, push_column_event, push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -1629,6 +1629,9 @@ impl From<Box<dyn std::error::Error>> for AppError {
         }
         if let Some(refusal) = error.downcast_ref::<PaletteStrandsColor>() {
             return Self::bad_request(refusal.to_string());
+        }
+        if error.downcast_ref::<TokenNameTaken>().is_some() {
+            return Self::conflict(error.to_string());
         }
         if error.downcast_ref::<NumberingExhausted>().is_some() {
             return Self::conflict(error.to_string());
@@ -4807,14 +4810,20 @@ struct LinkPickerTemplate {
 }
 
 impl PickerMode {
-    /// Returns whether the task `candidate`, holding `links`, may be offered when the tasks in
-    /// `excluded` may not be.
-    fn admits(self, candidate: &str, links: &[TaskLink], excluded: &HashSet<String>) -> bool {
+    /// Returns whether the task `candidate` of `kind`, holding `links`, may be offered when the
+    /// tasks in `excluded` may not be. A parent link takes an epic only.
+    fn admits(
+        self,
+        candidate: &str,
+        kind: TaskKind,
+        links: &[TaskLink],
+        excluded: &HashSet<String>,
+    ) -> bool {
         let has_umbrella = links.iter().any(|link| link.kind == LinkKind::Parent);
         let allowed = !excluded.contains(candidate);
         match self {
             Self::Child => allowed && !has_umbrella,
-            Self::Parent => allowed,
+            Self::Parent => allowed && kind == TaskKind::Epic,
         }
     }
 }
@@ -14709,7 +14718,11 @@ fn picker_candidates(
             continue;
         }
         let links = reads.task_links(&hit.task_id).map_err(AppError::from)?;
-        if !mode.admits(&hit.task_id, &links, &excluded) {
+        let kind = reads
+            .head(&hit.task_id)
+            .map_err(AppError::from)?
+            .map_or_else(TaskKind::default, |head| head.kind);
+        if !mode.admits(&hit.task_id, kind, &links, &excluded) {
             continue;
         }
         if candidates.len() == LINK_PICKER_LIMIT {
@@ -24479,16 +24492,12 @@ async fn create_child_token(
             (scope, permissions, boards)
         }
     };
-    let hours = input
-        .expires_in_hours
-        .unwrap_or(ApiTokenRecord::DEFAULT_CHILD_HOURS);
-    if !(ApiTokenRecord::MIN_CHILD_HOURS..=ApiTokenRecord::MAX_CHILD_HOURS).contains(&hours) {
-        return Err(AppError::bad_request(format!(
-            "expires_in_hours must be from {} to {}",
-            ApiTokenRecord::MIN_CHILD_HOURS,
-            ApiTokenRecord::MAX_CHILD_HOURS,
-        )));
-    }
+    let hours = checked_token_hours(
+        "expires_in_hours",
+        input
+            .expires_in_hours
+            .unwrap_or(ApiTokenRecord::DEFAULT_CHILD_HOURS),
+    )?;
     let grant = TokenGrant {
         scope,
         permissions,
@@ -24818,20 +24827,26 @@ fn submitted_token_name(name: &str) -> Result<String, AppError> {
     Ok(name.to_string())
 }
 
-/// The body of a token edit: an optional new name and an optional new grant.
+/// Reads a number of hours from 1 to 8, which `field` names in the refusal.
+fn checked_token_hours(field: &str, hours: i64) -> Result<i64, AppError> {
+    if (ApiTokenRecord::MIN_CHILD_HOURS..=ApiTokenRecord::MAX_CHILD_HOURS).contains(&hours) {
+        Ok(hours)
+    } else {
+        Err(AppError::bad_request(format!(
+            "{field} must be from {} to {}",
+            ApiTokenRecord::MIN_CHILD_HOURS,
+            ApiTokenRecord::MAX_CHILD_HOURS,
+        )))
+    }
+}
+
+/// The body of a token edit: an optional new name and an optional child lifetime. A field of any
+/// other kind, such as permissions, boards, scope or expiry, is refused.
 #[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 struct EditTokenInput {
     /// The new name, 1-80 characters. Absent keeps the name.
     name: Option<String>,
-    /// Non-empty subset of ["read", "work", "provision", "admin"]. The highest one sets the
-    /// token's permissions. Send at most one of `scopes`, `preset` and `permissions`; none keeps
-    /// the permissions.
-    #[serde(default)]
-    scopes: Vec<String>,
-    /// A preset from `GET /api/v1/auth/permissions`: "read", "work", "lead" or "admin".
-    preset: Option<String>,
-    /// A custom, non-empty set of permission wire names from `GET /api/v1/auth/permissions`.
-    permissions: Option<Vec<String>>,
     /// The most hours a child of this token may live, from 1 to 8. Absent keeps it.
     child_lifetime_hours: Option<i64>,
 }
@@ -24875,9 +24890,10 @@ async fn get_api_token(
     token_reply(&account, record)
 }
 
-/// Renames an API token, changes its permissions and sets the most hours its children may live,
-/// keeping its secret, boards and expiry. Only the browser sets that lifetime: an issuing token
-/// never raises its own. The reply never holds the secret, which was shown once at creation.
+/// Renames an API token and sets the most hours its children may live, keeping its secret,
+/// permissions, boards and expiry. A permission or board change is a revoke and a new token, so
+/// the body takes no field for one. Only the browser sets that lifetime: an issuing token never
+/// raises its own. The reply never holds the secret, which was shown once at creation.
 #[utoipa::path(
     patch,
     path = "/api/v1/auth/tokens/{id}",
@@ -24887,9 +24903,10 @@ async fn get_api_token(
     request_body = EditTokenInput,
     responses(
         (status = 200, description = "The token, without its secret", body = InspectTokenResponse),
-        (status = 400, description = "Invalid name, more than one of `scopes`, `preset` and `permissions`, an unknown preset or permission, or `child_lifetime_hours` outside 1 to 8"),
+        (status = 400, description = "Invalid name, a field other than `name` and `child_lifetime_hours` (permissions, boards, scope and expiry cannot change), or `child_lifetime_hours` outside 1 to 8"),
         (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot change tokens, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 404, description = "No such token on this account"),
+        (status = 409, description = "Another token of the account has that name, whatever its letter case"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -24906,35 +24923,15 @@ async fn update_api_token(
         .as_deref()
         .map(submitted_token_name)
         .transpose()?;
-    let grant = if input.scopes.is_empty() && input.preset.is_none() && input.permissions.is_none()
-    {
-        None
-    } else {
-        Some(submitted_permissions(
-            &input.scopes,
-            input.preset.as_deref(),
-            input.permissions.as_deref(),
-        )?)
-    };
     let child_lifetime_hours = input
         .child_lifetime_hours
-        .map(|hours| {
-            if (ApiTokenRecord::MIN_CHILD_HOURS..=ApiTokenRecord::MAX_CHILD_HOURS).contains(&hours)
-            {
-                Ok(hours)
-            } else {
-                Err(AppError::bad_request(format!(
-                    "child_lifetime_hours must be from {} to {}",
-                    ApiTokenRecord::MIN_CHILD_HOURS,
-                    ApiTokenRecord::MAX_CHILD_HOURS,
-                )))
-            }
-        })
+        .map(|hours| checked_token_hours("child_lifetime_hours", hours))
         .transpose()?;
-    let record = found(
-        account.edit_api_token(&id, name.as_deref(), grant, child_lifetime_hours),
-        "no such token",
-    )?;
+    let edit = TokenEdit {
+        name,
+        child_lifetime_hours,
+    };
+    let record = found(account.edit_api_token(&id, edit), "no such token")?;
     token_reply(&account, &record)
 }
 

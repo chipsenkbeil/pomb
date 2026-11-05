@@ -69,7 +69,7 @@ impl Db {
 
 /// Removes the uploaded avatar image of `account` inside an open write transaction, and takes its
 /// bytes off the account.
-pub(super) fn txn_drop_avatar_image(txn: &WriteTransaction, account: &AccountId) -> DbResult<()> {
+fn txn_drop_avatar_image(txn: &WriteTransaction, account: &AccountId) -> DbResult<()> {
     let removed = txn
         .open_table(AVATARS)?
         .remove(account.as_str())?

@@ -164,7 +164,7 @@ pub struct AccountSummary {
 
 /// Returns the id of the account whose handle is `handle` in any case, from an open usernames
 /// table.
-pub(super) fn handle_owner_in<R>(tbl: &R, handle: &str) -> DbResult<Option<String>>
+pub(crate) fn handle_owner_in<R>(tbl: &R, handle: &str) -> DbResult<Option<String>>
 where
     R: ReadableTable<&'static str, &'static str>,
 {
@@ -199,7 +199,7 @@ where
 /// everything in them, templates, time entries, tokens, device requests, sessions, passkeys,
 /// recovery code, invites, settings, timer, notifications, activity and handle. Returns the ids of
 /// its attachments, whose files the caller deletes once the transaction commits.
-pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbResult<Vec<String>> {
+pub(crate) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbResult<Vec<String>> {
     let id = user.id.as_str();
     let mut attachment_ids = Vec::new();
     for board in txn_owner_boards(txn, id)? {

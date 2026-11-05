@@ -116,7 +116,7 @@ fn happenings<'a>(before: Option<&'a TaskRow>, after: &'a TaskRow) -> Vec<Happen
 
 /// Queues the events the write of task `before` into `after` makes for the board's webhooks, inside
 /// the open write transaction that stores `after`.
-pub(super) fn txn_queue_events(
+pub(crate) fn txn_queue_events(
     txn: &WriteTransaction,
     before: Option<&TaskRow>,
     after: &TaskRow,
@@ -126,7 +126,7 @@ pub(super) fn txn_queue_events(
 }
 
 /// Queues a task deleted event for `task`, inside the open write transaction that deletes it.
-pub(super) fn txn_queue_task_deleted(
+pub(crate) fn txn_queue_task_deleted(
     txn: &WriteTransaction,
     task: &TaskRow,
     actor: Actor<'_>,
@@ -135,7 +135,7 @@ pub(super) fn txn_queue_task_deleted(
 }
 
 /// Queues a task restored event for `task`, inside the open write transaction that puts it back.
-pub(super) fn txn_queue_task_restored(
+pub(crate) fn txn_queue_task_restored(
     txn: &WriteTransaction,
     task: &TaskRow,
     actor: Actor<'_>,
@@ -279,7 +279,7 @@ fn txn_trim_outbox(txn: &WriteTransaction, webhook_id: &str) -> DbResult<()> {
 }
 
 /// Removes event `key` from the outbox table inside an open write transaction and returns it.
-pub(super) fn txn_remove_event(txn: &WriteTransaction, key: &str) -> DbResult<Option<OutboxRow>> {
+pub(crate) fn txn_remove_event(txn: &WriteTransaction, key: &str) -> DbResult<Option<OutboxRow>> {
     let raw = txn
         .open_table(WEBHOOK_OUTBOX)?
         .remove(key)?
@@ -288,7 +288,7 @@ pub(super) fn txn_remove_event(txn: &WriteTransaction, key: &str) -> DbResult<Op
 }
 
 /// Removes every event queued for webhook `webhook_id`, inside an open write transaction.
-pub(super) fn txn_remove_webhook_outbox(txn: &WriteTransaction, webhook_id: &str) -> DbResult<()> {
+pub(crate) fn txn_remove_webhook_outbox(txn: &WriteTransaction, webhook_id: &str) -> DbResult<()> {
     for key in txn_mmap_get(txn, WEBHOOK_OUTBOX_BY_HOOK, webhook_id)? {
         txn_remove_event(txn, &key)?;
     }

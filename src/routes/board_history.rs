@@ -35,7 +35,7 @@ const ATTACHMENT_KINDS: &[HistoryKind] = &[
 
 /// A group of history kinds a filter names.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) enum Group {
+pub(crate) enum Group {
     /// A task was created.
     Created,
     /// A task was deleted.
@@ -54,7 +54,7 @@ pub(super) enum Group {
 
 impl Group {
     /// Every group, in the order the filter lists them.
-    pub(super) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Created,
         Self::Deleted,
         Self::Restored,
@@ -65,7 +65,7 @@ impl Group {
     ];
 
     /// Returns the name a request uses for the group.
-    pub(super) fn value(self) -> &'static str {
+    pub(crate) fn value(self) -> &'static str {
         match self {
             Self::Created => "created",
             Self::Deleted => "deleted",
@@ -78,7 +78,7 @@ impl Group {
     }
 
     /// Returns the label the filter shows for the group.
-    pub(super) fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Created => "Created",
             Self::Deleted => "Deleted",
@@ -91,7 +91,7 @@ impl Group {
     }
 
     /// Returns the group a request names.
-    pub(super) fn parse(name: &str) -> Option<Self> {
+    pub(crate) fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|group| group.value() == name)
     }
 
@@ -110,7 +110,7 @@ impl Group {
 }
 
 /// Returns the `(value, label)` of each group, as the Event filter lists them.
-pub(super) fn event_groups() -> Vec<(&'static str, &'static str)> {
+pub(crate) fn event_groups() -> Vec<(&'static str, &'static str)> {
     Group::ALL
         .into_iter()
         .map(|group| (group.value(), group.label()))
@@ -118,7 +118,7 @@ pub(super) fn event_groups() -> Vec<(&'static str, &'static str)> {
 }
 
 /// Returns the `(kind, label)` pairs of the properties the group `changed` holds.
-pub(super) fn changed_properties() -> Vec<(&'static str, &'static str)> {
+pub(crate) fn changed_properties() -> Vec<(&'static str, &'static str)> {
     HistoryKind::ALL
         .into_iter()
         .filter(|kind| Group::of(*kind) == Group::Changed)
@@ -128,7 +128,7 @@ pub(super) fn changed_properties() -> Vec<(&'static str, &'static str)> {
 
 /// Which order a history lists its rows in.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) enum Order {
+pub(crate) enum Order {
     /// The latest row first.
     Newest,
     /// The earliest row first.
@@ -137,7 +137,7 @@ pub(super) enum Order {
 
 impl Order {
     /// Returns the order a request names.
-    pub(super) fn parse(name: &str) -> Option<Self> {
+    pub(crate) fn parse(name: &str) -> Option<Self> {
         match name {
             "newest" => Some(Self::Newest),
             "oldest" => Some(Self::Oldest),
@@ -148,19 +148,19 @@ impl Order {
 
 /// Which rows of a board's history a request keeps.
 #[derive(Clone, Debug)]
-pub(super) struct Filter {
+pub(crate) struct Filter {
     /// The event group to keep, or all.
-    pub(super) event: Option<Group>,
+    pub(crate) event: Option<Group>,
     /// The kind of change to keep, or all.
-    pub(super) property: Option<String>,
+    pub(crate) property: Option<String>,
     /// The user whose rows to keep, or all.
-    pub(super) user: Option<String>,
+    pub(crate) user: Option<String>,
     /// The first instant to keep.
-    pub(super) from: Option<DateTime<Utc>>,
+    pub(crate) from: Option<DateTime<Utc>>,
     /// The first instant to leave out.
-    pub(super) to: Option<DateTime<Utc>>,
+    pub(crate) to: Option<DateTime<Utc>>,
     /// The order of the rows.
-    pub(super) order: Order,
+    pub(crate) order: Order,
 }
 
 impl Filter {
@@ -178,38 +178,38 @@ impl Filter {
 
 /// One row of a board's history.
 #[derive(Clone, Debug, Serialize, ToSchema)]
-pub(super) struct HistoryRow {
+pub(crate) struct HistoryRow {
     /// RFC3339 time of the event.
-    pub(super) time: String,
+    pub(crate) time: String,
     /// The user who made the change, followed by the API token's name in parentheses when a token
     /// made it.
-    pub(super) user: String,
+    pub(crate) user: String,
     /// The name of the task.
-    pub(super) task: String,
+    pub(crate) task: String,
     /// The readable label of the kind of event.
-    pub(super) event: String,
+    pub(crate) event: String,
     /// The machine-readable kind of the event.
-    pub(super) kind: HistoryKind,
+    pub(crate) kind: HistoryKind,
     /// What happened, in one sentence, or the text of a comment.
-    pub(super) detail: String,
+    pub(crate) detail: String,
     /// Whether the event replaced one value with another, so `old_value` and `new_value` hold
     /// them.
-    pub(super) changed: bool,
+    pub(crate) changed: bool,
     /// The value the change replaced, or `(none)`.
-    pub(super) old_value: String,
+    pub(crate) old_value: String,
     /// The value the change set, or `(none)`.
-    pub(super) new_value: String,
+    pub(crate) new_value: String,
     #[serde(skip)]
     actor: String,
 }
 
 /// A board's history after a filter, with every user who made a change.
 #[derive(Clone, Debug, Serialize, ToSchema)]
-pub(super) struct HistoryPage {
+pub(crate) struct HistoryPage {
     /// The rows that pass the filter, in the order asked.
-    pub(super) rows: Vec<HistoryRow>,
+    pub(crate) rows: Vec<HistoryRow>,
     /// Every user with a row on the board before the filter, sorted.
-    pub(super) users: Vec<String>,
+    pub(crate) users: Vec<String>,
 }
 
 /// Returns the old and new value of a move whose event stores only its sentence.
@@ -280,7 +280,7 @@ fn comment_row(task: &str, comment: &TaskComment) -> HistoryRow {
 
 /// Collects the rows of the tasks on a board and of those in its recycle bin, given each task's
 /// visible history, and keeps the ones `filter` passes.
-pub(super) fn page(
+pub(crate) fn page(
     live: &[(TaskRow, Vec<TaskEvent>)],
     binned: &[(BinRow, Vec<TaskEvent>)],
     filter: &Filter,
@@ -319,7 +319,7 @@ pub(super) fn page(
 }
 
 /// Returns the rows of `page` and the header as the cells of an export.
-pub(super) fn export_cells(page: &HistoryPage) -> Vec<Vec<String>> {
+pub(crate) fn export_cells(page: &HistoryPage) -> Vec<Vec<String>> {
     let mut cells = vec![HEADER.iter().map(ToString::to_string).collect()];
     for row in &page.rows {
         let (property, old, new) = if row.changed {

@@ -25,20 +25,20 @@ use super::{
     QuestionWrite, Reads, RestoreOutcome, RoleTokenRefusal, Rows, SWIMLANES, SessionEndOutcome,
     SessionListing, SessionToken, StandardRoles, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
     SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
-    TaskContext, TemplateDeleteOutcome, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board,
-    index_in, link_event_target, links_blocked_in, no_signed_in_account, read_in, redacted_history,
-    role_in, task_role_in,
+    TaskContext, TemplateDeleteOutcome, TokenEdit, UmbrellaChange, WEBHOOKS, WebhookPatch,
+    first_board, index_in, link_event_target, links_blocked_in, no_signed_in_account, read_in,
+    redacted_history, role_in, task_role_in,
 };
 use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission, required_role,
 };
 use crate::models::{
-    AccountId, AccountStatus, ActiveTimer, Actor, AgentRoleRow, ApiTokenRecord, AuthScope, Avatar,
-    BinRow, BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
-    CommentQuestion, CoverChange, DeviceAuthRow, EscalationTier, EventKind, FieldDefRow,
-    InboundAddressRow, LinkKind, Numbering, ParentToken, PasskeyRow, PruneNotice, QuestionAnswer,
-    RecoveryCodeRow, ReportBookmark, Settings, SwimlaneRow, TaskAttachment, TaskBrief, TaskCard,
-    TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow, WebhookRow,
+    AccountId, AccountStatus, ActiveTimer, Actor, AgentRoleRow, ApiTokenRecord, Avatar, BinRow,
+    BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CommentQuestion,
+    CoverChange, DeviceAuthRow, EscalationTier, EventKind, FieldDefRow, InboundAddressRow,
+    LinkKind, Numbering, ParentToken, PasskeyRow, PruneNotice, QuestionAnswer, RecoveryCodeRow,
+    ReportBookmark, Settings, SwimlaneRow, TaskAttachment, TaskBrief, TaskCard, TaskComment,
+    TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow, WebhookRow,
 };
 use crate::permissions::Permission;
 
@@ -2806,18 +2806,10 @@ impl AccountDb {
         self.db.delete_child_api_tokens(&self.account, parent, only)
     }
 
-    /// Renames one of the account's tokens and, when `grant` is set, changes its scope and
-    /// permissions, and, when `child_lifetime_hours` is set, the most hours its children may live,
-    /// without a new secret. Returns [`None`] when it holds no such token.
-    pub fn edit_api_token(
-        &self,
-        id: &str,
-        name: Option<&str>,
-        grant: Option<(AuthScope, BTreeSet<Permission>)>,
-        child_lifetime_hours: Option<i64>,
-    ) -> DbResult<Option<ApiTokenRecord>> {
-        self.db
-            .edit_api_token(&self.account, id, name, grant, child_lifetime_hours)
+    /// Applies `edit` to one of the account's tokens without a new secret and without touching its
+    /// permissions, boards or expiry. Returns [`None`] when it holds no such token.
+    pub fn edit_api_token(&self, id: &str, edit: TokenEdit) -> DbResult<Option<ApiTokenRecord>> {
+        self.db.edit_api_token(&self.account, id, edit)
     }
 
     /// Returns the account's passkeys, oldest first.

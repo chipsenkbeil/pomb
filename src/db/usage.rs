@@ -26,7 +26,7 @@ use crate::models::{
 /// makes on its own, such as the starter board and the changes a delete makes to other tasks,
 /// are allowed and still counted.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) enum OverQuota {
+pub(crate) enum OverQuota {
     /// The write is the account's own, so a quota refuses it.
     Refuse,
     /// The write is the server's, so it is counted and never refused.
@@ -49,11 +49,11 @@ impl OverQuota {
 }
 
 /// Bytes past its stored-bytes quota an account may still record finished timer sessions in.
-pub(super) const MAX_TIMER_OVERAGE_BYTES: u64 = 1_048_576;
+const MAX_TIMER_OVERAGE_BYTES: u64 = 1_048_576;
 
 /// Returns the account that owns the board column `column_id` sits on, read inside an open write
 /// transaction.
-pub(super) fn txn_column_owner(
+pub(crate) fn txn_column_owner(
     txn: &WriteTransaction,
     column_id: &str,
 ) -> DbResult<Option<String>> {
@@ -69,7 +69,7 @@ fn txn_board_owner(txn: &WriteTransaction, board_id: &str) -> DbResult<Option<St
 }
 
 /// A stored row that counts against the account owning its board.
-pub(super) trait Counted: Serialize + DeserializeOwned {
+pub(crate) trait Counted: Serialize + DeserializeOwned {
     /// The most bytes one stored row may take and the bound a write past it breaks, absent when
     /// any size is stored.
     const MAX_ROW: Option<(Bound, usize)> = None;
@@ -114,7 +114,7 @@ impl Counted for FieldDefRow {
 
 /// Refuses, with [`QuotaExceeded`], a row of `bytes` past the `max` of `bound` that grows on the
 /// `held` bytes it replaces, so a write that shrinks such a row still goes through.
-pub(super) fn refuse_row_past(bound: Bound, max: usize, bytes: u64, held: u64) -> DbResult<()> {
+pub(crate) fn refuse_row_past(bound: Bound, max: usize, bytes: u64, held: u64) -> DbResult<()> {
     if bytes > max as u64 && bytes > held {
         return Err(Box::new(QuotaExceeded {
             bound,
@@ -127,7 +127,7 @@ pub(super) fn refuse_row_past(bound: Bound, max: usize, bytes: u64, held: u64) -
 /// Stores `row` under `key` in `table`, inside an open write transaction, and counts the change
 /// in its size against its owner. Unless `over` is [`OverQuota::Allow`], a write that grows the
 /// row past its [`Counted::MAX_ROW`] or its owner past the stored-bytes quota is refused.
-pub(super) fn txn_store_owned<T: Counted>(
+pub(crate) fn txn_store_owned<T: Counted>(
     txn: &WriteTransaction,
     table: Rows,
     key: &str,
@@ -156,7 +156,7 @@ pub(super) fn txn_store_owned<T: Counted>(
 
 /// Removes `key` from `table`, inside an open write transaction, takes its bytes off its owner,
 /// and returns the removed row.
-pub(super) fn txn_remove_owned<T: Counted>(
+pub(crate) fn txn_remove_owned<T: Counted>(
     txn: &WriteTransaction,
     table: Rows,
     key: &str,
@@ -177,7 +177,7 @@ pub(super) fn txn_remove_owned<T: Counted>(
 
 /// Loads row `key` of `table`, applies `f` and stores it back through [`txn_store_owned`] under
 /// [`OverQuota::Refuse`]. Returns false when the key is unknown.
-pub(super) fn mutate_owned<T: Counted>(
+pub(crate) fn mutate_owned<T: Counted>(
     db: &Store,
     table: Rows,
     key: &str,
@@ -195,7 +195,7 @@ pub(super) fn mutate_owned<T: Counted>(
 
 /// Returns the bytes the stored rows `keys` of `table` take, read inside an open write
 /// transaction.
-pub(super) fn txn_rows_bytes(
+pub(crate) fn txn_rows_bytes(
     txn: &WriteTransaction,
     table: Rows,
     keys: &[String],
@@ -220,7 +220,7 @@ fn txn_usage(txn: &WriteTransaction, owner: &str) -> DbResult<u64> {
 
 /// Adds `added` bytes to what `owner` stores and takes `removed` away, inside an open write
 /// transaction. The count never drops below zero.
-pub(super) fn txn_count_usage(
+pub(crate) fn txn_count_usage(
     txn: &WriteTransaction,
     owner: &str,
     added: u64,
@@ -238,7 +238,7 @@ pub(super) fn txn_count_usage(
 /// Refuses, with [`QuotaExceeded`], a write that adds `added` bytes and removes `removed` from
 /// what `owner` stores when that leaves it past its stored-bytes quota, inside that write's
 /// transaction. A write that grows nothing is never refused.
-pub(super) fn txn_refuse_over_bytes(
+pub(crate) fn txn_refuse_over_bytes(
     txn: &WriteTransaction,
     owner: &str,
     added: u64,
@@ -271,7 +271,7 @@ fn txn_refuse_past_bytes(
 
 /// Refuses, with [`QuotaExceeded`], an upload that adds `added` bytes to what `owner` stores when
 /// that leaves it past its stored-bytes quota, read inside a read transaction.
-pub(super) fn read_refuse_over_bytes(
+pub(crate) fn read_refuse_over_bytes(
     txn: &ReadTransaction,
     owner: &str,
     added: u64,
@@ -311,7 +311,7 @@ fn refuse_past_quota(quotas: &Quotas, after: u64, allowance: u64) -> DbResult<()
 /// past [`MAX_TASK_ROW_BYTES`], or when it grows its owner past the stored-bytes quota. A write
 /// under [`OverQuota::Allow`] changes no user text and never moves a task to another account's
 /// board, so it is only counted.
-pub(super) fn txn_store_task(
+pub(crate) fn txn_store_task(
     txn: &WriteTransaction,
     tasks: &mut Table<'_, &'static str, &'static [u8]>,
     task: &TaskRow,
@@ -324,7 +324,7 @@ pub(super) fn txn_store_task(
 
 /// Stores `task` like [`txn_store_task`] but queues no webhook event, and returns the row it
 /// replaced.
-pub(super) fn txn_write_task(
+pub(crate) fn txn_write_task(
     txn: &WriteTransaction,
     tasks: &mut Table<'_, &'static str, &'static [u8]>,
     task: &TaskRow,
@@ -413,7 +413,7 @@ fn task_bytes(raw: &[u8]) -> DbResult<u64> {
 /// Returns the bytes the board `board_id` counts against its owner: its tasks and layout rows,
 /// read inside an open write transaction. Recycle bin rows count against the account that
 /// deleted them.
-pub(super) fn txn_board_bytes(txn: &WriteTransaction, board_id: &str) -> DbResult<u64> {
+pub(crate) fn txn_board_bytes(txn: &WriteTransaction, board_id: &str) -> DbResult<u64> {
     let column_ids = txn_mmap_get(txn, COLUMNS_BY_BOARD, board_id)?;
     let swimlane_ids = txn_mmap_get(txn, SWIMLANES_BY_BOARD, board_id)?;
     let color_ids = txn_mmap_get(txn, COLORS_BY_BOARD, board_id)?;
@@ -432,7 +432,7 @@ pub(super) fn txn_board_bytes(txn: &WriteTransaction, board_id: &str) -> DbResul
 
 /// Returns the bytes the stored rows of `task_ids` and their attachment files take, read inside
 /// an open write transaction, for a delete that removes them all.
-pub(super) fn txn_task_bytes(txn: &WriteTransaction, task_ids: &[String]) -> DbResult<u64> {
+pub(crate) fn txn_task_bytes(txn: &WriteTransaction, task_ids: &[String]) -> DbResult<u64> {
     let tasks = txn.open_table(TASKS)?;
     let mut bytes = 0;
     for id in task_ids {
@@ -448,7 +448,7 @@ pub(super) fn txn_task_bytes(txn: &WriteTransaction, task_ids: &[String]) -> DbR
 /// differs from the stored entry is past its cap, and unless `over` is [`OverQuota::Allow`] when
 /// it takes the account past its time entry quota or its day past its most entries, or grows the
 /// account past its stored-bytes quota by more than [`OverQuota::allowance`].
-pub(super) fn txn_store_entry(
+pub(crate) fn txn_store_entry(
     txn: &WriteTransaction,
     entry: &TimeEntryRow,
     over: OverQuota,
@@ -477,7 +477,7 @@ pub(super) fn txn_store_entry(
 /// Removes the time entry `id` through the open table `entries`, inside an open write
 /// transaction, drops it from the indexes of its account and day, and takes its bytes off its
 /// account. Returns the removed entry.
-pub(super) fn txn_remove_entry(
+pub(crate) fn txn_remove_entry(
     txn: &WriteTransaction,
     entries: &mut Table<'_, &'static str, &'static [u8]>,
     id: &str,
@@ -534,7 +534,7 @@ fn count_owned<T: Counted>(
 /// Rebuilds what every account stores from its boards with their columns, swimlanes, colors,
 /// field definitions and webhooks, its task rows, time entries, saved templates and attachment
 /// files, inside an open write transaction.
-pub(super) fn txn_recount_usage(txn: &WriteTransaction) -> DbResult<()> {
+pub(crate) fn txn_recount_usage(txn: &WriteTransaction) -> DbResult<()> {
     let mut usage: HashMap<String, u64> = HashMap::new();
     count_tasks(txn, &mut usage)?;
     txn_bin_usage(txn, &mut usage)?;

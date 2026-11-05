@@ -14,7 +14,7 @@ const MAX_BOUNDARY_BYTES: usize = 200;
 
 /// Why a multipart body could not be read.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum MultipartError {
+pub(crate) enum MultipartError {
     /// The request has no multipart content type or no boundary.
     NoBoundary,
     /// The boundary is longer than [`MAX_BOUNDARY_BYTES`].
@@ -43,11 +43,11 @@ impl fmt::Display for MultipartError {
 
 /// The headers of one part that matter to an upload.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(super) struct PartHead {
+pub(crate) struct PartHead {
     /// The file name the client gave, which only a file part has.
-    pub(super) filename: Option<String>,
+    pub(crate) filename: Option<String>,
     /// The MIME type the client gave.
-    pub(super) content_type: Option<String>,
+    pub(crate) content_type: Option<String>,
 }
 
 /// Where the reader stands in the body.
@@ -77,7 +77,7 @@ enum Step {
 
 /// A streaming reader of a multipart/form-data body, which holds at most one chunk and a boundary
 /// in memory at a time, so a part of any size goes to disk as it arrives.
-pub(super) struct Multipart {
+pub(crate) struct Multipart {
     /// The request body.
     body: Body,
     /// The line break, dashes and boundary that end a part's data.
@@ -91,7 +91,7 @@ pub(super) struct Multipart {
 }
 
 /// Returns the boundary of the multipart content type in `headers`.
-pub(super) fn boundary_of(headers: &HeaderMap) -> Result<String, MultipartError> {
+pub(crate) fn boundary_of(headers: &HeaderMap) -> Result<String, MultipartError> {
     let value = headers
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -114,7 +114,7 @@ pub(super) fn boundary_of(headers: &HeaderMap) -> Result<String, MultipartError>
 }
 
 /// Returns whether `headers` announce a multipart/form-data body.
-pub(super) fn is_multipart(headers: &HeaderMap) -> bool {
+pub(crate) fn is_multipart(headers: &HeaderMap) -> bool {
     headers
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -158,7 +158,7 @@ fn param(header: &str, key: &str) -> Option<String> {
 
 impl Multipart {
     /// Reads `body`, whose parts are separated by `boundary`.
-    pub(super) fn new(body: Body, boundary: &str) -> Self {
+    pub(crate) fn new(body: Body, boundary: &str) -> Self {
         let mut delimiter = b"\r\n--".to_vec();
         delimiter.extend_from_slice(boundary.as_bytes());
         Self {
@@ -192,7 +192,7 @@ impl Multipart {
 
     /// Moves to the headers of the next part and returns them, or [`None`] after the last part.
     /// The rest of the part the reader is in is skipped.
-    pub(super) async fn next_part(&mut self) -> Result<Option<PartHead>, MultipartError> {
+    pub(crate) async fn next_part(&mut self) -> Result<Option<PartHead>, MultipartError> {
         loop {
             let step = match self.state {
                 State::Done => return Ok(None),
@@ -268,7 +268,7 @@ impl Multipart {
     }
 
     /// Returns the next bytes of the current part's data, or [`None`] at its end.
-    pub(super) async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, MultipartError> {
+    pub(crate) async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, MultipartError> {
         if self.state != State::Data {
             return Ok(None);
         }

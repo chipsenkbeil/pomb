@@ -135,7 +135,7 @@ fn txn_append(txn: &WriteTransaction, account: &str, rows: &[NotificationRow]) -
 
 /// Writes the notifications the save of task `before` into `after` makes for the owner of its
 /// board, inside the open write transaction that stores `after`. A task with no `before` is new.
-pub(super) fn txn_record_task_notifications(
+pub(crate) fn txn_record_task_notifications(
     txn: &WriteTransaction,
     before: Option<&TaskRow>,
     after: &TaskRow,
@@ -206,7 +206,7 @@ pub(super) fn txn_record_task_notifications(
 }
 
 /// Removes every notification of `account`, inside an open write transaction.
-pub(super) fn txn_remove_notifications(txn: &WriteTransaction, account: &str) -> DbResult<()> {
+pub(crate) fn txn_remove_notifications(txn: &WriteTransaction, account: &str) -> DbResult<()> {
     let mut table = txn.open_table(NOTIFICATIONS)?;
     let (first, last) = account_keys(account);
     let keys = table

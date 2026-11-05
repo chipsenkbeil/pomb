@@ -1,0 +1,38 @@
+id: pub-restricted
+snapshots:
+  "pub(in crate::wire) fn run() {}\n":
+    labels:
+    - source: pub(in crate::wire)
+      style: primary
+      start: 0
+      end: 19
+  "pub(in super) fn run() {}\n":
+    labels:
+    - source: pub(in super)
+      style: primary
+      start: 0
+      end: 13
+  "pub(self) struct Page;\n":
+    labels:
+    - source: pub(self)
+      style: primary
+      start: 0
+      end: 9
+  "pub(super) fn run() {}\n":
+    labels:
+    - source: pub(super)
+      style: primary
+      start: 0
+      end: 10
+  "pub(super) use pages::Page;\n":
+    labels:
+    - source: pub(super)
+      style: primary
+      start: 0
+      end: 10
+  "struct Page {\n    pub(super) id: u32,\n}\n":
+    labels:
+    - source: pub(super)
+      style: primary
+      start: 18
+      end: 28

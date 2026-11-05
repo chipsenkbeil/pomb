@@ -53,7 +53,7 @@ impl Spool {
 
     /// Refuses with [`ImportError::StorageFull`] when writing `bytes` more into the spool would
     /// leave less than the free-space floor.
-    pub(super) fn ensure_room(&self, bytes: u64) -> Result<(), ImportError> {
+    pub(crate) fn ensure_room(&self, bytes: u64) -> Result<(), ImportError> {
         match self
             .guard
             .as_ref()

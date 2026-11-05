@@ -53,7 +53,7 @@ impl fmt::Debug for BoardSnapshot {
 impl BoardSnapshot {
     /// Returns the snapshot of board `board_id` read through `txn`, whose links name only `boards`,
     /// or [`None`] when `account` does not own it.
-    pub(super) fn open(
+    pub(crate) fn open(
         txn: ReadTransaction,
         files: AttachmentFiles,
         account: &AccountId,

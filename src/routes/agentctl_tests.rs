@@ -4,16 +4,18 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+use super::passkey_tests::{make_epic, make_plain};
 use super::server::passkey_mode;
 use super::{DeviceApproveForm, device_grant, router};
 use crate::auth::new_api_token_record;
 use crate::db::{
     BootstrapToken, ChildTokenRefusal, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT, NewComment,
+    TokenEdit,
 };
 use crate::models::{
     AccountId, ActiveTimer, Actor, ActorKind, AgentRoleRow, AuthScope, BoardAccess, DeviceAuthRow,
     DeviceAuthStatus, FieldDefRow, FieldKind, FieldOwner, HistoryKind, SECONDS_PER_DAY,
-    SECONDS_PER_HOUR, TaskKind, TimeEntryRow, TimerMode,
+    SECONDS_PER_HOUR, TimeEntryRow, TimerMode,
 };
 use crate::permissions::{Permission, STANDARD_ROLES};
 use crate::{AppState, BODY_LIMIT_BYTES, markdown};
@@ -129,18 +131,6 @@ async fn create(fx: &Fixture, body: Value) -> String {
 async fn create_epic(fx: &Fixture, name: &str) -> String {
     let body = json!({"column_id": fx.col_todo, "name": name, "kind": "epic"});
     create(fx, body).await
-}
-
-/// Turns the epics among `ids` back into plain tasks, as an older file holds its umbrellas.
-fn make_plain(fx: &Fixture, ids: &[&str]) {
-    for id in ids {
-        fx.db
-            .apply_task_change(id, Actor::SYSTEM, |row| {
-                row.kind = TaskKind::Task;
-                ((), true)
-            })
-            .expect("plain");
-    }
 }
 
 /// Like [`call`], but returns a page's `items` instead of the page.
@@ -7786,12 +7776,7 @@ async fn a_timer_on_a_board_outside_the_set_should_read_idle_and_refuse_every_wr
 async fn a_link_that_reaches_outside_the_set_should_stay_hidden_and_refuse_every_write() {
     let (_dir, fx) = fixture();
     let (far, _, far_task) = other_board(&fx);
-    fx.db
-        .apply_task_change(&far_task, Actor::SYSTEM, |row| {
-            row.kind = TaskKind::Epic;
-            ((), true)
-        })
-        .expect("epic");
+    make_epic(&fx.db, &[&far_task]);
     let near_task = create(&fx, json!({"column_id": fx.col_todo, "name": "Near"})).await;
     let next_task = create(&fx, json!({"column_id": fx.col_todo, "name": "Next"})).await;
     let (status, link) = call(
@@ -8818,7 +8803,7 @@ async fn parent_and_child_links_should_list_on_both_tasks_and_count_done_childre
     assert_eq!(view["children_total"], 0);
     assert_eq!(view["children"], json!([]));
 
-    make_plain(&fx, &[&umbrella]);
+    make_plain(&fx.db, &[&umbrella]);
     move_to_done(&fx, &a).await;
     let view = detail(&fx, &umbrella).await;
     assert_eq!(
@@ -8978,7 +8963,7 @@ async fn deleting_an_umbrella_or_a_child_should_clear_the_parent_link() {
     link(&fx, &a, "parent", &umbrella).await;
     link(&fx, &b, "parent", &umbrella).await;
 
-    make_plain(&fx, &[&umbrella]);
+    make_plain(&fx.db, &[&umbrella]);
     move_to_done(&fx, &umbrella).await;
     let view = detail(&fx, &umbrella).await;
     assert_eq!(view["children_total"], 2);
@@ -9031,7 +9016,7 @@ async fn the_modal_should_show_the_children_tab_chip_and_rows_for_an_umbrella_on
     let plain = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
     link(&fx, &a, "parent", &umbrella).await;
     link(&fx, &b, "parent", &umbrella).await;
-    make_plain(&fx, &[&umbrella]);
+    make_plain(&fx.db, &[&umbrella]);
     move_to_done(&fx, &a).await;
 
     let html = modal_html(&fx, &umbrella).await;
@@ -9303,7 +9288,7 @@ async fn the_modal_should_show_the_whole_umbrella_path_and_count_direct_children
     let [root, mid, leaf, _] = nested_tree(&fx).await;
     let twin = create(&fx, json!({"column_id": fx.col_todo, "name": "Twin"})).await;
     link(&fx, &twin, "parent", &mid).await;
-    make_plain(&fx, &[&root, &mid]);
+    make_plain(&fx.db, &[&root, &mid]);
     move_to_done(&fx, &leaf).await;
 
     let html = modal_html(&fx, &leaf).await;
@@ -9338,17 +9323,14 @@ async fn the_link_picker_should_offer_nested_umbrellas_minus_the_card_and_its_de
     let (_dir, fx) = fixture();
     let [root, mid, leaf, free] = nested_tree(&fx).await;
 
-    assert_eq!(
-        picker_ids(&fx, &mid, "mode=parent").await,
-        std::slice::from_ref(&free)
-    );
+    assert!(picker_ids(&fx, &mid, "mode=parent").await.is_empty());
     assert_eq!(
         picker_ids(&fx, &mid, "mode=child").await,
         std::slice::from_ref(&free)
     );
     assert_eq!(
         picker_ids(&fx, &free, "mode=parent").await,
-        [leaf.clone(), mid.clone(), root.clone()]
+        [mid.clone(), root.clone()]
     );
     assert_eq!(
         picker_ids(&fx, &free, "mode=child").await,
@@ -9358,7 +9340,27 @@ async fn the_link_picker_should_offer_nested_umbrellas_minus_the_card_and_its_de
         picker_ids(&fx, &leaf, "mode=child").await,
         std::slice::from_ref(&free)
     );
-    assert_eq!(picker_ids(&fx, &root, "mode=parent").await, [free]);
+    assert!(picker_ids(&fx, &root, "mode=parent").await.is_empty());
+}
+
+#[tokio::test]
+async fn the_link_picker_should_offer_only_epics_in_parent_mode() {
+    let (_dir, fx) = fixture();
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let epic = create_epic(&fx, "Epic").await;
+    let plain = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
+    let legacy = create_epic(&fx, "Legacy").await;
+    make_plain(&fx.db, &[&legacy]);
+
+    assert_eq!(
+        picker_ids(&fx, &card, "mode=parent").await,
+        std::slice::from_ref(&epic)
+    );
+    assert_eq!(
+        picker_ids(&fx, &card, "mode=child").await,
+        [epic, legacy, plain],
+        "a child link takes any card"
+    );
 }
 
 async fn picker_ids(fx: &Fixture, task: &str, query: &str) -> Vec<String> {
@@ -9435,7 +9437,7 @@ async fn the_link_picker_should_find_cards_on_other_boards_until_the_board_term_
     .await;
     let other_column = columns[0]["id"].as_str().expect("column").to_string();
     let card = create_epic(&fx, "Card").await;
-    let near = create(&fx, json!({"column_id": fx.col_todo, "name": "Near"})).await;
+    let near = create_epic(&fx, "Near").await;
     let far = create(
         &fx,
         json!({"column_id": other_column, "name": "Far umbrella", "kind": "epic"}),
@@ -9505,8 +9507,12 @@ async fn a_board_limited_token_should_never_see_unreadable_boards_in_the_link_pi
     .await;
     let other_column = columns[0]["id"].as_str().expect("column").to_string();
     let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
-    let near = create(&fx, json!({"column_id": fx.col_todo, "name": "Near"})).await;
-    let far = create(&fx, json!({"column_id": other_column, "name": "Far"})).await;
+    let near = create_epic(&fx, "Near").await;
+    let far = create(
+        &fx,
+        json!({"column_id": other_column, "name": "Far", "kind": "epic"}),
+    )
+    .await;
 
     let (mut record, limited) = new_api_token_record(&fx.user_id, "limited", AuthScope::Read, None);
     record.boards = BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]));
@@ -9527,11 +9533,11 @@ async fn a_board_limited_token_should_never_see_unreadable_boards_in_the_link_pi
 #[tokio::test]
 async fn the_link_picker_should_list_the_tasks_a_parent_link_would_accept() {
     let (_dir, fx) = fixture();
-    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let card = create_epic(&fx, "Card").await;
     let current = create_epic(&fx, "Current").await;
     let other = create_epic(&fx, "Other").await;
-    let sibling = create(&fx, json!({"column_id": fx.col_todo, "name": "Sibling"})).await;
-    let child_of_other = create(&fx, json!({"column_id": fx.col_todo, "name": "Nested"})).await;
+    let sibling = create_epic(&fx, "Sibling").await;
+    let child_of_other = create_epic(&fx, "Nested").await;
     link(&fx, &card, "parent", &current).await;
     link(&fx, &sibling, "parent", &current).await;
     link(&fx, &child_of_other, "parent", &other).await;
@@ -9540,10 +9546,10 @@ async fn the_link_picker_should_list_the_tasks_a_parent_link_would_accept() {
     assert_eq!(
         listed,
         vec![child_of_other.clone(), other.clone(), sibling.clone()],
-        "any task but the card and its current umbrella may be chosen"
+        "any epic but the card and its current umbrella may be chosen"
     );
 
-    let loose = create(&fx, json!({"column_id": fx.col_todo, "name": "Loose"})).await;
+    let loose = create_epic(&fx, "Loose").await;
     let listed = picker_ids(&fx, &loose, "mode=parent").await;
     assert_eq!(
         listed,
@@ -10713,15 +10719,16 @@ async fn inspect_should_refuse_a_bearer_token_even_on_itself() {
 }
 
 #[tokio::test]
-async fn token_edit_should_rename_and_regrant_without_a_new_secret() {
+async fn token_edit_should_rename_without_a_new_secret_or_a_new_grant() {
     let (_dir, fx) = fixture();
     let (id, raw) = token_record(&fx, "before", AuthScope::Read);
     let uri = format!("/api/v1/auth/tokens/{id}");
-    let body = json!({"name": "  after  ", "permissions": ["tasks.read", "tasks.create"]});
-    let (status, reply) = call(&fx, "PATCH", &uri, Some(body)).await;
+    let (status, before) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{before}");
+    let (status, reply) = call(&fx, "PATCH", &uri, Some(json!({"name": "  after  "}))).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert_eq!(reply["name"], "after");
-    assert_eq!(reply["permissions"], json!(["tasks.read", "tasks.create"]));
+    assert_eq!(reply["permissions"], before["permissions"]);
     assert!(reply.get("raw_token").is_none(), "{reply}");
     assert!(!reply.to_string().contains(&raw), "{reply}");
 
@@ -10730,36 +10737,12 @@ async fn token_edit_should_rename_and_regrant_without_a_new_secret() {
     let inspected: Value = serde_json::from_str(&text).expect("json");
     assert_eq!(inspected["id"], json!(id));
     assert_eq!(inspected["name"], "after");
-    assert_eq!(
-        inspected["permissions"],
-        json!(["tasks.read", "tasks.create"])
-    );
+    assert_eq!(inspected["permissions"], before["permissions"]);
 
     let (status, shown) = call(&fx, "GET", &uri, None).await;
     assert_eq!(status, StatusCode::OK, "{shown}");
     assert_eq!(shown["name"], "after");
-    assert_eq!(shown["permissions"], reply["permissions"]);
-}
-
-#[tokio::test]
-async fn token_edit_should_keep_what_the_body_leaves_out() {
-    let (_dir, fx) = fixture();
-    let (id, _) = token_record(&fx, "keeper", AuthScope::Work);
-    let uri = format!("/api/v1/auth/tokens/{id}");
-    let (status, reply) = call(&fx, "PATCH", &uri, Some(json!({"name": "renamed"}))).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
-    let expected: Vec<_> = AuthScope::Work
-        .permissions()
-        .iter()
-        .map(|held| held.name())
-        .collect();
-    assert_eq!(reply["name"], "renamed");
-    assert_eq!(reply["permissions"], json!(expected));
-
-    let (status, reply) = call(&fx, "PATCH", &uri, Some(json!({"preset": "read"}))).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
-    assert_eq!(reply["name"], "renamed");
-    assert_eq!(reply["scopes"], json!(["read"]));
+    assert_eq!(shown["permissions"], before["permissions"]);
 }
 
 #[tokio::test]
@@ -10772,26 +10755,72 @@ async fn token_edit_should_keep_the_boards_and_the_expiry() {
     .await;
     assert_eq!(status, StatusCode::OK, "{token}");
     let uri = format!("/api/v1/auth/tokens/{}", token["id"].as_str().expect("id"));
-    let (status, edited) = call(&fx, "PATCH", &uri, Some(json!({"preset": "work"}))).await;
+    let (status, edited) = call(&fx, "PATCH", &uri, Some(json!({"name": "renamed"}))).await;
     assert_eq!(status, StatusCode::OK, "{edited}");
     assert_eq!(edited["boards"], token["boards"]);
     assert_eq!(edited["expires_at"], token["expires_at"]);
+    assert_eq!(edited["permissions"], token["permissions"]);
     assert!(edited["expires_at"].is_number(), "{edited}");
 }
 
 #[tokio::test]
-async fn token_edit_should_refuse_a_bad_name_or_grant_and_change_nothing() {
+async fn token_edit_should_refuse_a_grant_change_and_leave_the_token_unchanged() {
     let (_dir, fx) = fixture();
     let (id, _) = token_record(&fx, "steady", AuthScope::Read);
     let uri = format!("/api/v1/auth/tokens/{id}");
-    for body in [
-        json!({"name": "   "}),
-        json!({"name": "x".repeat(81)}),
-        json!({"preset": "read", "permissions": ["tasks.read"]}),
-        json!({"permissions": []}),
-        json!({"permissions": ["tasks.everything"]}),
-        json!({"preset": "root"}),
+    let (status, before) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{before}");
+    for (field, body) in [
+        ("preset", json!({"name": "wider", "preset": "admin"})),
+        ("permissions", json!({"permissions": ["tasks.create"]})),
+        ("scopes", json!({"scopes": ["admin"]})),
+        ("boards", json!({"boards": [fx.board_id]})),
+        ("expires_in_days", json!({"expires_in_days": 1})),
+        ("expires_at", json!({"expires_at": 1})),
     ] {
+        let (status, reply) = call(&fx, "PATCH", &uri, Some(body.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {reply}");
+        assert!(reply.to_string().contains(field), "{body}: {reply}");
+        let (status, shown) = call(&fx, "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{shown}");
+        assert_eq!(shown, before, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn token_edit_should_keep_names_unique_on_the_account() {
+    let (_dir, fx) = fixture();
+    token_record(&fx, "Taken", AuthScope::Read);
+    let (id, _) = token_record(&fx, "mine", AuthScope::Read);
+    let uri = format!("/api/v1/auth/tokens/{id}");
+    let (status, reply) = call(&fx, "PATCH", &uri, Some(json!({"name": "taken"}))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{reply}");
+    let (status, shown) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!(shown["name"], "mine");
+    let (status, reply) = call(&fx, "PATCH", &uri, Some(json!({"name": "MINE"}))).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["name"], "MINE");
+}
+
+#[tokio::test]
+async fn token_edit_should_accept_an_unchanged_name_next_to_a_same_named_token() {
+    let (_dir, fx) = fixture();
+    token_record(&fx, "ci", AuthScope::Read);
+    let (id, _) = token_record(&fx, "ci", AuthScope::Read);
+    let uri = format!("/api/v1/auth/tokens/{id}");
+    let body = json!({"name": "ci", "child_lifetime_hours": 3});
+    let (status, reply) = call(&fx, "PATCH", &uri, Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["child_lifetime_hours"], 3);
+}
+
+#[tokio::test]
+async fn token_edit_should_refuse_a_bad_name_and_change_nothing() {
+    let (_dir, fx) = fixture();
+    let (id, _) = token_record(&fx, "steady", AuthScope::Read);
+    let uri = format!("/api/v1/auth/tokens/{id}");
+    for body in [json!({"name": "   "}), json!({"name": "x".repeat(81)})] {
         let (status, reply) = call(&fx, "PATCH", &uri, Some(body.clone())).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {reply}");
     }
@@ -10821,7 +10850,7 @@ async fn token_edit_should_stay_session_only() {
     let admin = token_with(&fx, "admin", AuthScope::Admin);
     let (id, _) = token_record(&fx, "target", AuthScope::Read);
     let uri = format!("/api/v1/auth/tokens/{id}");
-    let body = json!({"name": "hijack", "preset": "admin"});
+    let body = json!({"name": "hijack"});
     let (status, text) = bearer_json(&fx, &admin, "PATCH", &uri, body).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
     let (status, text) = request(&fx, As::Bearer(&admin), "GET", &uri, None, true).await;
@@ -11387,9 +11416,9 @@ async fn a_board_limited_token_should_not_be_offered_cards_the_server_refuses_to
     .await;
     let hidden_column = columns[0]["id"].as_str().expect("column").to_string();
     let card = create_epic(&fx, "Card").await;
-    let free = create(&fx, json!({"column_id": fx.col_todo, "name": "Free"})).await;
+    let free = create_epic(&fx, "Free").await;
     let held = create(&fx, json!({"column_id": fx.col_todo, "name": "Held"})).await;
-    let below = create(&fx, json!({"column_id": fx.col_todo, "name": "Below"})).await;
+    let below = create_epic(&fx, "Below").await;
     let secret_umbrella = create(
         &fx,
         json!({"column_id": hidden_column, "name": "Secret umbrella", "kind": "epic"}),
@@ -12501,7 +12530,7 @@ async fn board_epics_should_skip_plain_cards_and_give_a_card_umbrella_no_parent_
     let epic = create_epic(&fx, "Epic").await;
     let (status, linked) = link(&fx, &epic, "parent", &umbrella).await;
     assert_eq!(status, StatusCode::OK, "{linked}");
-    make_plain(&fx, &[&umbrella]);
+    make_plain(&fx.db, &[&umbrella]);
 
     let epics = board_epics(&fx, &fx.board_id).await;
     assert_eq!(epics.as_array().expect("array").len(), 1);
@@ -12983,7 +13012,14 @@ async fn issue(fx: &Fixture, parent: &str, body: Value) -> (StatusCode, Value) {
 /// Lets the children of token `id` live up to `hours`, as the owner does in the browser.
 fn allow_child_hours(fx: &Fixture, id: &str, hours: i64) {
     fx.db
-        .edit_api_token(&fx.user_id, id, None, None, Some(hours))
+        .edit_api_token(
+            &fx.user_id,
+            id,
+            TokenEdit {
+                child_lifetime_hours: Some(hours),
+                ..TokenEdit::default()
+            },
+        )
         .expect("edit")
         .expect("token");
 }

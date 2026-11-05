@@ -10,10 +10,10 @@ use super::import::ImportError;
 use super::spool::Spool;
 
 /// Bytes in a tar block, which every header fills and every file's data pads to.
-pub(super) const BLOCK: usize = 512;
+pub(crate) const BLOCK: usize = 512;
 
 /// Zero bytes that pad a file's data to a block, and twice the block that ends the archive.
-pub(super) const ZEROS: [u8; 2 * BLOCK] = [0; 2 * BLOCK];
+pub(crate) const ZEROS: [u8; 2 * BLOCK] = [0; 2 * BLOCK];
 
 /// Longest path, in bytes, a plain header holds.
 const NAME_BYTES: usize = 100;
@@ -28,7 +28,7 @@ const SIZE_LIMIT_BYTES: u64 = 1 << 33;
 /// # Errors
 ///
 /// Returns [`ArchiveError`] when `size` does not fit the header.
-pub(super) fn entry_header(path: &str, size: u64, mtime: u64) -> Result<Vec<u8>, ArchiveError> {
+pub(crate) fn entry_header(path: &str, size: u64, mtime: u64) -> Result<Vec<u8>, ArchiveError> {
     let mut out = Vec::new();
     let mut name = path;
     if path.len() > NAME_BYTES {
@@ -53,7 +53,7 @@ pub(super) fn entry_header(path: &str, size: u64, mtime: u64) -> Result<Vec<u8>,
 
 /// Returns how many zero bytes pad `size` bytes of data to a whole block.
 #[must_use]
-pub(super) fn padding(size: u64) -> usize {
+pub(crate) fn padding(size: u64) -> usize {
     let rest = (size % BLOCK as u64) as usize;
     (BLOCK - rest) % BLOCK
 }
@@ -117,7 +117,7 @@ const SPOOL_CHECK_BYTES: u64 = 1 << 20;
 
 /// Where the bytes of a file read from a tar stream are.
 #[derive(Debug)]
-pub(super) enum Data {
+pub(crate) enum Data {
     /// The file is held in memory.
     Memory(Vec<u8>),
     /// The file is written to a file of the spool.
@@ -126,29 +126,29 @@ pub(super) enum Data {
 
 /// What a file of a tar stream may be: how large, and whether it is spooled to disk.
 #[derive(Copy, Clone, Debug)]
-pub(super) struct Cap {
+pub(crate) struct Cap {
     /// Most bytes the file may hold.
-    pub(super) bytes: u64,
+    pub(crate) bytes: u64,
     /// Whether the file is written to the spool, not held in memory.
-    pub(super) spooled: bool,
+    pub(crate) spooled: bool,
 }
 
 /// A regular file read from a tar stream.
 #[derive(Debug)]
-pub(super) struct TarFile {
+pub(crate) struct TarFile {
     /// The file's path inside the archive.
-    pub(super) path: String,
+    pub(crate) path: String,
     /// The file's bytes.
-    pub(super) data: Data,
+    pub(crate) data: Data,
 }
 
 /// What a tar stream may hold before [`read_files`] refuses it.
 #[derive(Copy, Clone, Debug)]
-pub(super) struct ReadLimits {
+pub(crate) struct ReadLimits {
     /// Most bytes the stream may unpack to, headers and padding included.
-    pub(super) unpacked_bytes: u64,
+    pub(crate) unpacked_bytes: u64,
     /// Most files the stream may hold.
-    pub(super) files: usize,
+    pub(crate) files: usize,
 }
 
 /// Refusal of a stream that unpacks to more bytes than its limit, carried inside an
@@ -437,7 +437,7 @@ fn expect_end(input: &mut impl Read) -> Result<(), ImportError> {
 /// allow, a file past its cap, a path outside the format, a duplicate path, an entry that is not a
 /// regular file (a directory, a link or a device), a header that fails its checksum, or anything
 /// after its end marker.
-pub(super) fn read_files(
+pub(crate) fn read_files(
     reader: impl Read,
     limits: ReadLimits,
     spool: &Spool,

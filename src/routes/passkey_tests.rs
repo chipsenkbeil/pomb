@@ -14,7 +14,7 @@ use crate::api_error::ErrorCode;
 use crate::auth::{AuthChoice, AuthMode, SESSION_MAX_AGE_SECONDS, SignIn, new_api_token_record};
 use crate::csrf::REFUSED_BODY;
 use crate::db::{Db, MAX_PASSKEYS_PER_ACCOUNT};
-use crate::models::{AccountId, AuthScope, PasskeyRow};
+use crate::models::{AccountId, Actor, AuthScope, PasskeyRow, TaskKind};
 use crate::{AppState, BODY_LIMIT_BYTES};
 
 const RP_ID: &str = "pomb.test";
@@ -29,7 +29,7 @@ const STALE_SESSION: &str = "5e5510a1-0000-4000-8000-000000000007";
 
 /// A software authenticator holding one P-256 passkey, which speaks WebAuthn's JSON the way the
 /// browser script sends it.
-pub(super) struct SoftAuthenticator {
+pub(crate) struct SoftAuthenticator {
     key: SigningKey,
     credential_id: Vec<u8>,
     user_handle: Vec<u8>,
@@ -38,7 +38,7 @@ pub(super) struct SoftAuthenticator {
 }
 
 impl SoftAuthenticator {
-    pub(super) fn new(seed: u8) -> Self {
+    pub(crate) fn new(seed: u8) -> Self {
         Self {
             key: SigningKey::from_slice(&[seed; 32]).expect("signing key"),
             credential_id: vec![seed; 16],
@@ -75,7 +75,7 @@ impl SoftAuthenticator {
         key
     }
 
-    pub(super) fn register(&mut self, options: &Value) -> Value {
+    pub(crate) fn register(&mut self, options: &Value) -> Value {
         let user_id = options["publicKey"]["user"]["id"]
             .as_str()
             .expect("user id");
@@ -113,7 +113,7 @@ impl SoftAuthenticator {
         })
     }
 
-    pub(super) fn sign_in(&mut self, options: &Value) -> Value {
+    pub(crate) fn sign_in(&mut self, options: &Value) -> Value {
         self.counter += 1;
         let auth_data = self.authenticator_data(FLAG_USER_PRESENT | FLAG_USER_VERIFIED);
         let client_data = self.client_data("webauthn.get", options);
@@ -136,16 +136,16 @@ impl SoftAuthenticator {
     }
 }
 
-pub(super) struct Reply {
-    pub(super) status: StatusCode,
-    pub(super) location: Option<String>,
-    pub(super) cookie: Option<String>,
-    pub(super) body: Value,
+pub(crate) struct Reply {
+    pub(crate) status: StatusCode,
+    pub(crate) location: Option<String>,
+    pub(crate) cookie: Option<String>,
+    pub(crate) body: Value,
     /// The error code the response carries, whether or not its body is JSON.
-    pub(super) code: Option<String>,
+    pub(crate) code: Option<String>,
 }
 
-pub(super) async fn call(
+pub(crate) async fn call(
     app: &axum::Router,
     method: &str,
     uri: &str,
@@ -218,11 +218,29 @@ fn passkey_app(db: Db) -> (axum::Router, String) {
     (router(AppState::new(db, None, sign_in)), code)
 }
 
-pub(super) fn none_mode(public_url: Option<&str>) -> SignIn {
+pub(crate) fn none_mode(public_url: Option<&str>) -> SignIn {
     SignIn::new(AuthChoice::Chosen(AuthMode::None), "127.0.0.1", public_url).expect("none mode")
 }
 
-pub(super) fn session_of(reply: &Reply) -> String {
+pub(crate) fn make_epic(db: &Db, ids: &[&str]) {
+    set_kind(db, ids, TaskKind::Epic);
+}
+
+pub(crate) fn make_plain(db: &Db, ids: &[&str]) {
+    set_kind(db, ids, TaskKind::Task);
+}
+
+fn set_kind(db: &Db, ids: &[&str], kind: TaskKind) {
+    for id in ids {
+        db.apply_task_change(id, Actor::SYSTEM, |row| {
+            row.kind = kind;
+            ((), true)
+        })
+        .expect("kind");
+    }
+}
+
+pub(crate) fn session_of(reply: &Reply) -> String {
     let cookie = reply.cookie.as_deref().expect("set-cookie");
     cookie.split(';').next().expect("cookie pair").to_string()
 }
@@ -251,7 +269,7 @@ async fn set_up(
     .await
 }
 
-pub(super) async fn sign_in(
+pub(crate) async fn sign_in(
     app: &axum::Router,
     authenticator: &mut SoftAuthenticator,
     headers: &[(&str, &str)],
@@ -269,7 +287,7 @@ pub(super) async fn sign_in(
     .await
 }
 
-pub(super) async fn add_passkey(
+pub(crate) async fn add_passkey(
     app: &axum::Router,
     authenticator: &mut SoftAuthenticator,
     headers: &[(&str, &str)],

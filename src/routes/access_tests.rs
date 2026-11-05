@@ -45,7 +45,7 @@ const SUB_ID_PARAMS: &[&str] = &[
 
 /// The ids one account's requests name.
 #[derive(Clone, Debug)]
-pub(super) struct Ids {
+pub(crate) struct Ids {
     /// The account itself.
     account: String,
     /// The account's handle, which names it in a request body.
@@ -59,7 +59,7 @@ pub(super) struct Ids {
     /// A swimlane on [`Ids::board`].
     lane: String,
     /// A task in [`Ids::column`] and [`Ids::lane`].
-    pub(super) task: String,
+    pub(crate) task: String,
     /// A second task beside [`Ids::task`].
     task2: String,
     /// A task deleted from [`Ids::column`], waiting in the recycle bin.
@@ -307,7 +307,7 @@ fn seed_webhook(db: &Db, board: &str) -> String {
 }
 
 /// Seeds one of everything for `account`, on two boards, beside its `token` and `passkey`.
-pub(super) fn seed(
+pub(crate) fn seed(
     db: &Db,
     account: &AccountId,
     name: &str,
@@ -486,7 +486,7 @@ async fn seeded() -> Seeded {
 
 /// Runs a passkey ceremony pair, the options request then the finish with `authenticator`'s new
 /// credential, and returns the finish reply.
-pub(super) async fn enroll(
+pub(crate) async fn enroll(
     app: &axum::Router,
     authenticator: &mut SoftAuthenticator,
     route: &str,
@@ -512,7 +512,7 @@ async fn enroll_named(
 }
 
 /// Mints an admin-scope API token with the browser session `cookie` and returns it.
-pub(super) async fn mint_token(app: &axum::Router, cookie: &str) -> String {
+pub(crate) async fn mint_token(app: &axum::Router, cookie: &str) -> String {
     let body = json!({"name": "agent", "scopes": ["admin"]});
     let minted = call(
         app,

@@ -1,0 +1,62 @@
+id: io-error-other
+snapshots:
+  "fn load() -> io::Result<()> {\n    Err(io::Error::other(\"missing header\"))\n}\n":
+    labels:
+    - source: io::Error::other
+      style: primary
+      start: 38
+      end: 54
+  "fn load() -> io::Result<()> {\n    Err(std::io::Error::other(\"missing header\"))\n}\n":
+    labels:
+    - source: std::io::Error::other
+      style: primary
+      start: 38
+      end: 59
+  "fn load(r: Result<(), Boxed>) -> io::Result<()> {\n    r.map_err(io::Error::other)\n}\n":
+    labels:
+    - source: io::Error::other
+      style: primary
+      start: 64
+      end: 80
+  "use std::io::Error;\n\nfn load() -> Result<(), Error> {\n    Err(Error::other(\"missing header\"))\n}\n":
+    labels:
+    - source: Error::other
+      style: primary
+      start: 62
+      end: 74
+    - source: use std::io::Error;
+      style: secondary
+      start: 0
+      end: 19
+    - source: "use std::io::Error;\n\nfn load() -> Result<(), Error> {\n    Err(Error::other(\"missing header\"))\n}\n"
+      style: secondary
+      start: 0
+      end: 96
+  "use std::io::{self, Error};\n\nfn load() -> io::Result<()> {\n    Err(Error::other(\"missing header\"))\n}\n":
+    labels:
+    - source: Error::other
+      style: primary
+      start: 67
+      end: 79
+    - source: use std::io::{self, Error};
+      style: secondary
+      start: 0
+      end: 27
+    - source: "use std::io::{self, Error};\n\nfn load() -> io::Result<()> {\n    Err(Error::other(\"missing header\"))\n}\n"
+      style: secondary
+      start: 0
+      end: 101
+  "use std::io::Error;\n\nfn load(r: Result<(), Boxed>) -> Result<(), Error> {\n    r.map_err(Error::other)\n}\n":
+    labels:
+    - source: Error::other
+      style: primary
+      start: 88
+      end: 100
+    - source: use std::io::Error;
+      style: secondary
+      start: 0
+      end: 19
+    - source: "use std::io::Error;\n\nfn load(r: Result<(), Boxed>) -> Result<(), Error> {\n    r.map_err(Error::other)\n}\n"
+      style: secondary
+      start: 0
+      end: 104

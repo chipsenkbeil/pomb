@@ -62,7 +62,7 @@ pub enum OwnerChange {
 
 /// Returns the role `account` holds on board `board_id`, through ownership or a member row, read
 /// inside an open transaction. It is absent when the board is gone or the account holds none.
-pub(super) fn role_in(
+pub(crate) fn role_in(
     txn: &impl Reads,
     account: &AccountId,
     board_id: &str,
@@ -79,7 +79,7 @@ pub(super) fn role_in(
 
 /// Returns the role `account` holds on the board that task `task_id` sits on, read inside an open
 /// transaction.
-pub(super) fn task_role_in(
+pub(crate) fn task_role_in(
     txn: &impl Reads,
     account: &AccountId,
     task_id: &str,
@@ -95,7 +95,7 @@ pub(super) fn task_role_in(
 
 /// Returns the accounts that hold a role on board `board_id`: its owner, then its members, read
 /// inside an open write transaction.
-pub(super) fn txn_board_accounts(txn: &WriteTransaction, board_id: &str) -> DbResult<Vec<String>> {
+pub(crate) fn txn_board_accounts(txn: &WriteTransaction, board_id: &str) -> DbResult<Vec<String>> {
     let mut accounts: Vec<String> = txn_read_one::<BoardRow>(txn, BOARDS, board_id)?
         .map(|board| board.owner_id)
         .into_iter()
@@ -106,7 +106,7 @@ pub(super) fn txn_board_accounts(txn: &WriteTransaction, board_id: &str) -> DbRe
 
 /// Deletes every member row of board `board_id` inside an open write transaction, with the active
 /// timer of each member that runs on one of `task_ids`.
-pub(super) fn txn_remove_members_of_board(
+pub(crate) fn txn_remove_members_of_board(
     txn: &WriteTransaction,
     board_id: &str,
     task_ids: &[String],
@@ -121,7 +121,7 @@ pub(super) fn txn_remove_members_of_board(
 }
 
 /// Deletes every member row of `account` inside an open write transaction.
-pub(super) fn txn_remove_memberships_of(txn: &WriteTransaction, account: &str) -> DbResult<()> {
+pub(crate) fn txn_remove_memberships_of(txn: &WriteTransaction, account: &str) -> DbResult<()> {
     for board_id in txn_mmap_get(txn, BOARDS_BY_MEMBER, account)? {
         txn_unjoin(txn, &board_id, account)?;
     }
@@ -130,7 +130,7 @@ pub(super) fn txn_remove_memberships_of(txn: &WriteTransaction, account: &str) -
 
 /// Returns whether `account` holds a role on a board it does not own, read inside an open
 /// write transaction.
-pub(super) fn txn_has_memberships(txn: &WriteTransaction, account: &str) -> DbResult<bool> {
+pub(crate) fn txn_has_memberships(txn: &WriteTransaction, account: &str) -> DbResult<bool> {
     Ok(!txn_mmap_get(txn, BOARDS_BY_MEMBER, account)?.is_empty())
 }
 
@@ -319,7 +319,7 @@ impl Db {
 /// Refuses with [`RoleDenied`] when `account` holds less than the member role on the board of task
 /// `task_id`, inside an open write transaction, so a timer never starts on a board the account
 /// only reads. A task that is gone is left to the caller.
-pub(super) fn txn_refuse_timer_below_member(
+pub(crate) fn txn_refuse_timer_below_member(
     txn: &WriteTransaction,
     account: &AccountId,
     task_id: &str,

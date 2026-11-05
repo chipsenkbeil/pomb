@@ -12,7 +12,7 @@ use crate::models::AccountId;
 /// When each account was last seen or each board last used, recorded in memory at most once an
 /// hour per id and written to the store in batches, so a request that only reads never writes.
 #[derive(Debug, Default)]
-pub(super) struct Activity {
+pub(crate) struct Activity {
     /// Id -> Unix seconds of its last recorded touch.
     seen: HashMap<String, i64>,
     /// Recorded touches not written yet.
@@ -109,12 +109,12 @@ impl Db {
     }
 
     /// Forgets every touch of `account`, which no longer exists.
-    pub(super) fn forget_activity(&self, account: &AccountId) {
+    pub(crate) fn forget_activity(&self, account: &AccountId) {
         self.activity().forget(account.as_str());
     }
 
     /// Forgets every touch of `board`, which no longer exists.
-    pub(super) fn forget_board_activity(&self, board: &str) {
+    pub(crate) fn forget_board_activity(&self, board: &str) {
         lock(&self.board_activity).forget(board);
     }
 
@@ -150,7 +150,7 @@ impl Db {
 
     /// Returns when each board of `boards` was last used: the later of its stored time and a
     /// touch recorded since.
-    pub(super) fn last_used_of(&self, boards: &[String]) -> DbResult<HashMap<String, i64>> {
+    pub(crate) fn last_used_of(&self, boards: &[String]) -> DbResult<HashMap<String, i64>> {
         let txn = self.db.begin_read()?;
         let stored = txn.open_table(BOARD_ACTIVITY)?;
         let recorded = lock(&self.board_activity);
@@ -166,7 +166,7 @@ impl Db {
 
     /// Returns when board `board` was last used, read inside an open write transaction: the later
     /// of its stored time and a touch recorded since.
-    pub(super) fn last_used_in(
+    pub(crate) fn last_used_in(
         &self,
         txn: &WriteTransaction,
         board: &str,
@@ -180,7 +180,7 @@ impl Db {
 
     /// Returns when `account` was last seen, read inside an open write transaction: the later of
     /// its stored time and a touch recorded since.
-    pub(super) fn last_seen_in(
+    pub(crate) fn last_seen_in(
         &self,
         txn: &WriteTransaction,
         account: &str,
@@ -202,7 +202,7 @@ fn lock(activity: &Mutex<Activity>) -> MutexGuard<'_, Activity> {
 
 /// Records every board of `owner` as used at `now`, inside an open write transaction, never moving
 /// a stored time backwards.
-pub(super) fn txn_mark_boards_used(txn: &WriteTransaction, owner: &str, now: i64) -> DbResult<()> {
+pub(crate) fn txn_mark_boards_used(txn: &WriteTransaction, owner: &str, now: i64) -> DbResult<()> {
     let mut stored = txn.open_table(BOARD_ACTIVITY)?;
     for board in txn_mmap_get(txn, BOARDS_BY_OWNER, owner)? {
         let at = stored.get(board.as_str())?.map(|at| at.value());

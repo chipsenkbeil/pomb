@@ -27,7 +27,7 @@ fn receiving_path(address: &str) -> String {
 
 /// An inbound address as the API returns it, without the address itself.
 #[derive(Clone, Debug, Serialize, ToSchema)]
-pub(super) struct InboundAddressView {
+pub(crate) struct InboundAddressView {
     /// The inbound address's id.
     id: String,
     /// The board the address belongs to.
@@ -58,7 +58,7 @@ impl From<InboundAddressRow> for InboundAddressView {
 /// An inbound address just created or rotated, with the address that receives its mail. No other
 /// response carries the address.
 #[derive(Clone, Serialize, ToSchema)]
-pub(super) struct IssuedInboundView {
+pub(crate) struct IssuedInboundView {
     #[serde(flatten)]
     inbound: InboundAddressView,
     /// The prefix, a hyphen when there is a prefix, and 64 lowercase hex characters, returned
@@ -90,7 +90,7 @@ impl From<IssuedInbound> for IssuedInboundView {
 
 /// The body that creates an inbound address.
 #[derive(Deserialize, ToSchema)]
-pub(super) struct CreateInboundInput {
+pub(crate) struct CreateInboundInput {
     /// Required, 1 to 100 characters once trimmed.
     #[schema(value_type = String, required = true)]
     name: Option<String>,
@@ -148,7 +148,7 @@ fn check_prefix(prefix: Option<&str>) -> Result<String, AppError> {
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
-pub(super) async fn create_inbound_address(
+pub(crate) async fn create_inbound_address(
     account: AccountDb,
     Path(board_id): Path<String>,
     headers: HeaderMap,
@@ -186,7 +186,7 @@ pub(super) async fn create_inbound_address(
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
-pub(super) async fn list_inbound_addresses(
+pub(crate) async fn list_inbound_addresses(
     account: AccountDb,
     Path(board_id): Path<String>,
 ) -> Result<Json<Vec<InboundAddressView>>, AppError> {
@@ -217,7 +217,7 @@ pub(super) async fn list_inbound_addresses(
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
-pub(super) async fn rotate_inbound_address(
+pub(crate) async fn rotate_inbound_address(
     account: AccountDb,
     Path(id): Path<String>,
 ) -> Result<Json<IssuedInboundView>, AppError> {
@@ -243,7 +243,7 @@ pub(super) async fn rotate_inbound_address(
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
-pub(super) async fn delete_inbound_address(
+pub(crate) async fn delete_inbound_address(
     account: AccountDb,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
@@ -266,7 +266,7 @@ const NO_SUBJECT: &str = "(no subject)";
 
 /// The mail an inbound-mail service forwards, in the field names of the common services.
 #[derive(Debug, Default, Deserialize, ToSchema)]
-pub(super) struct InboundMail {
+pub(crate) struct InboundMail {
     /// The subject, which becomes the task's name.
     #[serde(default, alias = "Subject")]
     subject: Option<String>,
@@ -280,7 +280,7 @@ pub(super) struct InboundMail {
 
 /// The task a mail made.
 #[derive(Debug, Serialize, ToSchema)]
-pub(super) struct ReceivedMail {
+pub(crate) struct ReceivedMail {
     /// The new task's id.
     task_id: String,
 }
@@ -422,7 +422,7 @@ async fn read_capped(headers: &HeaderMap, body: Body) -> Result<Bytes, AppError>
     ),
     security(()),
 )]
-pub(super) async fn receive_inbound_mail(
+pub(crate) async fn receive_inbound_mail(
     State(state): State<AppState>,
     public: PublicDb,
     client: ClientIp,

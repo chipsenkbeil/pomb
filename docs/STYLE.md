@@ -27,7 +27,7 @@ Restructure the code when a `//` comment runs to three or more consecutive lines
 of solid prose. Never split a paragraph into bullets to get under the limit. A
 long doc comment is fine.
 
-Lint: `lint.sh` comment runs, which passes a run that holds a numbered list item
+Lint: `lint.lua` comment runs, which passes a run that holds a numbered list item
 
 ```rust
 // Good
@@ -60,7 +60,7 @@ A `//` one-liner starts with a capital, reads in the present tense and has no
 trailing period. "We" is welcome. `dev fmt` removes the period from a one-liner and
 leaves a multi-line run, a doc comment and an ellipsis alone.
 
-Lint: `lint.sh` comment periods
+Lint: `lint.lua` comment periods
 
 ```rust
 // Good
@@ -91,7 +91,7 @@ A full-line comment that follows code at the same or a deeper indent, such as th
 last line of a method chain, gets a blank line above it. An end-of-line comment
 needs none.
 
-Lint: `lint.sh` comment spacing, with the exceptions in the style skill's `SKILL.md` Style rule 1
+Lint: `lint.lua` comment spacing, with the exceptions in the style skill's `SKILL.md` Style rule 1
 
 ```rust
 // Good
@@ -135,10 +135,6 @@ Say what the code is and why, in the module's own vocabulary. Never narrate
 history, speculate about the future, name the code that calls it, or point at a
 file, a line or a task id. Every comment, `//`, `///` and `//!` alike, also
 follows the `prose-review` skill.
-
-Schema history lives in git and the fingerprint list, never in a doc comment:
-the doc above `SCHEMA_VERSION` says only what the current schema is and why an
-older binary refuses a newer file.
 
 A pointer to another place in the code rots the moment that code moves.
 
@@ -252,7 +248,7 @@ Use `# Examples`, `# Errors`, `# Panics` and `# Safety`, never a smaller
 heading.
 
 Lint: `clippy::missing_errors_doc`, `missing_panics_doc`, `missing_safety_doc`
-for presence, and `lint.sh` doc headings for the level.
+for presence, and `lint.lua` doc headings for the level.
 
 ```rust
 // Good
@@ -272,7 +268,7 @@ A public module that is a real API surface gets a `//!` essay with at least one
 `#` section, as `std::io` has. Any other `pub mod` gets one `///` line at its
 declaration. A private module and a `#[cfg(test)]` module get nothing.
 
-Lint: `lint.sh` module docs, which flags a `//!` block under four lines
+Lint: `lint.lua` module docs, which flags a `//!` block under four lines
 
 ```rust
 /// Contains constants associated with different path formats.
@@ -309,10 +305,10 @@ namespace and `clippy::module_name_repetitions` stays off.
 A type that never reaches the crate root (`pub(super)`, private, or
 `pub(crate)` used only inside its module) is named for its role in its own
 file, with no module prefix: `wire.rs` holds `WireTask` and `WireComment`
-(agentctl `src/board/chipflow/wire.rs:115`). The prefix keeps a name
+(agentctl `src/board/pomb/wire.rs:115`). The prefix keeps a name
 unambiguous at the root, and a type that stays in its file never meets another
 there. Once a type is re-exported at the root, the module-path prefix applies
-and it takes the full path (`BoardChipflow`).
+and it takes the full path (`BoardPomb`).
 
 Review
 
@@ -342,7 +338,7 @@ and `*_checked` is the fallible twin. Sourced constructors read `load_from_*`
 and `add_from_*`, and an accessor takes the bare noun with no `get_`.
 
 Lint: `clippy::wrong_self_convention` for `as_`, `to_`, `into_` and `is_`.
-`lint.sh` getters for `get_`.
+`lint.lua` getters for `get_`.
 
 ```rust
 // Good
@@ -594,7 +590,7 @@ body, never at the top level of a file. rustfmt never moves an import between
 scopes, so the attribute stays on the right import. A gated `pub use` or
 `pub(crate) use` re-export stays at the top level.
 
-Lint: `lint.sh` cfg imports
+Lint: `lint.lua` cfg imports
 
 ```rust
 // Good
@@ -762,7 +758,7 @@ impl Frame {
 Fill `constants.rs` with doc-commented `pub const` and `static` items, grouped
 into nested modules when they cluster.
 
-Lint: `clippy::non_std_lazy_statics`, and `lint.sh` manifests for a direct
+Lint: `clippy::non_std_lazy_statics`, and `lint.lua` manifests for a direct
 `once_cell` or `lazy_static` dependency
 
 ```rust
@@ -843,7 +839,7 @@ A library returns a std error type when it is the only failure, or an enum with
 `Display` and `Error` written by hand. Deriving them with `derive_more` is
 allowed, and `anyhow` and `thiserror` never appear in library code.
 
-Lint: `lint.sh` thiserror for a direct `thiserror` dependency. `anyhow` is Review.
+Lint: `lint.lua` thiserror for a direct `thiserror` dependency. `anyhow` is Review.
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -871,7 +867,7 @@ own enum with an `Io(io::Error)` variant.
 
 A caller matching on `kind()` learns nothing from `Other`.
 
-Lint: `clippy::io_other_error`, the `no-io-error-other` ast-grep rule on
+Lint: `clippy::io_other_error`, ast-grep `io-error-other` on
 `io::Error::other`
 
 ```rust
@@ -1031,7 +1027,7 @@ Attributes appear in one order and only where they change behavior.
 `Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash`, then
 external derives such as serde and `derive_more`.
 
-Lint: `lint.sh` derive order
+Lint: `lint.lua` derive order
 
 ```rust
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1125,7 +1121,7 @@ The workspace lints deny `unsafe_code`. The core lifts it with a local
 `#[expect]` only when the root `Cargo.toml` lists the crate's path under
 `[workspace.metadata.style] allow-unsafe`, and only the owner adds an entry.
 
-Lint: rustc `unsafe_code` at `deny`, `lint.sh` unsafe for an `allow` or `expect`
+Lint: rustc `unsafe_code` at `deny`, `lint.lua` unsafe for an `allow` or `expect`
 of `unsafe_code` in an unlisted crate, `clippy::multiple_unsafe_ops_per_block`
 
 ```toml
@@ -1155,7 +1151,7 @@ tokio = { version = "1", features = ["full"] }
 
 Never use the `async-trait` crate.
 
-Lint: `lint.sh` manifests, for a direct `async-trait` dependency
+Lint: `lint.lua` manifests, for a direct `async-trait` dependency
 
 ```rust
 pub trait Transport {
@@ -1267,7 +1263,7 @@ fn rename_should_replace_existing_file() {
 Run `cargo nextest run` and then `cargo test --doc`, since nextest skips
 doctests.
 
-Lint: `test.sh`
+Lint: `test.lua`
 
 ```rust
 #[rstest]
@@ -1330,7 +1326,7 @@ workspace = true
 
 A caret range lets the members drift apart.
 
-Lint: `lint.sh` manifests
+Lint: `lint.lua` manifests
 
 ```toml
 # Good
@@ -1409,7 +1405,7 @@ ssh = ["dep:foo-ssh", "foo-core/ssh"]
 
 Test it in CI. An unpublished application pins `rust-toolchain.toml` instead.
 
-Lint: `lint.sh` manifests
+Lint: `lint.lua` manifests
 
 ```toml
 [package]
@@ -1421,7 +1417,7 @@ rust-version = "1.85.0"
 
 The rule is relative on purpose, so it does not go stale at the next edition.
 
-Lint: `lint.sh` manifests
+Lint: `lint.lua` manifests
 
 ```toml
 [package]
@@ -1498,7 +1494,7 @@ normalize_doc_attributes = true
 
 ### 86. Keep build steps in the project's scripts, and run CI once per commit
 
-CI only checks out and invokes `.dev/<verb>.sh`. Trigger a suite on
+CI only checks out and runs `dev <verb>`. Trigger a suite on
 `pull_request` for branches and on `push` for trunk and tags only.
 
 Review
@@ -1514,7 +1510,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: .dev/lint.sh
+      - run: dev lint
 ```
 
 ### 87. Look for an extraction point past about 40 lines
@@ -1762,20 +1758,6 @@ mod tests {
 assert_eq!(crate::models::Quotas::default().stored_mib_per_board, 65_536);
 ```
 
-### P7. Use `pub(super)` only one level up
-
-A child of a parent module, such as a file under `src/routes/`, marks an item
-`pub(super)` when only that parent uses it. Never reach further: an item that
-needs `super::super::` is `pub(crate)` instead. This overrides the style
-skill's note that `pub(super)` is not used.
-
-Review
-
-```rust
-// src/routes/local_time.rs
-pub(super) fn format_local(at: Timestamp) -> String {
-```
-
 ### P8. Name a module file in snake_case, two words when one is not enough
 
 A file may carry a two-word name when one word would be vague:
@@ -1806,4 +1788,35 @@ let board = client.board(&id).context("Failed to load the board")?;
 
 // Bad
 let board = db.board(&id).context("Failed to load the board")?;
+```
+
+### P10. Keep schema history out of doc comments
+
+Schema history lives in git and the fingerprint list, never in a doc comment:
+the doc above `SCHEMA_VERSION` says only what the current schema is and why an
+older binary refuses a newer file.
+
+Review
+
+```rust
+// Good
+/// Bumped whenever a stored struct or table changes, so an older binary refuses a newer file.
+
+// Bad
+/// Version 7 added labels, version 8 added the bin.
+```
+
+### P11. Never write `pub(super)`, `pub(self)` or `pub(in path)`
+
+Visibility is private, `pub(crate)` or `pub`. This overrides rule 16, whose
+`pub(super)` case does not apply here.
+
+Review
+
+```rust
+// Good
+pub(crate) fn format_local(at: Timestamp) -> String {
+
+// Bad
+pub(super) fn format_local(at: Timestamp) -> String {
 ```

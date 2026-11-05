@@ -1,4 +1,4 @@
-# `dev init` sets channel to the current stable release.
+# `dev init` copies this channel unless the project pins its own.
 [toolchain]
 channel = "1.99.1"
 profile = "minimal"

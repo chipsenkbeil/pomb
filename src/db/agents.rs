@@ -94,7 +94,7 @@ fn txn_remove_grant(txn: &WriteTransaction, role_id: &str, board_id: &str) -> Db
 /// Deletes the tokens issued as role `role_id` of `account` that reach `board_id`, or every token
 /// issued as it when `board_id` is [`None`], with the tokens they issued, found through the role
 /// and board index, inside an open write transaction. Returns how many live tokens it deleted.
-pub(super) fn txn_revoke_role_tokens(
+fn txn_revoke_role_tokens(
     txn: &WriteTransaction,
     account: &str,
     role_id: &str,
@@ -108,7 +108,7 @@ pub(super) fn txn_revoke_role_tokens(
 }
 
 /// Removes every agent role's grant on board `board_id`, inside an open write transaction.
-pub(super) fn txn_remove_grants_of_board(txn: &WriteTransaction, board_id: &str) -> DbResult<()> {
+pub(crate) fn txn_remove_grants_of_board(txn: &WriteTransaction, board_id: &str) -> DbResult<()> {
     for role_id in txn_mmap_get(txn, GRANTS_BY_BOARD, board_id)? {
         txn_remove_grant(txn, &role_id, board_id)?;
     }
@@ -116,7 +116,7 @@ pub(super) fn txn_remove_grants_of_board(txn: &WriteTransaction, board_id: &str)
 }
 
 /// Removes every agent role of `account` with its grants, inside an open write transaction.
-pub(super) fn txn_remove_agent_roles_of(txn: &WriteTransaction, account: &str) -> DbResult<()> {
+pub(crate) fn txn_remove_agent_roles_of(txn: &WriteTransaction, account: &str) -> DbResult<()> {
     for role_id in txn_mmap_get(txn, AGENT_ROLES_BY_ACCOUNT, account)? {
         for board_id in txn_mmap_get(txn, GRANTS_BY_ROLE, &role_id)? {
             txn_remove_grant(txn, &role_id, &board_id)?;

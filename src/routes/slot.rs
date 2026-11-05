@@ -18,11 +18,11 @@ use crate::api_error::{ErrorCode, coded_response};
 use crate::db::AccountSlot;
 
 /// Seconds a request waits for a slot before it is refused.
-pub(super) const QUEUE_WAIT_SECS: u64 = 10;
+pub(crate) const QUEUE_WAIT_SECS: u64 = 10;
 
 /// Seconds a slotted response or a streamed export may take to reach the client before the server
 /// gives up on it.
-pub(super) const SEND_SECS: u64 = 120;
+pub(crate) const SEND_SECS: u64 = 120;
 
 /// Bytes of a slotted response the server hands the connection at once, 64 KiB.
 const CHUNK_BYTES: usize = 65_536;
@@ -31,7 +31,7 @@ const CHUNK_BYTES: usize = 65_536;
 /// streaming a file. Each names the account it counts against, and holds one of that account's
 /// slots and one of the server's.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) enum Slot<'a> {
+pub(crate) enum Slot<'a> {
     /// An attachment upload to a task of the named account, or a board import into it, which
     /// holds its slots until its file is stored.
     Upload(&'a str),
@@ -49,7 +49,7 @@ pub(super) enum Slot<'a> {
 impl Slot<'_> {
     /// Waits up to [`QUEUE_WAIT_SECS`] in all for every slot this kind needs, or returns the 503
     /// `busy` that refuses the request.
-    pub(super) async fn acquire(self, state: &AppState) -> Result<SlotGuard, Box<Response>> {
+    pub(crate) async fn acquire(self, state: &AppState) -> Result<SlotGuard, Box<Response>> {
         let (kind, account, server, noun) = match self {
             Self::Upload(account) => (AccountSlot::Upload, account, &state.uploads, "uploads"),
             Self::Download(account) => (
@@ -94,7 +94,7 @@ impl Slot<'_> {
 
 /// The slots a request holds, freed when it is dropped.
 #[derive(Debug)]
-pub(super) struct SlotGuard {
+pub(crate) struct SlotGuard {
     /// One permit per slot the request took.
     _permits: Vec<OwnedSemaphorePermit>,
 }
@@ -102,7 +102,7 @@ pub(super) struct SlotGuard {
 /// The waits for board events a request holds, freed when it is dropped, which includes the
 /// client hanging up.
 #[derive(Debug)]
-pub(super) struct WaitGuard {
+pub(crate) struct WaitGuard {
     /// The permit of the token, if the request uses one, and the permit of the account.
     _permits: Vec<OwnedSemaphorePermit>,
 }
@@ -110,7 +110,7 @@ pub(super) struct WaitGuard {
 impl WaitGuard {
     /// Takes a wait of the account `account` and, for a request that uses an API token, of the
     /// token `token`. Returns the slot that has none left, without queueing.
-    pub(super) fn hold(
+    pub(crate) fn hold(
         state: &AppState,
         account: &str,
         token: Option<&str>,
@@ -162,7 +162,7 @@ enum Sending {
 
 /// Why a slotted response stopped before its last byte.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) enum SendFailed {
+pub(crate) enum SendFailed {
     /// The response took longer than [`SEND_SECS`].
     TimedOut,
     /// The file the response streams could not be read to its end.
@@ -187,7 +187,7 @@ impl Error for SendFailed {}
 ///
 /// It hands the connection copies of at most [`CHUNK_BYTES`], so once the time is up and the
 /// body is dropped, a client that stopped reading holds no more than the connection's buffer.
-pub(super) struct SlotBody {
+pub(crate) struct SlotBody {
     /// The bytes left and the slot, shared with the task that ends a slow send.
     state: Arc<Mutex<Sending>>,
 }
@@ -195,7 +195,7 @@ pub(super) struct SlotBody {
 impl SlotBody {
     /// Returns the body that sends `data` while it holds `slot`, and starts the clock that ends
     /// the send after [`SEND_SECS`].
-    pub(super) fn wrap(data: Bytes, slot: SlotGuard) -> Body {
+    pub(crate) fn wrap(data: Bytes, slot: SlotGuard) -> Body {
         Self::start(|sending| Sending::Data {
             rest: data,
             _slot: slot,
@@ -206,7 +206,7 @@ impl SlotBody {
     /// Returns the body that sends the `len` bytes of `file` from where it stands while it holds
     /// `slot`, and starts the clock that ends the send after [`SEND_SECS`]. The file is read a
     /// chunk at a time as the connection takes them.
-    pub(super) fn stream(file: tokio::fs::File, len: u64, slot: SlotGuard) -> Body {
+    pub(crate) fn stream(file: tokio::fs::File, len: u64, slot: SlotGuard) -> Body {
         Self::start(|sending| Sending::File {
             file,
             left: len,

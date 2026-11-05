@@ -198,7 +198,7 @@ impl Db {
     }
 
     /// Returns the warning each board of `owner` in `boards` shows at `now`, keyed by board id.
-    pub(super) fn prune_notices(
+    pub(crate) fn prune_notices(
         &self,
         owner: &AccountId,
         boards: &[String],

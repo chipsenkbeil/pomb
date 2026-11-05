@@ -30,7 +30,7 @@ or `cargo test` directly, and do not edit `.dev/lint.sh` above its
 | `dev test` | `cargo nextest run --all-features` (it takes any arguments), then `cargo test --doc --all-features` (only without arguments), then each `tests/js/*.js` with `node` against `static/app.js` |
 | `dev fmt` | `cargo +nightly fmt` with `rustfmt.toml` |
 | `dev build` | `cargo build --release` |
-| `dev release <commit> --batch N --summary "..."` | applies a verified commit to main on the remote of record, which mirrors to GitHub, in `.dev/worktrees/release-N`, commits `Release batch-N: ...`, runs `dev lint --remote`, `dev test --remote`, `dev nixcheck --remote` and `dev build --remote` one at a time on ci, checks for attribution, pushes to main on the remote of record, then prints the sha, nix hash and condition for the homelab request (`--hash-only <sha>` reprints the block for a pushed sha without touching git, `--env KEY=VALUE` lists service env changes, `--dry-run` skips the push and hash) |
+| `dev release <commit> --batch N --summary "..."` | refuses, before any ci step, a commit whose `Cargo.toml` version equals main's or whose `Cargo.lock` `pomb` entry differs from `Cargo.toml`, then applies a verified commit to main on the remote of record, which mirrors to GitHub, in `.dev/worktrees/release-N`, commits `Release batch-N: ...`, runs `dev lint --remote`, `dev test --remote`, `dev nixcheck --remote` and `dev build --remote` one at a time on ci, checks for attribution, pushes to main on the remote of record, then prints the sha, nix hash and condition for the homelab request (`--hash-only <sha>` reprints the block for a pushed sha without touching git or running that refusal, `--env KEY=VALUE` lists service env changes, `--dry-run` skips the push and hash) |
 | `dev nixcheck` | builds a nextest archive, then runs the tests in a user, mount and network namespace with no `/usr/bin/env` and only the tools the Nix derivation provides on PATH, so a missing tool fails before release. Linux only |
 | `dev regress [REV]` | diffs this tree's screenshots against REV (default main on the remote of record) with the ci `regress` job on a browser runner and keeps the report as an artifact (`ci artifacts last`) |
 | `dev verify <sha> --backup <file>` | read-only post-switch checks on green-box (build_sha, app.js, cross-site 403, journal, `/login`, OpenAPI server URL, `token_invalid`; `--cleanup <worktree>...` removes worktrees and merged branches, `--delete-branch <branch>` also deletes an unmerged one) |
@@ -80,7 +80,12 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
   account's 50 tokens and have no count limit. An issuer gets 429 `rate_limited` after a burst
   of 20 child creations, then one more every 2 seconds. A token holding `tokens.issue` also
   lists and revokes its own children over Bearer, and no other token's children. A token never
-  adds a passkey. Browser writes (every non-Bearer write, with or without a cookie) must be
+  adds a passkey. Only the owner edits, renames or deletes an agent role, in the browser. A
+  Bearer token only creates the standard roles the account lacks and grants or revokes a role on
+  boards it holds. A token acts as a role when it is issued from the Settings form or by device
+  approval, or as the child of a token holding `tokens.issue` made with `role_id`. A token edit
+  changes only the name and the child lifetime, so a permission or board change is a revoke and
+  a new token. Browser writes (every non-Bearer write, with or without a cookie) must be
   same-origin (`src/csrf.rs`, the router's outermost layer), and Bearer requests skip that
   check.
 - API prose lives in the utoipa annotations, `skill.md` covers workflow only,

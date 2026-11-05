@@ -1,0 +1,61 @@
+id: io-error-other
+valid:
+  - |
+    fn load() -> Result<(), LoadError> {
+        Err(LoadError::MissingHeader)
+    }
+  - |
+    fn load() -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::InvalidData, "bad"))
+    }
+  - |
+    fn load() -> LoadError {
+        LoadError::Io(io::Error::from(io::ErrorKind::NotFound))
+    }
+  - |
+    fn load() -> io::Result<()> {
+        Err(my_io::Error::other("x"))
+    }
+  - |
+    use my_crate::Error;
+
+    fn load() -> Result<(), Error> {
+        Err(Error::other("x"))
+    }
+  - |
+    use std::io;
+
+    fn load() -> io::Result<()> {
+        Err(Error::other("x"))
+    }
+invalid:
+  - |
+    use std::io::Error;
+
+    fn load() -> Result<(), Error> {
+        Err(Error::other("missing header"))
+    }
+  - |
+    use std::io::{self, Error};
+
+    fn load() -> io::Result<()> {
+        Err(Error::other("missing header"))
+    }
+  - |
+    use std::io::Error;
+
+    fn load(r: Result<(), Boxed>) -> Result<(), Error> {
+        r.map_err(Error::other)
+    }
+  - |
+    fn load() -> io::Result<()> {
+        Err(io::Error::other("missing header"))
+    }
+  - |
+    fn load() -> io::Result<()> {
+        Err(std::io::Error::other("missing header"))
+    }
+  - |
+    fn load(r: Result<(), Boxed>) -> io::Result<()> {
+        r.map_err(io::Error::other)
+    }

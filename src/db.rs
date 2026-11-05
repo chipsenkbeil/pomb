@@ -4198,18 +4198,34 @@ fn txn_check_child_token(
     record.expires_at =
         Some((now + hours * SECONDS_PER_HOUR).min(parent.expires_at.unwrap_or(i64::MAX)));
     txn_remove_expired_issued_tokens(txn, &record.account_id, now)?;
-    let name = record.name.to_lowercase();
-    for id in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, &record.account_id)? {
+    if txn_token_name_taken(txn, &record.account_id, &record.name, None)? {
+        return Ok(Err(ChildTokenRefusal::NameTaken));
+    }
+    Ok(Ok(()))
+}
+
+/// Returns whether a token of `account` other than `except` has `name`, whatever its letter case.
+fn txn_token_name_taken(
+    txn: &WriteTransaction,
+    account: &str,
+    name: &str,
+    except: Option<&str>,
+) -> DbResult<bool> {
+    let name = name.to_lowercase();
+    for id in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, account)? {
+        if except == Some(id.as_str()) {
+            continue;
+        }
         for table in [API_TOKENS, SUSPENDED_TOKENS] {
             let Some(token) = txn_read_one::<ApiTokenRecord>(txn, table, &id)? else {
                 continue;
             };
             if token.name.to_lowercase() == name {
-                return Ok(Err(ChildTokenRefusal::NameTaken));
+                return Ok(true);
             }
         }
     }
-    Ok(Ok(()))
+    Ok(false)
 }
 
 /// Deletes the expired issued tokens of `account`, live or suspended, with the tokens they
@@ -4659,6 +4675,27 @@ impl fmt::Display for NumberingExhausted {
 }
 
 impl Error for NumberingExhausted {}
+
+/// Refusal of a token name that another token of the account holds, whatever its letter case.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TokenNameTaken;
+
+impl fmt::Display for TokenNameTaken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("another token of the account has that name")
+    }
+}
+
+impl Error for TokenNameTaken {}
+
+/// The fields of a token an edit may change. A field left as [`None`] stays as it is.
+#[derive(Debug, Default)]
+pub struct TokenEdit {
+    /// The new name.
+    pub name: Option<String>,
+    /// The most hours a child of the token may live.
+    pub child_lifetime_hours: Option<i64>,
+}
 
 /// Why a child token was not stored.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -6522,17 +6559,14 @@ impl Db {
         Ok(removed)
     }
 
-    /// Renames `account`'s token `id` and, when `grant` is set, replaces its scope and permissions,
-    /// and, when `child_lifetime_hours` is set, the most hours its children may live, keeping its
-    /// secret, boards and expiry. Returns the stored token, or [`None`] when that account holds no
-    /// such token.
+    /// Applies `edit` to `account`'s token `id`, keeping its secret, permissions, boards and
+    /// expiry. Returns the stored token, or [`None`] when that account holds no such token. A name
+    /// another token of the account holds is refused with [`TokenNameTaken`].
     pub fn edit_api_token(
         &self,
         account: &AccountId,
         id: &str,
-        name: Option<&str>,
-        grant: Option<(AuthScope, BTreeSet<Permission>)>,
-        child_lifetime_hours: Option<i64>,
+        edit: TokenEdit,
     ) -> DbResult<Option<ApiTokenRecord>> {
         let txn = self.db.begin_write()?;
         let held = txn_mmap_get(&txn, TOKENS_BY_ACCOUNT, account.as_str())?
@@ -6546,14 +6580,13 @@ impl Db {
         let Some(mut record) = stored else {
             return Ok(None);
         };
-        if let Some(name) = name {
-            record.name = name.to_string();
+        if let Some(name) = edit.name.filter(|name| *name != record.name) {
+            if txn_token_name_taken(&txn, account.as_str(), &name, Some(id))? {
+                return Err(Box::new(TokenNameTaken));
+            }
+            record.name = name;
         }
-        if let Some((scope, permissions)) = grant {
-            record.scope = scope;
-            record.permissions = permissions;
-        }
-        if let Some(hours) = child_lifetime_hours {
+        if let Some(hours) = edit.child_lifetime_hours {
             record.child_lifetime_hours = hours;
         }
         write_one(&txn, API_TOKENS, id, &record)?;

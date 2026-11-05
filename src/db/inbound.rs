@@ -89,7 +89,7 @@ fn new_address(prefix: &str) -> String {
 
 /// Removes inbound address `id` and its hash entry without counting the freed bytes, inside an
 /// open write transaction, for the removal of a whole board that counts them once.
-pub(super) fn txn_drop_inbound(txn: &WriteTransaction, id: &str) -> DbResult<()> {
+pub(crate) fn txn_drop_inbound(txn: &WriteTransaction, id: &str) -> DbResult<()> {
     if let Some(row) = txn_read_one::<InboundAddressRow>(txn, INBOUND_ADDRESSES, id)? {
         txn.open_table(INBOUND_BY_HASH)?
             .remove(row.token_hash.as_str())?;
@@ -100,7 +100,7 @@ pub(super) fn txn_drop_inbound(txn: &WriteTransaction, id: &str) -> DbResult<()>
 
 /// Removes inbound address `id`, its hash entry and its stored bytes, inside an open write
 /// transaction.
-pub(super) fn txn_remove_inbound(txn: &WriteTransaction, id: &str) -> DbResult<()> {
+pub(crate) fn txn_remove_inbound(txn: &WriteTransaction, id: &str) -> DbResult<()> {
     if let Some(row) = txn_remove_owned::<InboundAddressRow>(txn, INBOUND_ADDRESSES, id)? {
         txn.open_table(INBOUND_BY_HASH)?
             .remove(row.token_hash.as_str())?;

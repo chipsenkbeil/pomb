@@ -1,0 +1,8 @@
+id: pub-restricted
+language: rust
+severity: error
+message: Use private, pub(crate) or pub. A visibility scoped to super, self or a path is not used.
+note: "style/references/rust.md, Visibility. Control access with module visibility and root re-exports."
+rule:
+  kind: visibility_modifier
+  regex: ^pub\s*\(\s*(super|self|in\b)

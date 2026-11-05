@@ -74,7 +74,7 @@ fn files_bytes(row: &BinRow) -> u64 {
 }
 
 /// Removes the tasks in the recycle bin of `board_id` and returns their attachment ids and bytes.
-pub(super) fn txn_remove_board_bin(
+pub(crate) fn txn_remove_board_bin(
     txn: &WriteTransaction,
     board_id: &str,
 ) -> DbResult<(Vec<String>, u64)> {
@@ -93,7 +93,7 @@ pub(super) fn txn_remove_board_bin(
 }
 
 /// Adds the bytes of every task in the recycle bins to `usage`, by owning account.
-pub(super) fn txn_bin_usage(
+pub(crate) fn txn_bin_usage(
     txn: &WriteTransaction,
     usage: &mut HashMap<String, u64>,
 ) -> DbResult<()> {

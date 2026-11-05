@@ -60,7 +60,7 @@ fn annotated_handlers(source: &str) -> Vec<(String, Option<String>)> {
             if let Some(rest) = line.strip_prefix("operation_id = \"") {
                 *id = rest.split('"').next().map(str::to_string);
             } else if let Some(handler) = line
-                .strip_prefix("pub(super) async fn ")
+                .strip_prefix("pub(crate) async fn ")
                 .or_else(|| line.strip_prefix("async fn "))
             {
                 let name = handler.split('(').next().unwrap_or_default();

@@ -2749,25 +2749,9 @@
     var errorBox = document.getElementById('tk-error');
     function fail(error) { errorBox.textContent = error.message; errorBox.hidden = false; }
     function overlay(id) { return document.getElementById(id); }
-    var catalog = [];
-    var pickerBox = document.getElementById('tk-edit-picker');
-    var picker = null;
-    var roles = [];
     var editError = document.getElementById('tk-edit-error');
     var editId = null;
     var deleteId = null;
-    function renderCatalog(items) {
-      catalog = items;
-      picker = mountPermissionPicker(pickerBox, catalog, roles);
-    }
-    var catalogLoaded = webhookRequest('GET', '/api/v1/agent-roles')
-      .catch(function () { return []; })
-      .then(function (found) {
-        roles = found;
-        return webhookRequest('GET', '/api/v1/auth/permissions');
-      })
-      .then(renderCatalog);
-    catalogLoaded.catch(fail);
     function describe(data) {
       document.getElementById('tk-show-expiry').textContent = data.expires_at
         ? 'Expires ' + new Date(data.expires_at * 1000).toISOString().slice(0, 10)
@@ -2796,13 +2780,11 @@
       });
       row.querySelector('.tk-edit').addEventListener('click', function () {
         errorBox.hidden = true;
-        Promise.all([tokenRequest('GET', id), catalogLoaded]).then(function (results) {
-          var data = results[0];
+        tokenRequest('GET', id).then(function (data) {
           editId = id;
           document.getElementById('tk-edit-name').value = data.name;
           document.getElementById('tk-edit-child-hours').value = data.child_lifetime_hours;
           editError.hidden = true;
-          picker.start(data.permissions, data.role_name);
           overlay('tk-edit-overlay').hidden = false;
           document.getElementById('tk-edit-name').focus();
         }).catch(fail);
@@ -2818,17 +2800,10 @@
     document.getElementById('tk-edit-form').addEventListener('submit', function (event) {
       event.preventDefault();
       editError.hidden = true;
-      var request = TokenForm.body(catalog, {
-        name: document.getElementById('tk-edit-name').value.trim(),
-        ticked: picker.held(),
-        boards: null,
-        expiryDays: null
-      });
-      if (!request.name) { editError.textContent = 'Give the token a name.'; editError.hidden = false; return; }
-      if (!request.permissions.length) { editError.textContent = 'Tick at least one permission.'; editError.hidden = false; return; }
+      var name = document.getElementById('tk-edit-name').value.trim();
+      if (!name) { editError.textContent = 'Give the token a name.'; editError.hidden = false; return; }
       var patch = {
-        name: request.name,
-        permissions: request.permissions,
+        name: name,
         child_lifetime_hours: Number(document.getElementById('tk-edit-child-hours').value)
       };
       tokenRequest('PATCH', editId, patch)

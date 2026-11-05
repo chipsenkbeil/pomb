@@ -91,7 +91,7 @@ pub struct AttachmentFiles {
 
 /// A claim on an attachment file that no task row names yet, released when dropped.
 #[derive(Debug)]
-pub(super) struct Held {
+pub(crate) struct Held {
     /// The id of the file.
     id: String,
     /// The set the id is released from.
@@ -109,7 +109,7 @@ impl Drop for Held {
 
 impl AttachmentFiles {
     /// Returns the store for the database file at `database`, creating its directory.
-    pub(super) fn open(database: &Path) -> DbResult<Self> {
+    pub(crate) fn open(database: &Path) -> DbResult<Self> {
         let files = Self::beside(database);
         fs::create_dir_all(&*files.dir)?;
         let parent = files
@@ -121,7 +121,7 @@ impl AttachmentFiles {
     }
 
     /// Returns the store for the database file at `database`, without creating anything.
-    pub(super) fn beside(database: &Path) -> Self {
+    pub(crate) fn beside(database: &Path) -> Self {
         let name = database
             .file_name()
             .and_then(OsStr::to_str)
@@ -140,7 +140,7 @@ impl AttachmentFiles {
     /// Returns the store an offline reader uses for the database file at `database`: the
     /// directory beside it, or for a Pomb backup `pomb-<stamp>.redb` the `pomb-<stamp>.attachments`
     /// directory that backup wrote, when only that one exists.
-    pub(super) fn beside_or_backup(database: &Path) -> Self {
+    pub(crate) fn beside_or_backup(database: &Path) -> Self {
         let files = Self::beside(database);
         if files.dir.is_dir() || database.extension() != Some(OsStr::new("redb")) {
             return files;
@@ -166,17 +166,17 @@ impl AttachmentFiles {
     }
 
     /// Checks that `id` is a generated id.
-    pub(super) fn check_id(&self, id: &str) -> DbResult<()> {
+    pub(crate) fn check_id(&self, id: &str) -> DbResult<()> {
         self.path_of(id).map(drop)
     }
 
     /// Stores `bytes` as attachment `id`.
-    pub(super) fn write(&self, id: &str, bytes: &[u8]) -> DbResult<()> {
+    pub(crate) fn write(&self, id: &str, bytes: &[u8]) -> DbResult<()> {
         self.place(id, |part| part.write_all(bytes))
     }
 
     /// Stores the file at `source` as attachment `id`.
-    pub(super) fn copy_from(&self, id: &str, source: &Path) -> DbResult<()> {
+    pub(crate) fn copy_from(&self, id: &str, source: &Path) -> DbResult<()> {
         let mut source = File::open(source)?;
         self.place(id, |part| io::copy(&mut source, part).map(drop))
     }
@@ -208,7 +208,7 @@ impl AttachmentFiles {
     }
 
     /// Starts receiving a new attachment into a `.part` file under a fresh id.
-    pub(super) fn receive(&self) -> DbResult<Incoming> {
+    pub(crate) fn receive(&self) -> DbResult<Incoming> {
         let id = Uuid::new_v4().to_string();
         let part = self.dir.join(format!("{id}{PART_SUFFIX}"));
         let file = tokio::fs::File::from_std(File::create(&part)?);
@@ -222,7 +222,7 @@ impl AttachmentFiles {
     }
 
     /// Moves the finished `upload` to its final name.
-    pub(super) fn place_incoming(&self, upload: &Incoming) -> DbResult<()> {
+    pub(crate) fn place_incoming(&self, upload: &Incoming) -> DbResult<()> {
         let target = self.path_of(&upload.id)?;
         let placed = self.settle(&upload.part, &target);
         if placed.is_err() {
@@ -233,7 +233,7 @@ impl AttachmentFiles {
 
     /// Opens attachment `id` for reading and returns it with its length, or [`None`] when no file
     /// holds it.
-    pub(super) fn open_file(&self, id: &str) -> DbResult<Option<(File, u64)>> {
+    pub(crate) fn open_file(&self, id: &str) -> DbResult<Option<(File, u64)>> {
         match File::open(self.path_of(id)?) {
             Ok(file) => {
                 let len = file.metadata()?.len();
@@ -245,7 +245,7 @@ impl AttachmentFiles {
     }
 
     /// Returns the bytes of attachment `id`, or [`None`] when no file holds them.
-    pub(super) fn read(&self, id: &str) -> DbResult<Option<Vec<u8>>> {
+    pub(crate) fn read(&self, id: &str) -> DbResult<Option<Vec<u8>>> {
         let mut bytes = Vec::new();
         match File::open(self.path_of(id)?) {
             Ok(mut file) => file.read_to_end(&mut bytes)?,
@@ -256,14 +256,14 @@ impl AttachmentFiles {
     }
 
     /// Returns whether a file holds attachment `id`.
-    pub(super) fn exists(&self, id: &str) -> DbResult<bool> {
+    pub(crate) fn exists(&self, id: &str) -> DbResult<bool> {
         Ok(self.path_of(id)?.try_exists()?)
     }
 
     /// Deletes the files of `ids` after the transaction that dropped their rows committed, once it
     /// has retried every file an earlier call could not delete. A file that fails is tried again
     /// at the next call and at the next [`Self::bytes`].
-    pub(super) fn remove(&self, ids: &[String]) {
+    pub(crate) fn remove(&self, ids: &[String]) {
         self.retry_stuck();
         for id in ids {
             if let Err(error) = self.delete(id) {
@@ -300,7 +300,7 @@ impl AttachmentFiles {
     }
 
     /// Returns the bytes the files in the directory hold, after retrying every delete that failed.
-    pub(super) fn bytes(&self) -> DbResult<u64> {
+    pub(crate) fn bytes(&self) -> DbResult<u64> {
         self.retry_stuck();
         let mut bytes = 0;
         for entry in fs::read_dir(&*self.dir)? {
@@ -318,7 +318,7 @@ impl AttachmentFiles {
     }
 
     /// Deletes every leftover `.part` file and returns how many it deleted.
-    pub(super) fn sweep_parts(&self) -> DbResult<usize> {
+    pub(crate) fn sweep_parts(&self) -> DbResult<usize> {
         let mut swept = 0;
         for entry in fs::read_dir(&*self.dir)? {
             let entry = entry?;
@@ -334,7 +334,7 @@ impl AttachmentFiles {
 
     /// Returns the complete files named with a generated id that are not in `named`, with their
     /// sizes, in id order, leaving out a file an upload is still placing.
-    pub(super) fn unnamed(&self, named: &HashSet<String>) -> DbResult<Vec<(String, u64)>> {
+    pub(crate) fn unnamed(&self, named: &HashSet<String>) -> DbResult<Vec<(String, u64)>> {
         self.scan_unnamed(named, &self.held())
     }
 
@@ -368,7 +368,7 @@ impl AttachmentFiles {
 
     /// Deletes the complete files that are not in `named` and returns how many it deleted with
     /// their bytes.
-    pub(super) fn remove_unnamed(&self, named: &HashSet<String>) -> DbResult<UnnamedFiles> {
+    pub(crate) fn remove_unnamed(&self, named: &HashSet<String>) -> DbResult<UnnamedFiles> {
         let held = self.held();
         let mut removed = UnnamedFiles::default();
         for (id, size) in self.scan_unnamed(named, &held)? {
@@ -380,7 +380,7 @@ impl AttachmentFiles {
     }
 
     /// Marks the file of `id` as being placed until the returned claim is dropped.
-    pub(super) fn hold(&self, id: &str) -> Held {
+    pub(crate) fn hold(&self, id: &str) -> Held {
         self.held().insert(id.to_string());
         Held {
             id: id.to_string(),
@@ -394,7 +394,7 @@ impl AttachmentFiles {
     }
 
     /// Returns the ids in `named` that no file holds, in id order.
-    pub(super) fn missing(&self, named: &HashSet<String>) -> DbResult<Vec<String>> {
+    pub(crate) fn missing(&self, named: &HashSet<String>) -> DbResult<Vec<String>> {
         let mut ids = Vec::new();
         for id in named {
             if !self.exists(id)? {
@@ -406,13 +406,13 @@ impl AttachmentFiles {
     }
 
     /// Returns the directory that holds the files.
-    pub(super) fn dir(&self) -> &Path {
+    pub(crate) fn dir(&self) -> &Path {
         &self.dir
     }
 
     /// Copies every complete file into the directory `dest`, creating it, flushes each copy and
     /// the directory, and returns how many bytes it copied.
-    pub(super) fn copy_to(&self, dest: &Path) -> io::Result<u64> {
+    pub(crate) fn copy_to(&self, dest: &Path) -> io::Result<u64> {
         fs::create_dir_all(dest)?;
         let mut copied = 0;
         for entry in fs::read_dir(&*self.dir)? {

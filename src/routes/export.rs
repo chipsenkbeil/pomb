@@ -17,7 +17,7 @@ use crate::taskjson::TaskArray;
 /// Refusal of an export whose head could not be built, whose next piece could not be read, or
 /// that took longer than [`SEND_SECS`] to send.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ExportFailed(String);
+pub(crate) struct ExportFailed(String);
 
 impl fmt::Display for ExportFailed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -28,14 +28,14 @@ impl fmt::Display for ExportFailed {
 impl Error for ExportFailed {}
 
 /// The content of an export, produced one piece at a time as the connection takes it.
-pub(super) trait Pieces: Send {
+trait Pieces: Send {
     /// Returns the next piece, or [`None`] once every piece is out.
     fn next_piece(&mut self) -> Result<Option<Bytes>, ExportFailed>;
 }
 
 /// A body that sends the pieces of an export, holds its slot until the last goes out, and fails
 /// once [`SEND_SECS`] pass.
-pub(super) struct Streamed {
+struct Streamed {
     /// Produces each piece as its turn comes.
     pieces: Box<dyn Pieces>,
     /// The slot the export holds, freed once the body ends.
@@ -48,7 +48,7 @@ pub(super) struct Streamed {
 
 impl Streamed {
     /// Returns the body that sends `pieces` while it holds `slot`, if any.
-    pub(super) fn body(pieces: impl Pieces + 'static, slot: Option<SlotGuard>) -> Body {
+    pub(crate) fn body(pieces: impl Pieces + 'static, slot: Option<SlotGuard>) -> Body {
         Body::new(Self {
             pieces: Box::new(pieces),
             _slot: slot,
@@ -102,7 +102,7 @@ impl HttpBody for Streamed {
 
 /// A JSON body that ends in an array of tasks, written one task at a time as the connection takes
 /// it, so the board is never held whole.
-pub(super) struct TaskStream {
+pub(crate) struct TaskStream {
     /// Reads each task as its turn comes.
     account: AccountDb,
     /// The JSON of the head, the tasks and the closing bytes.
@@ -118,7 +118,7 @@ impl TaskStream {
     ///
     /// Returns [`ExportFailed`] when `head` does not serialize to an object that ends in
     /// `"tasks":[]`.
-    pub(super) fn wrap(
+    pub(crate) fn wrap(
         head: &impl Serialize,
         account: AccountDb,
         ids: Vec<String>,
@@ -139,7 +139,7 @@ impl Pieces for TaskStream {
 }
 
 /// A board archive, sent as the gzipped chunks it produces.
-pub(super) struct ArchiveStream {
+pub(crate) struct ArchiveStream {
     /// Produces each chunk as its turn comes.
     archive: Archive,
     /// The name of the board, for the line logged when a chunk fails.
@@ -152,7 +152,7 @@ impl ArchiveStream {
     /// Returns the body that sends `archive` of the board `board` while it holds `slot`, and
     /// prints one line naming the board when a chunk fails. The send fails once [`SEND_SECS`]
     /// pass.
-    pub(super) fn wrap(archive: Archive, board: String, slot: SlotGuard) -> Body {
+    pub(crate) fn wrap(archive: Archive, board: String, slot: SlotGuard) -> Body {
         let log = Box::new(|line: &str| eprintln!("{line}"));
         Streamed::body(
             Self {

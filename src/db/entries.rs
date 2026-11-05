@@ -28,7 +28,7 @@ fn entry_day_key(entry: &TimeEntryRow) -> Option<String> {
 /// new entry takes its account past the time entry quota, or when a new or moved entry takes its
 /// day past [`MAX_ENTRIES_PER_DAY`], inside that write's transaction. A write under
 /// [`OverQuota::Allow`] is never refused.
-pub(super) fn txn_refuse_entry(
+pub(crate) fn txn_refuse_entry(
     txn: &WriteTransaction,
     entry: &TimeEntryRow,
     before: Option<&TimeEntryRow>,
@@ -70,7 +70,7 @@ pub(super) fn txn_refuse_entry(
 
 /// Indexes `entry` by its account and day, dropping the day of `before`, the entry it replaces,
 /// inside an open write transaction.
-pub(super) fn txn_index_entry(
+pub(crate) fn txn_index_entry(
     txn: &WriteTransaction,
     entry: &TimeEntryRow,
     before: Option<&TimeEntryRow>,
@@ -88,7 +88,7 @@ pub(super) fn txn_index_entry(
 }
 
 /// Drops `entry` from the indexes of its account and day, inside an open write transaction.
-pub(super) fn txn_unindex_entry(txn: &WriteTransaction, entry: &TimeEntryRow) -> DbResult<()> {
+pub(crate) fn txn_unindex_entry(txn: &WriteTransaction, entry: &TimeEntryRow) -> DbResult<()> {
     txn.open_multimap_table(ENTRIES_BY_ACCOUNT)?
         .remove(entry.account_id.as_str(), entry.id.as_str())?;
     if let Some(key) = entry_day_key(entry) {
@@ -99,7 +99,7 @@ pub(super) fn txn_unindex_entry(txn: &WriteTransaction, entry: &TimeEntryRow) ->
 }
 
 /// Rebuilds the indexes of every time entry by account and day, inside an open write transaction.
-pub(super) fn txn_reindex_entries(txn: &WriteTransaction) -> DbResult<()> {
+pub(crate) fn txn_reindex_entries(txn: &WriteTransaction) -> DbResult<()> {
     for index in [ENTRIES_BY_ACCOUNT, ENTRIES_BY_DAY] {
         txn.delete_multimap_table(index)?;
         txn.open_multimap_table(index)?;

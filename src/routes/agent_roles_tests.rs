@@ -8,7 +8,7 @@ use super::server::{passkey_mode, unthrottled_limits};
 use super::{history_actor, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::{ChildTokenRefusal, Db, MAX_AGENT_ROLES_PER_ACCOUNT, RoleTokenRefusal};
+use crate::db::{ChildTokenRefusal, Db, MAX_AGENT_ROLES_PER_ACCOUNT, RoleTokenRefusal, TokenEdit};
 use crate::models::{
     AccountId, AgentRoleRow, ApiTokenRecord, AuthScope, BoardAccess, BoardRole, HistoryKind,
 };
@@ -1080,7 +1080,14 @@ async fn role_token_should_always_expire() {
         StatusCode::BAD_REQUEST
     );
     fx.db
-        .edit_api_token(&fx.alice, &lead_record.id, None, None, Some(8))
+        .edit_api_token(
+            &fx.alice,
+            &lead_record.id,
+            TokenEdit {
+                child_lifetime_hours: Some(8),
+                ..TokenEdit::default()
+            },
+        )
         .expect("edit")
         .expect("token");
     let long = issue_child(&fx, &lead, body).await;

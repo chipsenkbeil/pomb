@@ -254,7 +254,7 @@ async fn editing_an_api_token_should_need_a_fresh_passkey_check() {
         "/api/v1/auth/tokens/{}",
         minted.body["id"].as_str().expect("id")
     );
-    let body = json!({"name": "renamed", "preset": "admin"});
+    let body = json!({"name": "renamed"});
     assert_unchecked_refused(&t, "PATCH", &uri, Some(body.clone())).await;
     let edited = call(
         &t.instance.app,

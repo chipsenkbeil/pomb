@@ -36,10 +36,10 @@ fn admin(db: &Db) -> AccountId {
 }
 
 /// The public URL the passkey-mode test servers run under.
-pub(super) const TEST_PUBLIC_URL: &str = "https://pomb.test";
+pub(crate) const TEST_PUBLIC_URL: &str = "https://pomb.test";
 
 /// Passkey sign-in under [`TEST_PUBLIC_URL`].
-pub(super) fn passkey_mode() -> SignIn {
+pub(crate) fn passkey_mode() -> SignIn {
     SignIn::new(
         AuthChoice::Chosen(AuthMode::Passkey),
         "127.0.0.1",
@@ -368,7 +368,7 @@ impl ManualClock {
     }
 }
 
-pub(super) fn unthrottled_limits() -> Limits {
+pub(crate) fn unthrottled_limits() -> Limits {
     const HOUR_SECS: u64 = 3600;
     let start = Instant::now();
     let reads = AtomicU64::new(0);

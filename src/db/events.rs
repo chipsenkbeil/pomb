@@ -69,7 +69,7 @@ fn newest_seq(
 
 /// Returns the boards that have events written in the open write transaction, and forgets them, so
 /// that no committed file holds one.
-pub(super) fn txn_take_wakeups(txn: &WriteTransaction) -> DbResult<Vec<String>> {
+pub(crate) fn txn_take_wakeups(txn: &WriteTransaction) -> DbResult<Vec<String>> {
     let mut table = txn.open_table(EVENT_WAKEUPS)?;
     let boards = table
         .iter()?
@@ -83,7 +83,7 @@ pub(super) fn txn_take_wakeups(txn: &WriteTransaction) -> DbResult<Vec<String>> 
 
 /// Writes the events the change of task `before` into `after` makes, inside the open write
 /// transaction that stores `after`. A task with no `before` is new.
-pub(super) fn txn_record_events(
+pub(crate) fn txn_record_events(
     txn: &WriteTransaction,
     before: Option<&TaskRow>,
     after: &TaskRow,
@@ -120,7 +120,7 @@ pub(super) fn txn_record_events(
 
 /// Appends `events` to `board`, inside an open write transaction, and drops its oldest events
 /// past `keep`.
-pub(super) fn txn_append_events(
+fn txn_append_events(
     txn: &WriteTransaction,
     board: &str,
     events: &[BoardEventRow],
@@ -145,7 +145,7 @@ pub(super) fn txn_append_events(
 }
 
 /// Removes every event of `board`, inside an open write transaction.
-pub(super) fn txn_remove_events(txn: &WriteTransaction, board: &str) -> DbResult<()> {
+pub(crate) fn txn_remove_events(txn: &WriteTransaction, board: &str) -> DbResult<()> {
     let mut table = txn.open_table(BOARD_EVENTS)?;
     let (first, last) = board_keys(board);
     let keys = table

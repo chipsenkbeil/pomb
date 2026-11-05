@@ -6,7 +6,7 @@ use crate::models::TimeFormat;
 
 /// How a rendered time reads.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) enum Shape {
+pub(crate) enum Shape {
     /// A time of day: "5:00 PM".
     Clock,
     /// A date and a time of day: "Sep 28, 2026 5:00 PM".
@@ -39,7 +39,7 @@ impl Shape {
 /// A time that renders as an element carrying its UTC instant, whose text reads as UTC until the
 /// browser rewrites it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct LocalTime {
+pub(crate) struct LocalTime {
     /// The text the element holds without JavaScript.
     text: String,
     /// The instant, or [`None`] when the stored text did not parse.
@@ -56,26 +56,26 @@ impl LocalTime {
     /// Returns the time `rfc3339` names as `shape` reads it, or the text itself when it is not a
     /// time.
     #[must_use]
-    pub(super) fn of(shape: Shape, rfc3339: &str) -> Self {
+    pub(crate) fn of(shape: Shape, rfc3339: &str) -> Self {
         Self::build(shape, rfc3339, Utc::now(), TimeFormat::current())
     }
 
     /// Returns the due text of `shape` for `rfc3339`, or [`None`] when it is not a time.
     #[must_use]
-    pub(super) fn due(shape: Shape, rfc3339: &str) -> Option<Self> {
+    pub(crate) fn due(shape: Shape, rfc3339: &str) -> Option<Self> {
         let time = Self::of(shape, rfc3339);
         time.at.map(|_| time)
     }
 
     /// Returns the span that starts at `rfc3339` and lasts `seconds`.
     #[must_use]
-    pub(super) fn range(rfc3339: &str, seconds: i64) -> Self {
+    pub(crate) fn range(rfc3339: &str, seconds: i64) -> Self {
         Self::range_with(rfc3339, seconds, Utc::now(), TimeFormat::current())
     }
 
     /// Returns the attributes that make an element's `title` follow the browser's zone.
     #[must_use]
-    pub(super) fn title_attrs(&self) -> String {
+    pub(crate) fn title_attrs(&self) -> String {
         let Some(at) = self.at else {
             return format!(" title=\"{}\"", escape(&self.text));
         };

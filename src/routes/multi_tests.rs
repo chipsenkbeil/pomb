@@ -38,7 +38,7 @@ const MIN_ADMIN_ROUTES: usize = 13;
 const BOOTSTRAP: &str = "pomb_multi_bootstrap_token_for_tests";
 
 /// The sessions table, which a test rewrites in a closed database file.
-pub(super) const SESSIONS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("sessions");
+pub(crate) const SESSIONS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("sessions");
 
 /// The tables an account's rows live in, each of which the deleted account fills.
 const OWNED_TABLES: [&str; 35] = [
@@ -149,15 +149,15 @@ fn dump(path: &Path) -> Dump {
 }
 
 /// A multi-mode instance on a database file of its own.
-pub(super) struct Instance {
+pub(crate) struct Instance {
     /// Keeps the database directory alive.
     _dir: tempfile::TempDir,
     /// The database file.
     path: PathBuf,
     /// The database behind [`Instance::app`].
-    pub(super) db: Db,
+    pub(crate) db: Db,
     /// The router under test.
-    pub(super) app: axum::Router,
+    pub(crate) app: axum::Router,
     /// The setup code the first passkey needs.
     code: String,
 }
@@ -268,7 +268,7 @@ impl Instance {
 
     /// Closes the database, sets the `verified_at` of each session in `edits` in its file, and
     /// opens it again behind a fresh router.
-    pub(super) fn restamp(self, edits: &[(&str, Option<String>)]) -> Self {
+    pub(crate) fn restamp(self, edits: &[(&str, Option<String>)]) -> Self {
         let Self {
             _dir,
             path,
@@ -313,7 +313,7 @@ impl Instance {
     }
 
     /// Returns the id of the account with `handle`.
-    pub(super) fn account(&self, handle: &str) -> AccountId {
+    pub(crate) fn account(&self, handle: &str) -> AccountId {
         self.db
             .account_by_handle(handle)
             .expect("read")
@@ -356,12 +356,12 @@ async fn register(
 }
 
 /// Starts a ceremony at `route` and returns its options reply.
-pub(super) async fn start(app: &axum::Router, route: &str, body: Value) -> Reply {
+pub(crate) async fn start(app: &axum::Router, route: &str, body: Value) -> Reply {
     call(app, "POST", &format!("{route}/options"), &[], Some(body)).await
 }
 
 /// Finishes the ceremony `started` at `route` with a new credential from `authenticator`.
-pub(super) async fn finish(
+pub(crate) async fn finish(
     app: &axum::Router,
     route: &str,
     started: &Reply,
@@ -415,7 +415,7 @@ async fn delete_account(app: &axum::Router, cookie: &str, handle: &str) -> Reply
 }
 
 /// Returns the recovery code a setup, registration or recovery showed.
-pub(super) fn recovery_code(reply: &Reply) -> String {
+pub(crate) fn recovery_code(reply: &Reply) -> String {
     reply.body["recovery_code"]
         .as_str()
         .unwrap_or_else(|| panic!("no recovery code: {}", reply.body))
@@ -423,25 +423,25 @@ pub(super) fn recovery_code(reply: &Reply) -> String {
 }
 
 /// A multi-mode instance with its admin `admin` and a member `bob`, each signed in.
-pub(super) struct Pair {
+pub(crate) struct Pair {
     /// The instance.
-    pub(super) instance: Instance,
+    pub(crate) instance: Instance,
     /// The admin's session cookie.
-    pub(super) admin: String,
+    pub(crate) admin: String,
     /// The admin's recovery code.
     admin_code: String,
     /// The admin's passkey.
-    pub(super) admin_key: SoftAuthenticator,
+    pub(crate) admin_key: SoftAuthenticator,
     /// The member's session cookie.
-    pub(super) member: String,
+    pub(crate) member: String,
     /// The member's recovery code.
-    pub(super) member_code: String,
+    pub(crate) member_code: String,
     /// The member's passkey.
-    pub(super) member_key: SoftAuthenticator,
+    pub(crate) member_key: SoftAuthenticator,
 }
 
 /// Sets up the admin, then registers `Bob` through an invite link.
-pub(super) async fn pair(bootstrap: Option<&str>) -> Pair {
+pub(crate) async fn pair(bootstrap: Option<&str>) -> Pair {
     let instance = Instance::new(bootstrap);
     let mut admin_key = SoftAuthenticator::new(21);
     let setup = set_up_admin(&instance, &mut admin_key).await;
@@ -1574,7 +1574,7 @@ async fn single_mode_should_keep_the_multi_user_routes_closed() {
 
 /// Returns a full `PUT /api/v1/admin/settings` body with registration mode `mode`, pending-account
 /// cap `cap` and the default quotas and limits.
-pub(super) fn admin_settings(mode: &str, cap: u32) -> Value {
+pub(crate) fn admin_settings(mode: &str, cap: u32) -> Value {
     json!({
         "registration": mode,
         "pending_cap": cap,

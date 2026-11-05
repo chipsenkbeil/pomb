@@ -1,0 +1,33 @@
+id: pub-restricted
+valid:
+  - |
+    fn run() {}
+  - |
+    pub fn run() {}
+  - |
+    pub(crate) fn run() {}
+  - |
+    struct Page {
+        id: u32,
+        pub title: String,
+        pub(crate) body: String,
+    }
+  - |
+    pub(crate) use pages::Page;
+  - |
+    pub use pages::Page;
+invalid:
+  - |
+    pub(super) fn run() {}
+  - |
+    pub(self) struct Page;
+  - |
+    pub(in crate::wire) fn run() {}
+  - |
+    pub(in super) fn run() {}
+  - |
+    struct Page {
+        pub(super) id: u32,
+    }
+  - |
+    pub(super) use pages::Page;

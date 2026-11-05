@@ -81,7 +81,7 @@ impl PublicDb {
     pub const DEVICE_POLL_INTERVAL_SECONDS: i64 = Db::DEVICE_POLL_INTERVAL_SECONDS;
 
     /// Returns the handle over `db`.
-    pub(super) fn new(db: Db) -> Self {
+    pub(crate) fn new(db: Db) -> Self {
         Self { db }
     }
 

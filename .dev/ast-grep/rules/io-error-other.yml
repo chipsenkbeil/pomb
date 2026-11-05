@@ -1,0 +1,16 @@
+id: io-error-other
+language: rust
+severity: error
+message: Replace io::Error::other with the crate's own error enum and an Io(io::Error) variant. A binary may suppress this locally.
+note: "style/references/rust.md, Errors. A caller matching on kind() learns nothing from Other."
+rule:
+  kind: scoped_identifier
+  any:
+    - regex: ^(::)?(std::)?io::Error::other$
+    - regex: ^Error::other$
+      inside:
+        kind: source_file
+        stopBy: end
+        has:
+          kind: use_declaration
+          regex: (^|[\s:{])io::(Error;|\{[^}]*\bError\s*[,}])

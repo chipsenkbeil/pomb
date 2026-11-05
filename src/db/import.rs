@@ -67,7 +67,7 @@ impl Db {
     /// Everything is written in one transaction, through the same checks as the writes that make
     /// each row one at a time. A quota, a text cap or a row cap that the import breaks refuses
     /// the whole board and writes nothing. The tasks are `actor`'s.
-    pub(super) fn import_board(
+    pub(crate) fn import_board(
         &self,
         owner: &AccountId,
         import: BoardImport,

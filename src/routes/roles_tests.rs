@@ -1,7 +1,7 @@
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 
-use super::passkey_tests::{Reply, call};
+use super::passkey_tests::{Reply, call, make_epic};
 use super::server::{passkey_mode, unthrottled_limits};
 use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
@@ -9,7 +9,7 @@ use crate::auth::{new_api_token_record, required_role};
 use crate::db::{Db, LinkAddOutcome, NewTimeEntry};
 use crate::models::{
     AccountId, ActiveTimer, Actor, AuthScope, BoardRole, EntryKind, HistoryKind, LinkKind,
-    TaskKind, TimerMode,
+    TimerMode,
 };
 
 /// A board of alice with a column and a task, a member bob, a viewer carol and a stranger dave.
@@ -510,12 +510,7 @@ fn changing_an_umbrella_should_refuse_a_member_without_a_role_on_the_old_parents
         .db
         .create_task(&far, None, "Parent", 1, None)
         .expect("task");
-    fx.db
-        .apply_task_change(&parent, Actor::SYSTEM, |row| {
-            row.kind = TaskKind::Epic;
-            ((), true)
-        })
-        .expect("epic");
+    make_epic(&fx.db, &[&parent]);
     let added = fx
         .db
         .add_task_link(&fx.task, LinkKind::Parent, &parent, None, Actor::SYSTEM)

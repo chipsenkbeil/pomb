@@ -646,11 +646,10 @@
       <label>Token name
         <input type="text" id="tk-edit-name" maxlength="80" required>
       </label>
-      <div id="tk-edit-picker" class="perm-picker"></div>
       <label>Child token lifetime, in hours
         <input type="number" id="tk-edit-child-hours" min="1" max="8" step="1" value="1">
       </label>
-      <p class="settings-hint">The secret and the boards the token reaches stay as they are.</p>
+      <p class="settings-hint">The secret, the permissions and the boards the token reaches stay as they are. To change them, revoke the token and issue a new one.</p>
       <p id="tk-edit-error" class="form-error" hidden></p>
       <div class="dlg-actions">
         <button type="button" class="btn" data-close-dialog>Cancel</button>
