@@ -106,6 +106,7 @@ catalog! {
     TemplatesDelete, "templates.delete", "templates", Admin, "Delete a saved template.";
     LabelsManage, "labels.manage", "labels", Lead, "Highlight labels on a board, color them and add labels no task carries yet.";
     EpicsManage, "epics.manage", "epics", Lead, "Close, reopen or turn an epic back into a plain task.";
+    SeatsManage, "seats.manage", "seats", Lead, "Drop a seat from a task and remove a seat from a board.";
     TasksRead, "tasks.read", "tasks", Read, "Read tasks, subtasks and links.";
     TasksCreate, "tasks.create", "tasks", Work, "Create a task or an epic, and turn a subtask into a task.";
     TasksEdit, "tasks.edit", "tasks", Work, "Update a task, tick the boxes in its description, close and reopen an epic, bulk update and restore tasks.";
@@ -276,6 +277,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
             Permission::SettingsRead,
             Permission::TokensIssue,
             Permission::RolesGrant,
+            Permission::SeatsManage,
         ],
     },
 ];
@@ -286,7 +288,7 @@ mod tests {
 
     use super::*;
 
-    const NAMES: [&str; 53] = [
+    const NAMES: [&str; 54] = [
         "boards.read",
         "boards.create",
         "boards.configure",
@@ -310,6 +312,7 @@ mod tests {
         "templates.delete",
         "labels.manage",
         "epics.manage",
+        "seats.manage",
         "tasks.read",
         "tasks.create",
         "tasks.edit",
@@ -442,6 +445,7 @@ mod tests {
             "templates.save",
             "labels.manage",
             "epics.manage",
+            "seats.manage",
             "tokens.issue",
             "roles.grant",
         ]);
@@ -587,6 +591,7 @@ mod tests {
                     "settings.read",
                     "tokens.issue",
                     "roles.grant",
+                    "seats.manage",
                 ],
             ),
         ];

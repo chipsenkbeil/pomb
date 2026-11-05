@@ -621,6 +621,7 @@
         expires_in_days: form.expiryDays
       };
       if (form.roleId) request.role_id = form.roleId;
+      if (form.childLifetimeHours) request.child_lifetime_hours = form.childLifetimeHours;
       return request;
     },
     deviceCatalog: function (catalog, requested) {
@@ -681,7 +682,13 @@
         ends: 'Ends ' + new Date(now + 86400000).toISOString().slice(0, 10) + ' UTC'
       }].concat(TokenForm.expiryChoices(now));
     },
-    expiryDefault: 365
+    expiryDefault: 365,
+    lifetimeChoices: () => [1, 2, 3, 4, 5, 6, 7, 8].map((hours) => ({
+      days: hours,
+      label: hours + (hours === 1 ? ' hour' : ' hours'),
+      ends: hours === 1 ? 'Default' : ''
+    })),
+    lifetimeField: { label: 'Child token lifetime', key: 'lifetime' }
   };
 
   var pickerMenu = null;
@@ -924,23 +931,24 @@
     };
   }
 
-  function mountExpiryMenu(root, first, choicesOf) {
+  function mountExpiryMenu(root, first, choicesOf, field) {
     var start = first === undefined ? TokenForm.expiryDefault : first;
     choicesOf = choicesOf || TokenForm.expiryChoices;
+    field = field || { label: 'Expires', key: 'expiry' };
     var days = start;
 
     function render() {
       root.textContent = '';
-      var field = pickerEl('div', 'pk-field');
-      var label = pickerEl('label', 'pk-label', 'Expires');
+      var wrap = pickerEl('div', 'pk-field');
+      var label = pickerEl('label', 'pk-label', field.label);
       label.htmlFor = root.id + '-choice';
-      field.appendChild(label);
+      wrap.appendChild(label);
       var choices = choicesOf(Date.now());
       var current = choices.filter(function (choice) { return choice.days === days; })[0];
       var button = pickerEl('button', 'pk-select');
       button.type = 'button';
       button.id = root.id + '-choice';
-      button.dataset.pickKey = 'expiry';
+      button.dataset.pickKey = field.key;
       button.setAttribute('aria-haspopup', 'menu');
       button.setAttribute('aria-expanded', 'false');
       button.appendChild(pickerEl('span', 'pk-select-name', current.label));
@@ -958,8 +966,8 @@
         });
         openPickerMenu(button, menu);
       });
-      field.appendChild(button);
-      root.appendChild(field);
+      wrap.appendChild(button);
+      root.appendChild(wrap);
     }
 
     render();
@@ -1552,6 +1560,8 @@
     var roles = [];
     var boardPicker = mountBoardPicker(document.getElementById('token-boards'));
     var expiryMenu = mountExpiryMenu(document.getElementById('token-expiry'));
+    const lifetimeMenu = mountExpiryMenu(document.getElementById('token-lifetime'), 1,
+      TokenForm.lifetimeChoices, TokenForm.lifetimeField);
     function renderCatalog(items) {
       catalog = items;
       picker = mountPermissionPicker(pickerBox, catalog, roles);
@@ -1584,7 +1594,8 @@
         ticked: picker ? picker.held() : [],
         roleId: picker ? picker.roleId() : null,
         boards: chosen,
-        expiryDays: expiryMenu.days()
+        expiryDays: expiryMenu.days(),
+        childLifetimeHours: lifetimeMenu.days()
       });
       if (!request.permissions.length) { showError('Tick at least one permission.'); return; }
       if (only && !request.boards.length) { showError('Pick at least one board.'); return; }
@@ -1602,6 +1613,7 @@
         boardPicker.reset();
         picker.reset();
         expiryMenu.reset();
+        lifetimeMenu.reset();
 
         // Refresh the Active tokens list in place instead of a delayed full-page reload,
         // so the one-time secret above stays visible.
@@ -3018,10 +3030,29 @@
     function count(input) {
       return input.value.trim() === '' ? null : Number(input.value);
     }
+    let standard = false;
+    document.getElementById('br-standard').addEventListener('click', () => {
+      standard = true;
+      form.requestSubmit();
+    });
+    const roleMoves = () => {
+      const moves = {};
+      form.querySelectorAll('.br-role').forEach((role) => {
+        const byColumn = {};
+        role.querySelectorAll('.br-move').forEach((row) => {
+          if (!row.querySelector('.br-limit').checked) { return; }
+          byColumn[row.dataset.fromId] = [...row.querySelectorAll('.br-target:checked')].map((input) => input.value);
+        });
+        if (Object.keys(byColumn).length) { moves[role.dataset.roleId] = byColumn; }
+      });
+      return moves;
+    };
     form.addEventListener('submit', function (event) {
       event.preventDefault();
       errorBox.hidden = true;
       savedBox.hidden = true;
+      const restore = standard;
+      standard = false;
       var columns = {};
       form.querySelectorAll('.br-column').forEach(function (box) {
         columns[box.dataset.columnId] = {
@@ -3035,9 +3066,15 @@
         method: 'PUT',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ locked_labels: lines(document.getElementById('br-locked').value), columns: columns })
+        body: JSON.stringify(restore
+          ? { locked_labels: lines(document.getElementById('br-locked').value), columns: columns }
+          : { locked_labels: lines(document.getElementById('br-locked').value), columns: columns, role_moves: roleMoves() })
       }).then(function (res) {
-        if (res.ok) { savedBox.hidden = false; return; }
+        if (res.ok) {
+          if (restore) { window.location.reload(); return; }
+          savedBox.hidden = false;
+          return;
+        }
         return res.text().then(function (text) {
           var message = text;
           try { message = JSON.parse(text).message || text; } catch (e) {}

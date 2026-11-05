@@ -126,6 +126,14 @@ check('a token whose rows differ from its role opens as Custom',
 check('a custom set posts exactly the ticked names in catalog order',
   TokenForm.body(catalog, { name: 'x', ticked: ['tasks.create', 'boards.read', 'nope'], boards: null, expiryDays: 30 }),
   { name: 'x', permissions: ['boards.read', 'tasks.create'], boards: 'all', expires_in_days: 30 });
+check('the lifetime menu offers 1 to 8 hours and marks 1 hour as the default',
+  [TokenForm.lifetimeChoices().map((choice) => choice.days),
+    TokenForm.lifetimeChoices()[0], TokenForm.lifetimeChoices()[7].label],
+  [[1, 2, 3, 4, 5, 6, 7, 8], { days: 1, label: '1 hour', ends: 'Default' }, '8 hours']);
+check('a chosen child lifetime posts as child_lifetime_hours',
+  TokenForm.body(catalog, { name: 'x', ticked: ['tasks.read'], boards: null, expiryDays: 0, childLifetimeHours: 4 }).child_lifetime_hours, 4);
+check('no chosen child lifetime posts no child_lifetime_hours',
+  'child_lifetime_hours' in TokenForm.body(catalog, { name: 'x', ticked: ['tasks.read'], boards: null, expiryDays: 0 }), false);
 check('a role posts its id with the permissions',
   TokenForm.body(catalog, { name: 'x', ticked: ['tasks.read'], roleId: 'r1', boards: null, expiryDays: 0 }).role_id, 'r1');
 check('no role posts no role id',

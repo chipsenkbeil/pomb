@@ -8,7 +8,7 @@ use super::server::{passkey_mode, unthrottled_limits};
 use super::{history_actor, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::{ChildTokenRefusal, Db, MAX_AGENT_ROLES_PER_ACCOUNT, RoleTokenRefusal, TokenEdit};
+use crate::db::{ChildTokenRefusal, Db, MAX_AGENT_ROLES_PER_ACCOUNT, RoleTokenRefusal};
 use crate::models::{
     AccountId, AgentRoleRow, ApiTokenRecord, AuthScope, BoardAccess, BoardRole, HistoryKind,
 };
@@ -1068,7 +1068,7 @@ async fn role_token_should_always_expire() {
     let fx = Fixture::new();
     let role = standard_role(&fx, "implementer").await;
     let now = chrono::Utc::now().timestamp();
-    let (lead_record, lead) = issuer_token(&fx, None, BoardAccess::All, None);
+    let (_, lead) = issuer_token(&fx, None, BoardAccess::All, None);
     let near = |token: &Value, hours: i64| {
         let expires = token["expires_at"].as_i64().expect("expires_at");
         (expires - now - hours * 3600).abs() < 120
@@ -1088,18 +1088,11 @@ async fn role_token_should_always_expire() {
         issue_child(&fx, &lead, body.clone()).await.status,
         StatusCode::BAD_REQUEST
     );
-    fx.db
-        .edit_api_token(
-            &fx.alice,
-            &lead_record.id,
-            TokenEdit {
-                child_lifetime_hours: Some(8),
-                ..TokenEdit::default()
-            },
-        )
-        .expect("edit")
-        .expect("token");
-    let long = issue_child(&fx, &lead, body).await;
+    let (mut long_lived, long_raw) =
+        new_api_token_record(&fx.alice, "long-lived", AuthScope::Provision, None);
+    long_lived.child_lifetime_hours = 8;
+    fx.db.create_api_token(&long_lived).expect("long lived");
+    let long = issue_child(&fx, &format!("Bearer {long_raw}"), body).await;
     assert_eq!(long.status, StatusCode::OK, "{}", long.body);
     assert!(near(&long.body, 8), "{}", long.body);
     for hours in [0, 9] {

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use axum::Router;
 use axum::body::{Body as HttpBody, to_bytes};
 use axum::http::{Request, StatusCode};
@@ -8,7 +10,7 @@ use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::Db;
+use crate::db::{ColumnKind, Db};
 use crate::models::AuthScope;
 
 const MAX_BODY_BYTES: usize = 1 << 22;
@@ -17,6 +19,7 @@ const MAX_BODY_BYTES: usize = 1 << 22;
 enum Who {
     Session,
     Token,
+    Role(&'static str),
 }
 
 enum Body {
@@ -34,6 +37,9 @@ struct Fixture {
     lane: String,
     cookie: String,
     token: String,
+    stages: BTreeMap<&'static str, String>,
+    role_tokens: BTreeMap<&'static str, String>,
+    role_ids: BTreeMap<&'static str, String>,
 }
 
 fn parse(text: &str) -> Value {
@@ -56,6 +62,39 @@ impl Fixture {
         let backlog = db.create_column(&board, "Backlog", None).expect("backlog");
         let ready = db.create_column(&board, "Ready", None).expect("ready");
         let lane = db.create_swimlane(&board, "Extra").expect("lane");
+        let mut stages = BTreeMap::new();
+        for (key, name) in [
+            ("progress", "In Progress"),
+            ("review", "In Review"),
+            ("verify", "Verify"),
+            ("release", "Release"),
+        ] {
+            stages.insert(key, db.create_column(&board, name, None).expect(name));
+        }
+        let done = db
+            .create_column_as(&board, "Done", None, ColumnKind::Done)
+            .expect("done");
+        stages.insert("done", done);
+        let blocked = db.create_column(&board, "Blocked", None).expect("blocked");
+        let mut config = serde_json::Map::new();
+        config.insert("blocked_column_id".to_string(), json!(blocked));
+        db.set_board_config(&board, &config).expect("config");
+        stages.insert("blocked", blocked);
+        stages.insert("ready", ready.clone());
+        let mut role_tokens = BTreeMap::new();
+        let mut role_ids = BTreeMap::new();
+        for role in db.list_agent_roles(owner.as_str()).expect("roles") {
+            let name = ["implementer", "reviewer", "verifier", "release", "lead"]
+                .into_iter()
+                .find(|name| *name == role.name);
+            let Some(name) = name else { continue };
+            let (record, raw) = new_api_token_record(&owner, name, AuthScope::Admin, None);
+            db.create_owner_token_as_role(&role.id, record)
+                .expect("issue")
+                .expect("role");
+            role_tokens.insert(name, raw);
+            role_ids.insert(name, role.id);
+        }
         let app = router(AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits()));
         Self {
             _dir: dir,
@@ -66,6 +105,9 @@ impl Fixture {
             lane,
             cookie,
             token,
+            stages,
+            role_tokens,
+            role_ids,
         }
     }
 
@@ -88,6 +130,10 @@ impl Fixture {
             .header("accept", "application/json");
         builder = match who {
             Who::Token => builder.header("authorization", format!("Bearer {}", self.token)),
+            Who::Role(name) => builder.header(
+                "authorization",
+                format!("Bearer {}", self.role_tokens[name]),
+            ),
             Who::Session => builder
                 .header("cookie", &self.cookie)
                 .header("sec-fetch-site", "same-origin"),
@@ -152,6 +198,181 @@ impl Fixture {
     async fn locked_task(&self) -> String {
         self.task(&self.backlog, json!({"labels": ["needs:human"]}))
             .await
+    }
+}
+
+mod role_moves {
+    use super::*;
+
+    async fn move_to(fx: &Fixture, who: Who, task: &str, stage: &str) -> (StatusCode, String) {
+        let uri = format!("/api/tasks/{task}/move");
+        fx.json(who, "POST", &uri, json!({"column_id": fx.stages[stage]}))
+            .await
+    }
+
+    #[tokio::test]
+    async fn forbidden_move_should_name_the_rule() {
+        let fx = Fixture::new();
+        let task = fx.task(&fx.stages["progress"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Role("implementer"), &task, "verify").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        let body = parse(&text);
+        assert_eq!(body["code"], "role_move_forbidden", "{text}");
+        let message = body["message"].as_str().expect("message");
+        for named in ["implementer", "In Progress", "Verify"] {
+            assert!(message.contains(named), "{message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn implementer_should_not_move_to_done() {
+        let fx = Fixture::new();
+        let task = fx.task(&fx.stages["progress"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Role("implementer"), &task, "done").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        let (status, text) = move_to(&fx, Who::Role("implementer"), &task, "review").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn verifier_should_move_verify_to_release() {
+        let fx = Fixture::new();
+        let task = fx.task(&fx.stages["verify"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Role("verifier"), &task, "release").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let other = fx.task(&fx.stages["verify"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Role("verifier"), &other, "done").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    }
+
+    #[tokio::test]
+    async fn roleless_token_should_not_be_limited() {
+        let fx = Fixture::new();
+        let task = fx.task(&fx.stages["progress"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Token, &task, "done").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let back = fx.task(&fx.stages["progress"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Session, &back, "done").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let lead = fx.task(&fx.stages["progress"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Role("lead"), &lead, "done").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn implementer_should_not_reach_done_through_ready() {
+        let fx = Fixture::new();
+        let task = fx.task(&fx.stages["progress"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Role("implementer"), &task, "ready").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let (status, text) = move_to(&fx, Who::Role("implementer"), &task, "done").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(parse(&text)["code"], "role_move_forbidden", "{text}");
+    }
+
+    #[tokio::test]
+    async fn implementer_should_not_reach_done_by_answering_a_question() {
+        let fx = Fixture::new();
+        let task = fx.task(&fx.stages["progress"], json!({})).await;
+        let question = json!({"question": {
+            "text": "Ship it?",
+            "choices": [
+                {"label": "Ship", "column_id": fx.stages["done"]},
+                {"label": "Review", "column_id": fx.stages["review"]},
+            ],
+            "recommended": 2,
+            "why": "Because",
+        }});
+        let uri = format!("/api/tasks/{task}/comments");
+        let (status, text) = fx
+            .json(Who::Role("implementer"), "POST", &uri, question)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let comment = parse(&text)["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{task}/comments/{comment}/answer");
+        let ship = json!({"choice": 1, "quote": "ship it"});
+        let (status, text) = fx.json(Who::Role("implementer"), "POST", &uri, ship).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(parse(&text)["code"], "role_move_forbidden", "{text}");
+    }
+
+    #[tokio::test]
+    async fn bulk_move_should_refuse_the_group_when_one_move_is_forbidden() {
+        let fx = Fixture::new();
+        let task = fx.task(&fx.stages["progress"], json!({})).await;
+        let uri = format!("/api/boards/{}/tasks/bulk", fx.board);
+        let body = json!({"action": "move", "task_ids": [task], "column_id": fx.stages["done"]});
+        let (status, text) = fx.json(Who::Role("implementer"), "POST", &uri, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(parse(&text)["code"], "role_move_forbidden", "{text}");
+    }
+
+    #[tokio::test]
+    async fn stored_moves_should_replace_the_standard_ones() {
+        let fx = Fixture::new();
+        let implementer = fx.role_ids["implementer"].clone();
+        let rules = json!({"role_moves": {(implementer.clone()): {
+            (fx.stages["progress"].clone()): [fx.stages["done"].clone()],
+        }}});
+        assert_eq!(fx.put_rules(rules.clone()).await, StatusCode::OK);
+        let (status, text) = fx
+            .call(Who::Session, "GET", &fx.rules_uri(), Body::Empty)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert_eq!(parse(&text)["role_moves"], rules["role_moves"]);
+        let task = fx.task(&fx.stages["progress"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Role("implementer"), &task, "review").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        let (status, text) = move_to(&fx, Who::Role("implementer"), &task, "done").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn empty_stored_moves_should_limit_no_role() {
+        let fx = Fixture::new();
+        assert_eq!(
+            fx.put_rules(json!({"role_moves": {}})).await,
+            StatusCode::OK
+        );
+        let task = fx.task(&fx.stages["progress"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Role("implementer"), &task, "done").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn put_should_refuse_moves_for_an_unknown_role_or_column() {
+        let fx = Fixture::new();
+        let progress = fx.stages["progress"].clone();
+        let implementer = fx.role_ids["implementer"].clone();
+        let unknown_role = json!({"role_moves": {"nope": {progress.clone(): []}}});
+        assert_eq!(fx.put_rules(unknown_role).await, StatusCode::BAD_REQUEST);
+        let unknown_column = json!({"role_moves": {implementer: {progress: ["nope"]}}});
+        assert_eq!(fx.put_rules(unknown_column).await, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn token_should_not_edit_the_moves() {
+        let fx = Fixture::new();
+        let status = fx
+            .json(
+                Who::Role("lead"),
+                "PUT",
+                &fx.rules_uri(),
+                json!({"role_moves": {}}),
+            )
+            .await
+            .0;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn settings_page_should_list_the_role_moves() {
+        let fx = Fixture::new();
+        let uri = format!("/b/{}/settings/rules", fx.board);
+        let (status, text) = fx.call(Who::Session, "GET", &uri, Body::Empty).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(text.contains("Role moves"), "{text}");
+        assert!(text.contains("Limit moves out of In Progress to"), "{text}");
     }
 }
 

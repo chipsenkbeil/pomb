@@ -61,6 +61,9 @@ pub enum ErrorCode {
     /// The task carries a locking label, which only the owner's browser session may write around
     /// (403).
     CardLocked,
+    /// The board's column rules do not let the agent role of the token move a task out of its
+    /// column into the one asked for (403).
+    RoleMoveForbidden,
     /// The action needs a passkey check within the last 5 minutes (403).
     ReauthRequired,
     /// The device pairing was denied (403).
@@ -81,6 +84,12 @@ pub enum ErrorCode {
     ClaimHeld,
     /// Another holder's live owner lease blocks the request (409).
     OwnerHeld,
+    /// Another holder's seat, or one that holds a verdict, blocks the request (409).
+    SeatHeld,
+    /// The caller does not hold the seat, or its lease lapsed, so it cannot answer for it (409).
+    SeatNotHeld,
+    /// The caller is not the task's live owner, which the request needs (409).
+    NotOwner,
     /// The claim fence is stale, mismatched or expired (409).
     StaleFence,
     /// The target column is at its WIP limit (409).

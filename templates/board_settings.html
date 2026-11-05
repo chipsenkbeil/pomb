@@ -509,7 +509,28 @@
             {% endif %}
           </fieldset>
           {% endfor %}
+          <h3>Role moves</h3>
+          <p class="settings-hint">A token issued as an agent role may move a task out of a limited
+            column only into the columns ticked here. A column with no limit lets the role move a
+            task anywhere, and a token with no role is never limited. The standard roles start
+            with the standard moves where the board has the stage columns.</p>
+          {% for role in rules_roles %}
+          <fieldset class="br-role" data-role-id="{{ role.id }}">
+            <legend>{{ role.name }}</legend>
+            {% for row in role.rows %}
+            <div class="br-move" data-from-id="{{ row.from_id }}">
+              <label class="check-label"><input type="checkbox" class="br-limit"{% if row.limited %} checked{% endif %}> Limit moves out of {{ row.from_name }} to</label>
+              <div class="br-fields">
+                {% for target in row.targets %}
+                <label class="check-label"><input type="checkbox" class="br-target" value="{{ target.id }}"{% if target.checked %} checked{% endif %}> {{ target.name }}</label>
+                {% endfor %}
+              </div>
+            </div>
+            {% endfor %}
+          </fieldset>
+          {% endfor %}
           <button type="submit" class="kf-btn kf-btn-success">Save rules</button>
+          <button type="button" id="br-standard" class="kf-btn">Restore standard moves</button>
         </form>
       </section>
       {% else if tab == "labels" %}

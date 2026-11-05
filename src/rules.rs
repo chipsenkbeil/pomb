@@ -3,6 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::models::ColumnRow;
+
 /// The board config bag key that holds the column rules.
 pub const CONFIG_KEY: &str = "column_rules";
 
@@ -27,7 +29,18 @@ pub struct ColumnRules {
     /// The entry rule of each column, by column id. A column with no entry takes any task.
     #[serde(default)]
     pub columns: BTreeMap<String, EntryRule>,
+    /// Where each agent role may move a task: by role id, then by the id of the column the task
+    /// leaves, the ids of the columns it may enter. A token issued as a role is held to it on
+    /// every move. A role or a column with no entry is not limited, and neither is the owner's
+    /// browser session or a token with no role. Absent means the standard moves of the standard
+    /// roles, and an empty map limits no role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_moves: Option<RoleMoves>,
 }
+
+/// The ids of the columns each role may move a task into, by role id, then by the id of the
+/// column it leaves.
+pub type RoleMoves = BTreeMap<String, BTreeMap<String, BTreeSet<String>>>;
 
 /// What a task must have to enter one column, or to be edited while it sits there.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -59,6 +72,7 @@ impl Default for ColumnRules {
         Self {
             locked_labels: default_locked_labels(),
             columns: BTreeMap::new(),
+            role_moves: None,
         }
     }
 }
@@ -117,17 +131,63 @@ impl ColumnRules {
         })
     }
 
+    /// Returns the ids of the columns a token issued as role `role_id`, named `role_name` when
+    /// it was issued, may move a task into from column `from`, or [`None`] when the board does
+    /// not limit that move. A board that stores no moves of its own gives the standard roles the
+    /// standard moves, wherever `columns` holds the stages they name.
+    #[must_use]
+    pub fn role_targets(
+        &self,
+        role_id: &str,
+        role_name: &str,
+        from: &str,
+        columns: &[ColumnRow],
+        blocked: Option<&str>,
+    ) -> Option<BTreeSet<String>> {
+        match &self.role_moves {
+            Some(moves) => moves.get(role_id)?.get(from).cloned(),
+            None => standard_targets(role_name, from, columns, blocked),
+        }
+    }
+
+    /// Returns the moves in force for each of `roles`, given as an id and a name: what the board
+    /// stores, or the standard moves when it stores none.
+    #[must_use]
+    pub fn effective_role_moves(
+        &self,
+        roles: &[(&str, &str)],
+        columns: &[ColumnRow],
+        blocked: Option<&str>,
+    ) -> RoleMoves {
+        let mut moves = RoleMoves::new();
+        for (role_id, role_name) in roles {
+            for column in columns {
+                if let Some(targets) =
+                    self.role_targets(role_id, role_name, &column.id, columns, blocked)
+                {
+                    moves
+                        .entry((*role_id).to_string())
+                        .or_default()
+                        .insert(column.id.clone(), targets);
+                }
+            }
+        }
+        moves
+    }
+
     /// Returns the rules cleaned up: every list trimmed and deduplicated, and a column whose rule
     /// asks for nothing dropped.
     ///
     /// # Errors
     ///
     /// Returns the reason when a column id or a field key is not one of the board's, a list
-    /// holds too many items or an item is too long, or the fewest outcomes exceed the most.
+    /// holds too many items or an item is too long, the fewest outcomes exceed the most, or a role
+    /// move names a role that is not one of the account's.
     pub fn validated(
         mut self,
         column_ids: &BTreeSet<&str>,
         field_keys: &BTreeSet<&str>,
+        role_ids: &BTreeSet<&str>,
     ) -> Result<Self, String> {
         self.locked_labels = clean_list("locked_labels", &self.locked_labels)?;
         let mut columns = BTreeMap::new();
@@ -156,8 +216,146 @@ impl ColumnRules {
             }
         }
         self.columns = columns;
+        self.role_moves = self
+            .role_moves
+            .map(|moves| clean_role_moves(moves, column_ids, role_ids))
+            .transpose()?;
         Ok(self)
     }
+}
+
+/// A standard role, the stage it moves tasks out of and the stages it may move them into.
+struct StandardMove {
+    /// The role's name.
+    role: &'static str,
+    /// The stage the role moves a task out of.
+    from: Stage,
+    /// The stages the role may move it into.
+    to: &'static [Stage],
+}
+
+/// A step of the pull model, which a board's columns stand in for.
+#[derive(Copy, Clone)]
+enum Stage {
+    /// A column named In Progress.
+    InProgress,
+    /// A column named Review or In Review.
+    Review,
+    /// A column named Verify.
+    Verify,
+    /// A column named Release.
+    Release,
+    /// A column named Ready.
+    Ready,
+    /// The column the board marks as Blocked.
+    Blocked,
+    /// A column that stamps completion.
+    Done,
+}
+
+impl Stage {
+    /// Reports whether `column` is this stage on a board whose Blocked column is `blocked`.
+    fn is(self, column: &ColumnRow, blocked: Option<&str>) -> bool {
+        let name = column.name.trim().to_lowercase();
+        match self {
+            Self::InProgress => name == "in progress",
+            Self::Review => name == "review" || name == "in review",
+            Self::Verify => name == "verify",
+            Self::Release => name == "release",
+            Self::Ready => name == "ready",
+            Self::Blocked => blocked == Some(column.id.as_str()),
+            Self::Done => column.is_done,
+        }
+    }
+}
+
+/// The moves the standard roles hold on a board that stores none: each role may send a task
+/// onward, back to Ready or to Blocked, and no further.
+const STANDARD_MOVES: &[StandardMove] = &[
+    StandardMove {
+        role: "implementer",
+        from: Stage::InProgress,
+        to: &[Stage::Review, Stage::Ready, Stage::Blocked],
+    },
+    StandardMove {
+        role: "reviewer",
+        from: Stage::Review,
+        to: &[Stage::Verify, Stage::Ready, Stage::Blocked],
+    },
+    StandardMove {
+        role: "verifier",
+        from: Stage::Verify,
+        to: &[Stage::Release, Stage::Ready, Stage::Blocked],
+    },
+    StandardMove {
+        role: "release",
+        from: Stage::Release,
+        to: &[Stage::Done, Stage::Ready, Stage::Blocked],
+    },
+];
+
+/// Returns the columns the standard role `role_name` may move a task into from `from`, or
+/// [`None`] when it is not a standard role, or the board has no column for the stage it works.
+/// Out of another column the role may pull a task into its own stage, or send it to Ready or
+/// Blocked, so two permitted moves never add up to one it may not make.
+fn standard_targets(
+    role_name: &str,
+    from: &str,
+    columns: &[ColumnRow],
+    blocked: Option<&str>,
+) -> Option<BTreeSet<String>> {
+    let standard = STANDARD_MOVES
+        .iter()
+        .find(|standard| standard.role == role_name)?;
+    let leaving_own_stage = columns
+        .iter()
+        .find(|column| column.id == from)
+        .map(|column| standard.from.is(column, blocked))?;
+    if !columns
+        .iter()
+        .any(|column| standard.from.is(column, blocked))
+    {
+        return None;
+    }
+    let onward: &[Stage] = if leaving_own_stage {
+        standard.to
+    } else {
+        &[standard.from, Stage::Ready, Stage::Blocked]
+    };
+    let targets: BTreeSet<String> = columns
+        .iter()
+        .filter(|column| column.id != from)
+        .filter(|column| onward.iter().any(|stage| stage.is(column, blocked)))
+        .map(|column| column.id.clone())
+        .collect();
+    (!targets.is_empty()).then_some(targets)
+}
+
+/// Returns `moves` without the role that has no entry, refusing a role or a column that is not
+/// among `role_ids` and `column_ids`.
+fn clean_role_moves(
+    moves: RoleMoves,
+    column_ids: &BTreeSet<&str>,
+    role_ids: &BTreeSet<&str>,
+) -> Result<RoleMoves, String> {
+    let mut clean = RoleMoves::new();
+    for (role_id, by_column) in moves {
+        if !role_ids.contains(role_id.as_str()) {
+            return Err(format!("unknown role \"{role_id}\""));
+        }
+        let named = by_column
+            .iter()
+            .flat_map(|(from, targets)| std::iter::once(from).chain(targets));
+        for column_id in named {
+            if !column_ids.contains(column_id.as_str()) {
+                return Err(format!("unknown column \"{column_id}\""));
+            }
+        }
+        if !by_column.is_empty() {
+            clean.insert(role_id, by_column);
+        }
+    }
+    Ok(clean)
 }
 
 /// Trims and dedupes `items`, refusing too many or an over-long one, naming the list `name`.
@@ -402,8 +600,11 @@ mod tests {
             let rules = ColumnRules {
                 locked_labels: vec![" hold ".to_string(), "hold".to_string()],
                 columns: BTreeMap::from([("c1".to_string(), EntryRule::default())]),
+                ..ColumnRules::default()
             };
-            let rules = rules.validated(&known(&["c1"]), &known(&[])).unwrap();
+            let rules = rules
+                .validated(&known(&["c1"]), &known(&[]), &known(&[]))
+                .unwrap();
             assert_eq!(rules.locked_labels, vec!["hold"]);
             assert!(rules.columns.is_empty());
         }
@@ -411,7 +612,9 @@ mod tests {
         #[test]
         fn should_refuse_an_unknown_column() {
             let rules = rules_for("nope", rule());
-            let error = rules.validated(&known(&["c1"]), &known(&[])).unwrap_err();
+            let error = rules
+                .validated(&known(&["c1"]), &known(&[]), &known(&[]))
+                .unwrap_err();
             assert!(error.contains("unknown column"), "{error}");
         }
 
@@ -424,7 +627,9 @@ mod tests {
                     ..EntryRule::default()
                 },
             );
-            let error = rules.validated(&known(&["c1"]), &known(&[])).unwrap_err();
+            let error = rules
+                .validated(&known(&["c1"]), &known(&[]), &known(&[]))
+                .unwrap_err();
             assert!(error.contains("unknown field"), "{error}");
         }
 
@@ -438,7 +643,45 @@ mod tests {
                     ..EntryRule::default()
                 },
             );
-            assert!(rules.validated(&known(&["c1"]), &known(&[])).is_err());
+            assert!(
+                rules
+                    .validated(&known(&["c1"]), &known(&[]), &known(&[]))
+                    .is_err()
+            );
+        }
+
+        #[test]
+        fn should_refuse_a_role_move_naming_an_unknown_role_or_column() {
+            let moves = |role: &str, from: &str, to: &str| ColumnRules {
+                role_moves: Some(RoleMoves::from([(
+                    role.to_string(),
+                    BTreeMap::from([(from.to_string(), BTreeSet::from([to.to_string()]))]),
+                )])),
+                ..ColumnRules::default()
+            };
+            let columns = known(&["c1", "c2"]);
+            let roles = known(&["r1"]);
+            let valid = moves("r1", "c1", "c2").validated(&columns, &known(&[]), &roles);
+            assert!(valid.is_ok());
+            for bad in [
+                moves("r2", "c1", "c2"),
+                moves("r1", "nope", "c2"),
+                moves("r1", "c1", "nope"),
+            ] {
+                assert!(bad.validated(&columns, &known(&[]), &roles).is_err());
+            }
+        }
+
+        #[test]
+        fn should_drop_a_role_with_no_moves_and_keep_an_empty_map() {
+            let rules = ColumnRules {
+                role_moves: Some(RoleMoves::from([("r1".to_string(), BTreeMap::new())])),
+                ..ColumnRules::default()
+            };
+            let rules = rules
+                .validated(&known(&[]), &known(&[]), &known(&["r1"]))
+                .unwrap();
+            assert_eq!(rules.role_moves, Some(RoleMoves::new()));
         }
 
         #[test]
@@ -447,12 +690,96 @@ mod tests {
                 locked_labels: (0..=MAX_ITEMS).map(|n| format!("l{n}")).collect(),
                 ..ColumnRules::default()
             };
-            assert!(many.validated(&known(&[]), &known(&[])).is_err());
+            assert!(
+                many.validated(&known(&[]), &known(&[]), &known(&[]))
+                    .is_err()
+            );
             let long = ColumnRules {
                 locked_labels: vec!["x".repeat(MAX_ITEM_CHARS + 1)],
                 ..ColumnRules::default()
             };
-            assert!(long.validated(&known(&[]), &known(&[])).is_err());
+            assert!(
+                long.validated(&known(&[]), &known(&[]), &known(&[]))
+                    .is_err()
+            );
+        }
+    }
+
+    mod standard_moves {
+        use super::*;
+
+        fn column(id: &str, name: &str, is_done: bool) -> ColumnRow {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "board_id": "b", "name": name, "position": 0,
+                "wip_limit": null, "is_done": is_done,
+            }))
+            .unwrap()
+        }
+
+        fn board() -> Vec<ColumnRow> {
+            vec![
+                column("ready", "Ready", false),
+                column("wip", "In Progress", false),
+                column("rev", "In Review", false),
+                column("ver", "Verify", false),
+                column("rel", "Release", false),
+                column("blk", "Blocked", false),
+                column("done", "Done", true),
+            ]
+        }
+
+        fn targets(role: &str, from: &str, columns: &[ColumnRow]) -> Option<Vec<String>> {
+            ColumnRules::default()
+                .role_targets("id", role, from, columns, Some("blk"))
+                .map(|set| set.into_iter().collect())
+        }
+
+        #[test]
+        fn should_stop_an_implementer_short_of_done() {
+            let found = targets("implementer", "wip", &board()).unwrap();
+            assert_eq!(found, vec!["blk", "ready", "rev"]);
+        }
+
+        #[test]
+        fn should_send_a_verifier_on_to_release() {
+            let found = targets("verifier", "ver", &board()).unwrap();
+            assert!(found.contains(&"rel".to_string()));
+            assert!(!found.contains(&"done".to_string()));
+        }
+
+        #[test]
+        fn should_not_limit_other_roles() {
+            assert_eq!(targets("lead", "wip", &board()), None);
+            assert_eq!(targets("planner", "ready", &board()), None);
+        }
+
+        #[test]
+        fn should_limit_a_role_out_of_every_other_column() {
+            let found = targets("implementer", "ready", &board()).unwrap();
+            assert_eq!(found, vec!["blk", "wip"]);
+            let found = targets("implementer", "blk", &board()).unwrap();
+            assert_eq!(found, vec!["ready", "wip"]);
+        }
+
+        #[test]
+        fn should_apply_only_where_the_stages_exist() {
+            let columns = vec![column("a", "Todo", false), column("b", "Doing", false)];
+            assert_eq!(targets("implementer", "b", &columns), None);
+            let columns = vec![
+                column("wip", "in progress", false),
+                column("x", "Other", false),
+            ];
+            assert_eq!(targets("implementer", "wip", &columns), None);
+        }
+
+        #[test]
+        fn should_prefer_the_moves_the_board_stores() {
+            let rules = ColumnRules {
+                role_moves: Some(RoleMoves::new()),
+                ..ColumnRules::default()
+            };
+            let found = rules.role_targets("id", "implementer", "wip", &board(), Some("blk"));
+            assert_eq!(found, None);
         }
     }
 
@@ -473,6 +800,10 @@ mod tests {
             let rules = ColumnRules {
                 locked_labels: Vec::new(),
                 columns: BTreeMap::from([("c1".to_string(), rule())]),
+                role_moves: Some(RoleMoves::from([(
+                    "r1".to_string(),
+                    BTreeMap::from([("c1".to_string(), BTreeSet::from(["c2".to_string()]))]),
+                )])),
             };
             let bag = serde_json::json!({ CONFIG_KEY: rules.to_config_value() });
             assert_eq!(ColumnRules::from_config(&bag.to_string()), rules);
@@ -496,6 +827,7 @@ mod tests {
                     ),
                     ("c2".to_string(), rule()),
                 ]),
+                ..ColumnRules::default()
             };
             let bag = serde_json::json!({ CONFIG_KEY: rules.to_config_value() });
             let config = config_without_field(&bag.to_string(), "owner").expect("changed");

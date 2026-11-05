@@ -10,7 +10,6 @@ use super::{DeviceApproveForm, device_grant, router};
 use crate::auth::new_api_token_record;
 use crate::db::{
     BootstrapToken, ChildTokenRefusal, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT, NewComment,
-    TokenEdit,
 };
 use crate::models::{
     AccountId, ActiveTimer, Actor, ActorKind, AgentRoleRow, AuthScope, BoardAccess, DeviceAuthRow,
@@ -13101,19 +13100,12 @@ async fn issue(fx: &Fixture, parent: &str, body: Value) -> (StatusCode, Value) {
     (status, reply)
 }
 
-/// Lets the children of token `id` live up to `hours`, as the owner does in the browser.
-fn allow_child_hours(fx: &Fixture, id: &str, hours: i64) {
-    fx.db
-        .edit_api_token(
-            &fx.user_id,
-            id,
-            TokenEdit {
-                child_lifetime_hours: Some(hours),
-                ..TokenEdit::default()
-            },
-        )
-        .expect("edit")
-        .expect("token");
+/// Makes a token whose children may live up to `hours`, and returns its secret.
+fn long_lived_issuer(fx: &Fixture, name: &str, hours: i64) -> String {
+    let (mut record, raw) = new_api_token_record(&fx.user_id, name, AuthScope::Provision, None);
+    record.child_lifetime_hours = hours;
+    fx.db.create_api_token(&record).expect("token");
+    raw
 }
 
 fn raw_of(reply: &Value) -> String {
@@ -13344,28 +13336,30 @@ async fn a_child_should_not_create_browser_tokens_or_issue_without_the_right() {
 #[tokio::test]
 async fn a_child_should_expire_within_hours_and_never_after_its_parent() {
     let (_dir, fx) = fixture();
-    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
     let now = chrono::Utc::now().timestamp();
 
     let (status, child) = issue(&fx, &lead, json!({"name": "default", "preset": "read"})).await;
     assert_eq!(status, StatusCode::OK, "{child}");
     let expires = child["expires_at"].as_i64().expect("expires_at");
     assert!((expires - now - 3600).abs() < 60, "{child}");
-    allow_child_hours(&fx, &lead_id, 8);
     let eight = json!({"name": "eight", "preset": "read", "expires_in_hours": 8});
-    let (status, child) = issue(&fx, &lead, eight).await;
+    let (status, reply) = issue(&fx, &lead, eight.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+    let long_lived = long_lived_issuer(&fx, "long-lived", 8);
+    let (status, child) = issue(&fx, &long_lived, eight).await;
     assert_eq!(status, StatusCode::OK, "{child}");
     for hours in [0, 9, -1] {
         let body = json!({"name": "bad", "preset": "read", "expires_in_hours": hours});
-        let (status, reply) = issue(&fx, &lead, body).await;
+        let (status, reply) = issue(&fx, &long_lived, body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{hours}: {reply}");
     }
 
     let soon = now + 3600;
-    let (record, short) =
+    let (mut record, short) =
         new_api_token_record(&fx.user_id, "short", AuthScope::Provision, Some(soon));
+    record.child_lifetime_hours = 8;
     fx.db.create_api_token(&record).expect("token");
-    allow_child_hours(&fx, &record.id, 8);
     let capped = json!({"name": "capped", "preset": "read", "expires_in_hours": 8});
     let (status, child) = issue(&fx, &short, capped).await;
     assert_eq!(status, StatusCode::OK, "{child}");
@@ -13430,12 +13424,14 @@ async fn child_should_not_outlive_its_issuer() {
     let (_, root) = token_record(&fx, "root", AuthScope::Admin);
     let (status, lead) = issue(&fx, &root, json!({"name": "lead-one", "preset": "lead"})).await;
     assert_eq!(status, StatusCode::OK, "{lead}");
-    allow_child_hours(&fx, &id_of(&lead), 8);
 
-    let body = json!({"name": "sub", "preset": "read", "expires_in_hours": 8});
+    let body = json!({"name": "sub", "preset": "read", "expires_in_hours": 1});
     let (status, sub) = issue(&fx, &raw_of(&lead), body).await;
     assert_eq!(status, StatusCode::OK, "{sub}");
-    assert_eq!(sub["expires_at"], lead["expires_at"]);
+    assert!(
+        sub["expires_at"].as_i64() <= lead["expires_at"].as_i64(),
+        "{sub}"
+    );
 
     let (status, reply) = issue(
         &fx,
@@ -13443,6 +13439,59 @@ async fn child_should_not_outlive_its_issuer() {
         json!({"name": "lead-two", "preset": "lead", "expires_in_hours": 2}),
     )
     .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+}
+
+#[tokio::test]
+async fn token_create_should_store_the_child_lifetime_and_refuse_one_outside_1_to_8() {
+    let (_dir, fx) = fixture();
+    let (status, plain) = mint(&fx, json!({"name": "plain", "preset": "lead"})).await;
+    assert_eq!(status, StatusCode::OK, "{plain}");
+    assert_eq!(plain["child_lifetime_hours"], 1, "{plain}");
+
+    let before = token_count(&fx);
+    let (status, four) = mint(
+        &fx,
+        json!({"name": "four", "preset": "lead", "child_lifetime_hours": 4}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{four}");
+    assert_eq!(four["child_lifetime_hours"], 4, "{four}");
+    let uri = format!("/api/v1/auth/tokens/{}", id_of(&four));
+    let (status, shown) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!(shown["child_lifetime_hours"], 4, "{shown}");
+
+    for hours in [0, 9, -1] {
+        let body = json!({"name": "bad", "preset": "lead", "child_lifetime_hours": hours});
+        let (status, reply) = mint(&fx, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{hours}: {reply}");
+    }
+    assert_eq!(token_count(&fx), before + 1);
+
+    let body = json!({"name": "kid", "preset": "read", "expires_in_hours": 4});
+    let (status, kid) = issue(&fx, &raw_of(&four), body).await;
+    assert_eq!(status, StatusCode::OK, "{kid}");
+}
+
+#[tokio::test]
+async fn child_token_should_refuse_a_child_lifetime_from_every_issuer() {
+    let (_dir, fx) = fixture();
+    let (_, root) = token_record(&fx, "root", AuthScope::Admin);
+    let before = token_count(&fx);
+    for hours in [0, 1, 3, 9] {
+        let body = json!({"name": "bad", "preset": "lead", "child_lifetime_hours": hours});
+        let (status, reply) = issue(&fx, &root, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{hours}: {reply}");
+    }
+    assert_eq!(token_count(&fx), before);
+
+    let (status, lead) = issue(&fx, &root, json!({"name": "lead-one", "preset": "lead"})).await;
+    assert_eq!(status, StatusCode::OK, "{lead}");
+    assert_eq!(lead["child_lifetime_hours"], 1, "{lead}");
+
+    let body = json!({"name": "sub", "preset": "read", "child_lifetime_hours": 1});
+    let (status, reply) = issue(&fx, &raw_of(&lead), body).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
 }
 
@@ -13909,8 +13958,7 @@ async fn a_child_named_like_an_existing_token_should_be_refused() {
 #[tokio::test]
 async fn a_token_should_read_its_own_permissions_boards_and_expiry_over_bearer() {
     let (_dir, fx) = fixture();
-    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
-    allow_child_hours(&fx, &lead_id, 2);
+    let lead = long_lived_issuer(&fx, "lead", 2);
     let body = json!({"name": "kid", "permissions": ["tasks.read", "subtasks.edit"], "boards": [fx.board_id], "expires_in_hours": 2});
     let (status, child) = issue(&fx, &lead, body).await;
     assert_eq!(status, StatusCode::OK, "{child}");

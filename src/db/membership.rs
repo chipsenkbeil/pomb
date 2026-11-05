@@ -965,6 +965,7 @@ mod tests {
                         scope: AuthScope::Read,
                         permissions: AuthScope::Read.permissions(),
                         boards: BoardAccess::All,
+                        child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
                     },
                     None,
                 )

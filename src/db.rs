@@ -1005,7 +1005,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 77;
+pub const SCHEMA_VERSION: u64 = 78;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1089,6 +1089,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "2f1061ac24004e1c00ef04eff0c1d8fecf32cfbd9f9cd51c098e8a9f4b3d7c1d",
     "332b9168cd35300e66a5e0a6bed3e8b755406698a9995661fcceaf615e746428",
     "2ede0a454c015ba8cb29d4d975460326645220f6c4751abfa01773ea7d97af62",
+    "79781e79136dc13b6cbe973f282c2f0b95c0406748922d77a924bb29f7a41770",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1250,6 +1251,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 70) {
         added.push(Permission::SubtasksDelete);
     }
+    if from.is_none_or(|version| version < 78) {
+        added.push(Permission::SeatsManage);
+    }
     if !added.is_empty() {
         grant_added_permissions(txn, &added)?;
     }
@@ -1275,7 +1279,40 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 75) {
         seed_standard_roles(txn)?;
     }
+    if from.is_none_or(|version| version < 78) {
+        grant_lead_role_seats_manage(txn)?;
+    }
     Ok(())
+}
+
+/// Adds `seats.manage` to each stored role named `lead` whose permissions are exactly the lead
+/// standard role without it, and leaves any other lead role as the owner set it.
+fn grant_lead_role_seats_manage(txn: &WriteTransaction) -> DbResult<()> {
+    let added = Permission::SeatsManage.name();
+    let old: BTreeSet<&str> = STANDARD_ROLES
+        .iter()
+        .filter(|standard| standard.name == "lead")
+        .flat_map(|standard| standard.permissions())
+        .map(Permission::name)
+        .filter(|name| *name != added)
+        .collect();
+    rewrite_rows(txn, AGENT_ROLES, |_, role| {
+        if role.get("name").and_then(serde_json::Value::as_str) != Some("lead") {
+            return false;
+        }
+        let Some(held) = role
+            .get_mut("permissions")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return false;
+        };
+        let names: BTreeSet<&str> = held.iter().filter_map(serde_json::Value::as_str).collect();
+        if names != old || names.len() != held.len() {
+            return false;
+        }
+        held.push(serde_json::Value::from(added));
+        true
+    })
 }
 
 /// Gives each account that holds no agent role the standard roles.
@@ -4742,13 +4779,11 @@ impl fmt::Display for TokenNameTaken {
 
 impl Error for TokenNameTaken {}
 
-/// The fields of a token an edit may change. A field left as [`None`] stays as it is.
-#[derive(Debug, Default)]
+/// The field of a token an edit may change. A name left as [`None`] stays as it is.
+#[derive(Debug)]
 pub struct TokenEdit {
     /// The new name.
     pub name: Option<String>,
-    /// The most hours a child of the token may live.
-    pub child_lifetime_hours: Option<i64>,
 }
 
 /// Why a child token was not stored.
@@ -6640,9 +6675,6 @@ impl Db {
                 return Err(Box::new(TokenNameTaken));
             }
             record.name = name;
-        }
-        if let Some(hours) = edit.child_lifetime_hours {
-            record.child_lifetime_hours = hours;
         }
         write_one(&txn, API_TOKENS, id, &record)?;
         txn.commit()?;
@@ -14520,6 +14552,7 @@ mod schema_version_tests {
             let mut set: BTreeSet<Permission> = lead_role_permissions()
                 .difference(&BTreeSet::from(LEAD_ROLE_V73_ADDED))
                 .copied()
+                .filter(|permission| *permission != Permission::SeatsManage)
                 .collect();
             set.extend(extra.iter().copied());
             set

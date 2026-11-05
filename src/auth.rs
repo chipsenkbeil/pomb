@@ -580,6 +580,8 @@ pub struct TokenGrant {
     pub permissions: BTreeSet<Permission>,
     /// The boards the token reaches.
     pub boards: BoardAccess,
+    /// The most hours a child of the token may live, from 1 to 8.
+    pub child_lifetime_hours: i64,
 }
 
 /// Builds the [`ApiTokenRecord`] for a fresh token of `account_id` (keeping its SHA-256). The raw
@@ -981,6 +983,21 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::DELETE,
         "/api/tasks/:id/seats",
+        Permission::TasksEdit,
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/seats/take",
+        Permission::TasksEdit,
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/seats/verdict",
+        Permission::TasksEdit,
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/seats/ask-again",
         Permission::TasksEdit,
     ),
     (Method::POST, "/api/tasks/:id/close", Permission::TasksEdit),
@@ -2317,6 +2334,17 @@ mod tests {
         (Method::PUT, "/api/tasks/:id/umbrella", AuthScope::Admin),
         (Method::POST, "/api/tasks/:id/seats", AuthScope::Work),
         (Method::DELETE, "/api/tasks/:id/seats", AuthScope::Work),
+        (Method::POST, "/api/tasks/:id/seats/take", AuthScope::Work),
+        (
+            Method::POST,
+            "/api/tasks/:id/seats/verdict",
+            AuthScope::Work,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/seats/ask-again",
+            AuthScope::Work,
+        ),
         (Method::POST, "/api/tasks/:id/close", AuthScope::Work),
         (Method::POST, "/api/tasks/:id/reopen", AuthScope::Work),
         (Method::POST, "/api/tasks/:id/claim", AuthScope::Work),

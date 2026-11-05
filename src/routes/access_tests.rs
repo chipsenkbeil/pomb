@@ -18,7 +18,8 @@ use crate::db::{
 };
 use crate::models::{
     AccountId, Actor, ActorKind, AuthScope, BoardAccess, BoardRole, FieldDefRow, FieldKind,
-    FieldOwner, InstanceMode, LinkKind, ReportBookmark, SubtaskTemplate, WebhookEvent,
+    FieldOwner, InstanceMode, LinkKind, ReportBookmark, Seat, SeatSlot, SubtaskTemplate,
+    WebhookEvent,
 };
 
 /// Largest response body a test reads.
@@ -325,6 +326,15 @@ pub(crate) fn seed(
     let task = db
         .create_task(&column, Some(&lane), "Task", 1, None)
         .expect("task");
+    db.apply_task_change(&task, Actor::SYSTEM, |row| {
+        row.seats.push(Seat::open(&SeatSlot {
+            name: "review".to_string(),
+            role: "reviewer".to_string(),
+        }));
+        ((), true)
+    })
+    .expect("seat")
+    .expect("task");
     let task2 = db
         .create_task(&column, Some(&lane), "Task 2", 1, None)
         .expect("task");
@@ -816,6 +826,11 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
         (&Method::PUT, "/api/tasks/:id/umbrella") => json!({"target_id": body_ids.task2}),
         (&Method::POST, "/api/tasks/:id/seats") => json!({"name": "qa", "role": "reviewer"}),
         (&Method::PUT, "/api/boards/:id/seats") => json!({"seats": []}),
+        (&Method::POST, "/api/tasks/:id/seats/take") => json!({"seat": "review", "name": "agent"}),
+        (&Method::POST, "/api/tasks/:id/seats/verdict") => {
+            json!({"seat": "review", "name": "agent", "verdict": "approved"})
+        }
+        (&Method::POST, "/api/tasks/:id/seats/ask-again") => json!({"name": "agent"}),
         (&Method::POST, "/api/tasks/:id/claim") => {
             json!({"claimant": "agent", "ttl_seconds": 60})
         }

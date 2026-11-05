@@ -322,6 +322,8 @@ impl TextCap {
     pub const MEMBERS: Self = Self::items("member_ids", 50);
     /// The name of the agent session a task is the responsibility of.
     pub const RESPONSIBLE_SESSION: Self = Self::chars("responsible.name", 200);
+    /// The change a reviewer suggests with a seat verdict.
+    pub const SEAT_REVISION: Self = Self::bytes("revision", 4 * 1024);
     /// Why a timer session stopped early.
     pub const STOP_REASON: Self = Self::bytes("reason", 1024);
     /// A subtask's name.
@@ -1103,6 +1105,12 @@ impl TryFrom<OwnerHolderWire> for OwnerHolder {
     }
 }
 
+/// Returns whether a lease ending at `end` still holds at `now`. A lease with no end always holds,
+/// and an unparseable end counts as lapsed.
+fn lease_holds(end: Option<&str>, now: DateTime<Utc>) -> bool {
+    end.is_none_or(|end| DateTime::parse_from_rfc3339(end).is_ok_and(|end| end > now))
+}
+
 /// The one holder of a task, with the lease that lets someone else grab it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Owner {
@@ -1119,9 +1127,7 @@ impl Owner {
     /// unparseable end counts as lapsed.
     #[must_use]
     pub fn is_live(&self, now: DateTime<Utc>) -> bool {
-        self.lease_expires_at
-            .as_deref()
-            .is_none_or(|end| DateTime::parse_from_rfc3339(end).is_ok_and(|end| end > now))
+        lease_holds(self.lease_expires_at.as_deref(), now)
     }
 
     /// Returns the owner a task with these holders gets: the live claim's holder, else the
@@ -1265,6 +1271,20 @@ impl Seat {
             verdict: None,
             revision: None,
         }
+    }
+
+    /// Returns whether `holder` holds the seat at `now` with a lease that still holds.
+    #[must_use]
+    pub fn is_held_by(&self, holder: &OwnerHolder, now: DateTime<Utc>) -> bool {
+        self.holder.as_ref() == Some(holder) && lease_holds(self.lease_expires_at.as_deref(), now)
+    }
+
+    /// Returns whether another taker may sit in the seat at `now` without taking over: it has no
+    /// holder, or its holder is at work and the lease has lapsed. A holder that answered, or that
+    /// waits after an ask again, keeps the seat.
+    #[must_use]
+    pub fn is_takeable(&self, now: DateTime<Utc>) -> bool {
+        self.holder.is_none() || (!self.idle && !lease_holds(self.lease_expires_at.as_deref(), now))
     }
 }
 

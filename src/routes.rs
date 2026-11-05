@@ -178,6 +178,9 @@ pub fn router(state: AppState) -> Router {
             "/api/tasks/:id/seats",
             post(add_task_seat).delete(drop_task_seat),
         )
+        .route("/api/tasks/:id/seats/take", post(take_task_seat))
+        .route("/api/tasks/:id/seats/verdict", post(set_task_seat_verdict))
+        .route("/api/tasks/:id/seats/ask-again", post(ask_task_seats_again))
         .route("/api/tasks/:id/close", post(close_task))
         .route("/api/tasks/:id/reopen", post(reopen_task))
         .route("/api/tasks/:id/claim", post(claim_task))
@@ -914,6 +917,9 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::PUT, "/api/tasks/:id/umbrella", Task, Grows),
         (Method::POST, "/api/tasks/:id/seats", Task, Grows),
         (Method::DELETE, "/api/tasks/:id/seats", Task, Exempt),
+        (Method::POST, "/api/tasks/:id/seats/take", Task, Grows),
+        (Method::POST, "/api/tasks/:id/seats/verdict", Task, Grows),
+        (Method::POST, "/api/tasks/:id/seats/ask-again", Task, Grows),
         (
             Method::DELETE,
             "/api/tasks/:id/links/:link_id",
@@ -9504,6 +9510,7 @@ struct MoveTaskInput {
     responses(
         (status = 200, description = "Moved task detail", body = TaskDetail),
         (status = 400, description = "Unknown column"),
+        (status = 403, description = "`role_move_forbidden`: the token was issued as a role and the board's column rules do not let that role move a task out of its column into this one. `card_locked`: the task carries a locking label"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit). `stale_fence`: a live claim holds another fence. `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column. Without a code: the target board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -9534,6 +9541,9 @@ async fn move_task(
     let to_name = to_column.row().name.clone();
     ensure_unlocked(db, &user, before.board_id(), before.row())?;
     if before.row().column_id != to_column.row().id {
+        if let Some(from) = &from_column {
+            ensure_role_move_allowed(db, &user, from.row(), to_column.row())?;
+        }
         ensure_entry_allowed(db, to_column.row(), before.board_id(), before.row())?;
     }
 
@@ -9821,7 +9831,7 @@ struct BulkTasksResult {
     responses(
         (status = 200, description = "Every task changed, or would change under `dry_run`", body = BulkTasksResult),
         (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks, a link the tasks cannot hold or a `parent` or `child` link whose umbrella is not an epic (`not_epic`)"),
-        (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task, or a task it links to, carries a locking label and the token is not the owner's"),
+        (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task, or a task it links to, carries a locking label and the token is not the owner's. `role_move_forbidden`: a `move` by a token issued as a role that the board's column rules do not let move one of the tasks out of its column into the target"),
         (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
         (status = 409, description = "`epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -10105,6 +10115,9 @@ async fn bulk_tasks(
                 .transpose()?;
             for task in &tasks {
                 if task.row().column_id != column.row().id {
+                    if let Some(from) = db.column(&task.row().column_id).map_err(AppError::from)? {
+                        ensure_role_move_allowed(db, &user, from.row(), column.row())?;
+                    }
                     ensure_entry_allowed(db, column.row(), task.board_id(), task.row())?;
                 }
             }
@@ -13596,6 +13609,12 @@ async fn answer_comment_question(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::conflict("the column of this choice is gone"))?;
     if task.row().column_id != destination.row().id {
+        if let Some(from) = account
+            .column(&task.row().column_id)
+            .map_err(AppError::from)?
+        {
+            ensure_role_move_allowed(&account, &user, from.row(), destination.row())?;
+        }
         ensure_entry_allowed(&account, destination.row(), task.board_id(), task.row())?;
     }
     let position = placement_index(new_task_placement(&account, &destination.row().board_id)?);
@@ -21020,7 +21039,11 @@ async fn get_board_rules(
 
 /// Replaces the board's column rules. Only the owner's browser session may call it: a task that
 /// breaks a column's rule is refused entry with 422 `column_rule`, and a task that carries a
-/// locked label is refused to an API token with 403 `card_locked`.
+/// locked label is refused to an API token with 403 `card_locked`. A token issued as an agent
+/// role may move a task only where `role_moves` lets that role, and is refused with 403
+/// `role_move_forbidden` otherwise. Leave `role_moves` out to give the standard roles their
+/// standard moves, which apply only where the board has columns named for the stages. Send `{}`
+/// to limit no role.
 #[utoipa::path(
     put,
     path = "/api/boards/{id}/rules",
@@ -21030,7 +21053,7 @@ async fn get_board_rules(
     request_body = ColumnRules,
     responses(
         (status = 200, description = "The rules as stored", body = ColumnRules),
-        (status = 400, description = "Unknown column or field, a list over 20 entries or an entry over 100 characters, a fewest above the most, or an unknown property"),
+        (status = 400, description = "Unknown column or field, a list over 20 entries or an entry over 100 characters, a fewest above the most, a `role_moves` entry for a role the account lacks, or an unknown property"),
         (status = 403, description = "`session_required`: the request came from an API token"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -21049,10 +21072,12 @@ async fn update_board_rules(
     let input: ColumnRules = parse_body(&headers, body).await?;
     let columns = db.list_columns(&id).map_err(AppError::from)?;
     let fields = db.list_fields(&id).map_err(AppError::from)?;
+    let roles = db.list_agent_roles().map_err(AppError::from)?;
     let column_ids = columns.iter().map(|column| column.id.as_str()).collect();
     let field_keys = fields.iter().map(|field| field.key.as_str()).collect();
+    let role_ids = roles.iter().map(|role| role.id.as_str()).collect();
     let stored = input
-        .validated(&column_ids, &field_keys)
+        .validated(&column_ids, &field_keys, &role_ids)
         .map_err(AppError::bad_request)?;
     let mut updates = serde_json::Map::new();
     updates.insert(rules::CONFIG_KEY.to_string(), stored.to_config_value());
@@ -21100,8 +21125,9 @@ async fn get_board_seats(
     }))
 }
 
-/// Replaces the seats the board offers. Only the owner's browser session may call it. Tasks that
-/// exist keep the seats they hold, and tasks created later start with the new ones.
+/// Replaces the seats the board offers. Tasks that exist keep the seats they hold, and tasks
+/// created later start with the new ones. A list that leaves out a seat the board has removes it,
+/// which needs `seats.manage`.
 #[utoipa::path(
     put,
     path = "/api/boards/{id}/seats",
@@ -21112,7 +21138,7 @@ async fn get_board_seats(
     responses(
         (status = 200, description = "The seats as stored", body = BoardSeatsView),
         (status = 400, description = "A role that is not a standard role, a blank or repeated name, a name over 50 characters or holding a slash, or more than 20 seats"),
-        (status = 403, description = "`session_required`: the request came from an API token"),
+        (status = 403, description = "`permission_denied`: removing a seat needs `seats.manage`"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -21125,9 +21151,16 @@ async fn update_board_seats(
     body: Bytes,
 ) -> Result<Json<BoardSeatsView>, AppError> {
     let board = found(account.board(&id), "board not found")?;
-    require_cookie_auth(&user)?;
     let input: BoardSeatsInput = parse_body(&headers, body).await?;
     let seats = SeatSlot::normalize_all(input.seats).map_err(AppError::bad_request)?;
+    let removes = board.row().seats.iter().any(|held| {
+        !seats
+            .iter()
+            .any(|kept| kept.name.eq_ignore_ascii_case(&held.name))
+    });
+    if removes && !user.has(Permission::SeatsManage) {
+        return Err(AppError::permission_denied(Permission::SeatsManage));
+    }
     account
         .set_board_seats(&board, seats.clone())
         .map_err(AppError::from)?;
@@ -21182,6 +21215,247 @@ async fn add_task_seat(
     Ok(Json(outcome?))
 }
 
+/// Finds the seat named `name` on a task, ignoring ASCII case.
+fn find_seat<'a>(seats: &'a mut [Seat], name: &str) -> Option<&'a mut Seat> {
+    seats
+        .iter_mut()
+        .find(|seat| seat.name.eq_ignore_ascii_case(name))
+}
+
+/// Returns the seat name a request names, or the 400 that asks for it.
+fn seat_name(name: Option<&str>) -> Result<&str, AppError> {
+    name.map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| AppError::bad_request("seat is required"))
+}
+
+/// The body of `POST /api/tasks/{id}/seats/take`.
+#[derive(Deserialize, ToSchema)]
+struct TakeSeatInput {
+    /// The name of the seat to take. Required.
+    #[schema(value_type = String, required = true)]
+    seat: Option<String>,
+    /// The agent's name, required for a token and ignored for the browser, which sits as the
+    /// signed-in member.
+    name: Option<String>,
+    /// Lease length in seconds, 1 to 86400. Without it the lease never ends.
+    ttl_seconds: Option<i64>,
+    /// Whether to replace the holder of a seat that is not free. Only the browser may.
+    #[serde(default)]
+    take_over: bool,
+}
+
+/// The body of `POST /api/tasks/{id}/seats/verdict`.
+#[derive(Deserialize, ToSchema)]
+struct SeatVerdictInput {
+    /// The name of the seat to answer for. Required.
+    #[schema(value_type = String, required = true)]
+    seat: Option<String>,
+    /// The agent's name, required for a token.
+    name: Option<String>,
+    /// The answer. Required.
+    #[schema(value_type = SeatVerdict, required = true)]
+    verdict: Option<SeatVerdict>,
+    /// The change the holder suggests, such as a commit id, stored as sent and never read by
+    /// Pomb. At most 4096 bytes.
+    revision: Option<String>,
+}
+
+/// The body of `POST /api/tasks/{id}/seats/ask-again`.
+#[derive(Deserialize, ToSchema)]
+struct AskAgainInput {
+    /// The agent's name, required for a token.
+    name: Option<String>,
+}
+
+/// Returns the end of a seat lease that lasts `ttl_seconds` from `now`.
+fn seat_lease_end(now: DateTime<Utc>, ttl_seconds: i64) -> String {
+    (now + Duration::seconds(ttl_seconds)).to_rfc3339()
+}
+
+/// Takes a seat on one task, as a reviewer starting its review. A seat nobody holds, or whose
+/// holder's lease lapsed while at work, goes to the first taker, and the holder that lapsed keeps
+/// no claim on it. A holder that takes its own seat again starts a new review and loses its
+/// verdict. Taking a seat sets no owner and moves no card.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/seats/take",
+    operation_id = "take_task_seat",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = TakeSeatInput,
+    responses(
+        (status = 200, description = "The task's seats", body = Vec<Seat>),
+        (status = 400, description = "No `seat`, a missing name for a token, or `ttl_seconds` outside 1..86400"),
+        (status = 403, description = "`take_over` sent with a token. `card_locked`: the task carries a locking label"),
+        (status = 404, description = "Task not found, or it has no seat of that name"),
+        (status = 409, description = "`seat_held`: another holder works the seat with a live lease, or holds its verdict, and the request does not take over"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn take_task_seat(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Vec<Seat>>, AppError> {
+    let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let input: TakeSeatInput = parse_body(&headers, body).await?;
+    if input.take_over && user.kind != CredentialKind::Session {
+        return Err(AppError::forbidden("only a signed-in member can take over"));
+    }
+    let name = seat_name(input.seat.as_deref())?;
+    let holder = owner_holder(&user, input.name.as_deref())?;
+    let ttl_seconds = claim_ttl(input.ttl_seconds)?;
+    let outcome = account
+        .apply_task_change(&task, user.actor(), |row| {
+            let now = Utc::now();
+            let Some(seat) = find_seat(&mut row.seats, name) else {
+                return (Err(AppError::not_found("the task has no such seat")), false);
+            };
+            let own = seat.holder.as_ref() == Some(&holder);
+            if !own && !input.take_over && !seat.is_takeable(now) {
+                let held = seat.holder.as_ref().map(OwnerHolder::label);
+                let refusal = format!(
+                    "seat \"{}\" is held by {}",
+                    seat.name,
+                    held.unwrap_or_default()
+                );
+                return (
+                    Err(AppError::conflict(refusal).with_code(ErrorCode::SeatHeld)),
+                    false,
+                );
+            }
+            seat.holder = Some(holder.clone());
+            seat.lease_expires_at = ttl_seconds.map(|ttl| seat_lease_end(now, ttl));
+            seat.idle = false;
+            seat.verdict = None;
+            seat.revision = None;
+            (Ok(row.seats.clone()), true)
+        })
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(Json(outcome?))
+}
+
+/// Records the verdict of the seat's holder, Approved or Changes needed, with an optional
+/// revision that Pomb stores as sent. The seat then waits, its lease ends and the holder's name
+/// stays. Only the holder of a seat whose lease still holds may answer for it.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/seats/verdict",
+    operation_id = "set_task_seat_verdict",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = SeatVerdictInput,
+    responses(
+        (status = 200, description = "The task's seats", body = Vec<Seat>),
+        (status = 400, description = "No `seat` or `verdict`, a missing name for a token, or a revision over 4096 bytes"),
+        (status = 403, description = "`card_locked`: the task carries a locking label"),
+        (status = 404, description = "Task not found, or it has no seat of that name"),
+        (status = 409, description = "`seat_not_held`: the caller is not the seat's holder, or its lease lapsed"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn set_task_seat_verdict(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Vec<Seat>>, AppError> {
+    let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let input: SeatVerdictInput = parse_body(&headers, body).await?;
+    let name = seat_name(input.seat.as_deref())?;
+    let verdict = input
+        .verdict
+        .ok_or_else(|| AppError::bad_request("verdict is required"))?;
+    if let Some(revision) = input.revision.as_deref() {
+        TextCap::SEAT_REVISION.check(revision)?;
+    }
+    let holder = owner_holder(&user, input.name.as_deref())?;
+    let outcome = account
+        .apply_task_change(&task, user.actor(), |row| {
+            let Some(seat) = find_seat(&mut row.seats, name) else {
+                return (Err(AppError::not_found("the task has no such seat")), false);
+            };
+            if !seat.is_held_by(&holder, Utc::now()) {
+                let refusal = format!("you do not hold seat \"{}\"", seat.name);
+                return (
+                    Err(AppError::conflict(refusal).with_code(ErrorCode::SeatNotHeld)),
+                    false,
+                );
+            }
+            seat.verdict = Some(verdict);
+            seat.revision = input.revision.clone();
+            seat.idle = true;
+            seat.lease_expires_at = None;
+            (Ok(row.seats.clone()), true)
+        })
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(Json(outcome?))
+}
+
+/// Asks for a fresh review. Every seat that answered Changes needed goes back to waiting with no
+/// verdict and no revision, and keeps its holder. A seat that answered Approved changes not at
+/// all. Only the task's live owner may ask.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/seats/ask-again",
+    operation_id = "ask_task_seats_again",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = AskAgainInput,
+    responses(
+        (status = 200, description = "The task's seats", body = Vec<Seat>),
+        (status = 400, description = "A missing name for a token"),
+        (status = 403, description = "`card_locked`: the task carries a locking label"),
+        (status = 404, description = "Task not found"),
+        (status = 409, description = "`not_owner`: the caller is not the task's live owner"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn ask_task_seats_again(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Vec<Seat>>, AppError> {
+    let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let input: AskAgainInput = parse_body(&headers, body).await?;
+    let holder = owner_holder(&user, input.name.as_deref())?;
+    let outcome = account
+        .apply_task_change(&task, user.actor(), |row| {
+            let owns = row
+                .live_owner(Utc::now())
+                .is_some_and(|owner| owner.holder == holder);
+            if !owns {
+                let refusal = AppError::conflict("only the task's live owner can ask again")
+                    .with_code(ErrorCode::NotOwner);
+                return (Err(refusal), false);
+            }
+            let mut reset = false;
+            for seat in &mut row.seats {
+                if seat.verdict == Some(SeatVerdict::ChangesNeeded) {
+                    seat.verdict = None;
+                    seat.revision = None;
+                    seat.idle = true;
+                    reset = true;
+                }
+            }
+            (Ok(row.seats.clone()), reset)
+        })
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(Json(outcome?))
+}
+
 /// Parameters of `DELETE /api/tasks/{id}/seats`.
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -21191,7 +21465,8 @@ struct DropSeatQuery {
 }
 
 /// Drops a seat from one task, with whoever holds it and whatever verdict it holds, and leaves
-/// every other task and the board's seats unchanged.
+/// every other task and the board's seats unchanged. Needs `seats.manage`, which the lead and
+/// admin presets and the lead role hold.
 #[utoipa::path(
     delete,
     path = "/api/tasks/{id}/seats",
@@ -21201,6 +21476,7 @@ struct DropSeatQuery {
     responses(
         (status = 200, description = "The task's seats", body = Vec<Seat>),
         (status = 400, description = "No `name`"),
+        (status = 403, description = "`permission_denied`: dropping a seat needs `seats.manage`. `card_locked`: the task carries a locking label"),
         (status = 404, description = "Task not found, or it has no seat of that name"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -21212,6 +21488,9 @@ async fn drop_task_seat(
     Query(query): Query<DropSeatQuery>,
 ) -> Result<Json<Vec<Seat>>, AppError> {
     let task = found(account.task(&id), "task not found")?;
+    if !user.has(Permission::SeatsManage) {
+        return Err(AppError::permission_denied(Permission::SeatsManage));
+    }
     ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     let name = query
         .name
@@ -21316,6 +21595,42 @@ fn ensure_unlocked(
         return Err(card_locked());
     }
     Ok(())
+}
+
+/// Refuses a token issued as an agent role the move of a task out of `from` into `to` when the
+/// board of `from` limits the role's moves there. The owner's browser session and a token with no
+/// role pass.
+fn ensure_role_move_allowed(
+    db: &AccountDb,
+    user: &AuthUser,
+    from: &ColumnRow,
+    to: &ColumnRow,
+) -> Result<(), AppError> {
+    let Some(role_id) = user.role_id.as_deref() else {
+        return Ok(());
+    };
+    if from.id == to.id {
+        return Ok(());
+    }
+    let board = found(db.board(&from.board_id), "board not found")?;
+    let columns = db.list_columns(&from.board_id).map_err(AppError::from)?;
+    let blocked = board.row().blocked_column_id();
+    let role_name = user.role_name.as_deref().unwrap_or_default();
+    let allowed = ColumnRules::from_config(&board.row().config_json).role_targets(
+        role_id,
+        role_name,
+        &from.id,
+        &columns,
+        blocked.as_deref(),
+    );
+    match allowed {
+        Some(targets) if !targets.contains(&to.id) => Err(AppError::forbidden(format!(
+            "the board's column rules do not let role \"{role_name}\" move a task out of \"{}\" into \"{}\"",
+            from.name, to.name
+        ))
+        .with_code(ErrorCode::RoleMoveForbidden)),
+        _ => Ok(()),
+    }
 }
 
 /// Returns the refusal of an API token's write to a task that carries a locking label.
@@ -21711,6 +22026,8 @@ struct BoardSettingsTemplate {
     rules_labels: String,
     /// Each column with its entry rule, for the Column rules tab.
     rules_columns: Vec<RulesColumnView>,
+    /// Each agent role with the moves it holds, for the Column rules tab.
+    rules_roles: Vec<RulesRoleView>,
     /// The Labels tab.
     labels_tab: LabelsTabView,
 }
@@ -21891,6 +22208,38 @@ struct RulesColumnView {
     fields: Vec<RulesFieldView>,
 }
 
+/// One agent role's moves as the Column rules tab shows them.
+struct RulesRoleView {
+    /// The role id the moves are stored under.
+    id: String,
+    /// The role's name.
+    name: String,
+    /// One row per column the role may be limited out of.
+    rows: Vec<RulesMoveRowView>,
+}
+
+/// The moves out of one column for one role.
+struct RulesMoveRowView {
+    /// The column a task leaves.
+    from_id: String,
+    /// The name of that column.
+    from_name: String,
+    /// Whether the board limits the role's moves out of the column.
+    limited: bool,
+    /// Every other column, ticked when the role may move a task into it.
+    targets: Vec<RulesMoveTargetView>,
+}
+
+/// One column a role may move a task into.
+struct RulesMoveTargetView {
+    /// The column id.
+    id: String,
+    /// The column name.
+    name: String,
+    /// Whether the role may move a task into the column.
+    checked: bool,
+}
+
 /// One board field a rule may require.
 struct RulesFieldView {
     /// The field key a rule stores.
@@ -21946,10 +22295,49 @@ fn board_settings_context(
         })
         .collect();
     let board_fields = db.list_fields(board_id).map_err(AppError::from)?;
-    let rules_columns: Vec<RulesColumnView> = db
-        .list_columns(board_id)
-        .map_err(AppError::from)?
-        .into_iter()
+    let board_columns = db.list_columns(board_id).map_err(AppError::from)?;
+    let agent_roles = db.list_agent_roles().map_err(AppError::from)?;
+    let role_names: Vec<(&str, &str)> = agent_roles
+        .iter()
+        .map(|role| (role.id.as_str(), role.name.as_str()))
+        .collect();
+    let role_moves = rules.effective_role_moves(
+        &role_names,
+        &board_columns,
+        board.blocked_column_id().as_deref(),
+    );
+    let rules_roles: Vec<RulesRoleView> = agent_roles
+        .iter()
+        .map(|role| RulesRoleView {
+            id: role.id.clone(),
+            name: role.name.clone(),
+            rows: board_columns
+                .iter()
+                .map(|from| {
+                    let limit = role_moves
+                        .get(&role.id)
+                        .and_then(|moves| moves.get(&from.id));
+                    RulesMoveRowView {
+                        from_id: from.id.clone(),
+                        from_name: from.name.clone(),
+                        limited: limit.is_some(),
+                        targets: board_columns
+                            .iter()
+                            .filter(|to| to.id != from.id)
+                            .map(|to| RulesMoveTargetView {
+                                id: to.id.clone(),
+                                name: to.name.clone(),
+                                checked: limit.is_some_and(|set| set.contains(&to.id)),
+                            })
+                            .collect(),
+                    }
+                })
+                .collect(),
+        })
+        .collect();
+    let rules_columns: Vec<RulesColumnView> = board_columns
+        .iter()
+        .cloned()
         .map(|column| {
             let rule = rules.rule_for(&column.id).cloned().unwrap_or_default();
             RulesColumnView {
@@ -22111,6 +22499,7 @@ fn board_settings_context(
         fields: board_fields.into_iter().map(FieldDef::from).collect(),
         rules_labels: rules.locked_labels.join("\n"),
         rules_columns,
+        rules_roles,
         labels_tab: LabelsTabView {
             rows: label_rows,
             palette: HIGHLIGHT_COLORS.join(","),
@@ -23781,6 +24170,9 @@ struct CreateTokenInput {
     /// name at issue and the next `agent-N` label, and may hold only permissions in the role's
     /// template. With none of `scopes`, `preset` and `permissions` it holds the whole template.
     role_id: Option<String>,
+    /// The most hours a child of this token may live, from 1 to 8. Defaults to 1. It is fixed at
+    /// creation (a token edit changes only the name).
+    child_lifetime_hours: Option<i64>,
 }
 
 /// Reads the one grant of permissions that `scopes`, `preset` and `permissions` name between them.
@@ -24831,7 +25223,7 @@ fn reauth_required() -> Response {
     request_body = CreateTokenInput,
     responses(
         (status = 200, description = "Created token (raw_token shown once)", body = CreateTokenResponse),
-        (status = 400, description = "Invalid name, more or less than one of `scopes`, `preset` and `permissions` without a `role_id`, an unknown preset or permission, `unknown_role`: the account has no such role, or `boards` empty or naming a board the account does not hold"),
+        (status = 400, description = "Invalid name, more or less than one of `scopes`, `preset` and `permissions` without a `role_id`, an unknown preset or permission, `unknown_role`: the account has no such role, `boards` empty or naming a board the account does not hold, or `child_lifetime_hours` outside 1 to 8"),
         (status = 403, description = "`exceeds_grant`: with a `role_id`, a permission outside the role's template and the required ones, which always come with a role, or `session_required`: needs the browser session cookie, so an API token cannot create a hand-made token, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 409, description = "`quota_exceeded`: the account holds 50 tokens already"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -24885,6 +25277,7 @@ async fn create_api_token(
         scope,
         permissions,
         boards,
+        child_lifetime_hours: submitted_child_lifetime(input.child_lifetime_hours)?,
     };
     let (record, raw) = match &role {
         Some(role) => account
@@ -24923,6 +25316,9 @@ struct CreateChildTokenInput {
     /// Hours until expiry, from 1 to 8 and no more than the owner allows the caller's children.
     /// Defaults to 1. The child never outlives the caller.
     expires_in_hours: Option<i64>,
+    /// Always refused with 400. Only the browser sets a child lifetime, and a child gets 1 hour.
+    #[schema(ignore)]
+    child_lifetime_hours: Option<i64>,
 }
 
 /// Creates a child token that holds no more than the calling token. The caller needs
@@ -24950,7 +25346,7 @@ struct CreateChildTokenInput {
     request_body = CreateChildTokenInput,
     responses(
         (status = 200, description = "Created child token (raw_token shown once)", body = CreateTokenResponse),
-        (status = 400, description = "Invalid name, both or neither of `preset` and `permissions` without a `role_id`, both with one, an unknown preset, permission or board, empty `boards`, `unknown_role`: the account has no such role, `expires_in_hours` outside 1 to 8, or more hours than the owner allows the caller's children"),
+        (status = 400, description = "Invalid name, both or neither of `preset` and `permissions` without a `role_id`, both with one, an unknown preset, permission or board, empty `boards`, `unknown_role`: the account has no such role, `expires_in_hours` outside 1 to 8, more hours than the owner allows the caller's children, or a `child_lifetime_hours` field, which only the browser sets"),
         (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`, or `forbidden`: the child asks for a permission or board the caller lacks, or for `tokens.issue` while the caller was itself issued, or the caller is not an API token, or `exceeds_grant`: with a `role_id`, the child asks for a permission or board outside the role's template and grants cut to the caller, or the cut leaves none of the role's permissions beyond the required ones"),
         (status = 409, description = "Another token of the account has the name, whatever its letter case"),
         (status = 429, description = "`rate_limited`: the caller mints children faster than 20 at once and then one every 2 seconds, so wait the `Retry-After` seconds"),
@@ -24966,6 +25362,11 @@ async fn create_child_token(
 ) -> Result<Json<CreateTokenResponse>, AppError> {
     let parent_id = calling_token_id(&user)?;
     let input: CreateChildTokenInput = parse_body(&headers, body).await?;
+    if input.child_lifetime_hours.is_some() {
+        return Err(AppError::bad_request(
+            "only the browser sets child_lifetime_hours",
+        ));
+    }
     let name = submitted_token_name(&input.name)?;
     let role = match input.role_id.as_deref() {
         Some(id) => Some(
@@ -25012,6 +25413,7 @@ async fn create_child_token(
         scope,
         permissions,
         boards,
+        child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
     };
     let parent = ParentToken {
         id: parent_id.to_string(),
@@ -25337,6 +25739,14 @@ fn submitted_token_name(name: &str) -> Result<String, AppError> {
     Ok(name.to_string())
 }
 
+/// Reads the child lifetime a new token asks for, which is 1 hour when it asks for none.
+fn submitted_child_lifetime(hours: Option<i64>) -> Result<i64, AppError> {
+    checked_token_hours(
+        "child_lifetime_hours",
+        hours.unwrap_or(ApiTokenRecord::DEFAULT_CHILD_HOURS),
+    )
+}
+
 /// Reads a number of hours from 1 to 8, which `field` names in the refusal.
 fn checked_token_hours(field: &str, hours: i64) -> Result<i64, AppError> {
     if (ApiTokenRecord::MIN_CHILD_HOURS..=ApiTokenRecord::MAX_CHILD_HOURS).contains(&hours) {
@@ -25431,10 +25841,7 @@ async fn update_api_token(
         .as_deref()
         .map(submitted_token_name)
         .transpose()?;
-    let edit = TokenEdit {
-        name,
-        ..TokenEdit::default()
-    };
+    let edit = TokenEdit { name };
     let record = found(account.edit_api_token(&id, edit), "no such token")?;
     token_reply(&account, &record)
 }
@@ -27892,6 +28299,9 @@ them, which the Backups section of the settings page calls after a confirmation.
         update_board_seats,
         add_task_seat,
         drop_task_seat,
+        take_task_seat,
+        set_task_seat_verdict,
+        ask_task_seats_again,
         create_column,
         update_column,
         move_column,
@@ -28144,6 +28554,9 @@ them, which the Backups section of the settings page calls after a confirmation.
             RenewInput,
             OwnerReleaseInput,
             OwnerView,
+            TakeSeatInput,
+            SeatVerdictInput,
+            AskAgainInput,
             ManualTimeInput,
             UpdateTimeEntryInput,
             CreateColumnInput,
@@ -28339,6 +28752,9 @@ mod labels_tests;
 
 #[cfg(test)]
 mod rules_tests;
+
+#[cfg(test)]
+mod seat_api_tests;
 
 #[cfg(test)]
 mod seats_tests;

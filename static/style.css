@@ -8234,14 +8234,17 @@ body.dark .task-modal .tm-child-done .tm-child-column {
 .tm-relation-edit[hidden] {
   display: none;
 }
-.br-column {
+.br-column,
+.br-role {
   border: 1px solid var(--card-border);
   border-radius: var(--radius);
   margin: 0 0 1rem;
   padding: 0.6rem 0.9rem;
   min-width: 0;
 }
-.br-column legend { padding: 0 0.3rem; font-weight: 600; }
+.br-column legend,
+.br-role legend { padding: 0 0.3rem; font-weight: 600; }
+.br-move { margin: 0 0 0.6rem; }
 .br-outcomes,
 .br-fields { display: flex; flex-wrap: wrap; gap: 0 1rem; }
 @media (max-width: 767px) {

@@ -35,6 +35,7 @@ ignores:
   - src/routes/reauth_tests.rs
   - src/routes/search_tests.rs
   - src/routes/rules_tests.rs
+  - src/routes/seat_api_tests.rs
   - src/routes/seats_tests.rs
   - src/routes/server.rs
   - src/routes/webhook_tests.rs
