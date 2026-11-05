@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use crate::AppState;
 use crate::api_error::{ErrorCode, coded_response, permission_denied};
 use crate::db::PublicDb;
-use crate::limit::{CredentialKey, TrustProxy, rate_limited_response};
+use crate::limit::{CredentialKey, Quota, Refusal, TrustProxy, rate_limited_response};
 use crate::models::{
     API_TOKEN_ACTOR, AccountId, AccountRole, AccountStatus, Actor, ActorKind, ApiTokenRecord,
     AuthScope, BoardAccess, BoardRole, InstanceMode, ParentToken, RecoveryCodeRow, UserRow,
@@ -1911,15 +1911,24 @@ pub async fn auth_middleware(
                     Some(record) => CredentialKey::Token(record.id.clone()),
                     None => CredentialKey::Bootstrap,
                 };
-                if rated && let Err(refusal) = state.limits.check_credential(&credential) {
-                    return rate_limited_response(refusal);
+                let mut quota = None;
+                if rated {
+                    let metered = state.limits.check_credential(&credential);
+                    if let Some(refusal) = metered.refusal {
+                        return limited_response(refusal, metered.quota);
+                    }
+                    quota = Some(metered.quota);
                 }
                 if let Some(record) = &maybe_record
                     && let Some(needed) = needed
                     && !opens_route(req.method(), route, needed, &record.permissions)
                     && !open_to_every_token(route)
                 {
-                    return permission_denied(needed);
+                    let mut denied = permission_denied(needed);
+                    if let Some(quota) = quota {
+                        quota.apply(&mut denied);
+                    }
+                    return denied;
                 }
                 if let Some(record) = &maybe_record
                     && state.token_touch.claim_write(&record.id, now)
@@ -1947,8 +1956,13 @@ pub async fn auth_middleware(
                     Some(account) => (account.account_id(), account.username, account.role),
                     None => (AccountId::ownerless(), String::new(), AccountRole::Admin),
                 };
-                if rated && let Err(refusal) = state.limits.check_account(&account_id) {
-                    return rate_limited_response(refusal);
+                if rated {
+                    let metered = state.limits.check_account(&account_id);
+                    let tighter = quota.map_or(metered.quota, |held| held.tighter(metered.quota));
+                    if let Some(refusal) = metered.refusal {
+                        return limited_response(refusal, tighter);
+                    }
+                    quota = Some(tighter);
                 }
                 db.touch_account(&account_id, now);
                 let clock = db.time_format(&account_id);
@@ -1980,7 +1994,11 @@ pub async fn auth_middleware(
                     boards,
                     expires_at,
                 });
-                clock.scope(next.run(req)).await
+                let mut response = clock.scope(next.run(req)).await;
+                if let Some(quota) = quota {
+                    quota.apply(&mut response);
+                }
+                response
             }
             Err(refusal) => refusal.into_response(),
         };
@@ -1992,16 +2010,32 @@ pub async fn auth_middleware(
     };
     match user {
         Ok(user) => {
-            if rated && let Err(refusal) = state.limits.check_account(user.account_id()) {
-                return rate_limited_response(refusal);
+            let mut quota = None;
+            if rated {
+                let metered = state.limits.check_account(user.account_id());
+                if let Some(refusal) = metered.refusal {
+                    return limited_response(refusal, metered.quota);
+                }
+                quota = Some(metered.quota);
             }
             db.touch_account(user.account_id(), now);
             let clock = db.time_format(user.account_id());
             req.extensions_mut().insert(user);
-            clock.scope(next.run(req)).await
+            let mut response = clock.scope(next.run(req)).await;
+            if let Some(quota) = quota {
+                quota.apply(&mut response);
+            }
+            response
         }
         Err(refusal) => refusal.into_response(),
     }
+}
+
+/// Builds the 429 for a refused request with the `X-RateLimit-*` headers of the bucket that refused.
+fn limited_response(refusal: Refusal, quota: Quota) -> Response {
+    let mut response = rate_limited_response(refusal);
+    quota.apply(&mut response);
+    response
 }
 
 /// The routes an account that waits for approval may reach: the page that says so, and sign-out.

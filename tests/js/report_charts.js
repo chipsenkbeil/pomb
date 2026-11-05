@@ -64,9 +64,10 @@ var week = []; var ends = [];
 for (var i = 0; i < 12; i++) week.push(new Date(2026, 8, 7 + 7 * i));
 for (var j = 0; j < 30; j++) { var e = new Date(2026, 9, 1 + j, 23, 59, 59, 999); ends.push(e); }
 
-var tp = ThroughputPage.chartSvg({ starts: week, counts: week.map(function () { return 1; }) });
+var tpSeries = { starts: week, values: week.map(function () { return 1; }), type: 'count', group: 'week' };
+var tp = ThroughputPage.chartSvg(tpSeries);
 check('throughput axis labels use the short form', ticks(tp).slice(6).every(function (t) { return SHORT.test(t); }), true);
-check('throughput tooltips use the long form', titles(tp).every(function (t) { return LONG.test(t); }), true);
+check('throughput tooltips use the long form', LONG.test(ThroughputPage.tipFor(tpSeries, 0).title), true);
 
 var bd = BurndownPage.chartSvg({ ends: ends, counts: ends.map(function () { return 2; }) });
 check('burndown axis labels use the short form', ticks(bd).slice(6).every(function (t) { return SHORT.test(t); }), true);

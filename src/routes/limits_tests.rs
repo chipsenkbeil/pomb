@@ -648,6 +648,136 @@ async fn account_bucket_should_be_shared_by_sessions_and_tokens() {
     assert_eq!(fx.admin("GET", uri, None).await.status, StatusCode::OK);
 }
 
+/// Returns the status and the three `X-RateLimit-*` header values of a request to `uri`.
+async fn rate_headers(
+    app: &Router,
+    uri: &str,
+    header: (&str, &str),
+) -> (StatusCode, [Option<String>; 3]) {
+    let request = Request::builder()
+        .uri(uri)
+        .header(header.0, header.1)
+        .body(Body::empty())
+        .expect("request");
+    let response = app.clone().oneshot(request).await.expect("oneshot");
+    let read = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .map(|value| value.to_str().expect("ascii").to_string())
+    };
+    let seen = [
+        read("x-ratelimit-limit"),
+        read("x-ratelimit-remaining"),
+        read("x-ratelimit-reset"),
+    ];
+    (response.status(), seen)
+}
+
+/// Returns the header values `[limit, remaining, reset]` as a test expects them.
+fn rates(limit: u32, remaining: u32, reset: u32) -> [Option<String>; 3] {
+    [limit, remaining, reset].map(|value| Some(value.to_string()))
+}
+
+#[tokio::test]
+async fn token_response_should_carry_the_rate_limit_headers_of_its_bucket() {
+    const BURST: u32 = 5;
+    let fx = Fixture::new(InstanceMode::Multi, Clock::new().limits(), |_| roomy());
+    fx.configure(
+        Quotas::default(),
+        RateLimits {
+            token_burst: BURST,
+            token_per_second: RateLimits::MIN,
+            ..RateLimits::default()
+        },
+        DiskLimits::default(),
+    )
+    .await;
+    let uri = "/api/v1/auth/whoami";
+    let auth = ("authorization", fx.member_bearer.as_str());
+    for spent in 1..=BURST {
+        let (status, seen) = rate_headers(&fx.app, uri, auth).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(seen, rates(BURST, BURST - spent, spent), "request {spent}");
+    }
+}
+
+#[tokio::test]
+async fn token_response_should_report_the_account_bucket_when_it_is_tighter() {
+    const BURST: u32 = 3;
+    let fx = Fixture::new(InstanceMode::Multi, Clock::new().limits(), |_| roomy());
+    fx.configure(
+        Quotas::default(),
+        RateLimits {
+            account_burst: BURST,
+            account_per_second: RateLimits::MIN,
+            ..RateLimits::default()
+        },
+        DiskLimits::default(),
+    )
+    .await;
+    let uri = "/api/v1/auth/whoami";
+    let auth = ("authorization", fx.member_bearer.as_str());
+    let (status, seen) = rate_headers(&fx.app, uri, auth).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(seen, rates(BURST, BURST - 1, 1));
+}
+
+#[tokio::test]
+async fn session_response_should_carry_the_account_rate_limit_headers() {
+    const BURST: u32 = 4;
+    let fx = Fixture::new(InstanceMode::Multi, Clock::new().limits(), |_| roomy());
+    fx.configure(
+        Quotas::default(),
+        RateLimits {
+            account_burst: BURST,
+            account_per_second: RateLimits::MIN,
+            ..RateLimits::default()
+        },
+        DiskLimits::default(),
+    )
+    .await;
+    let uri = "/api/v1/auth/whoami";
+    let cookie = ("cookie", fx.member_cookie.as_str());
+    let (status, seen) = rate_headers(&fx.app, uri, cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(seen, rates(BURST, BURST - 1, 1));
+}
+
+#[tokio::test]
+async fn permission_refusal_should_carry_the_rate_limit_headers_of_the_bucket_it_spent() {
+    let fx = Fixture::multi();
+    let no_boards = fx.token_lacking(&[Permission::BoardsRead]);
+    let auth = ("authorization", no_boards.as_str());
+    let (status, seen) = rate_headers(&fx.app, "/api/boards", auth).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(seen.iter().all(Option::is_some), "{seen:?}");
+}
+
+#[tokio::test]
+async fn refused_request_should_carry_an_empty_bucket_in_the_rate_limit_headers() {
+    const BURST: u32 = 2;
+    let fx = Fixture::new(InstanceMode::Multi, Clock::new().limits(), |_| roomy());
+    fx.configure(
+        Quotas::default(),
+        RateLimits {
+            token_burst: BURST,
+            token_per_second: RateLimits::MIN,
+            ..RateLimits::default()
+        },
+        DiskLimits::default(),
+    )
+    .await;
+    let uri = "/api/v1/auth/whoami";
+    let auth = ("authorization", fx.member_bearer.as_str());
+    for _ in 0..BURST {
+        assert_eq!(rate_headers(&fx.app, uri, auth).await.0, StatusCode::OK);
+    }
+    let (status, seen) = rate_headers(&fx.app, uri, auth).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(seen, rates(BURST, 0, BURST));
+}
+
 #[tokio::test]
 async fn disk_guard_should_refuse_writes_that_grow_the_database() {
     let fx = Fixture::probed(probe(OVERSIZED_MIB, ROOMY_MIB));

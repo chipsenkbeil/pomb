@@ -369,6 +369,9 @@ fn spec_should_describe_the_rate_limits() {
         format!("{per_ip} requests per minute on `POST /api/v1/auth/device` and {per_ip} on"),
         "429 `rate_limited`".to_string(),
         "`Retry-After`".to_string(),
+        "`X-RateLimit-Limit`".to_string(),
+        "`X-RateLimit-Remaining`".to_string(),
+        "`X-RateLimit-Reset`".to_string(),
     ];
     for needed in expected {
         assert!(description.contains(&needed), "missing {needed}");

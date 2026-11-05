@@ -611,6 +611,7 @@ pub fn router(state: AppState) -> Router {
         .route("/skill.md", get(skill_md))
         .route("/llms.txt", get(llms_txt))
         .route("/api/v1/openapi.json", get(openapi_json))
+        .route("/docs", get(api_reference_page))
         .route("/docs/api.md", get(api_reference_md))
         .route("/api/v1/version", get(version_info));
 
@@ -1413,6 +1414,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/skill.md", Public, No),
         (Method::GET, "/llms.txt", Public, No),
         (Method::GET, "/api/v1/openapi.json", Public, No),
+        (Method::GET, "/docs", Public, No),
         (Method::GET, "/docs/api.md", Public, No),
         (Method::GET, "/api/v1/version", Public, No),
         (Method::GET, "/api/calendar-feed/:token", Public, No),
@@ -15582,8 +15584,9 @@ async fn task_count_page(
     })
 }
 
-/// Throughput report page: tasks completed per week as a line chart (KanbanFlow's Throughput
-/// chart). Renders client-side from the shared export-data dataset.
+/// Throughput report page: the tasks that reach a target column, or their time estimate, per
+/// day, week or month as a line chart (KanbanFlow's Throughput chart). Renders client-side
+/// from the shared export-data dataset.
 #[derive(Template)]
 #[template(path = "throughput.html")]
 struct ThroughputTemplate {
@@ -25940,6 +25943,26 @@ static API_REFERENCE: LazyLock<Result<String, String>> = LazyLock::new(|| {
         .map_err(|error| format!("failed to serialize OpenAPI: {error}"))
 });
 
+/// The API reference as an HTML page, rendered from the OpenAPI document on its first request.
+static API_REFERENCE_PAGE: LazyLock<Result<String, String>> = LazyLock::new(|| {
+    serde_json::to_value(ApiDoc::openapi())
+        .map_err(|error| format!("failed to serialize OpenAPI: {error}"))
+        .and_then(|spec| {
+            docs::render_api_page(&spec)
+                .render()
+                .map_err(|error| format!("failed to render the API page: {error}"))
+        })
+});
+
+/// Serves the API reference as a page with a menu of every operation and a search box, rendered
+/// from the same OpenAPI document as the Markdown reference.
+async fn api_reference_page() -> Result<Html<String>, AppError> {
+    API_REFERENCE_PAGE
+        .as_ref()
+        .map(|page| Html(page.clone()))
+        .map_err(|error| AppError::internal(error.clone()))
+}
+
 /// Serves the API reference as Markdown, rendered from the OpenAPI document once.
 ///
 /// Each tag is a section that opens with its concept prose and lists its operations with their
@@ -27047,7 +27070,14 @@ impl Modify for RateLimitAddon {
              operations. In multi mode the admin changes these numbers with \
              `PUT /api/v1/admin/settings`. Over a limit any operation answers \
              429 `rate_limited` with a `Retry-After` header in whole seconds (at least 1). Wait \
-             that long, then retry. `GET /api/boards/{{id}}/events/wait` is exempt and has its own \
+             that long, then retry. Every response a request-rate bucket governs, which is every \
+             response to a Bearer request or a browser session request except an events wait, \
+             carries `X-RateLimit-Limit` (the burst of the bucket), `X-RateLimit-Remaining` \
+             (whole requests the bucket still holds) and `X-RateLimit-Reset` (whole seconds \
+             until the bucket is full again). They describe the bucket with the fewest requests \
+             left, the token's own or the account's, and the 429 carries them too with \
+             `X-RateLimit-Remaining: 0`. The per-IP limits and the inbound address limit send \
+             no such headers. `GET /api/boards/{{id}}/events/wait` is exempt and has its own \
              caps, which answer 429 `too_many_waits`. The counters are \
              kept in memory and reset when the server restarts. The server's `--trust-proxy` \
              setting picks the client IP: `none` (the default) takes the connection's own \
@@ -27100,8 +27130,8 @@ impl Modify for ErrorBodyAddon {
 
 /// API-wide conventions, the start of the spec's `info.description`.
 const API_DOC: &str = r#"JSON API for Pomb, a self-hosted kanban board with a pomodoro timer and time tracking.
-Paths are relative to the server's base URL, and `GET /docs/api.md` renders this document as
-Markdown.
+Paths are relative to the server's base URL. `GET /docs` shows this document as a page with a menu
+of every operation and a search box, and `GET /docs/api.md` renders it as Markdown.
 
 Authenticate with `Authorization: Bearer pomb_...` (see Tokens) and send
 `Content-Type: application/json`. A Bearer request gets JSON responses and JSON errors whatever

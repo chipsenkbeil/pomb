@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use utoipa::OpenApi;
 
-use super::docs::{SKILL, render_api_reference};
+use super::docs::{SKILL, operations, render_api_reference};
 use super::{ApiDoc, router};
 use crate::AppState;
 use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
@@ -147,6 +147,43 @@ async fn api_reference_should_be_public_markdown_rendered_from_the_spec() {
     let spec = serde_json::to_value(ApiDoc::openapi()).expect("spec");
     assert_eq!(served, render_api_reference(&spec));
     assert!(served.contains("\n### POST /api/tasks/{id}/claim\n"));
+}
+
+/// Largest rendered API page the test reads, in bytes.
+const PAGE_BODY_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+#[tokio::test]
+async fn api_page_should_be_public_html_that_lists_every_operation_with_search() {
+    let (_dir, db) = open_db();
+    let app = router(AppState::new(db, None, passkey_mode()));
+    let request = axum::http::Request::builder()
+        .uri("/docs")
+        .body(axum::body::Body::empty())
+        .expect("request");
+    let response = app.oneshot(request).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response.headers()["content-type"].to_str().expect("ascii");
+    assert!(content_type.starts_with("text/html"), "{content_type}");
+    let bytes = axum::body::to_bytes(response.into_body(), PAGE_BODY_MAX_BYTES)
+        .await
+        .expect("body");
+    let page = String::from_utf8(bytes.to_vec()).expect("utf8");
+    let spec = serde_json::to_value(ApiDoc::openapi()).expect("spec");
+    let listed = operations(&spec);
+    assert!(listed.len() > 100, "{} operations", listed.len());
+    for (method, path, operation) in listed {
+        let id = operation["operationId"].as_str().expect("operation id");
+        let label = format!("{} {path}", method.to_uppercase());
+        let link = format!("<a href=\"#op-{id}\">{label}</a>");
+        assert!(page.contains(&link), "menu lacks {label}");
+        assert!(
+            page.contains(&format!("<section id=\"op-{id}\"")),
+            "page lacks the section of {label}"
+        );
+    }
+    assert!(page.contains("id=\"api-search\""));
+    assert!(page.contains("src=\"/static/docs.js\""));
+    assert!(page.contains("GET /docs/api.md"));
 }
 
 #[test]

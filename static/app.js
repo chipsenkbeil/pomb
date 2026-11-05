@@ -12595,60 +12595,169 @@
     };
   })();
 
-  // KF-344: Throughput report page — tasks completed per week as a line
-  // chart (KanbanFlow's Throughput chart). Renders client-side from the
-  // shared export-data dataset; pure inline SVG, no chart library.
+  // Throughput report page. Counts the tasks that arrive in a target
+  // column, or their time estimate, per day, week, several weeks or month.
   var ThroughputPage = (function () {
     var initialized = false;
-    var WEEKS = 12;
+    var GEO = { W: 720, H: 300, padL: 46, padR: 32, padT: 16, padB: 34 };
+    var PERIOD = {
+      WEEKS_12: '12w', WEEKS_24: '24w', THIS_YEAR: 'this-year', LAST_YEAR: 'last-year',
+      ABSOLUTE: 'absolute', RELATIVE: 'relative'
+    };
+    var WEEKS_12 = 12;
+    var WEEKS_24 = 24;
+    var DEFAULT_DAYS_BACK = 84;
+    var DEFAULT_VALUE_TYPE = 'count';
+    var DEFAULT_GROUP = 'week';
+    var MONTH = 'month';
+    var DAYS_PER_WEEK = 7;
+    var MAX_TICKS = 12;
+    var HOLDER = { HUMAN: 'human', AGENT: 'agent' };
+    var VALUE_TYPES = ['count', 'estimate'];
+    var GROUPS = {
+      day: { text: 'Day', weeks: 0 },
+      week: { text: 'Week', weeks: 1 },
+      '2w': { text: '2 weeks', weeks: 2 },
+      '3w': { text: '3 weeks', weeks: 3 },
+      '4w': { text: '4 weeks', weeks: 4 },
+      month: { text: 'Month', weeks: 0 }
+    };
+    var UNASSIGNED = 'unassigned';
+    var OWNER_PREFIX_HUMAN = 'u:';
+    var OWNER_PREFIX_AGENT = 'a:';
 
     function qs(id) { return document.getElementById(id); }
+
+    function roundTenth(n) { return ReportRange.roundTenth(n); }
 
     function setStatus(msg) {
       var el = qs('throughput-status');
       if (el) el.textContent = msg;
     }
 
-    // First day of the account's week (local) containing d.
     function weekStart(d) {
       var x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
       x.setDate(x.getDate() - daysIntoWeek(x));
       return x;
     }
 
-    // Bucket completed_at timestamps into the last WEEKS week buckets
-    // (oldest first). Unparseable dates are ignored.
-    function bucketByWeek(tasks) {
-      var now = weekStart(new Date());
-      var starts = [];
-      for (var i = WEEKS - 1; i >= 0; i--) {
-        var s = new Date(now);
-        s.setDate(s.getDate() - 7 * i);
-        starts.push(s.getTime());
+    function daysAfter(d, n) {
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+    }
+
+    function periodRange(values, now) {
+      var today = ReportChart.dayStart(now);
+      var y = today.getFullYear();
+      var range;
+      var n;
+      if (values.period === PERIOD.THIS_YEAR) {
+        range = { start: new Date(y, 0, 1), end: today };
+      } else if (values.period === PERIOD.LAST_YEAR) {
+        range = { start: new Date(y - 1, 0, 1), end: new Date(y - 1, 11, 31) };
+      } else if (values.period === PERIOD.ABSOLUTE) {
+        var a = ReportBreakdown.parseDay(values.from), b = ReportBreakdown.parseDay(values.to);
+        if (a === null || b === null || b < a) return null;
+        range = { start: new Date(a), end: new Date(Math.min(b, today.getTime())) };
+        if (range.end < range.start) return null;
+      } else if (values.period === PERIOD.RELATIVE) {
+        n = parseInt(values.days, 10);
+        if (!(n >= 1)) return null;
+        range = { start: daysAfter(today, 1 - n), end: today };
+      } else {
+        n = values.period === PERIOD.WEEKS_24 ? WEEKS_24 : WEEKS_12;
+        range = { start: daysAfter(weekStart(today), -DAYS_PER_WEEK * (n - 1)), end: today };
       }
-      var counts = starts.map(function () { return 0; });
-      tasks.forEach(function (t) {
-        if (!t.completed_at) return;
-        var d = new Date(t.completed_at);
-        if (isNaN(d.getTime())) return;
-        var idx = starts.indexOf(weekStart(d).getTime());
-        if (idx !== -1) counts[idx]++;
+      if ((range.end - range.start) / ReportRange.DAY_MS > ReportRange.MAX_DAYS) return null;
+      return range;
+    }
+
+    function nextStart(start, group) {
+      if (group === MONTH) return new Date(start.getFullYear(), start.getMonth() + 1, 1);
+      return daysAfter(start, GROUPS[group].weeks ? DAYS_PER_WEEK * GROUPS[group].weeks : 1);
+    }
+
+    function firstStart(range, group) {
+      if (group === MONTH) return new Date(range.start.getFullYear(), range.start.getMonth(), 1);
+      return GROUPS[group].weeks ? weekStart(range.start) : range.start;
+    }
+
+    function bucketValues(arrivals, range, group) {
+      var starts = [];
+      var at = firstStart(range, group);
+      while (at.getTime() <= range.end.getTime()) {
+        starts.push(at);
+        at = nextStart(at, group);
+      }
+      var values = starts.map(function () { return 0; });
+      var from = range.start.getTime();
+      var to = daysAfter(range.end, 1).getTime();
+      arrivals.forEach(function (a) {
+        if (a.at < from || a.at >= to) return;
+        var i = starts.length - 1;
+        while (i > 0 && starts[i].getTime() > a.at) i--;
+        values[i] += a.value;
       });
+      return { starts: starts, values: values };
+    }
+
+    function arrivals(data, tasks, targetId, valueOf) {
+      var cols = ColumnHistory.lookup(data);
+      var out = [];
+      tasks.forEach(function (t) {
+        var tl = ColumnHistory.timelineFor(t, cols);
+        var value = valueOf(t);
+        tl.forEach(function (step, i) {
+          if (step.col === targetId && (i === 0 || tl[i - 1].col !== targetId)) {
+            out.push({ at: step.at, value: value });
+          }
+        });
+      });
+      return out;
+    }
+
+    function ownerMatches(task, chosen) {
+      if (!chosen) return true;
+      var holder = task.owner && task.owner.holder;
+      if (chosen === UNASSIGNED) return !holder;
+      if (!holder) return false;
+      if (holder.kind === HOLDER.HUMAN) return chosen === OWNER_PREFIX_HUMAN + holder.id;
+      return chosen === OWNER_PREFIX_AGENT + holder.name;
+    }
+
+    function selectTasks(data, values) {
+      var rest = { user: '', color: values.color, labels: values.labels, labelMode: values.labelMode };
+      return ReportFilter.filterTasks(data.tasks || [], rest).filter(function (t) {
+        return ownerMatches(t, values.user);
+      });
+    }
+
+    function series(data, values, now) {
+      var range = periodRange(values, now);
+      if (!range) return null;
+      var type = ReportValue[values.valueType] ? values.valueType : DEFAULT_VALUE_TYPE;
+      var group = GROUPS[values.group] ? values.group : DEFAULT_GROUP;
+      var tasks = selectTasks(data, values);
+      var buckets = bucketValues(
+        arrivals(data, tasks, values.target, ReportValue[type].valueOf), range, group);
       return {
-        starts: starts.map(function (ms) { return new Date(ms); }),
-        counts: counts
+        starts: buckets.starts, values: buckets.values, type: type, group: group, matched: tasks.length
       };
     }
 
-    function chartSvg(buckets) {
-      var W = 720, H = 300, padL = 46, padR = 32, padT = 16, padB = 34;
+    function unitText(type, n) {
+      var unit = ReportValue[type].unit;
+      return roundTenth(n) + ' ' + (n === 1 ? unit.replace(/s$/, '') : unit);
+    }
+
+    function chartSvg(s) {
+      var W = GEO.W, H = GEO.H, padL = GEO.padL, padR = GEO.padR, padT = GEO.padT, padB = GEO.padB;
       var innerW = W - padL - padR, innerH = H - padT - padB;
       var max = 1;
-      buckets.counts.forEach(function (n) { if (n > max) max = n; });
+      s.values.forEach(function (v) { if (v > max) max = v; });
       max = Math.ceil(max / 5) * 5;
 
-      var n = buckets.counts.length;
-      function x(i) { return padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW); }
+      var n = s.values.length;
+      function x(i) { return ReportChart.pointX(GEO, n, i); }
       function y(v) { return padT + innerH - (v / max) * innerH; }
 
       var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="line-chart">';
@@ -12663,40 +12772,119 @@
       }
       var midY = padT + innerH / 2;
       svg += '<text x="14" y="' + midY + '" text-anchor="middle" class="chart-axis-label"' +
-        ' transform="rotate(-90 14 ' + midY + ')">Task count</text>';
+        ' transform="rotate(-90 14 ' + midY + ')">' + escapeHtml(ReportValue[s.type].axis) + '</text>';
+      var step = Math.max(1, Math.ceil(n / MAX_TICKS));
       var i, j, k;
-      for (i = 0; i < n; i++) {
+      for (i = 0; i < n; i += step) {
         svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
           '" text-anchor="middle" class="chart-tick">' +
-          escapeHtml(ReportChart.shortDate(buckets.starts[i])) + '</text>';
+          escapeHtml(ReportChart.shortDate(s.starts[i])) + '</text>';
       }
       var pts = [];
       for (j = 0; j < n; j++) {
-        pts.push(x(j).toFixed(1) + ',' + y(buckets.counts[j]).toFixed(1));
+        pts.push(x(j).toFixed(1) + ',' + y(s.values[j]).toFixed(1));
       }
       svg += '<polyline points="' + pts.join(' ') + '" class="chart-line" fill="none"/>';
       for (k = 0; k < n; k++) {
-        svg += '<circle cx="' + x(k).toFixed(1) + '" cy="' + y(buckets.counts[k]).toFixed(1) +
-          '" r="4" class="chart-dot"><title>' + buckets.counts[k] +
-          ' tasks, week of ' + escapeHtml(ReportChart.longDate(buckets.starts[k])) + '</title></circle>';
+        svg += '<circle cx="' + x(k).toFixed(1) + '" cy="' + y(s.values[k]).toFixed(1) +
+          '" r="4" class="chart-dot"/>';
       }
-      svg += '</svg>';
-      return svg;
+      return svg + ReportChart.crosshairLine(GEO) + '</svg>';
     }
 
-    var lastBuckets = null;
+    function tipFor(s, i) {
+      return {
+        title: ReportChart.longDate(s.starts[i]),
+        rows: [{ label: ReportValue[s.type].text, value: unitText(s.type, s.values[i]) }]
+      };
+    }
 
-    function renderChart(buckets) {
-      lastBuckets = buckets;
+    var current = null;
+
+    function renderChart(s) {
+      current = s;
       var host = qs('throughput-chart');
-      if (host) host.innerHTML = chartSvg(buckets);
+      if (!host) return;
+      host.innerHTML = chartSvg(s);
+      ReportChart.attachCrosshair(host, GEO, s.values.length, function (i) { return tipFor(s, i); });
     }
 
     function rows() {
-      if (!lastBuckets) return [];
-      return [['Week starting', 'Tasks completed']].concat(lastBuckets.starts.map(function (start, i) {
-        return [isoDate(start), lastBuckets.counts[i]];
-      }));
+      if (!current) return [];
+      return [[GROUPS[current.group].text + ' starting', ReportValue[current.type].text]].concat(
+        current.starts.map(function (start, i) { return [isoDate(start), roundTenth(current.values[i])]; }));
+    }
+
+    function ownerControl(data) {
+      var agents = Object.create(null);
+      (data.tasks || []).forEach(function (t) {
+        var holder = t.owner && t.owner.holder;
+        if (holder && holder.kind === HOLDER.AGENT) agents[holder.name] = true;
+      });
+      return {
+        id: 'user', label: 'User', value: '',
+        options: [{ value: '', text: 'Show all' }, { value: UNASSIGNED, text: 'Unassigned' }]
+          .concat((data.users || []).map(function (u) { return { value: OWNER_PREFIX_HUMAN + u.id, text: u.username }; }))
+          .concat(Object.keys(agents).sort().map(function (name) { return { value: OWNER_PREFIX_AGENT + name, text: name }; }))
+      };
+    }
+
+    function defaultTarget(columns) {
+      var done = columns.filter(function (c) { return c.is_done; });
+      var pick = done.length ? done[0] : columns[columns.length - 1];
+      return pick ? pick.id : '';
+    }
+
+    function controls(data, now) {
+      var columns = data.columns || [];
+      var today = ReportChart.dayStart(now);
+      return [{
+        id: 'valueType', label: 'Value type', value: DEFAULT_VALUE_TYPE,
+        options: VALUE_TYPES.map(function (key) { return { value: key, text: ReportValue[key].text }; })
+      }, {
+        id: 'target', label: 'Target column', value: defaultTarget(columns),
+        options: columns.map(function (c) { return { value: c.id, text: c.name }; })
+      }, {
+        id: 'period', label: 'Period', value: PERIOD.WEEKS_12,
+        options: [
+          { value: PERIOD.WEEKS_12, text: 'Last 12 weeks' },
+          { value: PERIOD.WEEKS_24, text: 'Last 24 weeks' },
+          { value: PERIOD.THIS_YEAR, text: 'This year' },
+          { value: PERIOD.LAST_YEAR, text: 'Last year' },
+          { value: PERIOD.ABSOLUTE, text: 'Custom absolute' },
+          { value: PERIOD.RELATIVE, text: 'Custom relative' }
+        ]
+      }, {
+        id: 'from', label: 'From', type: 'date', value: isoDate(daysAfter(today, 1 - DEFAULT_DAYS_BACK)),
+        when: { id: 'period', value: PERIOD.ABSOLUTE }
+      }, {
+        id: 'to', label: 'To', type: 'date', value: isoDate(today),
+        when: { id: 'period', value: PERIOD.ABSOLUTE }
+      }, {
+        id: 'days', label: 'Days back', type: 'number', max: ReportRange.MAX_DAYS, value: String(DEFAULT_DAYS_BACK),
+        when: { id: 'period', value: PERIOD.RELATIVE }
+      }, ownerControl(data), ReportFilter.colorControl(data)]
+        .concat(ReportFilter.labelControls(data))
+        .concat([{
+          id: 'group', label: 'Group by', value: DEFAULT_GROUP,
+          options: Object.keys(GROUPS).map(function (key) { return { value: key, text: GROUPS[key].text }; })
+        }]);
+    }
+
+    function render(data, values) {
+      var s = series(data, values, new Date());
+      if (!s) {
+        current = null;
+        var blank = qs('throughput-chart');
+        if (blank) blank.innerHTML = '';
+        setStatus('Pick a valid period of at most ' + ReportRange.MAX_YEARS + ' years that starts on or before today.');
+        return;
+      }
+      renderChart(s);
+      var total = s.values.reduce(function (a, b) { return a + b; }, 0);
+      if ((data.tasks || []).length === 0) setStatus('No tasks on this board.');
+      else if (s.matched === 0) setStatus('No tasks match the filter.');
+      else setStatus(unitText(s.type, total) + ' reached the target column in the period.');
     }
 
     function init(boardId) {
@@ -12708,22 +12896,24 @@
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (data) {
-        var buckets = bucketByWeek(data.tasks || []);
-        renderChart(buckets);
+        var state = ReportFilter.open(qs('report-filter'), controls(data, new Date()), function (values) {
+          render(data, values);
+        }, function (err) {
+          setStatus('Could not draw the chart: ' + err.message);
+        });
         ReportTools.mount({
           report: 'throughput', title: 'Throughput', boardId: boardId, chartId: 'throughput-chart',
-          getFilters: function () { return {}; }, applyFilters: function () {}, rows: rows
+          getFilters: state.applied, applyFilters: state.apply, rows: rows
         });
-        var total = buckets.counts.reduce(function (a, b) { return a + b; }, 0);
-        setStatus(total === 1
-          ? '1 task completed in the last 12 weeks.'
-          : total + ' tasks completed in the last 12 weeks.');
       }).catch(function (err) {
         setStatus('Could not load task data: ' + err.message);
       });
     }
 
-    return { init: init, chartSvg: chartSvg };
+    return {
+      init: init, chartSvg: chartSvg, tipFor: tipFor, series: series, periodRange: periodRange,
+      bucketValues: bucketValues, arrivals: arrivals, controls: controls, render: render
+    };
   })();
 
   var ReportRange = (function () {
@@ -13317,7 +13507,8 @@
 
     return {
       create: create, mount: mount, open: open, matches: matches, filterTasks: filterTasks,
-      taskControls: taskControls, MODE_ALL: MODE_ALL, MODE_ANY: MODE_ANY
+      taskControls: taskControls, colorControl: colorControl, labelControls: labelControls,
+      MODE_ALL: MODE_ALL, MODE_ANY: MODE_ANY
     };
   })();
 

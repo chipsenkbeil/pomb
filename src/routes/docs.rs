@@ -1,10 +1,12 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use askama::Template;
 use axum::http::StatusCode;
 use serde_json::{Map, Value};
 
 use crate::api_error::ErrorCode;
+use crate::markdown;
 
 /// HTTP methods an OpenAPI path item can hold, in the order the reference lists them.
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
@@ -197,6 +199,107 @@ pub fn render_api_reference(spec: &Value) -> String {
         out.push('\n');
     }
     out
+}
+
+/// The rendered API reference: the overview, then one group per tag with a menu entry for each
+/// operation, then the schemas.
+#[derive(Debug, Template)]
+#[template(path = "api_docs.html")]
+pub struct ApiPage {
+    /// The page title.
+    title: String,
+    /// The API-wide conventions as sanitized HTML.
+    overview: String,
+    /// The tags in the order the Markdown reference lists them, and the schemas last.
+    groups: Vec<PageGroup>,
+}
+
+/// One tag of the API reference page.
+#[derive(Debug)]
+struct PageGroup {
+    /// The tag name.
+    name: String,
+    /// The tag description as sanitized HTML, empty when the tag has none.
+    intro: String,
+    /// The operations the tag holds.
+    entries: Vec<PageEntry>,
+}
+
+/// One operation or schema of the API reference page.
+#[derive(Debug)]
+struct PageEntry {
+    /// The anchor the menu links to.
+    id: String,
+    /// The menu text.
+    label: String,
+    /// The entry as sanitized HTML.
+    html: String,
+}
+
+/// Name of the group that holds the schemas on the page.
+const SCHEMAS_GROUP: &str = "Schemas";
+
+/// Builds the rendered API reference page from the OpenAPI document `spec` in its JSON form, with
+/// the text of each entry produced by the renderers behind [`render_api_reference`].
+pub fn render_api_page(spec: &Value) -> ApiPage {
+    let info = &spec["info"];
+    let title = format!("{} reference", info["title"].as_str().unwrap_or("API"));
+    let overview = markdown::render(info["description"].as_str().unwrap_or_default().trim());
+    let codes = enum_values(&spec["components"]["schemas"]["ErrorCode"]);
+    let mut groups = Vec::new();
+    for tag in spec["tags"].as_array().into_iter().flatten() {
+        let Some(name) = tag["name"].as_str() else {
+            continue;
+        };
+        let entries = operations(spec)
+            .into_iter()
+            .filter(|(_, _, operation)| {
+                operation["tags"]
+                    .as_array()
+                    .is_some_and(|tags| tags.iter().any(|t| t == name))
+            })
+            .map(|(method, path, operation)| {
+                let mut out = String::new();
+                render_operation(&mut out, spec, &codes, method, path, operation);
+                PageEntry {
+                    id: format!(
+                        "op-{}",
+                        operation["operationId"].as_str().unwrap_or_default()
+                    ),
+                    label: format!("{} {path}", method.to_uppercase()),
+                    html: markdown::render(&out),
+                }
+            })
+            .collect();
+        groups.push(PageGroup {
+            name: name.to_string(),
+            intro: markdown::render(tag["description"].as_str().unwrap_or_default().trim()),
+            entries,
+        });
+    }
+    let schemas = &spec["components"]["schemas"];
+    let entries = referenced_schemas(spec)
+        .into_iter()
+        .map(|name| {
+            let mut out = format!("### `{name}`\n\n");
+            render_schema(&mut out, &schemas[name.as_str()]);
+            PageEntry {
+                id: format!("schema-{name}"),
+                label: name,
+                html: markdown::render(&out),
+            }
+        })
+        .collect();
+    groups.push(PageGroup {
+        name: SCHEMAS_GROUP.to_string(),
+        intro: String::new(),
+        entries,
+    });
+    ApiPage {
+        title,
+        overview,
+        groups,
+    }
 }
 
 /// Lists every operation as (method, path, operation), in path order.

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="help" href="/llms.txt">
+<link rel="alternate" type="text/markdown" href="/docs/api.md">
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/docs.js" defer></script>
+</head>
+<body class="api-docs">
+<aside class="api-docs-menu">
+  <h1 class="api-docs-title">{{ title }}</h1>
+  <input type="search" id="api-search" class="api-docs-search" placeholder="Search endpoints" aria-label="Search endpoints" autocomplete="off">
+  <p class="api-docs-count" id="api-count" aria-live="polite"></p>
+  <nav aria-label="Endpoints">
+    <ul class="api-docs-links">
+      <li data-api-link><a href="#overview">Overview</a></li>
+    </ul>
+    {% for group in groups %}
+    <div data-api-group>
+      <h2 class="api-docs-group">{{ group.name }}</h2>
+      <ul class="api-docs-links">
+        {% for entry in group.entries %}
+        <li data-api-link><a href="#{{ entry.id }}">{{ entry.label }}</a></li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endfor %}
+  </nav>
+  <p class="api-docs-raw"><a href="/docs/api.md">Markdown</a> &middot; <a href="/api/v1/openapi.json">OpenAPI</a></p>
+</aside>
+<main class="api-docs-body">
+  <section id="overview" class="api-docs-entry" data-api-entry>
+    {{ overview|safe }}
+  </section>
+  {% for group in groups %}
+  <div data-api-group>
+    <h2 class="api-docs-group-title">{{ group.name }}</h2>
+    <div data-api-intro>{{ group.intro|safe }}</div>
+    {% for entry in group.entries %}
+    <section id="{{ entry.id }}" class="api-docs-entry" data-api-entry>
+      {{ entry.html|safe }}
+    </section>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</main>
+</body>
+</html>

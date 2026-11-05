@@ -8,6 +8,7 @@
 //! entries are dropped on a sweep, so a flood of distinct credentials or addresses cannot grow
 //! the maps without bound.
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::fmt;
@@ -19,7 +20,7 @@ use std::time::{Duration, Instant};
 use axum::extract::{ConnectInfo, FromRequestParts, Request, State};
 use axum::http::header::RETRY_AFTER;
 use axum::http::request::Parts;
-use axum::http::{Extensions, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::http::{Extensions, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 
@@ -43,6 +44,54 @@ impl Refusal {
             retry_after_secs: wait.as_secs_f64().ceil().max(1.0) as u64,
         }
     }
+}
+
+/// What a token bucket holds after it counted a request, as the `X-RateLimit-*` headers report it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Quota {
+    /// Requests a full bucket allows at once.
+    pub limit: u32,
+    /// Whole requests the bucket still holds.
+    pub remaining: u32,
+    /// Whole seconds until the bucket is full again.
+    pub reset_secs: u64,
+}
+
+impl Quota {
+    /// The `X-RateLimit-Limit` header.
+    const LIMIT_HEADER: HeaderName = HeaderName::from_static("x-ratelimit-limit");
+    /// The `X-RateLimit-Remaining` header.
+    const REMAINING_HEADER: HeaderName = HeaderName::from_static("x-ratelimit-remaining");
+    /// The `X-RateLimit-Reset` header.
+    const RESET_HEADER: HeaderName = HeaderName::from_static("x-ratelimit-reset");
+
+    /// Returns whichever of the two quotas leaves the caller less room, the later reset on a tie.
+    #[must_use]
+    pub fn tighter(self, other: Self) -> Self {
+        match self.remaining.cmp(&other.remaining) {
+            Ordering::Less => self,
+            Ordering::Greater => other,
+            Ordering::Equal if self.reset_secs >= other.reset_secs => self,
+            Ordering::Equal => other,
+        }
+    }
+
+    /// Sets the three `X-RateLimit-*` headers on `response`.
+    pub fn apply(self, response: &mut Response) {
+        let headers = response.headers_mut();
+        headers.insert(Self::LIMIT_HEADER, HeaderValue::from(self.limit));
+        headers.insert(Self::REMAINING_HEADER, HeaderValue::from(self.remaining));
+        headers.insert(Self::RESET_HEADER, HeaderValue::from(self.reset_secs));
+    }
+}
+
+/// What a bucket answered a request with, and what it holds afterwards.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Metered {
+    /// What the bucket holds after it counted, or refused, the request.
+    pub quota: Quota,
+    /// Set when the bucket was empty and refused the request.
+    pub refusal: Option<Refusal>,
 }
 
 /// Identifies what a request is counted against: the Bearer credential it is made with, or the
@@ -109,6 +158,14 @@ impl Buckets {
 
     /// Spends one request from the key's bucket, or says how long until one is free.
     pub fn check(&self, key: &CredentialKey, now: Instant, rate: Rate) -> Result<(), Refusal> {
+        match self.meter(key, now, rate).refusal {
+            Some(refusal) => Err(refusal),
+            None => Ok(()),
+        }
+    }
+
+    /// Spends one request from the key's bucket and reports what the bucket holds afterwards.
+    pub fn meter(&self, key: &CredentialKey, now: Instant, rate: Rate) -> Metered {
         let mut state = lock(&self.state);
         if now.saturating_duration_since(state.swept_at) >= Self::SWEEP_EVERY {
             state
@@ -122,14 +179,24 @@ impl Buckets {
         });
         bucket.tokens = Self::refilled(bucket, now, rate);
         bucket.refilled_at = now;
-        if bucket.tokens >= 1.0 {
+        let refusal = if bucket.tokens >= 1.0 {
             bucket.tokens -= 1.0;
-            return Ok(());
+            None
+        } else {
+            let missing = 1.0 - bucket.tokens;
+            Some(Refusal::after(Duration::from_secs_f64(
+                missing / rate.per_second,
+            )))
+        };
+        let refill = (rate.burst - bucket.tokens) / rate.per_second;
+        Metered {
+            quota: Quota {
+                limit: rate.burst as u32,
+                remaining: bucket.tokens as u32,
+                reset_secs: refill.ceil() as u64,
+            },
+            refusal,
         }
-        let missing = 1.0 - bucket.tokens;
-        Err(Refusal::after(Duration::from_secs_f64(
-            missing / rate.per_second,
-        )))
     }
 
     fn refilled(bucket: &Bucket, now: Instant, rate: Rate) -> f64 {
@@ -328,18 +395,18 @@ impl Limits {
     }
 
     /// Spends one request from the Bearer credential's bucket.
-    pub fn check_credential(&self, key: &CredentialKey) -> Result<(), Refusal> {
+    pub fn check_credential(&self, key: &CredentialKey) -> Metered {
         let settings = self.settings();
         let rate = Rate::new(settings.token_burst, settings.token_per_second);
-        self.credentials.check(key, (self.clock)(), rate)
+        self.credentials.meter(key, (self.clock)(), rate)
     }
 
     /// Spends one request from the bucket `account`'s sessions and tokens share.
-    pub fn check_account(&self, account: &AccountId) -> Result<(), Refusal> {
+    pub fn check_account(&self, account: &AccountId) -> Metered {
         let settings = self.settings();
         let rate = Rate::new(settings.account_burst, settings.account_per_second);
         let key = CredentialKey::Account(account.as_str().to_string());
-        self.accounts.check(&key, (self.clock)(), rate)
+        self.accounts.meter(&key, (self.clock)(), rate)
     }
 
     /// Spends one request from the bucket of inbound address `id`.
@@ -596,6 +663,54 @@ mod tests {
             })
         );
         assert_eq!(limits.check(&token("b"), now, rate()), Ok(()));
+    }
+
+    #[test]
+    fn meter_should_report_what_the_bucket_holds_after_each_request() {
+        let now = Instant::now();
+        let limits = Buckets::new(now);
+        let first = limits.meter(&token("a"), now, rate());
+        assert_eq!(first.refusal, None);
+        assert_eq!(
+            first.quota,
+            Quota {
+                limit: RateLimits::DEFAULT_TOKEN_BURST,
+                remaining: RateLimits::DEFAULT_TOKEN_BURST - 1,
+                reset_secs: 1,
+            }
+        );
+        for _ in 1..BURST {
+            limits.meter(&token("a"), now, rate());
+        }
+        let refused = limits.meter(&token("a"), now, rate());
+        assert!(refused.refusal.is_some());
+        assert_eq!(refused.quota.remaining, 0);
+        assert_eq!(
+            refused.quota.reset_secs,
+            u64::from(RateLimits::DEFAULT_TOKEN_BURST / RateLimits::DEFAULT_TOKEN_PER_SECOND)
+        );
+    }
+
+    #[test]
+    fn quota_should_keep_the_tighter_of_two() {
+        let roomy = Quota {
+            limit: 100,
+            remaining: 90,
+            reset_secs: 1,
+        };
+        let tight = Quota {
+            limit: 10,
+            remaining: 2,
+            reset_secs: 4,
+        };
+        let later = Quota {
+            reset_secs: 9,
+            ..tight
+        };
+        assert_eq!(roomy.tighter(tight), tight);
+        assert_eq!(tight.tighter(roomy), tight);
+        assert_eq!(tight.tighter(later), later);
+        assert_eq!(later.tighter(tight), later);
     }
 
     #[test]
