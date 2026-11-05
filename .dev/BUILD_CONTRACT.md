@@ -56,8 +56,11 @@ A PASS verdict must cite the regress `report.json` entry (status and
 diffPixels) for every permutation.
 
 **L4 — Regression.** The final-battery checks covering the affected area
-still pass; no previously-fixed defect regresses. The card moves to Done only
-after `dev verify` passes on the released sha.
+still pass; no previously-fixed defect regresses. A card lands on main with
+`dev land COMMIT --card ID` once L3 passes: it applies the verified commit onto
+the remote's current main, runs `dev lint --remote` then `dev test --remote`,
+and pushes. The card moves to Done only after `dev verify` passes on the
+released sha.
 
 ## 3. Geometry rule
 
@@ -80,10 +83,13 @@ is not automatically the cause.
 - Test instances only. Kill test servers by exact PID. Never `pkill` pomb.
 - No production ports, no production databases, no secrets, no green-box or
   network changes.
+- A card lands on main through `dev land` once L3 passes. A land is not a
+  deploy: deploys are a separate `dev release`.
 - Deploys only by the release worker under Chip's standing authorization,
-  and only after L0–L3 are green, via a squashed verified diff pushed with
-  `dev push`, with per-commit tree verification, dry-activate showing pomb.service as the sole
-  affected unit, and `/api/v1/version` reporting the new SHA.
+  and only after L0–L3 are green on each card in the release. Verification is per card, and a
+  release is ci on the main commit that `dev release` cuts: it bumps the version as its own
+  commit on the remote's main, runs the four ci gates and pushes it, with dry-activate showing
+  pomb.service as the sole affected unit, and `/api/v1/version` reporting the new SHA.
 - Git commits per unit (short imperative message). Never leave the tree in a
   state that blocks the next unit. The card is updated by the worker
   that did the work.

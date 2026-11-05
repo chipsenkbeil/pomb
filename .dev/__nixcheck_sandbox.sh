@@ -10,7 +10,7 @@ shift 5
 allowed=(
     bash sh cat cp mv rm mkdir rmdir ls ln chmod touch date sleep sort uniq tr head tail wc cut tee
     env basename dirname readlink realpath mktemp comm kill id true false test expr seq stat tac
-    sed grep awk find xargs tar gzip diff cmp jq
+    sed grep awk find xargs tar gzip diff cmp jq git rg
 )
 
 type -P ip >/dev/null || {

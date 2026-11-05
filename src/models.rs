@@ -684,6 +684,54 @@ pub struct ColumnRow {
     /// existed.
     #[serde(default)]
     pub watchers: Vec<String>,
+    /// The step of the pull model the column stands in for, which the standard role moves read
+    /// instead of the name. None for a column that stands in for none.
+    #[serde(default)]
+    pub stage: Option<ColumnStage>,
+}
+
+/// A step of the pull model that a board column can stand in for. Blocked and Done are not
+/// stages: the board config and `is_done` name those columns.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnStage {
+    /// Where an implementer works a task.
+    InProgress,
+    /// Where a reviewer checks a task.
+    Review,
+    /// Where a verifier proves a task.
+    Verify,
+    /// Where a release role ships a task.
+    Release,
+    /// Where a task waits to be picked up.
+    Ready,
+}
+
+impl ColumnStage {
+    /// Returns the stage's name in the API and in the Edit column dialog.
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::InProgress => "in_progress",
+            Self::Review => "review",
+            Self::Verify => "verify",
+            Self::Release => "release",
+            Self::Ready => "ready",
+        }
+    }
+
+    /// Returns the stage a seeded column name maps to, or [`None`] for any other name.
+    #[must_use]
+    pub fn from_legacy_name(name: &str) -> Option<Self> {
+        match name.trim().to_lowercase().as_str() {
+            "in progress" => Some(Self::InProgress),
+            "review" | "in review" => Some(Self::Review),
+            "verify" => Some(Self::Verify),
+            "release" => Some(Self::Release),
+            "ready" => Some(Self::Ready),
+            _ => None,
+        }
+    }
 }
 
 impl ColumnRow {

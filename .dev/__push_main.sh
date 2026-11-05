@@ -29,4 +29,13 @@ fi
 
 sha=$(git -C "$wt" rev-parse HEAD)
 cd "$wt"
-jj-git-guard push -- "$remote" "$sha:refs/heads/main"
+log=$(mktemp)
+trap 'rm -f "$log"' EXIT
+status=0
+jj-git-guard push -- "$remote" "$sha:refs/heads/main" 2>"$log" || status=$?
+cat "$log" >&2
+[ "$status" -eq 0 ] && exit 0
+if rg -q 'non-fast-forward|fetch first' "$log"; then
+    exit 3
+fi
+exit 1

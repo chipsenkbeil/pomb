@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::models::ColumnRow;
+use crate::models::{ColumnRow, ColumnStage};
 
 /// The board config bag key that holds the column rules.
 pub const CONFIG_KEY: &str = "column_rules";
@@ -237,15 +237,15 @@ struct StandardMove {
 /// A step of the pull model, which a board's columns stand in for.
 #[derive(Copy, Clone)]
 enum Stage {
-    /// A column named In Progress.
+    /// A column whose stage is In Progress.
     InProgress,
-    /// A column named Review or In Review.
+    /// A column whose stage is Review.
     Review,
-    /// A column named Verify.
+    /// A column whose stage is Verify.
     Verify,
-    /// A column named Release.
+    /// A column whose stage is Release.
     Release,
-    /// A column named Ready.
+    /// A column whose stage is Ready.
     Ready,
     /// The column the board marks as Blocked.
     Blocked,
@@ -256,13 +256,12 @@ enum Stage {
 impl Stage {
     /// Reports whether `column` is this stage on a board whose Blocked column is `blocked`.
     fn is(self, column: &ColumnRow, blocked: Option<&str>) -> bool {
-        let name = column.name.trim().to_lowercase();
         match self {
-            Self::InProgress => name == "in progress",
-            Self::Review => name == "review" || name == "in review",
-            Self::Verify => name == "verify",
-            Self::Release => name == "release",
-            Self::Ready => name == "ready",
+            Self::InProgress => column.stage == Some(ColumnStage::InProgress),
+            Self::Review => column.stage == Some(ColumnStage::Review),
+            Self::Verify => column.stage == Some(ColumnStage::Verify),
+            Self::Release => column.stage == Some(ColumnStage::Release),
+            Self::Ready => column.stage == Some(ColumnStage::Ready),
             Self::Blocked => blocked == Some(column.id.as_str()),
             Self::Done => column.is_done,
         }
@@ -295,7 +294,7 @@ const STANDARD_MOVES: &[StandardMove] = &[
 ];
 
 /// Returns the columns the standard role `role_name` may move a task into from `from`, or
-/// [`None`] when it is not a standard role, or the board has no column for the stage it works.
+/// [`None`] when it is not a standard role, or no column of the board holds the stage it works.
 /// Out of another column the role may pull a task into its own stage, or send it to Ready or
 /// Blocked, so two permitted moves never add up to one it may not make.
 fn standard_targets(
@@ -708,12 +707,26 @@ mod tests {
     mod standard_moves {
         use super::*;
 
-        fn column(id: &str, name: &str, is_done: bool) -> ColumnRow {
+        fn unstaged(id: &str, name: &str, is_done: bool) -> ColumnRow {
             serde_json::from_value(serde_json::json!({
                 "id": id, "board_id": "b", "name": name, "position": 0,
                 "wip_limit": null, "is_done": is_done,
             }))
             .unwrap()
+        }
+
+        fn staged(id: &str, name: &str, stage: ColumnStage) -> ColumnRow {
+            ColumnRow {
+                stage: Some(stage),
+                ..unstaged(id, name, false)
+            }
+        }
+
+        fn column(id: &str, name: &str, is_done: bool) -> ColumnRow {
+            ColumnRow {
+                stage: ColumnStage::from_legacy_name(name),
+                ..unstaged(id, name, is_done)
+            }
         }
 
         fn board() -> Vec<ColumnRow> {
@@ -770,6 +783,33 @@ mod tests {
                 column("x", "Other", false),
             ];
             assert_eq!(targets("implementer", "wip", &columns), None);
+        }
+
+        #[test]
+        fn should_keep_the_standard_moves_for_a_renamed_staged_column() {
+            let columns = vec![
+                staged("ready", "Up next", ColumnStage::Ready),
+                staged("wip", "Doing", ColumnStage::InProgress),
+                staged("rev", "Peer check", ColumnStage::Review),
+                column("blk", "Blocked", false),
+            ];
+            let found = targets("implementer", "wip", &columns).unwrap();
+            assert_eq!(found, vec!["blk", "ready", "rev"]);
+        }
+
+        #[test]
+        fn should_not_limit_a_board_whose_columns_have_no_stage() {
+            let columns = vec![
+                unstaged("ready", "Ready", false),
+                unstaged("wip", "In Progress", false),
+                unstaged("rev", "Review", false),
+                unstaged("ver", "Verify", false),
+                unstaged("rel", "Release", false),
+                unstaged("done", "Done", true),
+            ];
+            for role in ["implementer", "reviewer", "verifier", "release"] {
+                assert_eq!(targets(role, "wip", &columns), None);
+            }
         }
 
         #[test]

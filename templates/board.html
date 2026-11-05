@@ -455,6 +455,7 @@
             data-wip-unit="{{ col.limit_unit }}"
             data-is-done="{% if col.is_done %}1{% else %}0{% endif %}"
             data-is-blocked="{% if col.is_blocked %}1{% else %}0{% endif %}"
+            data-stage="{{ col.stage }}"
             data-collapsed="{% if col.collapsed %}1{% else %}0{% endif %}"
             data-watched="{% if col.watched %}1{% else %}0{% endif %}"
             data-overdue-count="{{ col.overdue_count }}"
@@ -850,6 +851,17 @@
     <label class="dlg-field">
       <span>Description</span>
       <input type="text" id="ec-description" maxlength="500" placeholder="Add description" autocomplete="off">
+    </label>
+    <label class="dlg-field">
+      <span>Stage</span>
+      <select id="ec-stage">
+        <option value="">None</option>
+        <option value="ready">Ready</option>
+        <option value="in_progress">In Progress</option>
+        <option value="review">Review</option>
+        <option value="verify">Verify</option>
+        <option value="release">Release</option>
+      </select>
     </label>
     <div class="dlg-row">
       <label class="dlg-field">

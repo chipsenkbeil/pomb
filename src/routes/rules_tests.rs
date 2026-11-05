@@ -10,8 +10,8 @@ use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::{ColumnKind, Db};
-use crate::models::AuthScope;
+use crate::db::{ColumnKind, ColumnPatch, Db};
+use crate::models::{AuthScope, ColumnStage};
 
 const MAX_BODY_BYTES: usize = 1 << 22;
 
@@ -63,13 +63,21 @@ impl Fixture {
         let ready = db.create_column(&board, "Ready", None).expect("ready");
         let lane = db.create_swimlane(&board, "Extra").expect("lane");
         let mut stages = BTreeMap::new();
-        for (key, name) in [
-            ("progress", "In Progress"),
-            ("review", "In Review"),
-            ("verify", "Verify"),
-            ("release", "Release"),
+        let stage_patch = |stage| ColumnPatch {
+            stage: Some(Some(stage)),
+            ..ColumnPatch::default()
+        };
+        db.update_column(&ready, &stage_patch(ColumnStage::Ready))
+            .expect("stage ready");
+        for (key, name, stage) in [
+            ("progress", "In Progress", ColumnStage::InProgress),
+            ("review", "In Review", ColumnStage::Review),
+            ("verify", "Verify", ColumnStage::Verify),
+            ("release", "Release", ColumnStage::Release),
         ] {
-            stages.insert(key, db.create_column(&board, name, None).expect(name));
+            let id = db.create_column(&board, name, None).expect(name);
+            db.update_column(&id, &stage_patch(stage)).expect(name);
+            stages.insert(key, id);
         }
         let done = db
             .create_column_as(&board, "Done", None, ColumnKind::Done)

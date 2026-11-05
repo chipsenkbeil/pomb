@@ -120,10 +120,10 @@ use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, AgentRoleRow,
     ApiTokenRecord, AttachmentVersion, AuthScope, BLOCKED_COLUMN_KEY, BLOCKED_KIND, BackupSettings,
     BackupStatus, BinRow, BoardAccess, BoardFeed, BoardRole, BoardRow, BoardTemplateRow, ColorRow,
-    ColumnRow, CommentQuestion, CommentReaction, CoverChange, DeviceAuthRow, DeviceAuthStatus,
-    EntryKind, EscalationTier, EventChange, FieldDefRow, HistoryKind, InboundAddressRow,
-    InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS, MAX_CUSTOM_COLORS,
-    MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
+    ColumnRow, ColumnStage, CommentQuestion, CommentReaction, CoverChange, DeviceAuthRow,
+    DeviceAuthStatus, EntryKind, EscalationTier, EventChange, FieldDefRow, HistoryKind,
+    InboundAddressRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS,
+    MAX_CUSTOM_COLORS, MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
     MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NEEDS_HUMAN_LABEL, NUMBERING_KEY, Numbering, Owner,
     OwnerHolder, PasskeyRow, QUESTION_KIND, QuestionAnswer, Quota, Quotas, RecoveryCodeRow,
     ReportBookmark, Responsible, SECONDS_PER_HOUR, Seat, SeatSlot, SessionRow, Settings, Subtask,
@@ -1005,7 +1005,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 78;
+pub const SCHEMA_VERSION: u64 = 79;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1090,6 +1090,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "332b9168cd35300e66a5e0a6bed3e8b755406698a9995661fcceaf615e746428",
     "2ede0a454c015ba8cb29d4d975460326645220f6c4751abfa01773ea7d97af62",
     "79781e79136dc13b6cbe973f282c2f0b95c0406748922d77a924bb29f7a41770",
+    "e1da24113ea1128afeaace95b5d5cd2e4876bd2b5d04f387dd1119807f4330e5",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1282,7 +1283,26 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 78) {
         grant_lead_role_seats_manage(txn)?;
     }
+    if from.is_none_or(|version| version < 79) {
+        assign_column_stages(txn)?;
+        txn_recount_usage(txn)?;
+    }
     Ok(())
+}
+
+/// Sets each stored column's stage from its current name.
+fn assign_column_stages(txn: &WriteTransaction) -> DbResult<()> {
+    rewrite_rows(txn, COLUMNS, |_, column| {
+        let stage = column
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .and_then(ColumnStage::from_legacy_name);
+        let Some(stage) = stage else {
+            return false;
+        };
+        column.insert("stage".to_string(), serde_json::json!(stage));
+        true
+    })
 }
 
 /// Adds `seats.manage` to each stored role named `lead` whose permissions are exactly the lead
@@ -5243,6 +5263,7 @@ fn txn_insert_column(
     name: &str,
     wip_limit: Option<i64>,
     is_done: bool,
+    stage: Option<ColumnStage>,
     over: OverQuota,
 ) -> DbResult<String> {
     TextCap::COLUMN_NAME.check(name)?;
@@ -5262,6 +5283,7 @@ fn txn_insert_column(
         config_json: "{}".to_string(),
         former_names: Vec::new(),
         watchers: Vec::new(),
+        stage,
     };
     txn_store_owned(txn, COLUMNS, &id, &row, over)?;
     mmap_insert(txn, COLUMNS_BY_BOARD, board_id, &id)?;
@@ -5698,6 +5720,8 @@ pub struct ColumnPatch<'a> {
     /// `Some(None)` clears the WIP limit.
     pub wip_limit: Option<Option<i64>>,
     pub is_done: Option<bool>,
+    /// `Some(None)` clears the stage.
+    pub stage: Option<Option<ColumnStage>>,
     /// Whether the column is its board's Blocked column, where `false` clears the board's Blocked
     /// column only when it is this one.
     pub is_blocked: Option<bool>,
@@ -7203,7 +7227,15 @@ impl Db {
     ) -> DbResult<String> {
         let txn = self.db.begin_write()?;
         let is_done = kind == ColumnKind::Done;
-        let id = txn_insert_column(&txn, board_id, name, wip_limit, is_done, OverQuota::Refuse)?;
+        let id = txn_insert_column(
+            &txn,
+            board_id,
+            name,
+            wip_limit,
+            is_done,
+            None,
+            OverQuota::Refuse,
+        )?;
         txn.commit()?;
         Ok(id)
     }
@@ -7236,6 +7268,9 @@ impl Db {
             if let Some(is_done) = patch.is_done {
                 column.is_done = is_done;
                 restamp = Some(is_done);
+            }
+            if let Some(stage) = patch.stage {
+                column.stage = stage;
             }
             if let Some(description) = patch.description {
                 TextCap::DESCRIPTION.check(description)?;
@@ -8233,6 +8268,7 @@ impl Db {
                     "name": column.name,
                     "wip_limit": column.wip_limit,
                     "is_done": column.is_done,
+                    "stage": column.stage,
                     "position": column.position,
                 })
             })
@@ -8533,18 +8569,24 @@ impl Db {
                     .unwrap_or(0)
             });
             for column in columns {
+                let name = column
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("To-do");
+                let stage = match column.get("stage") {
+                    Some(stored) => serde_json::from_value(stored.clone()).ok().flatten(),
+                    None => ColumnStage::from_legacy_name(name),
+                };
                 txn_insert_column(
                     txn,
                     &board_id,
-                    column
-                        .get("name")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("To-do"),
+                    name,
                     column.get("wip_limit").and_then(|value| value.as_i64()),
                     column
                         .get("is_done")
                         .and_then(|value| value.as_bool())
                         .unwrap_or(false),
+                    stage,
                     over,
                 )?;
             }
@@ -15975,6 +16017,7 @@ mod schema_fingerprint_tests {
             shape::<BreakActivity>("BreakActivity"),
             shape::<ColorRow>("ColorRow"),
             shape::<ColumnRow>("ColumnRow"),
+            shape::<ColumnStage>("ColumnStage"),
             shape::<DeviceAuthRow>("DeviceAuthRow"),
             shape::<DiskLimits>("DiskLimits"),
             shape::<FieldColumn>("FieldColumn"),
@@ -17881,5 +17924,91 @@ mod owner_migration_tests {
         );
         assert_eq!(owners[3], unleased(human("m1")));
         assert_eq!(owners[4], None);
+    }
+}
+
+#[cfg(test)]
+mod stage_upgrade_tests {
+    use super::*;
+
+    fn stamp(path: &str, version: u64) {
+        let db = Database::create(path).expect("raw open");
+        let txn = db.begin_write().expect("write txn");
+        txn.open_table(META)
+            .expect("meta table")
+            .insert(SCHEMA_VERSION_KEY, version)
+            .expect("stamp");
+        txn.commit().expect("commit");
+    }
+
+    fn stage_of(db: &Db, column: &str) -> Option<ColumnStage> {
+        db.column(column).expect("read").expect("column").stage
+    }
+
+    #[test]
+    fn should_assign_stages_from_names_once_at_upgrade() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let path = path.to_str().expect("utf8 path");
+        let (working, doing, review) = {
+            let db = Db::connect(path).expect("connect");
+            let board = db
+                .create_board(&AccountId::ownerless(), "Legacy")
+                .expect("board");
+            let working = db
+                .create_column(&board, "In Progress", None)
+                .expect("working");
+            let doing = db.create_column(&board, "Doing", None).expect("doing");
+            let review = db.create_column(&board, "In Review", None).expect("review");
+            assert_eq!(stage_of(&db, &working), None);
+            (working, doing, review)
+        };
+        stamp(path, 78);
+        let db = Db::connect(path).expect("upgrade");
+        assert_eq!(stage_of(&db, &working), Some(ColumnStage::InProgress));
+        assert_eq!(stage_of(&db, &doing), None);
+        assert_eq!(stage_of(&db, &review), Some(ColumnStage::Review));
+        db.rename_column(&working, "Building").expect("rename");
+        drop(db);
+        let db = Db::connect(path).expect("reopen");
+        assert_eq!(stage_of(&db, &working), Some(ColumnStage::InProgress));
+    }
+
+    #[test]
+    fn should_carry_stages_through_a_template() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let owner = AccountId::ownerless();
+        let board = db.create_board(&owner, "Source").expect("board");
+        let doing = db.create_column(&board, "Doing", None).expect("doing");
+        let verify = db.create_column(&board, "Verify", None).expect("verify");
+        let patch = ColumnPatch {
+            stage: Some(Some(ColumnStage::Review)),
+            ..ColumnPatch::default()
+        };
+        db.update_column(&doing, &patch).expect("stage");
+        let template = db
+            .save_board_as_template(&owner, &board, "Staged", "")
+            .expect("save")
+            .expect("template");
+        let copy = db
+            .apply_template(&owner, &template, "Copy")
+            .expect("apply")
+            .expect("board");
+        let stages: Vec<(String, Option<ColumnStage>)> = db
+            .list_columns(&copy)
+            .expect("columns")
+            .into_iter()
+            .map(|column| (column.name, column.stage))
+            .collect();
+        assert_eq!(
+            stages,
+            vec![
+                ("Doing".to_string(), Some(ColumnStage::Review)),
+                ("Verify".to_string(), None),
+            ]
+        );
+        assert_eq!(stage_of(&db, &verify), None);
     }
 }

@@ -24,4 +24,4 @@ fi
 
 git tag -a "$tag" "$sha" -m "Pomb ${tag#v}"
 echo "tag     $tag at $sha"
-jj-git-guard push -- "$remote" "refs/tags/$tag"
+jj-git-guard push -- "$remote" "refs/tags/$tag" || { git tag -d "$tag" >/dev/null; exit 1; }

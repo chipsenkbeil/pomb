@@ -27,6 +27,9 @@ Every verdict carries:
   settled (networkidle + fixed delay), animations settled, scrollbars
   accounted for (a scrollbar in one but not the other IS a deviation).
 
+You verify one card's commit, never a batch. A release is ci on the main commit that
+`dev release` cuts, and it adds only the version bump.
+
 Reference images come from the card. The KanbanFlow golden captures for a
 unit are attached to its card on the board, so read them from the card's
 attachments (`GET /api/tasks/{id}/attachments`) and name each one by its

@@ -4146,6 +4146,8 @@ struct ColumnHead {
     /// overdue task(s)" indicator.
     overdue_count: usize,
     is_done: bool,
+    /// The stage the column stands in for, in the form the Edit column dialog's select holds.
+    stage: String,
     /// Whether this is the board's Blocked column.
     is_blocked: bool,
     /// Whether the viewing account watches the column.
@@ -4307,6 +4309,8 @@ struct ColumnListItem {
     wip_limit: Option<i64>,
     /// Whether tasks moved here count as Done.
     is_done: bool,
+    /// The step of the pull model the column stands in for, or null for none.
+    stage: Option<ColumnStage>,
     /// Whether this is the board's Blocked column, where a posted question moves its card.
     is_blocked: bool,
     /// Whether the calling account watches the column.
@@ -5120,6 +5124,11 @@ fn board_template(
                 over_limit,
                 overdue_count,
                 is_done: col.is_done,
+                stage: col
+                    .stage
+                    .map(ColumnStage::key)
+                    .unwrap_or_default()
+                    .to_string(),
                 is_blocked: board.row().is_blocked_column(&col.id),
                 watched: col.watched_by(db.account_id().as_str()),
                 config_json: col.config_json.clone(),
@@ -16764,6 +16773,11 @@ struct UpdateColumnInput {
     #[serde(default, deserialize_with = "de_opt_opt")]
     wip_limit: Option<Option<i64>>,
     is_done: Option<bool>,
+    /// The step of the pull model the column stands in for, which the standard role moves read in
+    /// place of its name. One of `in_progress`, `review`, `verify`, `release` or `ready`. Explicit
+    /// JSON null clears it and absent leaves it unchanged.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    stage: Option<Option<ColumnStage>>,
     /// Whether the column is its board's Blocked column, where a posted question moves its card.
     /// `false` clears the board's Blocked column when it is this one. Absent leaves it unchanged.
     is_blocked: Option<bool>,
@@ -16784,9 +16798,9 @@ struct UpdateColumnInput {
     config_json: Option<String>,
 }
 
-/// Renames a column, sets or clears its WIP limit, flips its done flag, makes it or stops it being
-/// the board's Blocked column, and updates its description, collapsed state, the calling account's
-/// watch and settings bag.
+/// Renames a column, sets or clears its WIP limit, flips its done flag, sets or clears its stage,
+/// makes it or stops it being the board's Blocked column, and updates its description, collapsed
+/// state, the calling account's watch and settings bag.
 #[utoipa::path(
     patch,
     path = "/api/columns/{id}",
@@ -16815,6 +16829,7 @@ async fn update_column(
     let reshapes = input.name.is_some()
         || input.wip_limit.is_some()
         || input.is_done.is_some()
+        || input.stage.is_some()
         || input.is_blocked.is_some()
         || input.description.is_some()
         || input.collapsed.is_some()
@@ -16841,6 +16856,7 @@ async fn update_column(
         name,
         wip_limit: input.wip_limit,
         is_done: input.is_done,
+        stage: input.stage,
         is_blocked: input.is_blocked,
         description: input.description.as_deref().map(str::trim),
         collapsed: input.collapsed,
@@ -18671,6 +18687,7 @@ fn board_columns(db: &AccountDb, board_id: &str) -> Result<Vec<ColumnListItem>, 
             name: column.name,
             wip_limit: column.wip_limit,
             is_done: column.is_done,
+            stage: column.stage,
         })
         .collect();
     Ok(columns)
@@ -21042,7 +21059,7 @@ async fn get_board_rules(
 /// locked label is refused to an API token with 403 `card_locked`. A token issued as an agent
 /// role may move a task only where `role_moves` lets that role, and is refused with 403
 /// `role_move_forbidden` otherwise. Leave `role_moves` out to give the standard roles their
-/// standard moves, which apply only where the board has columns named for the stages. Send `{}`
+/// standard moves, which apply only where the board's columns hold the stages that set. Send `{}`
 /// to limit no role.
 #[utoipa::path(
     put,
@@ -28754,6 +28771,9 @@ mod labels_tests;
 mod rules_tests;
 
 #[cfg(test)]
+mod column_stage_tests;
+
+#[cfg(test)]
 mod seat_api_tests;
 
 #[cfg(test)]
@@ -30915,6 +30935,7 @@ mod tests {
             config_json: "{}".into(),
             former_names: Vec::new(),
             watchers: Vec::new(),
+            stage: None,
         }];
         let swimlanes = vec![SwimlaneRow {
             id: "s1".into(),
@@ -31070,6 +31091,7 @@ mod tests {
             config_json: "{}".into(),
             former_names: Vec::new(),
             watchers: Vec::new(),
+            stage: None,
         }];
         let tasks = vec![
             feed_task(
@@ -31228,6 +31250,7 @@ mod tests {
                 is_done: i == 4,
                 is_blocked: false,
                 watched: false,
+                stage: String::new(),
                 config_json: "{}".into(),
                 sum_label: None,
                 sum_kind: "count",

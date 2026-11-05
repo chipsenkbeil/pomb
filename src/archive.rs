@@ -21,9 +21,9 @@ pub use spool::Spool;
 
 use crate::db::{BoardSnapshot, DbResult, OfflineDb};
 use crate::models::{
-    ActorKind, BoardRow, ColorRow, ColumnRow, FieldColumn, FieldDefRow, FieldKind, FieldOwner,
-    HistoryKind, LaneLimit, LinkKind, OwnerHolder, Responsible, SwimlaneRow, TaskClaim, TaskKind,
-    TaskLink, TaskRow, TimeEntryRow,
+    ActorKind, BoardRow, ColorRow, ColumnRow, ColumnStage, FieldColumn, FieldDefRow, FieldKind,
+    FieldOwner, HistoryKind, LaneLimit, LinkKind, OwnerHolder, Responsible, SwimlaneRow, TaskClaim,
+    TaskKind, TaskLink, TaskRow, TimeEntryRow,
 };
 use crate::taskjson::TaskArray;
 
@@ -156,6 +156,10 @@ struct ColumnInfo {
     collapsed: bool,
     /// The names the column had before each rename, oldest first.
     former_names: Vec<String>,
+    /// The step of the pull model the column stands in for, or null for none. An archive with no
+    /// key gets the stage its name maps to on import.
+    #[serde(default, deserialize_with = "present")]
+    stage: Option<Option<ColumnStage>>,
     /// The column's settings bag.
     settings: Map<String, Value>,
 }
@@ -628,6 +632,7 @@ fn column_info(column: ColumnRow) -> ColumnInfo {
         description: column.description,
         collapsed: column.collapsed,
         former_names: column.former_names,
+        stage: Some(column.stage),
     }
 }
 
@@ -1242,7 +1247,8 @@ mod tests {
 
     use super::*;
     use crate::db::{
-        AccountDb, ColumnKind, Db, NewComment, NewTimeEntry, SCHEMA_VERSION, SchemaTooNew,
+        AccountDb, ColumnKind, ColumnPatch, Db, NewComment, NewTimeEntry, SCHEMA_VERSION,
+        SchemaTooNew,
     };
     use crate::models::{API_TOKEN_ACTOR, AccountId, Actor, EntryKind, Owner};
 
@@ -1602,6 +1608,36 @@ mod tests {
             .row;
         assert_eq!(row.kind, TaskKind::Epic);
         assert!(row.closed);
+    }
+
+    #[test]
+    fn column_stage_should_survive_an_export_and_import_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+        let first = seeded.db.list_columns(&seeded.board).expect("columns")[0]
+            .id
+            .clone();
+        let patch = ColumnPatch {
+            stage: Some(Some(ColumnStage::Verify)),
+            ..ColumnPatch::default()
+        };
+        seeded.db.update_column(&first, &patch).expect("stage");
+        let exported = document(&archive_of(&seeded));
+        assert_eq!(exported["columns"][0]["stage"], "verify");
+
+        let spool_dir = tempfile::tempdir().expect("tempdir");
+        let spool = Spool::create(spool_dir.path()).expect("spool");
+        let account = AccountId::new("acc");
+        let importer = Importer {
+            handle: "chip",
+            account: &account,
+            max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
+            activities: &[],
+        };
+        let snapshot = read_board(&archive_bytes(&seeded), &importer, &spool)
+            .expect("import")
+            .0;
+        assert_eq!(snapshot.columns[0].stage, Some(ColumnStage::Verify));
     }
 
     #[test]

@@ -249,6 +249,7 @@ mod tests {
             config_json: "{}".to_string(),
             former_names: Vec::new(),
             watchers: Vec::new(),
+            stage: None,
         };
         let file_id = uuid::Uuid::new_v4().to_string();
         let mut row = Db::new_task_row("column", None, "Task", 1, None);
@@ -385,6 +386,7 @@ mod tests {
                 config_json: "{}".to_string(),
                 former_names: Vec::new(),
                 watchers: Vec::new(),
+                stage: None,
             }],
             swimlanes: Vec::new(),
             fields: Vec::new(),

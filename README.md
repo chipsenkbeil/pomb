@@ -216,9 +216,11 @@ minified files:
 
 ## Releasing and deploying
 
-1. `dev release <commit> --batch N --summary "..."` squashes a verified
-   commit onto `main`, runs lint, test and build on ci, pushes, and prints
-   the sha and nix hash for deployments that pin a commit.
+1. `dev release --batch N --summary "..."` bumps the version on the
+   remote's `main` as its own commit, runs lint, test, nixcheck and build on
+   ci, pushes, tags `batch-N` and `vX.Y.Z` on the pushed sha, and prints the
+   sha and nix hash for deployments that pin a commit. It refuses when `main`
+   has no commit since the last `v*` tag.
 2. A push to `main` publishes the `nightly` binary, and a `v*` tag publishes
    a release (`.github/workflows/publish.yml`).
 3. After a deployment switches to the new sha, `dev verify <sha>`

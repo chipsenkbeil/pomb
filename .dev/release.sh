@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
-# Land a verified commit on main as one release commit and print the homelab request.
+# Cut a release from the remote's main as it stands and print the homelab request.
 # flags: --batch --summary --env --dry-run --hash-only
 #
-#   dev release <verified-commit> --batch 48 --summary "limits and docs"
-#   dev release <verified-commit> --batch 48 --summary "..." --env KEY=VALUE
-#   dev release <verified-commit> --batch 48 --summary "..." --dry-run
+#   dev release --batch 48 --summary "limits and docs"
+#   dev release --batch 48 --summary "..." --env KEY=VALUE
+#   dev release --batch 48 --summary "..." --dry-run
 #
-# Steps, any failure aborts before the push:
-#   1. Refuse unless <remote>/main is the verified commit's base: an ancestor of it,
-#      or sharing its merge-base tree, so applying the diff cannot revert main.
-#      Then refuse unless Cargo.toml's package version differs from <remote>/main's and
+# Each card lands on main through dev land after its own verification, so a release adds
+# only the version bump. Steps, any failure aborts before the push:
+#   1. Refuse unless <remote>/main has a commit since its last v* tag.
+#   2. Bump the version with .dev/__bump_version.sh in .dev/worktrees/release-<N> on
+#      <remote>/main and commit "Release batch-<N>: <summary>" with only Cargo.toml and
+#      Cargo.lock. Then refuse unless the new version differs from the last v* tag's and
 #      Cargo.lock's pomb entry matches it.
-#   2. Apply the diff onto <remote>/main in .dev/worktrees/release-<N> and commit
-#      "Release batch-<N>: <summary>".
 #   3. Run dev lint --remote, dev test --remote, dev nixcheck --remote and dev build --remote,
 #      one at a time on ci, logging to a temp dir. A failing gate aborts before the push, and
 #      so does a gate whose ci run is not a new passed run of the release worktree with
 #      source local.
-#   4. Refuse attribution trailers in the new commit, then push to main on the remote of record.
-#   5. Compute the nix hash of the commit's tree and print the request block.
+#   4. Refuse attribution trailers in the new commit and refuse when <remote>/main moved since
+#      step 1, then push to main on the remote of record.
+#   5. Tag batch-<N> and v<version> at the pushed commit with .dev/__push_tag.sh, then compute
+#      the nix hash of the commit's tree and print the request block. A failed tag prints the
+#      __push_tag.sh command to rerun for it.
 #
 # The remote of record is forge.remote, else gerrit when that remote exists, else origin.
 # On gerrit the release commit carries a Change-Id trailer.
@@ -26,7 +29,7 @@
 # --hash-only <sha> fetches main from the remote of record and prints the request block
 # for an already pushed sha: the recovery path when the hash step fails after the push.
 #
-# --dry-run does everything except the push and the hash. The release worktree
+# --dry-run does everything except the push, the tags and the hash. The release worktree
 # stays behind. dev verify --cleanup removes it once the release is live.
 # Repeat --env to list pomb.service environment changes in the request.
 set -euo pipefail
@@ -38,7 +41,7 @@ tools="$root/.dev"
 # shellcheck source=__remote.sh
 . "$tools/__remote.sh"
 
-commit="" batch="" summary="" dry_run=0 hash_only=""
+batch="" summary="" dry_run=0 hash_only=""
 envs=()
 
 die() {
@@ -47,7 +50,7 @@ die() {
 }
 
 usage() {
-    echo 'usage: dev release <verified-commit> --batch N --summary "<text>" [--env KEY=VALUE]... [--dry-run]' >&2
+    echo 'usage: dev release --batch N --summary "<text>" [--env KEY=VALUE]... [--dry-run]' >&2
     echo '       dev release --hash-only <sha> [--batch N] [--env KEY=VALUE]...' >&2
     exit 2
 }
@@ -89,17 +92,14 @@ while [ $# -gt 0 ]; do
     --hash-only) hash_only="${2:-}"; shift ;;
     --hash-only=*) hash_only="${1#--hash-only=}" ;;
     -*) usage ;;
-    *)
-        [ -z "$commit" ] || usage
-        commit="$1"
-        ;;
+    *) usage ;;
     esac
     shift
 done
 if [ -n "$hash_only" ]; then
-    [ -z "$commit" ] && [ -z "$summary" ] || usage
+    [ -z "$summary" ] || usage
 else
-    [ -n "$commit" ] && [ -n "$batch" ] && [ -n "$summary" ] || usage
+    [ -n "$batch" ] && [ -n "$summary" ] || usage
 fi
 case "$batch" in *[!0-9]*) die "--batch must be a number, got '$batch'" ;; esac
 for kv in "${envs[@]+"${envs[@]}"}"; do
@@ -118,38 +118,30 @@ fi
 cd "$main_repo"
 remote=$(remote_of_record) || exit 1
 git fetch -q "$remote"
-cand=$(git rev-parse --verify "$commit^{commit}") || die "no such commit: $commit"
 base=$(git rev-parse "$remote/main")
 
-# 1. the remote's main must be the commit's base
-if ! git merge-base --is-ancestor "$base" "$cand"; then
-    fork=$(git merge-base "$base" "$cand") || die "$commit shares no history with $remote/main"
-    [ "$(git rev-parse "$fork^{tree}")" = "$(git rev-parse "$base^{tree}")" ] ||
-        die "$remote/main (${base:0:7}) moved past the verified base (${fork:0:7}); re-verify on the new main"
-fi
+# 1. main must hold a commit since the last tag
+last_tag=$(git describe --tags --match 'v*' --abbrev=0 "$base") || die "no v* tag in the history of $remote/main"
+[ "$(git rev-list --count "$last_tag..$base")" -gt 0 ] ||
+    die "$remote/main (${base:0:7}) has no commit since $last_tag; nothing to release"
 
-guard_dir=$(mktemp -d)
-{
-    git show "$remote/main:Cargo.toml" >"$guard_dir/base.toml" &&
-        git show "$cand:Cargo.toml" >"$guard_dir/cand.toml" &&
-        git show "$cand:Cargo.lock" >"$guard_dir/cand.lock"
-} || { rm -rf "$guard_dir"; die "cannot read Cargo.toml or Cargo.lock at $commit"; }
-guard_ok=0
-"$tools/__version_guard.sh" "$guard_dir/base.toml" "$guard_dir/cand.toml" "$guard_dir/cand.lock" || guard_ok=1
-rm -rf "$guard_dir"
-[ "$guard_ok" = 0 ] || die "version check failed for $commit"
-
-# 2. apply the diff in a fresh worktree and commit
+# 2. bump the version in a fresh worktree and commit only that
 wt=".dev/worktrees/release-$batch"
 [ ! -e "$wt" ] || die "$wt already exists; remove it first"
-git worktree add -q --detach "$wt" "$remote/main"
+git worktree add -q --detach "$wt" "$base"
 cd "$wt"
-git diff --binary "$remote/main" "$cand" | git apply --index || die "diff does not apply (worktree left at $main_repo/$wt)"
-git diff --quiet "$cand" || die "applied tree differs from $cand (worktree left at $main_repo/$wt)"
-git diff --cached --quiet && die "verified commit changes nothing against $remote/main"
+new_version=$(bash "$tools/__bump_version.sh" "$PWD") || die "version bump failed (worktree left at $main_repo/$wt)"
+git add Cargo.toml Cargo.lock
 git commit -q -m "Release batch-$batch: $summary"
 [ "$remote" != gerrit ] || add_change_id
 sha=$(git rev-parse HEAD)
+
+tag_toml=$(mktemp)
+git show "$last_tag:Cargo.toml" >"$tag_toml" || { rm -f "$tag_toml"; die "cannot read Cargo.toml at $last_tag"; }
+guard_ok=0
+bash "$tools/__version_guard.sh" "$tag_toml" Cargo.toml Cargo.lock || guard_ok=1
+rm -f "$tag_toml"
+[ "$guard_ok" = 0 ] || die "version $new_version fails the check against $last_tag (worktree left at $main_repo/$wt)"
 
 # 3. gates, one at a time on ci
 logs=$(mktemp -d "${TMPDIR:-/tmp}/release-$batch.XXXXXX")
@@ -157,21 +149,29 @@ printf 'release: logs in %s\n' "$logs"
 export CARGO_TARGET_DIR="$PWD/target"
 for gate in lint test nixcheck build; do
     printf 'release: dev %s --remote ...\n' "$gate"
-    ran=$("$tools/__gate.sh" "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
+    ran=$(bash "$tools/__gate.sh" "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
         die "dev $gate --remote did not pass on this worktree: $(cat "$logs/$gate.err"), see $logs/$gate.log (worktree left at $main_repo/$wt)"
     printf 'release: %s ci run %s\n' "$gate" "$ran"
 done
 printf 'release: gates ok: %s\n' "$(rg -o 'Summary.*' "$logs/test.log" | tail -1)"
 
 # 4. attribution check, then push
-"$tools/__push_main.sh" "$PWD" --check || die "attribution check failed (worktree left at $main_repo/$wt)"
+bash "$tools/__push_main.sh" "$PWD" --check || die "attribution check failed (worktree left at $main_repo/$wt)"
+git fetch -q "$remote"
+[ "$(git rev-parse "$remote/main")" = "$base" ] ||
+    die "$remote/main moved past ${base:0:7} while the gates ran; rerun dev release (worktree left at $main_repo/$wt)"
 if [ "$dry_run" -eq 1 ]; then
     printf 'release: dry run, not pushed. Release commit %s in %s/%s\n' "$sha" "$main_repo" "$wt"
     exit 0
 fi
-"$tools/__push_main.sh" "$PWD" || die "push failed (worktree left at $main_repo/$wt)"
+bash "$tools/__push_main.sh" "$PWD" || die "push failed (worktree left at $main_repo/$wt)"
 
-# 5. nix hash and the request
+# 5. tags, nix hash and the request
+tag_reruns=""
+for tag in "batch-$batch" "v$new_version"; do
+    bash "$tools/__push_tag.sh" "$tag" "$sha" || tag_reruns+=" && bash $tools/__push_tag.sh $tag $sha"
+done
+[ -z "$tag_reruns" ] || die "pushed $sha but tagging failed; rerun: ${tag_reruns# && }, then dev release --hash-only $sha"
 hash=$(nix_hash "$sha") ||
     die "pushed $sha but the nix hash failed; run: dev release --hash-only $sha"
 request_block "$sha" "$hash"

@@ -19,10 +19,10 @@ use super::{
 };
 use crate::db::{AccountDb, BoardImport, Db, FileImport, MAX_HISTORY_TEXT_CHARS, TaskImport};
 use crate::models::{
-    AccountId, AttachmentVersion, BreakActivity, ColorRow, ColumnRow, EntryKind, FieldDefRow,
-    FieldKind, LaneLimit, LinkKind, MAIN_SWIMLANE_KEY, NUMBERING_KEY, Numbering, Owner,
-    OwnerHolder, Quotas, Responsible, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment,
-    TaskEvent, TaskKind, TaskLink, TaskRow, TextCap, TimeEntryRow, custom_color_hexes,
+    AccountId, AttachmentVersion, BreakActivity, ColorRow, ColumnRow, ColumnStage, EntryKind,
+    FieldDefRow, FieldKind, LaneLimit, LinkKind, MAIN_SWIMLANE_KEY, NUMBERING_KEY, Numbering,
+    Owner, OwnerHolder, Quotas, Responsible, Subtask, SwimlaneRow, TaskAttachment, TaskClaim,
+    TaskComment, TaskEvent, TaskKind, TaskLink, TaskRow, TextCap, TimeEntryRow, custom_color_hexes,
     is_custom_color, parse_due_time, standard_color, valid_field_key,
 };
 use crate::routes::{
@@ -575,6 +575,9 @@ impl Builder<'_> {
                 config_json: bag_json(settings, "column settings")?,
                 former_names: column.former_names,
                 watchers: Vec::new(),
+                stage: column
+                    .stage
+                    .unwrap_or_else(|| ColumnStage::from_legacy_name(&column.name)),
             });
         }
         Ok(rows)
@@ -3470,5 +3473,21 @@ mod tests {
         document["board"]["settings"]["numbering"]["next"] = json!(20);
         let (import, _) = read(&document).expect("a board");
         assert_eq!(import.settings["numbering"]["next"], 20);
+    }
+
+    #[test]
+    fn read_board_should_stage_a_column_from_its_name_only_when_the_key_is_absent() {
+        let mut document = base();
+        document["columns"][0]["name"] = json!("In Review");
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(import.columns[0].stage, Some(ColumnStage::Review));
+
+        document["columns"][0]["stage"] = json!(null);
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(import.columns[0].stage, None);
+
+        document["columns"][0]["stage"] = json!("verify");
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(import.columns[0].stage, Some(ColumnStage::Verify));
     }
 }

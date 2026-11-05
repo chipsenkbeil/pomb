@@ -2586,6 +2586,7 @@
     document.getElementById('ec-wip-type').value = th.dataset.wipUnit === 'hours' ? 'hours' : 'count';
     document.getElementById('ec-collapsed').checked = th.dataset.collapsed === '1';
     document.getElementById('ec-blocked').checked = th.dataset.isBlocked === '1';
+    document.getElementById('ec-stage').value = th.dataset.stage || '';
     // KF-042: the remaining fields live in the column's opaque config_json
     // bag — load the saved values so editing a name doesn't wipe them.
     var cfg = columnConfigBag(th);
@@ -2637,6 +2638,7 @@
       wip_limit: wip,
       collapsed: document.getElementById('ec-collapsed').checked,
       is_blocked: document.getElementById('ec-blocked').checked,
+      stage: document.getElementById('ec-stage').value || null,
       config_json: JSON.stringify(config),
     }).then(drained).then(function (res) {
       if (res.ok) window.location.reload();
