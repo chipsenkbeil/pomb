@@ -17729,7 +17729,7 @@
       panel.addEventListener('change', function (e) {
         // KF-175: handle both select dropdowns (by id) and radio buttons (by name)
         if (e.target.id === 'f-user' || e.target.id === 'f-owner' || e.target.id === 'f-color' || e.target.id === 'f-date' ||
-            e.target.id === 'f-label-mode' || e.target.classList.contains('f-field') ||
+            e.target.id === 'f-label-mode' || e.target.id === 'f-hide-epics' || e.target.classList.contains('f-field') ||
             e.target.name === 'f-fold' || e.target.name === 'f-user' || e.target.name === 'f-color' || e.target.name === 'f-date' || e.target.name === 'f-label') {
           self.applyFilter();
           self.maybeSaveFilter();
@@ -17780,6 +17780,7 @@
           self.setRadio('f-date', b.date);
           self.setLabelMode(b.labelMode);
           self.setFilterFields(b.fields);
+          self.setHideEpics(b.hideEpics);
           document.querySelectorAll('input[name="f-label"]').forEach(function (box) {
             box.checked = (b.labels || []).indexOf(box.value) !== -1;
           });
@@ -17823,7 +17824,8 @@
           date: self.filterValue('f-date'),
           labels: self.filterLabels(),
           labelMode: self.filterLabelMode(),
-          fields: self.filterFields()
+          fields: self.filterFields(),
+          hideEpics: self.hideEpics()
         });
         name.value = '';
         self.writeFilterBookmarks(list);
@@ -18464,6 +18466,14 @@
       }
       select.value = chosen;
     },
+    hideEpics: function () {
+      var box = document.getElementById('f-hide-epics');
+      return !!box && box.checked;
+    },
+    setHideEpics: function (on) {
+      var box = document.getElementById('f-hide-epics');
+      if (box) box.checked = on === true;
+    },
     setEpicFilter: function (id) {
       this.epicFilter = id || '';
       var select = document.getElementById('f-epic');
@@ -18571,6 +18581,7 @@
         this.filterValue('f-color') !== 'all' ||
         this.filterValue('f-date') !== 'all' ||
         this.epicFilter !== '' ||
+        this.hideEpics() ||
         this.filterLabels().length > 0 ||
         Object.keys(this.filterFields()).length > 0;
     },
@@ -18607,6 +18618,7 @@
       this.setLabelMode(this.LABEL_MODE.AND);
       this.setFilterFields({});
       this.setEpicFilter('');
+      this.setHideEpics(false);
       this.setRadio('f-fold', this.FOLD_MODE.HIDE);
       document.querySelectorAll('input[name="f-label"]').forEach(function (box) {
         box.checked = false;
@@ -18722,6 +18734,7 @@
       var fields = this.filterFields();
       var fieldKeys = Object.keys(fields);
       var epic = this.epicFilter;
+      var hideEpics = this.hideEpics();
       var self = this;
       var activeTaskId = null;
       if (user === 'timer' && window.TimerUI && TimerUI.state && TimerUI.state.taskId) {
@@ -18753,6 +18766,7 @@
           try { cardFields = JSON.parse(card.dataset.filterFields || '{}'); } catch (e) { cardFields = {}; }
           if (!fieldKeys.every(function (k) { return cardFields[k] === fields[k]; })) show = false;
         }
+        if (hideEpics && card.dataset.kind === 'epic') show = false;
         if (show && epic && card.dataset.taskId !== epic && !self.isEpicChild(card, epic)) show = false;
         var list = card.closest('.task-list');
         var only = list ? self.columnLabels[list.dataset.columnId] : null;
@@ -19100,6 +19114,7 @@
         labelMode: this.filterLabelMode(),
         fields: this.filterFields(),
         epic: this.epicFilter,
+        hideEpics: this.hideEpics(),
         fold: this.panelFoldMode()
       });
       try { window.sessionStorage.setItem(this.sessionFilterKey(), state); } catch (e) {}
@@ -19126,6 +19141,7 @@
         this.setLabelMode(f.labelMode);
         this.setFilterFields(f.fields);
         this.setEpicFilter(kept && typeof f.epic === 'string' ? f.epic : '');
+        this.setHideEpics(f.hideEpics);
         this.setRadio('f-fold', f.fold === this.FOLD_MODE.COLLAPSE ? this.FOLD_MODE.COLLAPSE : this.FOLD_MODE.HIDE);
         this.fillEpicSelect();
         // Label checkboxes load async — apply them when they arrive.

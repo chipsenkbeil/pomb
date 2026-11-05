@@ -128,6 +128,8 @@
       <select id="f-epic" class="filter-select">
         <option value="" selected>Show all</option>
       </select>
+      <label class="filter-remember">Hide epic cards
+        <input type="checkbox" id="f-hide-epics" class="filter-switch" role="switch"></label>
     </section>
     {% for field in filter_fields %}
     <section class="filter-section" aria-label="Filter by {{ field.label }}">
