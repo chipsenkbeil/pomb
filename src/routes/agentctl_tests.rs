@@ -13,7 +13,7 @@ use crate::db::{
 use crate::models::{
     AccountId, ActiveTimer, Actor, ActorKind, AgentRoleRow, AuthScope, BoardAccess, DeviceAuthRow,
     DeviceAuthStatus, FieldDefRow, FieldKind, FieldOwner, HistoryKind, SECONDS_PER_DAY,
-    SECONDS_PER_HOUR, TimeEntryRow, TimerMode,
+    SECONDS_PER_HOUR, TaskKind, TimeEntryRow, TimerMode,
 };
 use crate::permissions::{Permission, STANDARD_ROLES};
 use crate::{AppState, BODY_LIMIT_BYTES, markdown};
@@ -123,6 +123,24 @@ async fn create(fx: &Fixture, body: Value) -> String {
     let (status, task) = call(fx, "POST", "/api/tasks", Some(body)).await;
     assert_eq!(status, StatusCode::CREATED, "{task}");
     task["id"].as_str().expect("id").to_string()
+}
+
+/// Creates an epic in the Todo column through the API and returns its id.
+async fn create_epic(fx: &Fixture, name: &str) -> String {
+    let body = json!({"column_id": fx.col_todo, "name": name, "kind": "epic"});
+    create(fx, body).await
+}
+
+/// Turns the epics among `ids` back into plain tasks, as an older file holds its umbrellas.
+fn make_plain(fx: &Fixture, ids: &[&str]) {
+    for id in ids {
+        fx.db
+            .apply_task_change(id, Actor::SYSTEM, |row| {
+                row.kind = TaskKind::Task;
+                ((), true)
+            })
+            .expect("plain");
+    }
 }
 
 /// Like [`call`], but returns a page's `items` instead of the page.
@@ -7768,6 +7786,12 @@ async fn a_timer_on_a_board_outside_the_set_should_read_idle_and_refuse_every_wr
 async fn a_link_that_reaches_outside_the_set_should_stay_hidden_and_refuse_every_write() {
     let (_dir, fx) = fixture();
     let (far, _, far_task) = other_board(&fx);
+    fx.db
+        .apply_task_change(&far_task, Actor::SYSTEM, |row| {
+            row.kind = TaskKind::Epic;
+            ((), true)
+        })
+        .expect("epic");
     let near_task = create(&fx, json!({"column_id": fx.col_todo, "name": "Near"})).await;
     let next_task = create(&fx, json!({"column_id": fx.col_todo, "name": "Next"})).await;
     let (status, link) = call(
@@ -8759,7 +8783,7 @@ const PARENT_CYCLE: &str = "the link would put the umbrella under its own child"
 #[tokio::test]
 async fn parent_and_child_links_should_list_on_both_tasks_and_count_done_children() {
     let (_dir, fx) = fixture();
-    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Tokens"})).await;
+    let umbrella = create_epic(&fx, "Tokens").await;
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "Slice A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "Slice B"})).await;
     let (status, created) = link(&fx, &a, "parent", &umbrella).await;
@@ -8794,6 +8818,7 @@ async fn parent_and_child_links_should_list_on_both_tasks_and_count_done_childre
     assert_eq!(view["children_total"], 0);
     assert_eq!(view["children"], json!([]));
 
+    make_plain(&fx, &[&umbrella]);
     move_to_done(&fx, &a).await;
     let view = detail(&fx, &umbrella).await;
     assert_eq!(
@@ -8830,7 +8855,7 @@ async fn parent_and_child_links_should_list_on_both_tasks_and_count_done_childre
 #[tokio::test]
 async fn parent_link_should_refuse_a_second_umbrella_and_itself() {
     let (_dir, fx) = fixture();
-    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "U"})).await;
+    let umbrella = create_epic(&fx, "U").await;
     let other = create(&fx, json!({"column_id": fx.col_todo, "name": "V"})).await;
     let child = create(&fx, json!({"column_id": fx.col_todo, "name": "C"})).await;
     assert_eq!(
@@ -8866,7 +8891,7 @@ async fn parent_link_should_refuse_a_second_umbrella_and_itself() {
 async fn parent_link_should_refuse_the_reverse_of_an_existing_parent_link() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
-    let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
+    let b = create_epic(&fx, "B").await;
     assert_eq!(link(&fx, &a, "parent", &b).await.0, StatusCode::OK);
     let (status, text) = post_link(&fx, &b, "parent", &a).await;
     assert_eq!(
@@ -8929,7 +8954,7 @@ async fn children_on_other_boards_should_count_by_their_own_done_column() {
         .create_column(&board_id, "Closed", None)
         .expect("column");
     fx.db.set_column_done(&done, true).expect("set done");
-    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "U"})).await;
+    let umbrella = create_epic(&fx, "U").await;
     let near = create(&fx, json!({"column_id": open, "name": "Far open"})).await;
     let far = create(&fx, json!({"column_id": done, "name": "Far done"})).await;
     link(&fx, &near, "parent", &umbrella).await;
@@ -8947,12 +8972,13 @@ async fn children_on_other_boards_should_count_by_their_own_done_column() {
 #[tokio::test]
 async fn deleting_an_umbrella_or_a_child_should_clear_the_parent_link() {
     let (_dir, fx) = fixture();
-    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "U"})).await;
+    let umbrella = create_epic(&fx, "U").await;
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
     link(&fx, &a, "parent", &umbrella).await;
     link(&fx, &b, "parent", &umbrella).await;
 
+    make_plain(&fx, &[&umbrella]);
     move_to_done(&fx, &umbrella).await;
     let view = detail(&fx, &umbrella).await;
     assert_eq!(view["children_total"], 2);
@@ -8972,7 +8998,7 @@ async fn deleting_an_umbrella_or_a_child_should_clear_the_parent_link() {
         assert!(!card_html(&fx, child).await.contains("card-epic-tag"));
     }
 
-    let again = create(&fx, json!({"column_id": fx.col_todo, "name": "U2"})).await;
+    let again = create_epic(&fx, "U2").await;
     assert_eq!(link(&fx, &a, "parent", &again).await.0, StatusCode::OK);
     let (status, _) = call(&fx, "DELETE", &format!("/api/tasks/{a}"), None).await;
     assert_eq!(status, StatusCode::OK);
@@ -8999,12 +9025,13 @@ fn description_panel(html: &str) -> &str {
 #[tokio::test]
 async fn the_modal_should_show_the_children_tab_chip_and_rows_for_an_umbrella_only() {
     let (_dir, fx) = fixture();
-    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Tokens"})).await;
+    let umbrella = create_epic(&fx, "Tokens").await;
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "Slice A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "Slice B"})).await;
     let plain = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
     link(&fx, &a, "parent", &umbrella).await;
     link(&fx, &b, "parent", &umbrella).await;
+    make_plain(&fx, &[&umbrella]);
     move_to_done(&fx, &a).await;
 
     let html = modal_html(&fx, &umbrella).await;
@@ -9042,7 +9069,7 @@ async fn the_modal_should_show_the_children_tab_chip_and_rows_for_an_umbrella_on
 #[tokio::test]
 async fn the_modal_should_offer_change_and_remove_on_a_child() {
     let (_dir, fx) = fixture();
-    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Tokens"})).await;
+    let umbrella = create_epic(&fx, "Tokens").await;
     let child = create(&fx, json!({"column_id": fx.col_todo, "name": "Slice A"})).await;
     link(&fx, &child, "parent", &umbrella).await;
 
@@ -9064,7 +9091,7 @@ async fn the_modal_should_offer_change_and_remove_on_a_child() {
 #[tokio::test]
 async fn hide_done_children_should_round_trip_through_settings_and_render_in_the_modal() {
     let (_dir, fx) = fixture();
-    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Tokens"})).await;
+    let umbrella = create_epic(&fx, "Tokens").await;
     let open = create(&fx, json!({"column_id": fx.col_todo, "name": "Open one"})).await;
     let done = create(&fx, json!({"column_id": fx.col_todo, "name": "Done one"})).await;
     link(&fx, &open, "parent", &umbrella).await;
@@ -9129,9 +9156,9 @@ async fn change_umbrella(fx: &Fixture, task: &str, target: &str) -> (StatusCode,
 #[tokio::test]
 async fn changing_the_umbrella_should_replace_the_parent_link_in_one_call() {
     let (_dir, fx) = fixture();
-    let old = create(&fx, json!({"column_id": fx.col_todo, "name": "Old"})).await;
-    let new = create(&fx, json!({"column_id": fx.col_todo, "name": "New"})).await;
-    let kid = create(&fx, json!({"column_id": fx.col_todo, "name": "Kid"})).await;
+    let old = create_epic(&fx, "Old").await;
+    let new = create_epic(&fx, "New").await;
+    let kid = create_epic(&fx, "Kid").await;
     let loner = create(&fx, json!({"column_id": fx.col_todo, "name": "Loner"})).await;
     let member = create(&fx, json!({"column_id": fx.col_todo, "name": "Member"})).await;
     let grand = create(&fx, json!({"column_id": fx.col_todo, "name": "Grand"})).await;
@@ -9167,9 +9194,45 @@ async fn changing_the_umbrella_should_replace_the_parent_link_in_one_call() {
     );
 }
 
+#[tokio::test]
+async fn a_parent_link_to_a_plain_task_should_be_refused_as_not_an_epic() {
+    let (_dir, fx) = fixture();
+    let plain = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
+    let epic = create_epic(&fx, "Epic").await;
+    let kid = create(&fx, json!({"column_id": fx.col_todo, "name": "Kid"})).await;
+    let other = create(&fx, json!({"column_id": fx.col_todo, "name": "Other"})).await;
+
+    let admin = token_with(&fx, "admin", AuthScope::Admin);
+    let refused = |method: &'static str, uri: String, body: Value| {
+        let who = As::Bearer(&admin);
+        let fx = &fx;
+        async move {
+            let (status, text) = request(fx, who, method, &uri, Some(body), true).await;
+            let error: Value = serde_json::from_str(&text).expect("json");
+            (status, error)
+        }
+    };
+    for (task, kind, target) in [(&kid, "parent", &plain), (&plain, "child", &kid)] {
+        let uri = format!("/api/tasks/{task}/links");
+        let body = json!({"kind": kind, "target_id": target});
+        let (status, error) = refused("POST", uri, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{kind}: {error}");
+        assert_eq!(error["code"], "not_epic", "{kind}");
+    }
+    assert!(links_of(&fx, &kid).await.is_empty());
+
+    assert_eq!(link(&fx, &kid, "parent", &epic).await.0, StatusCode::OK);
+    assert_eq!(link(&fx, &epic, "child", &other).await.0, StatusCode::OK);
+    let uri = format!("/api/tasks/{kid}/umbrella");
+    let (status, error) = refused("PUT", uri, json!({"target_id": plain})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert_eq!(error["code"], "not_epic");
+    assert_eq!(detail(&fx, &kid).await["parent"]["id"], epic.as_str());
+}
+
 async fn nested_tree(fx: &Fixture) -> [String; 4] {
-    let root = create(fx, json!({"column_id": fx.col_todo, "name": "Root"})).await;
-    let mid = create(fx, json!({"column_id": fx.col_todo, "name": "Mid"})).await;
+    let root = create_epic(fx, "Root").await;
+    let mid = create_epic(fx, "Mid").await;
     let leaf = create(fx, json!({"column_id": fx.col_todo, "name": "Leaf"})).await;
     let free = create(fx, json!({"column_id": fx.col_todo, "name": "Free"})).await;
     assert_eq!(link(fx, &mid, "parent", &root).await.0, StatusCode::OK);
@@ -9181,7 +9244,7 @@ async fn nested_tree(fx: &Fixture) -> [String; 4] {
 async fn parent_links_should_nest_three_levels_from_the_api() {
     let (_dir, fx) = fixture();
     let [root, mid, leaf, _] = nested_tree(&fx).await;
-    let top = create(&fx, json!({"column_id": fx.col_todo, "name": "Top"})).await;
+    let top = create_epic(&fx, "Top").await;
     assert_eq!(link(&fx, &top, "child", &root).await.0, StatusCode::OK);
 
     let view = detail(&fx, &leaf).await;
@@ -9240,6 +9303,7 @@ async fn the_modal_should_show_the_whole_umbrella_path_and_count_direct_children
     let [root, mid, leaf, _] = nested_tree(&fx).await;
     let twin = create(&fx, json!({"column_id": fx.col_todo, "name": "Twin"})).await;
     link(&fx, &twin, "parent", &mid).await;
+    make_plain(&fx, &[&root, &mid]);
     move_to_done(&fx, &leaf).await;
 
     let html = modal_html(&fx, &leaf).await;
@@ -9319,9 +9383,9 @@ async fn picker_ids_everywhere(fx: &Fixture, task: &str, query: &str) -> Vec<Str
 #[tokio::test]
 async fn the_link_picker_should_list_the_tasks_a_child_link_would_accept() {
     let (_dir, fx) = fixture();
-    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let card = create_epic(&fx, "Card").await;
     let kid = create(&fx, json!({"column_id": fx.col_todo, "name": "Kid"})).await;
-    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Umbrella"})).await;
+    let umbrella = create_epic(&fx, "Umbrella").await;
     let member = create(&fx, json!({"column_id": fx.col_todo, "name": "Member"})).await;
     let free_b = create(&fx, json!({"column_id": fx.col_done, "name": "bravo"})).await;
     let free_a = create(&fx, json!({"column_id": fx.col_todo, "name": "Alpha"})).await;
@@ -9370,11 +9434,11 @@ async fn the_link_picker_should_find_cards_on_other_boards_until_the_board_term_
     )
     .await;
     let other_column = columns[0]["id"].as_str().expect("column").to_string();
-    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let card = create_epic(&fx, "Card").await;
     let near = create(&fx, json!({"column_id": fx.col_todo, "name": "Near"})).await;
     let far = create(
         &fx,
-        json!({"column_id": other_column, "name": "Far umbrella"}),
+        json!({"column_id": other_column, "name": "Far umbrella", "kind": "epic"}),
     )
     .await;
 
@@ -9464,8 +9528,8 @@ async fn a_board_limited_token_should_never_see_unreadable_boards_in_the_link_pi
 async fn the_link_picker_should_list_the_tasks_a_parent_link_would_accept() {
     let (_dir, fx) = fixture();
     let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
-    let current = create(&fx, json!({"column_id": fx.col_todo, "name": "Current"})).await;
-    let other = create(&fx, json!({"column_id": fx.col_todo, "name": "Other"})).await;
+    let current = create_epic(&fx, "Current").await;
+    let other = create_epic(&fx, "Other").await;
     let sibling = create(&fx, json!({"column_id": fx.col_todo, "name": "Sibling"})).await;
     let child_of_other = create(&fx, json!({"column_id": fx.col_todo, "name": "Nested"})).await;
     link(&fx, &card, "parent", &current).await;
@@ -9709,6 +9773,9 @@ async fn deleting_a_middle_umbrella_should_leave_its_children_loose_and_the_rest
     let (_dir, fx) = fixture();
     let [root, mid, leaf, _] = nested_tree(&fx).await;
     let below = create(&fx, json!({"column_id": fx.col_todo, "name": "Below"})).await;
+    let body = Some(json!({"kind": "epic"}));
+    let (status, made) = call(&fx, "PATCH", &format!("/api/tasks/{leaf}"), body).await;
+    assert_eq!(status, StatusCode::OK, "{made}");
     assert_eq!(link(&fx, &below, "parent", &leaf).await.0, StatusCode::OK);
 
     let (status, _) = call(&fx, "DELETE", &format!("/api/tasks/{mid}"), None).await;
@@ -11228,7 +11295,7 @@ async fn a_board_limited_token_should_never_see_the_board_names_of_linked_cards_
     )
     .await;
     let other_column = columns[0]["id"].as_str().expect("column").to_string();
-    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let card = create_epic(&fx, "Card").await;
     let child = create(
         &fx,
         json!({"column_id": other_column, "name": "Remote child"}),
@@ -11236,7 +11303,7 @@ async fn a_board_limited_token_should_never_see_the_board_names_of_linked_cards_
     .await;
     let umbrella = create(
         &fx,
-        json!({"column_id": other_column, "name": "Remote umbrella"}),
+        json!({"column_id": other_column, "name": "Remote umbrella", "kind": "epic"}),
     )
     .await;
     link(&fx, &card, "child", &child).await;
@@ -11288,7 +11355,7 @@ async fn the_task_modal_should_name_its_own_board() {
 async fn the_link_picker_should_list_admissible_cards_past_the_first_hundred_hits() {
     let (_dir, fx) = fixture();
     let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
-    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Umbrella"})).await;
+    let umbrella = create_epic(&fx, "Umbrella").await;
     for n in 1..=100 {
         let kid = create(
             &fx,
@@ -11319,18 +11386,18 @@ async fn a_board_limited_token_should_not_be_offered_cards_the_server_refuses_to
     )
     .await;
     let hidden_column = columns[0]["id"].as_str().expect("column").to_string();
-    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let card = create_epic(&fx, "Card").await;
     let free = create(&fx, json!({"column_id": fx.col_todo, "name": "Free"})).await;
     let held = create(&fx, json!({"column_id": fx.col_todo, "name": "Held"})).await;
     let below = create(&fx, json!({"column_id": fx.col_todo, "name": "Below"})).await;
     let secret_umbrella = create(
         &fx,
-        json!({"column_id": hidden_column, "name": "Secret umbrella"}),
+        json!({"column_id": hidden_column, "name": "Secret umbrella", "kind": "epic"}),
     )
     .await;
     let secret_middle = create(
         &fx,
-        json!({"column_id": hidden_column, "name": "Secret middle"}),
+        json!({"column_id": hidden_column, "name": "Secret middle", "kind": "epic"}),
     )
     .await;
     assert_eq!(
@@ -12409,14 +12476,11 @@ async fn a_nested_epic_should_report_its_parent_epic_and_count_only_direct_child
 #[tokio::test]
 async fn board_epics_should_skip_plain_cards_and_give_a_card_umbrella_no_parent_id() {
     let (_dir, fx) = fixture();
-    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Umbrella"})).await;
-    let epic = create(
-        &fx,
-        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
-    )
-    .await;
+    let umbrella = create_epic(&fx, "Umbrella").await;
+    let epic = create_epic(&fx, "Epic").await;
     let (status, linked) = link(&fx, &epic, "parent", &umbrella).await;
     assert_eq!(status, StatusCode::OK, "{linked}");
+    make_plain(&fx, &[&umbrella]);
 
     let epics = board_epics(&fx, &fx.board_id).await;
     assert_eq!(epics.as_array().expect("array").len(), 1);

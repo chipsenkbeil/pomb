@@ -701,6 +701,7 @@ fn openapi_should_describe_every_agent_role_route() {
     );
     for (method, path) in [
         ("post", "/api/v1/auth/tokens/children"),
+        ("get", "/api/v1/auth/tokens/children"),
         ("delete", "/api/v1/auth/tokens/children/{id}"),
         ("delete", "/api/v1/auth/tokens/children"),
     ] {

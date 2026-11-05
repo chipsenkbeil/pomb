@@ -38,6 +38,8 @@ pub enum ErrorCode {
     InvalidGrant,
     /// The handle, or the recovery code sent with it, matches no account (400).
     InvalidRecovery,
+    /// A parent link names a task that is not an epic, and only an epic holds children (400).
+    NotEpic,
     /// No credential was sent (401).
     Unauthenticated,
     /// The API token is unknown or revoked (401).

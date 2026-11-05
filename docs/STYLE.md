@@ -136,6 +136,10 @@ history, speculate about the future, name the code that calls it, or point at a
 file, a line or a task id. Every comment, `//`, `///` and `//!` alike, also
 follows the `prose-review` skill.
 
+Schema history lives in git and the fingerprint list, never in a doc comment:
+the doc above `SCHEMA_VERSION` says only what the current schema is and why an
+older binary refuses a newer file.
+
 A pointer to another place in the code rots the moment that code moves.
 
 Review
@@ -1786,4 +1790,20 @@ mod local_time;
 
 // Bad
 mod time;
+```
+
+### P9. Apply rule 48 to main.rs and the CLI paths only
+
+Rule 48 covers `main.rs` and the CLI paths, which take `anyhow`. Library code,
+such as the db module, keeps its own error type and never takes `anyhow`. This
+overrides rule 48 for library code.
+
+Review
+
+```rust
+// Good
+let board = client.board(&id).context("Failed to load the board")?;
+
+// Bad
+let board = db.board(&id).context("Failed to load the board")?;
 ```

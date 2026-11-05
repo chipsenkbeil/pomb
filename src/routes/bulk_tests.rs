@@ -61,6 +61,13 @@ impl Fixture {
         reply.body["id"].as_str().expect("id").to_string()
     }
 
+    async fn epic(&self, column: &str, name: &str) -> String {
+        let body = json!({"column_id": column, "name": name, "kind": "epic"});
+        let reply = self.send("POST", "/api/tasks", Some(body)).await;
+        assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+        reply.body["id"].as_str().expect("id").to_string()
+    }
+
     async fn bulk(&self, board: &str, body: Value) -> Reply {
         let uri = format!("/api/boards/{board}/tasks/bulk");
         self.send("POST", &uri, Some(body)).await
@@ -1298,7 +1305,7 @@ async fn bulk_relations_dry_run_should_list_the_relations_and_change_nothing() {
     let fx = Fixture::new();
     let (board, columns) = fx.board("Plans", &["Todo"]);
     let a = fx.task(&columns[0], "a").await;
-    let hub = fx.task(&columns[0], "hub").await;
+    let hub = fx.epic(&columns[0], "hub").await;
     let old = fx.task(&columns[0], "old").await;
     fx.db
         .add_task_link(&a, LinkKind::Related, &old, None, Actor::SYSTEM)
@@ -1490,13 +1497,32 @@ async fn bulk_delete_should_delete_nothing_when_a_task_is_locked() {
 }
 
 #[tokio::test]
+async fn bulk_relations_should_refuse_a_parent_link_to_a_plain_task_as_not_an_epic() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    let plain = fx.task(&columns[0], "plain").await;
+
+    let body = json!({
+        "task_ids": [a],
+        "action": "relations",
+        "add_links": [{"kind": "parent", "target_id": plain}],
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert_eq!(reply.body["code"], "not_epic", "{}", reply.body);
+    assert!(fx.row(&a).links.is_empty());
+}
+
+#[tokio::test]
 async fn bulk_relations_should_refuse_a_second_child_under_an_umbrella_and_change_nothing() {
     let fx = Fixture::new();
     let (board, columns) = fx.board("Plans", &["Todo"]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
-    let first = fx.task(&columns[0], "first").await;
-    let second = fx.task(&columns[0], "second").await;
+    let first = fx.epic(&columns[0], "first").await;
+    let second = fx.epic(&columns[0], "second").await;
     fx.db
         .add_task_link(&b, LinkKind::Parent, &first, None, Actor::SYSTEM)
         .expect("link");

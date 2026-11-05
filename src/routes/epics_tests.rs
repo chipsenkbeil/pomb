@@ -6,7 +6,7 @@ use super::server::{passkey_mode, unthrottled_limits};
 use super::{EPIC_TEMPLATE, router};
 use crate::AppState;
 use crate::db::Db;
-use crate::models::AccountId;
+use crate::models::{AccountId, Actor, TaskKind};
 
 struct Fixture {
     db: Db,
@@ -996,9 +996,19 @@ async fn a_plain_cards_details_and_more_menu_should_not_offer_link_a_child() {
 #[tokio::test]
 async fn a_plain_card_with_children_should_list_them_without_offering_to_add_more() {
     let (_dir, fx) = fixture();
-    let parent = create(&fx, json!({"column_id": fx.col_todo, "name": "Parent"})).await;
+    let parent = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Parent", "kind": "epic"}),
+    )
+    .await;
     let child = create(&fx, json!({"column_id": fx.col_todo, "name": "Child"})).await;
     adopt(&fx, &child, &parent).await;
+    fx.db
+        .apply_task_change(&parent, Actor::SYSTEM, |row| {
+            row.kind = TaskKind::Task;
+            ((), true)
+        })
+        .expect("plain");
     let modal = modal_of(&fx, &parent).await;
     let children = section(&modal, "tm-panel-children");
     assert!(children.contains("data-child-id"), "{children}");

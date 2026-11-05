@@ -22,6 +22,7 @@ use crate::db::{Db, LinkAddOutcome};
 use crate::disk::{DiskGuard, DiskProbe, MIB};
 use crate::models::{
     AccountId, Actor, AuthScope, BoardAccess, CoverChange, DiskLimits, InstanceMode, LinkKind,
+    TaskKind,
 };
 
 /// What the router answered.
@@ -591,6 +592,14 @@ async fn export_and_import_should_keep_a_three_level_nest() {
         .clone();
     let make = |name: &str| fx.db.create_task(&todo, None, name, 1, None).expect("task");
     let (root, mid, leaf) = (make("Root"), make("Mid"), make("Leaf"));
+    for umbrella in [&root, &mid] {
+        fx.db
+            .apply_task_change(umbrella, Actor::SYSTEM, |row| {
+                row.kind = TaskKind::Epic;
+                ((), true)
+            })
+            .expect("epic");
+    }
     for (child, umbrella) in [(&mid, &root), (&leaf, &mid)] {
         let outcome = fx
             .db

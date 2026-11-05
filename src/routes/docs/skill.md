@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "31"
+  version: "32"
 ---
 
 # Pomb
@@ -125,7 +125,7 @@ A lead token issues a subagent with `POST /api/v1/auth/tokens/children` and a `r
 7. An epic (`kind` `epic`) is claimed once every direct child is done. While a child is open, a claim is
    a 409 `epic_not_claimable` and a move into a WIP-limited or Done column a 409 `epic_has_open_children`.
    Make one with `POST /api/tasks`, `"kind": "epic"` and a `board_id` in place of `column_id`, or `PATCH`
-   a task to `"kind": "epic"`. Link a child with `POST /api/tasks/{id}/links` on it and `{"kind": "parent", "target_id": "<epic>"}`.
+   a task to `"kind": "epic"`. Link a child with `POST /api/tasks/{id}/links` on it and `{"kind": "parent", "target_id": "<epic>"}`, and any other parent is a 400 `not_epic`.
 8. `GET /api/boards/{id}/epics` shows progress. Finished children never close an epic: a lead token or
    the owner does with `POST /api/tasks/{id}/close`, or a move into Done does, and a move out reopens it.
 9. On a decision you cannot make alone, add a `question` to `POST /api/tasks/{id}/comments`. Relay the owner's

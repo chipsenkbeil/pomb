@@ -9780,7 +9780,7 @@ struct BulkTasksResult {
     request_body = BulkTasksInput,
     responses(
         (status = 200, description = "Every task changed, or would change under `dry_run`", body = BulkTasksResult),
-        (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks or a link the tasks cannot hold"),
+        (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks, a link the tasks cannot hold or a `parent` or `child` link whose umbrella is not an epic (`not_epic`)"),
         (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task, or a task it links to, carries a locking label and the token is not the owner's"),
         (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
         (status = 409, description = "`epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column"),
@@ -10231,6 +10231,12 @@ fn link_pairs(links: Option<Vec<BulkLink>>) -> Result<Vec<(LinkKind, String)>, A
         .collect()
 }
 
+/// Returns the 400 for a parent link whose umbrella is not an epic.
+fn not_epic() -> AppError {
+    AppError::bad_request("the umbrella must be an epic, so make it one first")
+        .with_code(ErrorCode::NotEpic)
+}
+
 /// Returns the error for a relation change [`Db::change_links_logged`] refused.
 fn link_refusal(refusal: LinkRefusal) -> AppError {
     match refusal {
@@ -10242,6 +10248,7 @@ fn link_refusal(refusal: LinkRefusal) -> AppError {
         LinkRefusal::ParentCycle => {
             AppError::bad_request("the link would put the umbrella under its own child")
         }
+        LinkRefusal::NotEpic => not_epic(),
         LinkRefusal::NotOwner => AppError::permission_denied(Permission::LinksDelete),
     }
 }
@@ -11088,7 +11095,7 @@ struct CreateLinkInput {
     request_body = CreateLinkInput,
     responses(
         (status = 200, description = "The link, as seen from this task", body = TaskLink),
-        (status = 400, description = "unknown link kind, target is the task itself, link would create a cycle, the tasks already have a relation of another type, the child already has an umbrella, or the link would put the umbrella under its own child"),
+        (status = 400, description = "unknown link kind, target is the task itself, link would create a cycle, the tasks already have a relation of another type, the child already has an umbrella, the link would put the umbrella under its own child, or the umbrella is not an epic (`not_epic`)"),
         (status = 404, description = "Task or target not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -11132,6 +11139,7 @@ async fn create_task_link(
         LinkAddOutcome::ParentCycle => Err(AppError::bad_request(
             "the link would put the umbrella under its own child",
         )),
+        LinkAddOutcome::NotEpic => Err(not_epic()),
     }
 }
 
@@ -11153,7 +11161,7 @@ struct ChangeUmbrellaInput {
     request_body = ChangeUmbrellaInput,
     responses(
         (status = 200, description = "The `parent` link now held by the task", body = TaskLink),
-        (status = 400, description = "target is the task itself, the task has no umbrella, or the target sits under the task"),
+        (status = 400, description = "target is the task itself, the task has no umbrella, the target sits under the task, or the target is not an epic (`not_epic`)"),
         (status = 404, description = "Task or target not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -11199,6 +11207,7 @@ async fn change_task_umbrella(
         UmbrellaChange::ParentCycle => Err(AppError::bad_request(
             "the link would put the umbrella under its own child",
         )),
+        UmbrellaChange::NotEpic => Err(not_epic()),
     }
 }
 

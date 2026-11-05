@@ -408,6 +408,8 @@ pub enum LinkAddOutcome {
     HasParent,
     /// Refused: the umbrella sits under the child, so the link would close a parent cycle.
     ParentCycle,
+    /// Refused: the umbrella is not an epic.
+    NotEpic,
 }
 
 /// The link changes [`Db::change_links_logged`] makes on each task.
@@ -434,6 +436,8 @@ pub enum LinkRefusal {
     HasParent,
     /// The umbrella sits under the child.
     ParentCycle,
+    /// The umbrella is not an epic.
+    NotEpic,
     /// A link to remove was not created by the API token the removal is limited to.
     NotOwner,
 }
@@ -464,6 +468,8 @@ pub enum UmbrellaChange {
     NoUmbrella,
     /// Refused: the new umbrella sits under the task, so the change would close a parent cycle.
     ParentCycle,
+    /// Refused: the new umbrella is not an epic.
+    NotEpic,
 }
 
 /// Typed outcome for a change to one comment.
@@ -968,645 +974,6 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-///
-/// Version 2 adds, over version 1 (all additive, read from older rows
-/// through serde defaults):
-///
-/// 1. `TaskRow`: `updated_at`, `metadata`, `links` (`TaskLink`, `LinkKind`),
-///    `claim` (`TaskClaim`), `claim_fence`, `fields`.
-/// 2. `TaskComment`: `actor_kind` (`ActorKind`), `token_name`, `kind`.
-/// 3. Table `field_defs` holding `FieldDefRow` (`FieldKind`, `FieldOwner`),
-///    and multimap `fields_by_board`.
-/// 4. Multimap `task_links_by_target`.
-/// 5. Table `device_auths` holding `DeviceAuthRow` (`DeviceAuthStatus`).
-/// 6. `TaskRow`: `due_target_column_id`, and a board's opaque `config_json` gains `due_time`.
-/// 7. `TaskEvent`: `column_id`, and `ColumnRow`: `former_names`. A column's opaque
-///    `config_json` stores `column_sum` as "count" or "hours" and `sorting` as "due", "color" or
-///    "added" too.
-/// 8. A board's opaque `config_json` holds `main_swimlane_id`, the id of the lane that renders
-///    without a label.
-///
-/// Version 2 has shipped.
-///
-/// Version 3 adds, over version 2 (additive, read from older rows through a
-/// serde default):
-///
-/// 1. `Subtask`: `due_at`.
-///
-/// Version 3 has shipped.
-///
-/// Version 4 removes, over version 3 (older rows still holding the key load,
-/// because serde ignores unknown keys):
-///
-/// 1. `Settings`: `ding_enabled`.
-///
-/// Version 4 has shipped.
-///
-/// Version 5 changes, over version 4:
-///
-/// 1. `ApiTokenRecord` and `DeviceAuthRow`: `scope` (`AuthScope`: `read`, `work` or `admin`)
-///    replaces the `scopes` list. The upgrade maps a list holding `write` to `admin`, and a
-///    list of only `read` to `read`.
-/// 2. `DeviceAuthRow`: `token_expires_at`.
-/// 3. `TaskEvent`: `token_name`.
-///
-/// Version 5 has shipped.
-///
-/// Version 6 changes, over version 5:
-///
-/// 1. `ApiTokenRecord` and `DeviceAuthRow`: the stored `scope` gains `provision`, between `work`
-///    and `admin`. The upgrade rewrites no row, and the new stamp makes a version-5 binary refuse
-///    a file that may hold a `provision` token.
-///
-/// Version 7 adds, over version 6 (additive, read from older rows through a serde default):
-///
-/// 1. `FieldDefRow`: `columns` (`FieldColumn`), the typed columns of a `table` field, and the
-///    `table` value of `FieldKind`. The upgrade rewrites no row, and the new stamp makes a
-///    version-6 binary refuse a file that may hold a `table` field, which it would read as an
-///    unknown kind.
-///
-/// Version 7 has shipped.
-///
-/// Version 8 changes, over version 7:
-///
-/// 1. `UserRow`: `password_hash` is gone. The upgrade strips it from every stored user and deletes
-///    every stored session, since each was opened with a password.
-/// 2. Table `passkeys` holding `PasskeyRow`, the passkeys the owner signs in with.
-///
-/// Version 9 adds, over version 8 (additive, read from an absent row as its defaults):
-///
-/// 1. `BackupSettings` and `BackupStatus`, stored as the `backups` and `backup_status` rows of
-///    the `settings` table. The upgrade writes no row, and the new stamp makes a version-8
-///    binary refuse a file whose owner configured backups.
-///
-/// Version 9 has shipped.
-///
-/// Version 10 binds every row to the account that owns it:
-///
-/// 1. `BoardRow`: `owner_id`, indexed by the multimap `boards_by_owner`. `ApiTokenRecord`:
-///    `account_id`. `DeviceAuthRow`: `account_id`, set on approval. `BoardTemplateRow`:
-///    `owner_id`, [`None`] for a built-in template. `TimeEntryRow`: `account_id`.
-/// 2. `UserRow`: `role` (`AccountRole`), `status` (`AccountStatus`) and `created_at`.
-/// 3. Table `account_settings` holding each account's `Settings`, which leave the `app` row of
-///    `settings`. The active timer is keyed by account id instead of `timer`.
-/// 4. `InstanceSettings` (`InstanceMode`), stored as the `instance` row of `settings`.
-///
-/// The upgrade gives every row to the instance's one user, who becomes its admin. A file without
-/// a user keeps its rows ownerless until the first account claims them.
-///
-/// Version 11 adds, over version 10:
-///
-/// 1. `InstanceMode`: `multi`, which `--mode multi` stores.
-/// 2. Table `recovery_codes` holding `RecoveryCodeRow`, each account's recovery code as a salted
-///    hash.
-/// 3. Table `invites` holding `InviteRow`, the unused invite links by the hash of their token.
-///
-/// The upgrade rewrites no row, and the new stamp makes a version-10 binary refuse a file that
-/// may hold a member account.
-///
-/// Version 12 adds, over version 11:
-///
-/// 1. `AccountStatus`: `pending`, an account that requested to join and waits for the admin, and
-///    `suspended`, an account the admin stopped.
-/// 2. `InstanceSettings`: `registration` (`RegistrationMode`), read as `invite` from an older row,
-///    and `pending_cap`, read as the default cap.
-/// 3. Table `activity`, the time each account was last seen.
-/// 4. Table `suspended_tokens` holding the `ApiTokenRecord`s a suspension took from
-///    `api_tokens`.
-///
-/// The upgrade rewrites no row, and the new stamp makes a version-11 binary refuse a file that
-/// may hold a pending or suspended account.
-///
-/// Version 13 adds, over version 12:
-///
-/// 1. `InstanceSettings`: `quotas` (`Quotas`), `limits` (`RateLimits`) and `disk` (`DiskLimits`),
-///    each read as its defaults from an older row.
-///
-/// The upgrade rewrites no row, and the new stamp makes a version-12 binary refuse a file whose
-/// settings it would drop on its next write.
-///
-/// Version 14 adds, over version 13:
-///
-/// 1. Table `board_activity`, the time each board was last used.
-/// 2. `InstanceSettings`: `prune` (`PruneSettings`), read as its defaults from an older row, and
-///    `prune_changed_at`, read as absent.
-/// 3. `PruneStatus`, stored as the `prune_status` row of the `settings` table.
-///
-/// The upgrade records every existing board as used at the upgrade, so no board is pruned for
-/// the time before its use was tracked.
-///
-/// Version 14 has shipped.
-///
-/// Version 15 adds, over version 14:
-///
-/// 1. `Quotas`: `subtasks_per_task`, `templates_per_account`, `stored_mib_per_account`,
-///    `columns_per_board`, `swimlanes_per_board` and `fields_per_board`, each read as its default
-///    from an older row.
-/// 2. Table `account_usage`, the bytes each account stores in task rows, time entries, saved
-///    templates and attachment files.
-/// 3. `DeviceAuthRow`: `client_network`, read as absent from an older row.
-/// 4. `BoardTemplateRow`: `snapshot_bytes`, without its `snapshot`, which moves to table
-///    `template_snapshots`. Table `templates_by_owner` indexes the templates by owner.
-///
-/// The upgrade moves every template's snapshot to its own table and counts what every account
-/// stores. The new stamp makes a version-14 binary refuse a file whose usage counts it would leave
-/// stale.
-///
-/// Version 15 has shipped.
-///
-/// Version 16 adds, over version 15:
-///
-/// 1. `Quotas`: `time_entries_per_account`, read as its default from an older row.
-/// 2. Multimaps `entries_by_account` and `entries_by_day`, which index each account's time
-///    entries, and `passkeys_by_user`, which indexes each account's passkeys.
-/// 3. Table `feed_tokens`, the board each calendar-feed token names, by the token's hash.
-///
-/// The upgrade builds every new index from the stored rows. The new stamp makes a version-15
-/// binary refuse a file whose indexes it would leave stale.
-///
-/// Version 16 has shipped.
-///
-/// Version 17 adds, over version 16:
-///
-/// 1. `SessionRow`: `verified_at`, read as absent from an older row, so a session from before the
-///    upgrade has to prove a passkey again before a sensitive action.
-///
-/// The upgrade rewrites no row. The new stamp makes a version-16 binary refuse a file whose
-/// sessions it would save without their proof.
-///
-/// Version 18 changes, over version 17:
-///
-/// 1. Table `sessions` is keyed by the hex SHA-256 of the session cookie value instead of the
-///    value itself.
-///
-/// The upgrade deletes every stored session, since none is keyed by a hash, so everyone signs in
-/// again. The stored types and tables are the same as in version 17, so the fingerprint is too.
-/// The new stamp makes a version-17 binary refuse a file whose sessions it could not find.
-///
-/// Version 19 adds, over version 18:
-///
-/// 1. `BoardRow`: `created_by_token`, the id of the API token that created the board, read as
-///    empty from an older row.
-///
-/// The upgrade also gives every task that has no `column_entered_at` the time of its latest `moved`
-/// history event, else its creation time, and counts what every account stores again. The new
-/// stamp makes a version-18 binary refuse a file whose boards it would save without their
-/// creator.
-///
-/// Version 20 adds, over version 19:
-///
-/// 1. Table `passkeys_by_credential`, base64url credential id -> passkey id.
-/// 2. Multimap `tokens_by_account`, account id -> id of each API token it holds, live or
-///    suspended.
-/// 3. Multimap `sessions_by_user`, account id -> key of each session it has.
-/// 4. Multimap `devices_by_account`, account id -> key of each device request it approved.
-///
-/// The upgrade builds all four from the rows. The new stamp makes a version-19 binary refuse a
-/// file whose rows it would change without keeping these in step.
-///
-/// Version 21 adds, over version 20 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskComment`: `token_id`, the id of the API token that wrote the comment, and `edited_at`,
-///    the time of its last edit.
-///
-/// The upgrade rewrites no row, so a comment from before the upgrade names no token and only an
-/// admin can edit or delete it. The new stamp makes a version-20 binary refuse a file whose
-/// comments it would save without their token or edit time.
-///
-/// Version 22 adds, over version 21:
-///
-/// 1. Table `token_ids_by_hash`, hex SHA-256 of an API token -> id of the token, live or
-///    suspended. A new token keeps that SHA-256 as its `token_hash` and an empty `salt`.
-/// 2. Multimap `salted_tokens_by_last4`, last four characters of a token -> id of each token
-///    still under a salted hash.
-/// 3. Multimap `devices_by_user_code`, canonical user code -> key of each device request that
-///    carries it.
-///
-/// The upgrade indexes every stored token by its last four characters, because a salted hash
-/// cannot be turned into a key without the raw token, and every device request by its user code.
-/// A salted token moves to `token_ids_by_hash` the first time it authenticates. The new stamp
-/// makes a version-21 binary refuse a file whose tokens and device requests it would change
-/// without keeping these in step.
-///
-/// Version 23 changes, over version 22:
-///
-/// 1. `TaskRow`: `column_added_at` is now `column_entered_at`, the time the task entered its
-///    column.
-/// 2. Multimap `devices_by_expiry`, unix second -> key of each device request that expires then.
-///
-/// The upgrade moves each task's stamp to the new name and indexes every device request by its
-/// expiry. A suspended account's tokens are no longer deleted when the suspension is lifted, which
-/// changes no stored shape. The new stamp makes a version-22 binary refuse a file whose tasks it
-/// would read without their stamp and whose device requests it would store without this index.
-///
-/// Version 24 adds, over version 23 (additive, read from older rows through a serde default):
-///
-/// 1. `SwimlaneRow`: `description`, the text shown as a tooltip on the lane's header, `limits`, the
-///    WIP limits it puts on columns (`LaneLimit`: `column_id` and `max`), `collapsed`, whether the
-///    lane is folded, and `height`, the lane's dragged height in pixels.
-///
-/// The upgrade rewrites no row, so a lane from before the upgrade reads with no description, no
-/// limits, unfolded, at the default height. The new stamp makes a version-23 binary refuse a file
-/// whose lanes it would save without those fields.
-///
-/// Version 25 adds, over version 24 (additive):
-///
-/// 1. Table `board_events` holding [`BoardEventRow`] ([`EventKind`]), keyed by board id and a
-///    sequence number that counts up per board.
-/// 2. Table `event_wakeups`, empty in every committed file.
-///
-/// The upgrade rewrites no row, so a board from before the upgrade starts with no events, and its
-/// first cursor is 0. The new stamp makes a version-24 binary refuse a file whose events it would
-/// neither keep in step with the tasks nor delete with their board.
-///
-/// Version 26 changes, over version 25:
-///
-/// 1. [`ActorKind`] gains `system`, the author of a change the server makes on its own.
-/// 2. `BoardEventRow`: `column_id` is now optional, absent on the board a task left for another
-///    board.
-///
-/// The upgrade rewrites no row: every event stored before it reads with the column it holds. The
-/// new stamp makes a version-25 binary refuse a file whose events or comments it could not read.
-///
-/// Version 27 adds, over version 26:
-///
-/// 1. `ApiTokenRecord` and `DeviceAuthRow`: `permissions`, the set of `Permission` names the
-///    credential holds, and `boards`, the [`BoardAccess`] naming the boards it may reach.
-///
-/// The upgrade rewrites every token in `api_tokens` and `suspended_tokens` and every device
-/// request in `device_auths` to the preset of its scope, `provision` to `lead`, with all boards.
-/// It changes no key and no index. The new stamp makes a version-26 binary refuse a file whose
-/// tokens it would save without their permissions and boards.
-///
-/// Version 28 adds, over version 27 (additive, read from older rows through a serde default):
-///
-/// 1. `Settings`: `modal_folded_groups`, the keys of the task dialog sidebar folds the account
-///    set, among them `panel` for the whole sidebar.
-///
-/// The upgrade rewrites no row, so a settings row from before the upgrade reads with nothing
-/// folded. The new stamp makes a version-27 binary refuse a file whose folds it would drop on its
-/// next settings save.
-///
-/// Version 29 adds, over version 28 (additive):
-///
-/// 1. [`LinkKind`] gains `parent`, stored on a child task with the umbrella as its target.
-///
-/// The upgrade rewrites no row. The new stamp makes a version-28 binary refuse a file whose tasks
-/// hold a `parent` link it could not read.
-///
-/// Version 30 adds, over version 29 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskLink`: `token_id`, the API token that created the link.
-///
-/// The upgrade rewrites no row, so a link from before the upgrade reads as created by no token
-/// and only `links.delete` removes it. The new stamp makes a version-29 binary refuse a file
-/// whose link creators it would drop on its next task save.
-///
-/// Version 31 adds, over version 30 (additive, read from older rows through a serde default):
-///
-/// 1. `TimeEntryRow`: `role`, the role the time was logged in, and `token_name`, the name of the API
-///    token that logged it.
-///
-/// The upgrade rewrites no row, so an entry from before the upgrade reads with no role and no token
-/// name. The new stamp makes a version-30 binary refuse a file whose entry roles and token names it
-/// would drop on its next entry save.
-///
-/// Version 32 adds, over version 31 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskEvent`: `from` and `to`, the short previews of the value a history event replaced and
-///    set, read as absent from an older event.
-///
-/// The upgrade rewrites no row. The new stamp makes a version-31 binary refuse a file whose
-/// event values it would drop on its next task save.
-///
-/// Version 33 adds, over version 32 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskRow`: `responsible`, the `Responsible` member or named agent session the task is the
-///    responsibility of.
-///
-/// The upgrade rewrites no row, so a task from before the upgrade reads with no responsible actor.
-/// The new stamp makes a version-32 binary refuse a file whose responsible actors it would drop
-/// on its next task save.
-///
-/// Version 34 adds, over version 33 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskAttachment`: `token_name`, the API token that uploaded the file.
-///
-/// The upgrade rewrites no row, so an attachment from before the upgrade reads as uploaded by no
-/// token. The new stamp makes a version-33 binary refuse a file whose uploader tokens it would
-/// drop on its next task save.
-///
-/// Version 35 removes, over version 34, the `attachment_data` table: the bytes of an attachment
-/// live in a file beside the database, named by the attachment's id. Opening an older file moves
-/// each row a task names into its file and drops the table, and the new stamp makes a version-34
-/// binary refuse a file whose attachment bytes it would not find.
-///
-/// Version 36 removes, over version 35:
-///
-/// 1. `BoardRow`: `created_by_token`, which no rule reads any more.
-///
-/// The upgrade rewrites no row. An older row keeps the value until its next save, which drops it.
-/// The new stamp makes a version-35 binary refuse a file whose boards lost the field, and whose
-/// token sets it would not enforce.
-///
-/// Version 37 adds, over version 36 (additive, read from older rows through a serde default):
-///
-/// 1. `Subtask`: `token_id`, the API token that created the subtask.
-///
-/// The upgrade rewrites no row, so a subtask from before the upgrade reads as created by no token
-/// and only `subtasks.delete` removes it. The new stamp makes a version-36 binary refuse a file
-/// whose subtask creators it would drop on its next task save.
-///
-/// Version 38 adds, over version 37 (additive, read from older rows through a serde default):
-///
-/// 1. `Quotas`: `stored_mib_per_board`, the most one board of a member account may hold.
-/// 2. `DiskLimits`: `max_attachment_mib`, the most one attachment file may hold.
-///
-/// The upgrade rewrites no row, so older settings read with the defaults. The new stamp makes a
-/// version-37 binary refuse a file whose limits it would drop on its next settings save.
-///
-/// Version 39 adds, over version 38 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskAttachment`: `sha256`, the hash of the attachment's bytes.
-///
-/// The upgrade rewrites no row, so an attachment from before the upgrade has no hash and a later
-/// upload matches it by name alone. The new stamp makes a version-38 binary refuse a file whose
-/// attachment hashes it would drop on its next task save.
-///
-/// Version 40 adds, over version 39, the recycle bin: the table `recycle_bin` (task id to a
-/// `BinRow`, a deleted task whole with its time entries) and the multimap `recycle_bin_by_board`.
-/// The upgrade rewrites no row, so a task deleted before it is gone. The new stamp makes a
-/// version-39 binary refuse a file whose deleted tasks and their attachment files it would not
-/// name, and so delete as unnamed.
-///
-/// Version 41 adds, over version 40, the `Permission` `tasks.bin`. The upgrade gives it to every
-/// token and device request that holds the whole lead or admin preset of its scope, and a custom
-/// set keeps what it holds. The new stamp makes a version-40 binary refuse a file whose tokens name
-/// a permission it cannot read.
-///
-/// Version 42 adds, over version 41, the table `notifications`: the notifications of each account,
-/// keyed by account id and a sequence number. The new stamp makes a version-41 binary refuse a
-/// file whose notifications it would not carry.
-///
-/// Version 43 adds, over version 42 (additive, read from older rows through a serde default):
-///
-/// 1. `Settings`: `muted_notifications`, the notification kinds the account turned off.
-///
-/// The upgrade rewrites no row, so a settings row from before the upgrade mutes nothing. The new
-/// stamp makes a version-42 binary refuse a file whose muted kinds it would drop on its next
-/// settings save.
-///
-/// Version 44 adds, over version 43 (additive, read from older rows through a serde default):
-///
-/// 1. `SessionRow`: `device`, the browser and system the sign-in came from.
-///
-/// The upgrade rewrites no row, and a session from before the upgrade lists with no device. The new
-/// stamp makes a version-43 binary refuse a file whose session devices it would drop when the
-/// session next proves a passkey.
-///
-/// Version 45 adds, over version 44 (additive, read from older rows through a serde default):
-///
-/// 1. `Settings`: `subtask_templates`, the `SubtaskTemplate` lists the account saved from a task's
-///    checklist.
-///
-/// The upgrade rewrites no row, so a settings row from before the upgrade reads with no templates.
-/// The new stamp makes a version-44 binary refuse a file whose templates it would drop on its next
-/// settings save.
-///
-/// Version 46 adds, over version 45 (additive, read from older rows through a serde default):
-///
-/// 1. `Subtask`: `member_ids`, the accounts the subtask is assigned to.
-///
-/// The upgrade rewrites no row, so a subtask from before the upgrade reads with no members. The new
-/// stamp makes a version-45 binary refuse a file whose subtask members it would drop on its next
-/// task save.
-///
-/// Version 47 adds, over version 46 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskRow`: `timeline_start` and `timeline_end`, the `YYYY-MM-DD` dates of the task's
-///    timeline.
-///
-/// The upgrade rewrites no row, so a task from before the upgrade reads with no timeline. The new
-/// stamp makes a version-46 binary refuse a file whose timelines it would drop on its next task
-/// save.
-///
-/// Version 48 adds, over version 47, the tables `webhooks` holding `WebhookRow` and
-/// `webhook_outbox` holding `OutboxRow`, and the multimaps `webhooks_by_board` and
-/// `webhook_outbox_by_hook`. The upgrade rewrites no row, and the new stamp makes a version-47
-/// binary refuse a file whose webhooks and queued webhook events it would not know.
-///
-/// Version 49 adds, over version 48 (additive, read from older rows through a serde default):
-///
-/// 1. `ColumnRow`: `watchers`, the ids of the accounts that watch the column.
-///
-/// The upgrade rewrites no row, so a column from before the upgrade reads with no watchers. The
-/// new stamp makes a version-48 binary refuse a file whose column watches it would drop on its
-/// next column save.
-///
-/// Version 50 adds, over version 49 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskRow`: `points`, the task's points estimate, kept beside `estimate_hours` so a board that
-///    switches its estimation unit loses neither.
-/// 2. `TaskRow`: `number`, the task's label under the board's numbering, such as `PS-1`.
-///
-/// The numbering itself lives in the board's config bag, which takes any key. The upgrade rewrites
-/// no row, so a task from before the upgrade reads with no points and no number. The new stamp makes
-/// a version-49 binary refuse a file whose points and numbers it would drop on its next task save.
-///
-/// Version 51 adds, over version 50, the `Permission` `labels.manage` and the board config bag key
-/// `label_settings`, a board's highlighted labels, its show-all flag and the labels it keeps with
-/// no card. The upgrade gives the permission to every token and device request that holds the
-/// whole lead or admin preset of its scope, and a custom set keeps what it holds. The new stamp
-/// makes a version-50 binary refuse a file whose tokens name a permission it cannot read.
-///
-/// Version 52 adds, over version 51 (additive, read from older rows through a serde default):
-///
-/// 1. `Settings`: `full_name` (the name members show in place of the handle), `dismissed_hints`
-///    (the ids of the dismissed first-visit hints), `avatar` (the text or uploaded image shown),
-///    `time_format` and `week_start`.
-/// 2. The `avatars` table, one uploaded image per account, counted in the account's stored bytes.
-///
-/// A settings row from before the upgrade reads with no full name, no hint dismissed, a text
-/// avatar, the 12-hour clock and weeks starting Sunday. A version-51 binary refuses the file,
-/// since its next settings save would drop the new fields.
-///
-/// Version 53 adds, over version 52 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskAttachment`: `url`, the address of a link attachment.
-/// 2. `TaskAttachment`: `edited_at` and `versions`, when a text document was saved and its earlier
-///    contents, each an `AttachmentVersion` naming a file beside the database.
-/// 3. `TaskRow`: `cover_id`, the id of the image attachment shown as the task's cover.
-///
-/// The upgrade rewrites no row, so an attachment from before the upgrade is a file and a task has
-/// no cover. The new stamp makes a version-52 binary refuse a file whose links, document versions
-/// and covers it would drop on its next task save.
-///
-/// Version 54 adds, over version 53 (additive, read from older rows through a serde default):
-///
-/// 1. `BoardRow`: `report_bookmarks`, each a `ReportBookmark` holding a chart report's saved
-///    filter values with a name, a share flag and a shortcut flag.
-///
-/// The upgrade rewrites no row, so a board from before the upgrade reads with no bookmark. The
-/// new stamp makes a version-53 binary refuse a file whose bookmarks it would drop on its next
-/// board save.
-///
-/// Version 55 adds, over version 54 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskComment`: `reactions`, the `CommentReaction` of each account and emoji.
-///
-/// The upgrade rewrites no row, so a comment from before the upgrade holds no reactions. The new
-/// stamp makes a version-54 binary refuse a file whose reactions it would drop on its next task
-/// save. A board archive carries no reactions, since the accounts that gave them may not exist
-/// where the archive is imported.
-///
-/// Version 56 adds, over version 55, `BoardMemberRow` and `BoardRole`, stored as rows of the table
-/// `board_members` (keyed `<board id>|<account id>`), with the multimaps `members_by_board` and
-/// `boards_by_member` indexing them. An account that joined a board it does not own holds one row
-/// there, and the board's `owner_id` still names its owner. The upgrade rewrites no row, so every
-/// board reads as having no members. The new stamp makes a version-55 binary refuse a file whose
-/// boards other accounts joined, which it would hide from them and leave dangling on a board delete.
-///
-/// Version 57 adds, over version 56 (additive, read from older rows through a serde default):
-///
-/// 1. `Settings`: `show_tips`, whether the account sees the first-visit tips, read as on.
-/// 2. `InstanceSettings`: `disable_tips`, whether the admin turned the tips off for every account,
-///    read as off.
-///
-/// The upgrade rewrites no row. The new stamp makes a version-56 binary refuse a file whose tip
-/// switches it would drop on its next settings save.
-///
-/// Version 58 adds, over version 57 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskRow`: `kind`, a `TaskKind` that says whether the task is a plain task or an epic.
-/// 2. `TaskRow`: `closed`, whether someone closed the epic.
-/// 3. The `Permission` `epics.manage`, which the upgrade grants to every token and device request
-///    that holds the whole lead or admin preset of its scope.
-///
-/// The upgrade makes the target of every parent link an epic and recounts each account's stored
-/// bytes, so a task that had children before it is an epic and every other task is a plain, open
-/// task. A version-57 binary refuses the file, so its next task save cannot drop the new fields.
-///
-/// Version 59 adds, over version 58:
-///
-/// 1. The tables `inbound_addresses` holding `InboundAddressRow` and `inbound_by_hash`, which maps
-///    the SHA-256 of each inbound address to its id, and the multimap `inbound_by_board`.
-/// 2. The `Permission` `inbound.manage`, which the upgrade grants to every token and device request
-///    that holds the whole admin preset of its scope.
-/// 3. `TaskEvent`: `kind` becomes the enum `HistoryKind`, whose names are the strings the events
-///    already store, so every stored event reads as before.
-///
-/// The upgrade rewrites no task row. A version-58 binary refuses the file, since it knows neither
-/// the inbound addresses nor the new permission.
-///
-/// Version 60 adds, over version 59 (additive, read from older rows through a serde default):
-///
-/// 1. `ApiTokenRecord`: `parent_id`, the lead token that issued the token.
-///
-/// The upgrade rewrites no row, so a token from before the upgrade reads as issued by no token.
-/// The new stamp makes a version-59 binary refuse a file whose child tokens it would save without
-/// their parent, which would leave them alive after the parent is revoked.
-///
-/// Version 61 adds, over version 60 (additive, read from older rows through a serde default):
-///
-/// 1. `ApiTokenRecord`: `parent_name`, the name of the lead token that issued the token.
-/// 2. `TaskEvent` and `TaskComment`: `parent_token`, the `ParentToken` (id and name) of the lead
-///    token behind the child token that made the change.
-///
-/// The upgrade rewrites no row, so an older child token reads without a parent name and an older
-/// event or comment without a parent token. The new stamp makes a version-60 binary refuse a file
-/// whose delegation records it would drop on its next task save.
-///
-/// Version 62 splits the `Permission` `tasks.write` into `tasks.create`, `tasks.edit`,
-/// `tasks.move` and `tasks.claim`, and `subtasks.write` into `subtasks.edit` and `subtasks.check`.
-/// The upgrade replaces each in every token, suspended token and device request with its parts,
-/// which keeps every ability. The new stamp makes a version-61 binary refuse a file whose
-/// permissions it could not read.
-///
-/// Version 63 adds, over version 62 (additive, read from older rows through a serde default):
-///
-/// 1. `ApiTokenRecord`: `child_lifetime_hours`, the most hours a child of the token may live,
-///    which the owner sets in the browser and which reads as 1 from an older row.
-///
-/// The upgrade rewrites no row. The new stamp makes a version-62 binary refuse a file whose
-/// issuing tokens it would save without their limit, which would let their children ask for up to
-/// 8 hours again whatever limit the owner set.
-///
-/// Version 64 adds, over version 63:
-///
-/// 1. The tables `agent_roles` holding `AgentRoleRow` and `agent_role_grants` holding
-///    `AgentRoleGrantRow`, and the multimaps `agent_roles_by_account`,
-///    `agent_role_grants_by_board` and `agent_role_grants_by_role`.
-///
-/// The upgrade rewrites no row and opens the new tables empty. The new stamp makes a version-63
-/// binary refuse a file whose board deletes it would run without removing the board's grants.
-///
-/// Version 65 adds, over version 64 (additive, read from older rows through a serde default):
-///
-/// 1. `ApiTokenRecord`: `role_id`, `role_name` and `label`, the agent role the token was issued as,
-///    the role's name when it was, and the `agent-N` label of that issue.
-/// 2. `AgentRoleRow`: `issued`, how many tokens the role has issued, which numbers the next label.
-///
-/// The upgrade rewrites no row, so an older token reads as issued as no role and an older role as
-/// having issued none. The new stamp makes a version-64 binary refuse a file whose role tokens it
-/// would save without their snapshot, or whose roles it would save with the counter reset, which
-/// would reuse a label.
-///
-/// Version 66 adds, over version 65 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskEvent`, `TaskComment`, `TaskAttachment` and `BoardEventRow`: `role_id`, `role_name` and
-///    `label`, the agent role of the token that acted, the role's name when the token was issued
-///    and the `agent-N` label of that issue.
-/// 2. `TimeEntryRow`: `role_id` and `role_name`, the same for the token that logged the entry.
-///
-/// The upgrade rewrites no row, so an older event, comment, attachment or entry reads as made by no
-/// role. The new stamp makes a version-65 binary refuse a file whose attributions it would drop on
-/// its next save.
-///
-/// Version 67 adds, over version 66 (additive):
-///
-/// 1. Table `tokens_by_role_board`, a multimap from `role id/board id` to the id of each token
-///    issued as that role that reaches that board, which a role's revokes read.
-/// 2. The `Permission` `roles.grant`, in the lead preset. The upgrade grants it to no stored token,
-///    which holds the set its approval expanded.
-///
-/// The upgrade fills the table from the tokens that name a role. The new stamp makes a version-66
-/// binary refuse a file whose role tokens it would save without their index entries.
-///
-/// Version 68 adds, over version 67 (additive, read from older rows through a serde default):
-///
-/// 1. `TaskComment`: `question`, the structured question a comment poses, as a `CommentQuestion`
-///    with its `QuestionChoice` list and, once answered, its `QuestionAnswer`.
-///
-/// The upgrade rewrites no row, so an older comment reads as a plain one. The new stamp makes a
-/// version-67 binary refuse a file whose question comments it would save without their question.
-///
-/// A board's opaque `config_json` gains `blocked_column_id`, the id of its Blocked column.
-///
-/// Version 69 changes no stored field or table. `boards.read` joins the base every standard role
-/// holds, and the upgrade adds it to each stored role that bears a standard name.
-///
-/// Version 70 changes no stored field or table. `subtasks.delete` joins the lead preset and the
-/// lead standard role, and the upgrade adds it to each stored token that held the whole lead
-/// preset without it.
-///
-/// Version 71 changes no stored field or table. The lead standard role shrinks to the permissions a
-/// lead uses, and the upgrade sets the stored role named `lead` to that set. Stored tokens keep
-/// their permissions.
-///
-/// Version 72 adds, over version 71 (additive, read from older rows through a serde default):
-///
-/// 1. `DeviceAuthRow`: `role_id`, the agent role the owner approved the request as.
-///
-/// The upgrade rewrites no row, so an older request reads as approved as no role. The new stamp
-/// makes a version-71 binary refuse a file whose approved requests it would save without their
-/// role.
-///
-/// Version 73 changes no stored field or table. The lead standard role regains `subtasks.check`,
-/// `labels.manage`, `attachments.write` and `time.write`, and the upgrade adds them to the stored
-/// role named `lead` only while it holds exactly the version-72 lead set. The version stamp guards
-/// it, so a lead role the owner later sets back to that set is not changed again.
-///
-/// The next change to stored data bumps the version again.
 pub const SCHEMA_VERSION: u64 = 73;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
@@ -10054,6 +9421,9 @@ impl Db {
                 if parent_chain_reaches(&tbl, stored_target, holder_id)? {
                     return Ok(LinkAddOutcome::ParentCycle);
                 }
+                if other.kind != TaskKind::Epic {
+                    return Ok(LinkAddOutcome::NotEpic);
+                }
             }
             let now = Utc::now().to_rfc3339();
             let link = TaskLink {
@@ -10106,6 +9476,9 @@ impl Db {
             }
             if parent_chain_reaches(&tbl, umbrella_id, task_id)? {
                 return Ok(UmbrellaChange::ParentCycle);
+            }
+            if umbrella.kind != TaskKind::Epic {
+                return Ok(UmbrellaChange::NotEpic);
             }
             let old = task.links.remove(index);
             let old_name = task_in(&tbl, &old.target_id)?.map(|old_umbrella| old_umbrella.name);
@@ -10243,6 +9616,9 @@ impl Db {
                     }
                     LinkAddOutcome::ParentCycle => {
                         return Ok(ChangeOutcome::Refused(LinkRefusal::ParentCycle));
+                    }
+                    LinkAddOutcome::NotEpic => {
+                        return Ok(ChangeOutcome::Refused(LinkRefusal::NotEpic));
                     }
                 }
             }
@@ -13805,6 +13181,14 @@ mod schema_version_tests {
     use crate::models::{AgentRoleRow, FieldKind, FieldOwner};
     use crate::permissions::Preset;
 
+    fn lead_role_permissions() -> BTreeSet<Permission> {
+        STANDARD_ROLES
+            .iter()
+            .find(|standard| standard.name == "lead")
+            .expect("lead")
+            .permissions()
+    }
+
     fn temp_path() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("test.redb");
@@ -14709,11 +14093,7 @@ mod schema_version_tests {
                 .expect("read")
                 .expect("row")
         };
-        let fitted = STANDARD_ROLES
-            .iter()
-            .find(|standard| standard.name == "lead")
-            .expect("lead")
-            .permissions();
+        let fitted = lead_role_permissions();
         assert_eq!(role(&lead).permissions, fitted);
         assert_eq!(role(&planner).permissions, held);
         let kept: ApiTokenRecord = read_one(&db.db, API_TOKENS, &token.id)
@@ -14725,11 +14105,7 @@ mod schema_version_tests {
     #[test]
     fn version_72_file_should_widen_an_untouched_lead_role_and_keep_an_edited_one() {
         let held = |extra: &[Permission]| -> BTreeSet<Permission> {
-            let mut set: BTreeSet<Permission> = STANDARD_ROLES
-                .iter()
-                .find(|standard| standard.name == "lead")
-                .expect("lead")
-                .permissions()
+            let mut set: BTreeSet<Permission> = lead_role_permissions()
                 .difference(&BTreeSet::from(LEAD_ROLE_V73_ADDED))
                 .copied()
                 .collect();
@@ -14757,11 +14133,7 @@ mod schema_version_tests {
                 .expect("read")
                 .expect("row")
         };
-        let widened = STANDARD_ROLES
-            .iter()
-            .find(|standard| standard.name == "lead")
-            .expect("lead")
-            .permissions();
+        let widened = lead_role_permissions();
         assert_eq!(role(&untouched).permissions, widened);
         assert_eq!(role(&owned).permissions, edited);
         assert_eq!(role(&other).permissions, held(&[]));
@@ -15538,6 +14910,13 @@ mod schema_version_tests {
                     .expect("link");
                 assert!(matches!(outcome, LinkAddOutcome::Added(_)));
             };
+            for id in [&tasks.0, &tasks.1] {
+                db.apply_task_change(id, Actor::SYSTEM, |row| {
+                    row.kind = TaskKind::Epic;
+                    ((), true)
+                })
+                .expect("epic");
+            }
             link(&tasks.2, LinkKind::Parent, &tasks.0);
             link(&tasks.3, LinkKind::Parent, &tasks.0);
             link(&tasks.0, LinkKind::Parent, &tasks.1);

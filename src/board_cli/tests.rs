@@ -577,6 +577,13 @@ async fn board_show_should_print_the_card_its_family_its_outcomes_and_its_commen
         .await;
     server
         .api(
+            "PATCH",
+            &format!("/api/tasks/{umbrella}"),
+            Some(json!({"kind": "epic"})),
+        )
+        .await;
+    server
+        .api(
             "POST",
             &format!("/api/tasks/{}/links", ids.client),
             Some(json!({"kind": "parent", "target_id": umbrella})),
@@ -704,6 +711,13 @@ async fn board_show_should_print_the_card_its_family_its_outcomes_and_its_commen
 async fn board_show_should_count_the_children_of_an_umbrella() {
     let server = start().await;
     let ids = server.seed().await;
+    server
+        .api(
+            "PATCH",
+            &format!("/api/tasks/{}", ids.docs),
+            Some(json!({"kind": "epic"})),
+        )
+        .await;
     server
         .api(
             "POST",

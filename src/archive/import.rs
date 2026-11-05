@@ -2688,14 +2688,14 @@ mod tests {
             .expect("comment");
         db.add_task_link(&task, LinkKind::Related, &other, None, Actor::SYSTEM)
             .expect("link");
-        db.add_task_link(&child, LinkKind::Parent, &task, None, Actor::SYSTEM)
-            .expect("parent");
         db.apply_task_change(&task, Actor::SYSTEM, |row| {
             row.kind = TaskKind::Epic;
             row.closed = true;
             ((), true)
         })
         .expect("epic");
+        db.add_task_link(&child, LinkKind::Parent, &task, None, Actor::SYSTEM)
+            .expect("parent");
         db.add_task_link(&other, LinkKind::BlockedBy, &child, None, Actor::SYSTEM)
             .expect("blocked");
         for (name, bytes) in [
