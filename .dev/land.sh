@@ -111,7 +111,7 @@ while :; do
     printf 'Attempt %s of %s, with logs in %s.\n' "$attempt" "$attempts" "$logs"
     for gate in lint test; do
         printf 'Running dev %s --remote.\n' "$gate"
-        ran=$(bash "$tools/__gate.sh" "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
+        ran=$(DEV_AGENT="pomb/land/$card" bash "$tools/__gate.sh" "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
             die "The dev $gate --remote gate did not pass on this worktree: $(cat "$logs/$gate.err"), so see $logs/$gate.log, and the worktree is left at $main_repo/$wt."
         printf 'The %s gate ran as ci run %s.\n' "$gate" "$ran"
     done

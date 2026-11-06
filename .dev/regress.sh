@@ -35,7 +35,7 @@ trap 'exit 130' INT TERM
 git archive "$rev" --prefix=.ci-baseline/ | tar -x
 
 status=0
-ci run --local --job regress -f | tee "$log" || status=$?
+DEV_AGENT=pomb/regress ci run --local --job regress -f | tee "$log" || status=$?
 
 run=$(sed -n 's/^run //p;q' "$log")
 if [ -n "$run" ]; then

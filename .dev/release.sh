@@ -149,7 +149,7 @@ printf 'release: logs in %s\n' "$logs"
 export CARGO_TARGET_DIR="$PWD/target"
 for gate in lint test nixcheck build; do
     printf 'release: dev %s --remote ...\n' "$gate"
-    ran=$(bash "$tools/__gate.sh" "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
+    ran=$(DEV_AGENT="pomb/release/$batch" bash "$tools/__gate.sh" "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
         die "dev $gate --remote did not pass on this worktree: $(cat "$logs/$gate.err"), see $logs/$gate.log (worktree left at $main_repo/$wt)"
     printf 'release: %s ci run %s\n' "$gate" "$ran"
 done
