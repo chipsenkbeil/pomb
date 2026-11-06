@@ -59,8 +59,8 @@ diffPixels) for every permutation.
 still pass; no previously-fixed defect regresses. A card lands on main with
 `dev land COMMIT --card ID` once L3 passes: it applies the verified commit onto
 the remote's current main, runs `dev lint --remote` then `dev test --remote`,
-and pushes. The card moves to Done only after `dev verify` passes on the
-released sha.
+and pushes. A successful land moves the card to Release, and it moves to
+Done only after `dev verify` passes on the released sha.
 
 ## 3. Geometry rule
 

@@ -1,8 +1,9 @@
 //! `.dev/land.sh` applies one verified commit onto the remote's current main, refuses attribution
 //! and package version changes before any gate, runs lint then test on ci through `__gate.sh`,
-//! and pushes only after both pass. Each test copies the land script and its helpers into a clone
-//! of a bare remote in a tempdir, and puts stub `dev`, `ci` and `jj-git-guard` scripts first on
-//! `PATH`: the stub `dev` records each verb and adds a ci run row that passed unless a
+//! and pushes only after both pass. A landed card moves to Release, and the worktree and branch
+//! its commit came from are removed. Each test copies the land script and its helpers into a clone
+//! of a bare remote in a tempdir, and puts stub `dev`, `ci`, `jj` and `jj-git-guard` scripts
+//! first on `PATH`: the stub `dev` records each verb and adds a ci run row that passed unless a
 //! `fail-<verb>` file exists, and keeps each `dev board` call apart in `notes`. The stub
 //! `jj-git-guard` logs its arguments in `pushes` and forwards to `git push`, except that it
 //! first moves the remote's main and refuses the push as many times as the `refuse` file says,
@@ -16,6 +17,7 @@ use std::process::{Command, Output};
 use tempfile::TempDir;
 
 const CARD: &str = "abc123";
+const RELEASE: &str = "release";
 
 const HELPERS: [&str; 4] = ["land.sh", "__gate.sh", "__push_main.sh", "__remote.sh"];
 
@@ -81,6 +83,12 @@ impl Fixture {
             ),
         );
         let root = self.dir.path().display();
+        write_script(
+            &bin.join("jj"),
+            &format!(
+                "echo \"$*\" >>'{root}/jjcalls'\n[ \"$1\" = --no-pager ] && shift\nif [ \"$1 $2\" = 'workspace list' ]; then cat '{root}/workspaces' 2>/dev/null; fi\nif [ \"$1 $2\" = 'bookmark list' ]; then cat '{root}/bookmarks' 2>/dev/null; fi\nexit 0"
+            ),
+        );
         write_script(
             &bin.join("jj-git-guard"),
             &format!(
@@ -181,6 +189,25 @@ exec git push "$@""#
             .expect("run land")
     }
 
+    fn jj_repo(&self, workspaces: &[(&str, &Path)], bookmarks: &[&str]) {
+        let root = self.dir.path();
+        fs::create_dir(self.work().join(".jj")).expect("jj dir");
+        let rows: String = workspaces
+            .iter()
+            .map(|(name, path)| format!("{name} {}\n", path.display()))
+            .collect();
+        fs::write(root.join("workspaces"), rows).expect("write workspaces");
+        let names: String = bookmarks.iter().map(|name| format!("{name}\n")).collect();
+        fs::write(root.join("bookmarks"), names).expect("write bookmarks");
+    }
+
+    fn card_worktree(&self, name: &str, branch: &str) -> PathBuf {
+        let path = self.work().join(".dev/worktrees").join(name);
+        let arg = path.to_str().expect("utf8");
+        git(&self.work(), &["worktree", "add", "-q", arg, branch]);
+        path
+    }
+
     fn remote(&self) -> PathBuf {
         self.dir.path().join("remote.git")
     }
@@ -235,6 +262,16 @@ fn show(dir: &Path, spec: &str) -> String {
 
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+fn branch_exists(dir: &Path, name: &str) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--verify", "-q", &format!("refs/heads/{name}")])
+        .status()
+        .expect("run git rev-parse")
+        .success()
 }
 
 fn refused_candidate(refusals: u32) -> (Fixture, String) {
@@ -329,6 +366,7 @@ fn land_should_not_push_when_a_gate_fails() {
     assert!(!out.status.success());
     assert_eq!(fixture.calls(), ["lint", "test"]);
     assert_eq!(fixture.remote_main(), before);
+    assert!(fixture.lines("notes").is_empty());
 }
 
 #[test]
@@ -417,7 +455,7 @@ fn land_should_note_the_landed_sha_on_the_card() {
     let out = fixture.land(&cand);
     assert!(out.status.success(), "{}", stderr(&out));
     let notes = fixture.lines("notes");
-    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes.len(), 2, "{notes:?}");
     assert!(
         notes[0].starts_with(&format!(
             "board note {CARD} landed {} ",
@@ -425,6 +463,129 @@ fn land_should_note_the_landed_sha_on_the_card() {
         )),
         "{notes:?}"
     );
+    assert_eq!(notes[1], format!("board move {CARD} {RELEASE}"));
+}
+
+#[test]
+fn land_should_remove_the_card_worktree_and_delete_its_branch() {
+    let fixture = Fixture::new();
+    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
+    let worktree = fixture.card_worktree("feat", "card");
+    let out = fixture.land(&cand);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!worktree.exists());
+    assert!(!branch_exists(&fixture.work(), "card"));
+    assert_eq!(fixture.calls(), ["lint", "test"]);
+    assert_eq!(
+        fixture.lines("notes")[1],
+        format!("board move {CARD} {RELEASE}")
+    );
+    assert!(fixture.lines("jjcalls").is_empty());
+}
+
+#[test]
+fn land_should_forget_the_jj_workspace_and_delete_the_bookmark_of_the_card_worktree() {
+    let fixture = Fixture::new();
+    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
+    let worktree = fixture.card_worktree("feat", "card");
+    fixture.jj_repo(
+        &[
+            ("default", fixture.work().as_path()),
+            ("feat", worktree.as_path()),
+        ],
+        &["main", "card"],
+    );
+    let out = fixture.land(&cand);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!worktree.exists());
+    assert!(!branch_exists(&fixture.work(), "card"));
+    let jj = fixture.lines("jjcalls");
+    assert!(
+        jj.contains(&"--no-pager workspace forget feat".to_owned()),
+        "{jj:?}"
+    );
+    assert!(
+        !jj.iter().any(|call| call.contains("forget default")),
+        "{jj:?}"
+    );
+    assert!(
+        jj.contains(&"--no-pager bookmark delete card".to_owned()),
+        "{jj:?}"
+    );
+    assert!(
+        !jj.iter().any(|call| call.contains("bookmark delete main")),
+        "{jj:?}"
+    );
+}
+
+#[test]
+fn land_should_keep_the_worktrees_it_did_not_land_from() {
+    let fixture = Fixture::new();
+    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
+    let work = fixture.work();
+    git(&work, &["branch", "-q", "other", "origin/main"]);
+    git(&work, &["branch", "-q", "outside", "card"]);
+    let landed = fixture.card_worktree("feat", "card");
+    let other = fixture.card_worktree("other", "other");
+    let detached = work.join(".dev/worktrees/detached");
+    git(
+        &work,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            detached.to_str().expect("utf8"),
+            cand.as_str(),
+        ],
+    );
+    let outside = fixture.dir.path().join("outside");
+    git(
+        &work,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            outside.to_str().expect("utf8"),
+            "outside",
+        ],
+    );
+    let out = fixture.land(&cand);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!landed.exists());
+    assert!(!branch_exists(&work, "card"));
+    assert!(other.exists());
+    assert!(branch_exists(&work, "other"));
+    assert!(detached.exists());
+    assert!(outside.exists());
+    assert!(branch_exists(&work, "outside"));
+}
+
+#[test]
+fn land_should_keep_a_card_worktree_with_uncommitted_changes() {
+    let fixture = Fixture::new();
+    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
+    let worktree = fixture.card_worktree("feat", "card");
+    fs::write(worktree.join("scratch.txt"), "wip").expect("write file");
+    let out = fixture.land(&cand);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(worktree.exists());
+    assert!(branch_exists(&fixture.work(), "card"));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("uncommitted changes"), "{stdout}");
+}
+
+#[test]
+fn land_should_leave_the_card_worktree_and_column_alone_when_the_push_is_denied() {
+    let fixture = Fixture::new();
+    let cand = fixture.candidate(&[("feature.txt", "feature")], "add feature");
+    let worktree = fixture.card_worktree("feat", "card");
+    fixture.deny_push();
+    let out = fixture.land(&cand);
+    assert!(!out.status.success());
+    assert!(fixture.lines("notes").is_empty());
+    assert!(worktree.exists());
+    assert!(branch_exists(&fixture.work(), "card"));
 }
 
 #[test]

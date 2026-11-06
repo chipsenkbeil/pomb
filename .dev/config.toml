@@ -1,3 +1,6 @@
 [board]
 backend = "pomb"
 name = "pomb"
+
+[board.land]
+deploys = true

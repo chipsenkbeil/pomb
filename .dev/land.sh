@@ -13,8 +13,12 @@
 #   3. Refuse attribution trailers through __push_main.sh --check, before any gate.
 #   4. Run dev lint --remote, then dev test --remote, through __gate.sh, one at a time on ci,
 #      logging to a temp dir. The first failing gate aborts.
-#   5. Push to main through __push_main.sh, remove the worktree, print the landed sha and note
-#      it on the card with dev board note.
+#   5. Push to main through __push_main.sh, remove the land worktree, print the landed sha, note it
+#      on the card with dev board note and move the card to Release with dev board move. Then remove
+#      the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch.
+#      In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the
+#      bookmark of the same name. A worktree with uncommitted changes is kept, and the script
+#      says why.
 #   6. A push refused because main moved on (exit 3) removes the worktree, fetches, and repeats
 #      steps 2 to 5 on the new main, 3 attempts in all. It never forces the push.
 #
@@ -123,8 +127,74 @@ while :; do
     git fetch -q "$remote"
     attempt=$((attempt + 1))
 done
+forget_jj_workspace() {
+    local path=$1 listing name ws_root
+    listing=$(jj --no-pager workspace list -T 'name ++ " " ++ root ++ "\n"') || {
+        printf 'land: could not list jj workspaces, workspace at %s left in jj\n' "$path" >&2
+        return 0
+    }
+    while read -r name ws_root; do
+        [ "$ws_root" = "$path" ] || continue
+        jj --no-pager workspace forget "$name" ||
+            printf 'land: could not forget jj workspace %s\n' "$name" >&2
+    done <<<"$listing"
+}
+
+delete_jj_bookmark() {
+    local branch=$1 bookmarks
+    bookmarks=$(jj --no-pager bookmark list -T 'name ++ "\n"') || {
+        printf 'land: could not list jj bookmarks, bookmark %s left in jj\n' "$branch" >&2
+        return 0
+    }
+    grep -qx -- "$branch" <<<"$bookmarks" || return 0
+    jj --no-pager bookmark delete "$branch" ||
+        printf 'land: could not delete jj bookmark %s\n' "$branch" >&2
+}
+
+retire_if_landed() {
+    local path=$1 head=$2 branch=$3
+    case "$path" in */.dev/worktrees/*) ;; *) return 0 ;; esac
+    [ "$head" = "$cand" ] && [ -n "$branch" ] || return 0
+    if [ -n "$(git -C "$path" status --porcelain)" ]; then
+        printf 'land: kept %s and branch %s: it has uncommitted changes\n' "$path" "$branch"
+        return 0
+    fi
+    if ! git worktree remove "$path"; then
+        printf 'land: kept %s and branch %s: git worktree remove refused it\n' "$path" "$branch"
+        return 0
+    fi
+    if [ -d "$main_repo/.jj" ]; then
+        forget_jj_workspace "$path"
+        delete_jj_bookmark "$branch"
+    fi
+    if git show-ref --verify -q "refs/heads/$branch"; then
+        git branch -q -D "$branch"
+    fi
+    printf 'land: removed %s and deleted branch %s\n' "$path" "$branch"
+}
+
+retire_landed_worktrees() {
+    local listing path="" head="" branch="" line
+    listing=$(git worktree list --porcelain)
+    while IFS= read -r line; do
+        case "$line" in
+        "worktree "*) path="${line#worktree }" ;;
+        "HEAD "*) head="${line#HEAD }" ;;
+        "branch refs/heads/"*) branch="${line#branch refs/heads/}" ;;
+        "")
+            retire_if_landed "$path" "$head" "$branch"
+            path="" head="" branch=""
+            ;;
+        esac
+    done <<<"$listing"
+    retire_if_landed "$path" "$head" "$branch"
+}
+
 cd "$main_repo"
 git worktree remove --force "$wt"
 printf 'land: landed %s\n' "$sha"
 dev board note "$card" "landed $sha on $remote/main" ||
     printf 'land: landed, but dev board note %s failed; note %s on the card yourself\n' "$card" "$sha" >&2
+dev board move "$card" release ||
+    printf 'land: landed, but dev board move %s release failed; move the card yourself\n' "$card" >&2
+retire_landed_worktrees
