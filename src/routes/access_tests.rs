@@ -2473,7 +2473,7 @@ async fn device_approval_should_mint_token_for_approver() {
         .expect("device code")
         .to_string();
 
-    let approve = Payload::Form(format!("user_code={user_code}&expires_in_days=1"));
+    let approve = Payload::Form(format!("user_code={user_code}&expires_in_hours=24"));
     let (status, text) = send(
         &fx.app,
         Who::Session(&fx.b_cookie),

@@ -1005,7 +1005,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 81;
+pub const SCHEMA_VERSION: u64 = 82;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1093,6 +1093,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "e1da24113ea1128afeaace95b5d5cd2e4876bd2b5d04f387dd1119807f4330e5",
     "ddef6d5beb8718c6a99f0f42a1c37ba81b4eec45ec86ffd797cccfb89066835c",
     "8f0a76c629391994f2e71f44847877943e826288031ba9748875ef75810bba01",
+    "735ee709d084a3663625557b7e7ba31e2bff2c9e72847f21a133ac4071b36fe8",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -14420,6 +14421,9 @@ mod schema_version_tests {
             client_network: None,
             role_id: None,
             requested_role: None,
+            requested_boards: Vec::new(),
+            requested_hours: None,
+            reason: None,
         };
         let value = serde_json::to_value(&device).expect("json");
         put_raw(&path, DEVICE_AUTHS, &device.device_code_hash, &value);
@@ -15032,6 +15036,9 @@ mod schema_version_tests {
             client_network: None,
             role_id: None,
             requested_role: None,
+            requested_boards: Vec::new(),
+            requested_hours: None,
+            reason: None,
         };
         put_raw(
             &path,
@@ -15112,6 +15119,9 @@ mod schema_version_tests {
                 client_network: Some("net".to_string()),
                 role_id: None,
                 requested_role: None,
+                requested_boards: Vec::new(),
+                requested_hours: None,
+                reason: None,
             };
             let value = serde_json::to_value(&row).expect("json");
             put_raw(&path, DEVICE_AUTHS, &row.device_code_hash, &value);
@@ -17369,6 +17379,9 @@ mod device_tests {
             client_network: Some(network.to_string()),
             role_id: None,
             requested_role: None,
+            requested_boards: Vec::new(),
+            requested_hours: None,
+            reason: None,
         }
     }
 
@@ -17648,6 +17661,9 @@ mod token_index_tests {
             client_network: None,
             role_id: None,
             requested_role: None,
+            requested_boards: Vec::new(),
+            requested_hours: None,
+            reason: None,
         }
     }
 

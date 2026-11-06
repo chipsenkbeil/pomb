@@ -283,6 +283,12 @@ impl TextCap {
     pub const CONFIG: Self = Self::bytes("config", 16 * 1024);
     /// A task's or a column's description.
     pub const DESCRIPTION: Self = Self::bytes("description", 64 * 1024);
+    /// One board name a device request asks for.
+    pub const DEVICE_BOARD: Self = Self::chars("boards", 200);
+    /// Most board names one device request asks for.
+    pub const DEVICE_BOARDS: Self = Self::items("boards", 50);
+    /// The reason a device request gives.
+    pub const DEVICE_REASON: Self = Self::chars("reason", 200);
     /// A task's due-date repeat text.
     pub const DUE_REPEAT: Self = Self::chars("due_repeat", 200);
     /// A time entry's note.
@@ -5247,6 +5253,17 @@ pub struct DeviceAuthRow {
     /// Absent for a request that named no role and for one stored before requests could name one.
     #[serde(default)]
     pub requested_role: Option<String>,
+    /// The names of the boards the request asks for. Empty asks for every board, including boards
+    /// made later. The approval matches them against the approver's boards.
+    #[serde(default)]
+    pub requested_boards: Vec<String>,
+    /// The hours the request asks its token to live, which the approval never exceeds. Absent for
+    /// a request that named none and for one stored before requests could name one.
+    #[serde(default)]
+    pub requested_hours: Option<i64>,
+    /// Why the client asks, in its own words, which nothing verifies.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// A named API token for agent/script access. The raw token is shown once

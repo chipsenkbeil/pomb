@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "33"
+  version: "34"
 ---
 
 # Pomb
@@ -52,15 +52,15 @@ they differ, tell the user to re-run Install.
 When `POMB_API_TOKEN` is unset, pair through the device flow. `curl --json` needs curl 7.82 or newer.
 
 1. `POST /api/v1/auth/device` with a `client_name` of `claude-code@<host>` and a `preset` (`"work"`
-   here) or a `permissions` array. The approver picks the role, boards and expiry within it.
+   here) or `permissions`, plus optional `boards` (names), `expires_in_hours` and `reason`.
 2. Show the user `user_code` and `verification_url`, and ask them to approve it in the browser.
 3. Poll `POST /api/v1/auth/device/token` with `device_code`, waiting `interval_seconds` between
    polls, and match on the `code` of the reply: `authorization_pending` means keep polling,
    `slow_down` means add 5 seconds to `interval_seconds`, and `access_denied`, `device_code_expired`
    or `invalid_grant` end the pairing.
 4. The 200 reply carries `token` once. Tell the user the token once, in your reply, to store as
-   `POMB_API_TOKEN`, and don't repeat it. The approver may drop permissions or boards and may
-   issue the token as an agent role, so check `GET /api/v1/auth/whoami` after pairing.
+   `POMB_API_TOKEN`, and don't repeat it. The approver may narrow permissions, boards and expiry
+   and issue the token as an agent role, so check `GET /api/v1/auth/whoami` after pairing.
 
 ## Calling the API
 

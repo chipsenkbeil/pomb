@@ -24741,6 +24741,15 @@ fn submitted_scope(scopes: &[String]) -> Result<AuthScope, AppError> {
     })
 }
 
+/// The most hours a device request may ask its token to live, 365 days.
+const MAX_DEVICE_HOURS: i64 = 8_760;
+
+/// The hours a device token lives by default, 90 days.
+const DEFAULT_DEVICE_HOURS: i64 = 2_160;
+
+/// The hours a device token lives by default when the request holds a delete permission, 1 day.
+const DELETE_DEVICE_HOURS: i64 = 24;
+
 /// A device request makes a root token, which the approving browser session grants. The approver
 /// may issue it as an agent role, drop permissions and limit boards, but never beyond what the
 /// request asks: a role holding a permission the request lacks, or a board outside it, is refused.
@@ -24764,6 +24773,19 @@ struct DeviceAuthInput {
     /// approver's role of that name. An unknown name gets 400, as does a role sent with `scopes`,
     /// `preset` or `permissions`.
     role: Option<String>,
+    /// The names of the boards the token needs, at most 50. The approval matches them against the
+    /// approver's boards, so a name that matches none is shown and skipped, never an error, and
+    /// the token reaches only the matches. Absent or empty asks for every board, including boards
+    /// made later. The approver may narrow the boards but never widen them past these.
+    boards: Option<Vec<String>>,
+    /// How long the token should live, 1 to 8760 hours (365 days). A request cannot ask for a token
+    /// that never expires. The approver may shorten it but never lengthen it past this. Absent
+    /// keeps the default of 90 days, or 1 day when the request holds a delete permission, and the
+    /// approver of such a request may pick any expiry of 1 to 8760 hours, or none.
+    expires_in_hours: Option<i64>,
+    /// Why the client asks, up to 200 characters. The approver sees it as the client's own words,
+    /// which nothing verifies.
+    reason: Option<String>,
 }
 
 #[derive(serde::Serialize, ToSchema)]
@@ -24806,7 +24828,7 @@ struct DeviceTokenResponse {
     security(()),
     responses(
         (status = 200, description = "Codes for the device", body = DeviceAuthResponse),
-        (status = 400, description = "Bad client_name or scopes, an unknown role, or a role sent with scopes, preset or permissions"),
+        (status = 400, description = "Bad client_name or scopes, an unknown role, a role sent with scopes, preset or permissions, `expires_in_hours` outside 1 to 8760, more than 50 `boards`, a board name over 200 characters, or a `reason` over 200 characters"),
         (status = 429, description = "`rate_limited`: 5 device requests from this client network, or 1000 in all, already wait for approval, or more than 10 starts a minute came from one client IP"),
     ),
 )]
@@ -24854,6 +24876,22 @@ async fn start_device_auth(
             input.permissions.as_deref(),
         )?,
     };
+    let requested_boards = requested_board_names(input.boards)?;
+    let requested_hours = match input.expires_in_hours {
+        Some(hours) if !(1..=MAX_DEVICE_HOURS).contains(&hours) => {
+            return Err(AppError::bad_request(format!(
+                "expires_in_hours must be 1-{MAX_DEVICE_HOURS}"
+            )));
+        }
+        hours => hours,
+    };
+    let reason = input
+        .reason
+        .map(|reason| reason.trim().to_string())
+        .filter(|reason| !reason.is_empty());
+    if let Some(reason) = &reason {
+        TextCap::DEVICE_REASON.check(reason)?;
+    }
     let now = chrono::Utc::now().timestamp();
     let device_code = auth::generate_device_code();
     let mut row = DeviceAuthRow {
@@ -24872,6 +24910,9 @@ async fn start_device_auth(
         client_network: Some(client.network().to_string()),
         role_id: None,
         requested_role: input.role,
+        requested_boards,
+        requested_hours,
+        reason,
     };
 
     // A user-code collision among live requests is astronomically rare;
@@ -24901,6 +24942,22 @@ async fn start_device_auth(
         }
     }
     Err(AppError::internal("could not draw a free user code"))
+}
+
+/// Trims the board names of a device request, drops the blank and repeated ones and refuses a list
+/// or a name past its cap.
+fn requested_board_names(names: Option<Vec<String>>) -> Result<Vec<String>, AppError> {
+    let names = names.unwrap_or_default();
+    TextCap::DEVICE_BOARDS.check_count(&names)?;
+    let mut kept = Vec::new();
+    for name in &names {
+        let name = name.trim();
+        TextCap::DEVICE_BOARD.check(name)?;
+        if !name.is_empty() && !kept.iter().any(|held| held == name) {
+            kept.push(name.to_string());
+        }
+    }
+    Ok(kept)
 }
 
 /// The server's externally visible base URL: `--public-url` when set, else built from the
@@ -25015,42 +25072,12 @@ struct DeviceTemplate {
     /// The standard role the request named when the account holds a role of that name, which the
     /// picker preselects. Empty when there is none.
     role_name: String,
-    /// Days of the expiry the picker selects first.
-    default_days: &'static str,
+    /// Hours of the expiry the picker selects first.
+    default_hours: i64,
+    /// The hours the request asks for, or 0 when it names none, which caps the picker's choices.
+    requested_hours: i64,
     error: Option<String>,
 }
-
-/// One expiry the owner can give a device token.
-struct ExpiryChoice {
-    /// Form value.
-    value: &'static str,
-    /// Days until expiry, or [`None`] for a token that never expires.
-    days: Option<i64>,
-}
-
-/// Expiry choices on the approval page, in display order.
-const DEVICE_TOKEN_EXPIRIES: [ExpiryChoice; 5] = [
-    ExpiryChoice {
-        value: "1",
-        days: Some(1),
-    },
-    ExpiryChoice {
-        value: "30",
-        days: Some(30),
-    },
-    ExpiryChoice {
-        value: "90",
-        days: Some(90),
-    },
-    ExpiryChoice {
-        value: "365",
-        days: Some(365),
-    },
-    ExpiryChoice {
-        value: "never",
-        days: None,
-    },
-];
 
 /// Returns whether `permissions` holds a delete only the admin preset holds, which leaves out
 /// `subtasks.delete` of the lead preset.
@@ -25060,10 +25087,34 @@ fn holds_delete(permissions: &BTreeSet<Permission>) -> bool {
     })
 }
 
-/// Returns the form value of the expiry chosen when the owner picks none for a request of
-/// `requested` permissions: one day when it holds a delete permission, 90 days otherwise.
-fn device_default_expiry(requested: &BTreeSet<Permission>) -> &'static str {
-    if holds_delete(requested) { "1" } else { "90" }
+/// Returns the hours of the expiry a request gets when the owner picks none: the default for its
+/// permissions, cut to the hours it asks for.
+fn device_default_hours(row: &DeviceAuthRow) -> i64 {
+    let default = if holds_delete(&row.permissions) {
+        DELETE_DEVICE_HOURS
+    } else {
+        DEFAULT_DEVICE_HOURS
+    };
+    default.min(row.requested_hours.unwrap_or(MAX_DEVICE_HOURS))
+}
+
+/// Returns the boards of `db` that `row` asks for by name, or every board when it names none. Names
+/// that match no board of the account are skipped, and a request whose names match none is refused.
+fn device_requested_boards(db: &AccountDb, row: &DeviceAuthRow) -> Result<BoardAccess, String> {
+    if row.requested_boards.is_empty() {
+        return Ok(row.boards.clone());
+    }
+    let ids: BTreeSet<String> = db
+        .list_boards()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|board| row.requested_boards.contains(&board.name))
+        .map(|board| board.id)
+        .collect();
+    if ids.is_empty() {
+        return Err("None of the boards the request names is a board of yours.".to_string());
+    }
+    Ok(BoardAccess::Only(ids))
 }
 
 impl DeviceTemplate {
@@ -25076,7 +25127,8 @@ impl DeviceTemplate {
             requested_admin: false,
             requested_names: String::new(),
             role_name: String::new(),
-            default_days: "",
+            default_hours: 0,
+            requested_hours: 0,
             error: error.map(str::to_string),
         }
     }
@@ -25094,7 +25146,8 @@ impl DeviceTemplate {
                 .map(|permission| permission.name())
                 .collect::<Vec<_>>()
                 .join(","),
-            default_days: device_default_expiry(&row.permissions),
+            default_hours: device_default_hours(row),
+            requested_hours: row.requested_hours.unwrap_or(0),
             role_name: String::new(),
             error: None,
         }
@@ -25122,8 +25175,10 @@ impl DeviceTemplate {
 /// Builds what the owner grants from the approval form, refusing permissions above the
 /// request, a role of another account or one that gives a permission the request lacks, a
 /// permission the chosen role gives no, an empty grant, a board outside the account or the request
-/// and an expiry outside the offered set. A missing field means the requested permissions, or the
-/// role's when one is chosen, every board and the default expiry for those permissions.
+/// and an expiry that is not 1 to 8760 hours or `never`, is longer than the request, or is `never`
+/// for a request that names hours. A missing field means the requested permissions, or the role's
+/// when one is chosen, the requested boards and the default expiry for those permissions, cut to
+/// the requested hours.
 fn device_grant(
     db: &AccountDb,
     row: &DeviceAuthRow,
@@ -25165,8 +25220,9 @@ fn device_grant(
     if permissions.is_empty() {
         return Err("Grant at least one permission.".to_string());
     }
+    let requested = device_requested_boards(db, row)?;
     let boards = match &form.boards {
-        None => BoardAccess::All,
+        None => requested.clone(),
         Some(ids) => {
             for id in ids {
                 if !db.board_exists(id).map_err(|error| error.to_string())? {
@@ -25176,22 +25232,37 @@ fn device_grant(
             BoardAccess::Only(ids.iter().cloned().collect())
         }
     };
-    if !boards.within(&row.boards) {
+    if !boards.within(&requested) {
         return Err("Boards can be narrowed but never widened beyond the request.".to_string());
     }
-    let wanted = form
-        .expires_in_days
-        .as_deref()
-        .unwrap_or_else(|| device_default_expiry(&row.permissions));
-    let expiry = DEVICE_TOKEN_EXPIRIES
-        .iter()
-        .find(|choice| choice.value == wanted)
-        .ok_or_else(|| "Choose 1, 30, 90 or 365 days, or never.".to_string())?;
+    let hours = match form.expires_in_hours.as_deref() {
+        None => Some(device_default_hours(row)),
+        Some("never") if row.requested_hours.is_none() => None,
+        Some(text) => Some(
+            text.parse::<i64>()
+                .ok()
+                .filter(|hours| (1..=MAX_DEVICE_HOURS).contains(hours))
+                .ok_or_else(|| {
+                    if row.requested_hours.is_some() {
+                        format!("Choose an expiry of 1 to {MAX_DEVICE_HOURS} hours.")
+                    } else {
+                        format!("Choose an expiry of 1 to {MAX_DEVICE_HOURS} hours, or never.")
+                    }
+                })?,
+        ),
+    };
+    if let (Some(asked), Some(hours)) = (row.requested_hours, hours)
+        && hours > asked
+    {
+        return Err(format!(
+            "The expiry can be shortened but never lengthened beyond the request: it asks for {asked} hours."
+        ));
+    }
     Ok(DeviceGrant {
         scope: AuthScope::label_of(&permissions),
         permissions,
         boards,
-        expires_at: expiry.days.map(|days| now + days * SECONDS_PER_DAY),
+        expires_at: hours.map(|hours| now + hours * SECONDS_PER_HOUR),
         role_id: role.map(|role| role.id),
     })
 }
@@ -25219,8 +25290,9 @@ struct DeviceApproveForm {
     boards: Option<Vec<String>>,
     /// The agent role to issue the token as; absent means no role.
     role_id: Option<String>,
-    /// `1`, `30`, `90`, `365` or `never`; absent means the default for the requested permissions.
-    expires_in_days: Option<String>,
+    /// A whole number of hours from 1 to 8760, or `never` for a request that names no hours; absent
+    /// means the default for the requested permissions.
+    expires_in_hours: Option<String>,
 }
 
 impl DeviceApproveForm {
@@ -25232,7 +25304,7 @@ impl DeviceApproveForm {
         for (key, value) in fields {
             match key.as_str() {
                 "user_code" => form.user_code = value,
-                "expires_in_days" => form.expires_in_days = Some(value),
+                "expires_in_hours" => form.expires_in_hours = Some(value),
                 "permissions_listed" => {
                     form.permissions.get_or_insert_with(Vec::new);
                 }
@@ -28565,15 +28637,20 @@ token.
 
 Device pairing (RFC 8628) gives a client its own token without pasting one:
 
-1. `POST /api/v1/auth/device` with a `client_name` and one of `scopes`, `preset` and `permissions`
-   returns a `device_code`, a `user_code` and a `verification_url`.
+1. `POST /api/v1/auth/device` with a `client_name` and one of `scopes`, `preset`, `permissions`
+   and `role`, and optionally `boards` (board names), `expires_in_hours` (1 to 8760, with no
+   way to ask for never) and a `reason`, returns a `device_code`, a `user_code` and a `verification_url`.
 2. The person opens `verification_url` in the browser, types `user_code` (case, spaces and the
    dash do not matter) and checks the client name and the requested permissions. A request for
    `admin` is shown with a warning. The person denies, or approves with the requested permissions
-   or fewer, never more, optionally limits the token to some boards of the account, and picks the
-   token's expiry: 1, 30, 90 or 365 days, or never. The page preselects 1 day for a request that
-   holds a delete permission and 90 days for any other, and a form with no expiry gets that
-   default.
+   or fewer, never more, optionally limits the token to fewer boards of the account, and picks the
+   token's expiry in hours, 1 to 8760, or never when the request names no
+   `expires_in_hours`. The approval never gives a longer expiry than `expires_in_hours` asked for
+   (never included), a board outside `boards` or a permission beyond the request, and a request
+   cannot ask for a token that never expires. A board name that matches no board of the account is skipped,
+   and a request naming none grants every board, including boards made later. A form with no
+   expiry gets 1 day for a request that holds a delete permission and 90 days for any other, cut
+   to `expires_in_hours`.
 3. The client polls `POST /api/v1/auth/device/token` with the `device_code`, waiting
    `interval_seconds` between polls, until it gets the token or a final error. The reply names
    the token's `scopes` and `permissions`.

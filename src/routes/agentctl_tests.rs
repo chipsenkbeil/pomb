@@ -3516,6 +3516,9 @@ async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
         client_network: None,
         role_id: None,
         requested_role: None,
+        requested_boards: Vec::new(),
+        requested_hours: None,
+        reason: None,
     };
     fx.db.create_device_auth(&row, now).expect("insert");
     let (status, text) = poll_device(&fx, expired_code).await;
@@ -3609,6 +3612,9 @@ async fn device_pairing_should_limit_pending_requests_wrong_codes_and_clean_up()
         client_network: None,
         role_id: None,
         requested_role: None,
+        requested_boards: Vec::new(),
+        requested_hours: None,
+        reason: None,
     };
     fx.db.create_device_auth(&stale, now).expect("insert");
     assert_eq!(poll_device(&fx, "stale").await.0, StatusCode::GONE);
@@ -5545,6 +5551,268 @@ async fn a_read_token_should_be_refused_every_write_and_an_admin_token_none() {
     assert!(status.is_success(), "{status} {text}");
 }
 
+/// Starts a device request with `extra` merged into the body of a read-scope request, and returns
+/// its status, its reply and the stored row.
+async fn start_device_with(
+    fx: &Fixture,
+    extra: Value,
+) -> (StatusCode, Value, Option<DeviceAuthRow>) {
+    let mut body = json!({"client_name": "agentctl on laptop", "scopes": ["read"]});
+    body.as_object_mut()
+        .expect("object")
+        .extend(extra.as_object().expect("object").clone());
+    let (status, started) = start_device(fx, body).await;
+    let row = started["user_code"].as_str().map(|code| {
+        fx.db
+            .pending_device_auth(
+                &crate::auth::normalize_user_code(code),
+                chrono::Utc::now().timestamp(),
+            )
+            .expect("read")
+            .expect("row")
+    });
+    (status, started, row)
+}
+
+#[tokio::test]
+async fn device_request_should_store_boards_expiry_hours_and_reason() {
+    let (_dir, fx) = fixture();
+    let (status, started, row) = start_device_with(
+        &fx,
+        json!({"boards": [" Agentctl ", "Agentctl", "Nope", ""], "expires_in_hours": 8, "reason": " to sync cards "}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let row = row.expect("row");
+    assert_eq!(row.requested_boards, ["Agentctl", "Nope"]);
+    assert_eq!(row.requested_hours, Some(8));
+    assert_eq!(row.reason.as_deref(), Some("to sync cards"));
+
+    let (_, _, plain) = start_device_with(&fx, json!({})).await;
+    let plain = plain.expect("row");
+    assert!(plain.requested_boards.is_empty());
+    assert_eq!(plain.requested_hours, None);
+    assert_eq!(plain.reason, None);
+}
+
+#[tokio::test]
+async fn device_request_should_refuse_expires_in_hours_outside_1_to_8760() {
+    let (_dir, fx) = fixture();
+    for hours in [json!(0), json!(-1), json!(8761), json!(1_000_000)] {
+        let (status, body, _) = start_device_with(&fx, json!({"expires_in_hours": hours})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{hours}: {body}");
+    }
+    for hours in [1, 8760] {
+        let (status, body, _) = start_device_with(&fx, json!({"expires_in_hours": hours})).await;
+        assert_eq!(status, StatusCode::OK, "{hours}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn device_request_should_refuse_an_overlong_reason_or_too_many_boards() {
+    let (_dir, fx) = fixture();
+    let long = "r".repeat(201);
+    let names: Vec<String> = (0..51).map(|n| format!("board {n}")).collect();
+    for extra in [
+        json!({"reason": long}),
+        json!({"boards": names}),
+        json!({"boards": ["b".repeat(201)]}),
+    ] {
+        let (status, body, _) = start_device_with(&fx, extra.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{extra}: {body}");
+    }
+    let (status, body, _) = start_device_with(&fx, json!({"reason": "r".repeat(200)})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// Approves a device request made with `extra` and `form` and returns the approval status, the page
+/// and the whoami of the issued token when it was approved.
+async fn approve_asked(extra: Value, form: &str) -> (StatusCode, String, Option<Value>) {
+    let (_dir, fx) = fixture();
+    let (status, started, _) = start_device_with(&fx, extra).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let device_code = started["device_code"].as_str().expect("device_code");
+    let user_code = started["user_code"].as_str().expect("user_code");
+    let (status, page) = form_post(
+        &fx,
+        As::Admin,
+        "/device/approve",
+        &format!("user_code={user_code}{form}"),
+    )
+    .await;
+    if status != StatusCode::OK {
+        return (status, page, None);
+    }
+    let (status, body) = poll_device(&fx, device_code).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let token = serde_json::from_str::<Value>(&body).expect("json")["token"]
+        .as_str()
+        .expect("token")
+        .to_string();
+    let (status, whoami) = request(
+        &fx,
+        As::Bearer(&token),
+        "GET",
+        "/api/v1/auth/whoami",
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{whoami}");
+    (
+        status,
+        page,
+        Some(serde_json::from_str(&whoami).expect("json")),
+    )
+}
+
+#[tokio::test]
+async fn device_approval_should_refuse_an_expiry_longer_than_requested() {
+    let extra = json!({"expires_in_hours": 8});
+    let (status, page, whoami) = approve_asked(extra.clone(), "&expires_in_hours=9").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{page}");
+    assert!(whoami.is_none());
+    assert!(
+        page.contains("never lengthened beyond the request"),
+        "{page}"
+    );
+
+    let (status, _, whoami) = approve_asked(extra.clone(), "&expires_in_hours=8").await;
+    assert_eq!(status, StatusCode::OK);
+    let at = whoami.expect("whoami")["expires_at"]
+        .as_i64()
+        .expect("expires_at");
+    assert!((at - (chrono::Utc::now().timestamp() + 8 * SECONDS_PER_HOUR)).abs() < 60);
+
+    let (_, _, whoami) = approve_asked(extra.clone(), "&expires_in_hours=2").await;
+    let at = whoami.expect("whoami")["expires_at"]
+        .as_i64()
+        .expect("expires_at");
+    assert!((at - (chrono::Utc::now().timestamp() + 2 * SECONDS_PER_HOUR)).abs() < 60);
+
+    let (_, _, whoami) = approve_asked(extra, "").await;
+    let at = whoami.expect("whoami")["expires_at"]
+        .as_i64()
+        .expect("expires_at");
+    assert!(
+        (at - (chrono::Utc::now().timestamp() + 8 * SECONDS_PER_HOUR)).abs() < 60,
+        "no field grants the requested hours, below the default"
+    );
+}
+
+#[tokio::test]
+async fn device_page_should_default_and_cap_the_expiry_at_the_requested_hours() {
+    let (_dir, fx) = fixture();
+    for (extra, default, requested) in [
+        (json!({"expires_in_hours": 8}), 8, 8),
+        (json!({"expires_in_hours": 8760}), 2160, 8760),
+        (json!({}), 2160, 0),
+        (json!({"scopes": ["admin"]}), 24, 0),
+    ] {
+        let (status, started, _) = start_device_with(&fx, extra.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{started}");
+        let user_code = started["user_code"].as_str().expect("user_code");
+        let (status, page) =
+            form_post(&fx, As::Admin, "/device", &format!("user_code={user_code}")).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert!(
+            page.contains(&format!("data-expiry-hours=\"{default}\"")),
+            "{extra}: {page}"
+        );
+        assert!(
+            page.contains(&format!("data-requested-hours=\"{requested}\"")),
+            "{extra}: {page}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn device_approval_should_accept_never_only_when_the_request_names_no_hours() {
+    let (status, _, whoami) = approve_asked(json!({}), "&expires_in_hours=never").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(whoami.expect("whoami")["expires_at"], Value::Null);
+
+    for hours in [8, 8760] {
+        let (status, page, whoami) = approve_asked(
+            json!({"expires_in_hours": hours}),
+            "&expires_in_hours=never",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{hours}: {page}");
+        assert!(whoami.is_none());
+    }
+
+    let (_, _, whoami) = approve_asked(json!({}), "").await;
+    assert!(whoami.expect("whoami")["expires_at"].is_i64());
+}
+
+#[tokio::test]
+async fn device_approval_should_skip_unknown_board_names_and_grant_the_rest() {
+    let (_dir, fx) = fixture();
+    let other = fx.db.create_board(&fx.user_id, "Other").expect("board");
+    let (status, started, _) = start_device_with(
+        &fx,
+        json!({"boards": ["Agentctl", "No such board", "agentctl"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let user_code = started["user_code"].as_str().expect("user_code");
+    let (status, page) = form_post(
+        &fx,
+        As::Admin,
+        "/device/approve",
+        &format!("user_code={user_code}&boards={other}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{page}");
+    assert!(page.contains("never widened beyond the request"), "{page}");
+    let (status, page) = form_post(
+        &fx,
+        As::Admin,
+        "/device/approve",
+        &format!("user_code={user_code}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let (status, body) = poll_device(&fx, started["device_code"].as_str().expect("code")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let token = serde_json::from_str::<Value>(&body).expect("json")["token"]
+        .as_str()
+        .expect("token")
+        .to_string();
+    let (_, whoami) = request(
+        &fx,
+        As::Bearer(&token),
+        "GET",
+        "/api/v1/auth/whoami",
+        None,
+        true,
+    )
+    .await;
+    let whoami: Value = serde_json::from_str(&whoami).expect("json");
+    let boards = whoami["boards"].as_array().expect("boards");
+    assert_eq!(boards.len(), 1, "{whoami}");
+    assert_eq!(boards[0]["id"], fx.board_id);
+}
+
+#[tokio::test]
+async fn device_approval_should_refuse_a_request_whose_board_names_match_none() {
+    let (_, page, whoami) = approve_asked(json!({"boards": ["No such board"]}), "").await;
+    assert!(whoami.is_none());
+    assert!(
+        page.contains("None of the boards the request names"),
+        "{page}"
+    );
+}
+
+#[tokio::test]
+async fn device_approval_should_grant_every_board_when_the_request_names_none() {
+    let (_, _, whoami) = approve_asked(json!({}), "").await;
+    assert_eq!(whoami.expect("whoami")["boards"], "all");
+    let (_, _, whoami) = approve_asked(json!({"boards": []}), "").await;
+    assert_eq!(whoami.expect("whoami")["boards"], "all");
+}
+
 /// Returns the approval form fields that grant exactly the permissions of `scope`.
 fn scope_form(scope: AuthScope) -> String {
     let names: String = scope
@@ -5603,7 +5871,7 @@ async fn approving_should_lower_the_permissions_and_set_the_expiry() {
 
     let (status, _, whoami) = approve_with(
         "work",
-        &format!("{}&expires_in_days=30", scope_form(AuthScope::Read)),
+        &format!("{}&expires_in_hours=720", scope_form(AuthScope::Read)),
     )
     .await;
     let whoami = whoami.expect("whoami");
@@ -5641,38 +5909,40 @@ async fn approving_should_lower_the_permissions_and_set_the_expiry() {
         );
     }
 
-    let (_, _, whoami) = approve_with("work", "&expires_in_days=1").await;
+    let (_, _, whoami) = approve_with("work", "&expires_in_hours=24").await;
     let whoami = whoami.expect("whoami");
     assert!(near(&whoami["expires_at"], 1), "{whoami}");
 
     let (_, _, whoami) = approve_with(
         "admin",
-        &format!("{}&expires_in_days=365", scope_form(AuthScope::Work)),
+        &format!("{}&expires_in_hours=8760", scope_form(AuthScope::Work)),
     )
     .await;
     let whoami = whoami.expect("whoami");
     assert_eq!(whoami["scope"], "work");
     assert!(near(&whoami["expires_at"], 365));
 
-    let (_, _, whoami) = approve_with(
-        "read",
-        &format!("{}&expires_in_days=never", scope_form(AuthScope::Read)),
-    )
-    .await;
+    let (_, _, whoami) = approve_with("read", "&expires_in_hours=never").await;
     let whoami = whoami.expect("whoami");
     assert_eq!(whoami["scope"], "read");
     assert_eq!(whoami["expires_at"], Value::Null);
+
+    let (_, _, whoami) = approve_with("read", "&expires_in_hours=1").await;
+    let whoami = whoami.expect("whoami");
+    let want = chrono::Utc::now().timestamp() + SECONDS_PER_HOUR;
+    assert!((whoami["expires_at"].as_i64().expect("expires_at") - want).abs() < 60);
 }
 
 #[tokio::test]
-async fn approving_should_refuse_raised_permissions_or_an_unoffered_expiry() {
+async fn approving_should_refuse_raised_permissions_or_an_expiry_outside_1_to_8760_hours() {
     for form in [
         scope_form(AuthScope::Admin),
         scope_form(AuthScope::Work),
-        "&expires_in_days=7".to_string(),
-        "&expires_in_days=0".to_string(),
-        "&expires_in_days=-30".to_string(),
-        "&expires_in_days=".to_string(),
+        "&expires_in_hours=0".to_string(),
+        "&expires_in_hours=-30".to_string(),
+        "&expires_in_hours=".to_string(),
+        "&expires_in_hours=abc".to_string(),
+        "&expires_in_hours=8761".to_string(),
     ] {
         let (status, page, whoami) = approve_with("read", &form).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{form}: {page}");
@@ -5681,9 +5951,9 @@ async fn approving_should_refuse_raised_permissions_or_an_unoffered_expiry() {
             page.contains("id=\"device-expiry\""),
             "{form}: the form is shown again"
         );
-        if form.as_str() == "&expires_in_days=7" {
+        if form.as_str() == "&expires_in_hours=abc" {
             assert!(
-                page.contains("Choose 1, 30, 90 or 365 days, or never."),
+                page.contains("Choose an expiry of 1 to 8760 hours, or never."),
                 "{page}"
             );
         }
@@ -5723,11 +5993,11 @@ async fn approving_should_refuse_raised_permissions_or_an_unoffered_expiry() {
 
 #[tokio::test]
 async fn the_approval_page_should_name_the_requested_permissions_and_warn_about_admin() {
-    for (requested, warned, days) in [
-        ("read", false, "90"),
-        ("work", false, "90"),
-        ("provision", false, "90"),
-        ("admin", true, "1"),
+    for (requested, warned, hours) in [
+        ("read", false, "2160"),
+        ("work", false, "2160"),
+        ("provision", false, "2160"),
+        ("admin", true, "24"),
     ] {
         let (_dir, fx) = fixture();
         let (_, user_code) = paired(&fx, json!([requested])).await;
@@ -5736,7 +6006,7 @@ async fn the_approval_page_should_name_the_requested_permissions_and_warn_about_
         assert_eq!(status, StatusCode::OK);
         assert_eq!(page.contains("device-warning"), warned, "{requested}");
         assert!(
-            page.contains(&format!("data-expiry-days=\"{days}\"")),
+            page.contains(&format!("data-expiry-hours=\"{hours}\"")),
             "{requested}"
         );
         let attribute = page
@@ -5934,6 +6204,9 @@ async fn approving_should_refuse_the_role_of_another_account() {
         client_network: None,
         role_id: None,
         requested_role: None,
+        requested_boards: Vec::new(),
+        requested_hours: None,
+        reason: None,
     };
     let form = DeviceApproveForm {
         user_code: "BCDFGHJK".into(),
@@ -5997,16 +6270,20 @@ async fn device_grant_should_refuse_boards_outside_the_request() {
         client_network: None,
         role_id: None,
         requested_role: None,
+        requested_boards: Vec::new(),
+        requested_hours: None,
+        reason: None,
     };
     let form = |boards: Option<Vec<String>>| DeviceApproveForm {
         user_code: "BCDFGHJK".into(),
         boards,
         ..Default::default()
     };
-    let refused = device_grant(&account, &row, &form(None), now).expect_err("widened");
-    assert!(
-        refused.contains("never widened beyond the request"),
-        "{refused}"
+    let grant = device_grant(&account, &row, &form(None), now).expect("no field");
+    assert_eq!(
+        grant.boards,
+        BoardAccess::Only(BTreeSet::from([fx.board_id.clone()])),
+        "no field keeps the requested boards"
     );
     let refused = device_grant(&account, &row, &form(Some(vec![other])), now).expect_err("outside");
     assert!(
@@ -12021,8 +12298,11 @@ async fn a_device_client_using_an_old_scope_name_should_still_pair_with_that_pre
 async fn the_expiry_of_a_device_request_should_key_on_deletes() {
     let (_dir, fx) = fixture();
     for (request, default) in [
-        (json!({"permissions": ["tasks.read", "tasks.delete"]}), "1"),
-        (json!({"permissions": ["tasks.read", "tasks.create"]}), "90"),
+        (json!({"permissions": ["tasks.read", "tasks.delete"]}), "24"),
+        (
+            json!({"permissions": ["tasks.read", "tasks.create"]}),
+            "2160",
+        ),
     ] {
         let (_, started) = {
             let mut body = json!({"client_name": "agentctl"});
@@ -12040,7 +12320,7 @@ async fn the_expiry_of_a_device_request_should_key_on_deletes() {
         .await;
         assert_eq!(status, StatusCode::OK, "{page}");
         assert!(
-            page.contains(&format!("data-expiry-days=\"{default}\"")),
+            page.contains(&format!("data-expiry-hours=\"{default}\"")),
             "{request}: {page}"
         );
     }

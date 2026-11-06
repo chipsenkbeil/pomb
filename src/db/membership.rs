@@ -815,6 +815,9 @@ mod tests {
             client_network: None,
             role_id: None,
             requested_role: None,
+            requested_boards: Vec::new(),
+            requested_hours: None,
+            reason: None,
         };
         let txn = fx.db.db.begin_write().expect("write");
         move_row_to(
@@ -877,6 +880,9 @@ mod tests {
             client_network: None,
             role_id: None,
             requested_role: None,
+            requested_boards: Vec::new(),
+            requested_hours: None,
+            reason: None,
         };
         fx.db.create_device_auth(&request, now).expect("request");
         let grant = DeviceGrant {

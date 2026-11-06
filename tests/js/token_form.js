@@ -179,18 +179,35 @@ check('a request without the required permission leaves no role',
   TokenForm.deviceRoles(catalog, deviceRoleList, ['tasks.read', 'tasks.create']), []);
 check('the device fields post the permissions in catalog order, the boards, the role and the expiry',
   TokenForm.deviceFields(catalog, {
-    userCode: 'ABCD-EFGH', ticked: ['tasks.create', 'boards.read'], boards: ['b1', 'b2'], roleId: 'r1', expiryDays: 90
+    userCode: 'ABCD-EFGH', ticked: ['tasks.create', 'boards.read'], boards: ['b1', 'b2'], roleId: 'r1', expiryDays: 2160
   }),
   [['user_code', 'ABCD-EFGH'], ['permissions_listed', '1'], ['permissions', 'boards.read'],
-    ['permissions', 'tasks.create'], ['boards', 'b1'], ['boards', 'b2'], ['role_id', 'r1'], ['expires_in_days', '90']]);
-check('the device fields post no boards for all boards, no role id for no role and never for zero days',
+    ['permissions', 'tasks.create'], ['boards', 'b1'], ['boards', 'b2'], ['role_id', 'r1'], ['expires_in_hours', '2160']]);
+check('the device fields post never for zero hours',
   TokenForm.deviceFields(catalog, { userCode: 'X', ticked: [], boards: null, roleId: null, expiryDays: 0 }),
-  [['user_code', 'X'], ['permissions_listed', '1'], ['expires_in_days', 'never']]);
-check('the device menu adds a one day choice with its end date before the Settings choices',
-  TokenForm.deviceExpiryChoices(day).map(function (choice) { return [choice.days, choice.label, choice.ends]; }),
-  [[1, '1 day', 'Ends 2026-11-05 UTC']].concat(TokenForm.expiryChoices(day).map(function (choice) {
+  [['user_code', 'X'], ['permissions_listed', '1'], ['expires_in_hours', 'never']]);
+check('the device fields post no boards for all boards and no role id for no role',
+  TokenForm.deviceFields(catalog, { userCode: 'X', ticked: [], boards: null, roleId: null, expiryDays: 24 }),
+  [['user_code', 'X'], ['permissions_listed', '1'], ['expires_in_hours', '24']]);
+var deviceChoices = function (requested) {
+  return TokenForm.deviceExpiryChoices(requested)(day).map(function (choice) {
     return [choice.days, choice.label, choice.ends];
-  })));
+  });
+};
+check('the device menu offers 1 hour, 8 hours, 1 day, 30 days, 90 days, 365 days and never for a request naming no hours',
+  deviceChoices(0),
+  [[1, '1 hour', 'Ends 2026-11-04 UTC'], [8, '8 hours', 'Ends 2026-11-04 UTC'],
+    [24, '1 day', 'Ends 2026-11-05 UTC'], [720, '30 days', 'Ends 2026-12-04 UTC'],
+    [2160, '90 days', 'Ends 2027-02-02 UTC'], [8760, '1 year', 'Ends 2027-11-04 UTC'],
+    [0, 'Never', 'No end date']]);
+check('a request for 8 hours offers 1 hour and 8 hours and no never',
+  deviceChoices(8), [[1, '1 hour', 'Ends 2026-11-04 UTC'], [8, '8 hours', 'Ends 2026-11-04 UTC']]);
+check('a request for 1 hour offers only 1 hour',
+  deviceChoices(1).map(function (choice) { return choice[0]; }), [1]);
+check('a request for 48 hours offers the shorter choices and the 48 hours',
+  deviceChoices(48).map(function (choice) { return choice[0]; }), [1, 8, 24, 48]);
+check('every device choice stays within the request',
+  deviceChoices(1000).every(function (choice) { return choice[0] <= 1000; }), true);
 check('the Settings choices stay without a one day choice',
   TokenForm.expiryChoices(day).some(function (choice) { return choice.days === 1; }), false);
 check('a role token reaches a board when it is all boards or holds it',

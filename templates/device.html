@@ -19,7 +19,7 @@
     <p class="login-error" id="device-error" hidden></p>
     <form id="device-approve" method="post" action="/device/approve">
       <input type="hidden" name="user_code" value="{{ user_code }}">
-      <div id="device-picker" class="perm-picker" data-requested="{{ requested_names }}" data-role="{{ role_name }}" data-expiry-days="{{ default_days }}"><p class="settings-hint">Loading permissions&hellip;</p></div>
+      <div id="device-picker" class="perm-picker" data-requested="{{ requested_names }}" data-role="{{ role_name }}" data-expiry-hours="{{ default_hours }}" data-requested-hours="{{ requested_hours }}"><p class="settings-hint">Loading permissions&hellip;</p></div>
       <div id="device-boards" class="perm-picker"></div>
       <div id="device-expiry" class="perm-picker"></div>
       <div class="device-actions">

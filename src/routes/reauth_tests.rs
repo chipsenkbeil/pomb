@@ -283,7 +283,7 @@ async fn approving_a_device_should_need_a_fresh_passkey_check() {
     .await;
     assert_eq!(paired.status, StatusCode::OK, "{}", paired.body);
     let user_code = paired.body["user_code"].as_str().expect("user code");
-    let form = format!("user_code={user_code}&expires_in_days=1");
+    let form = format!("user_code={user_code}&expires_in_hours=24");
     for cookie in [&t.stale, &t.never] {
         let (status, body) = form_post(app, cookie, "/device/approve", form.clone()).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");

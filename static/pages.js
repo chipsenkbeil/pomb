@@ -250,7 +250,7 @@
     var pickerBox = document.getElementById('device-picker');
     var requested = pickerBox.dataset.requested.split(',');
     var boardPicker = mountBoardPicker(document.getElementById('device-boards'));
-    var expiryMenu = mountExpiryMenu(document.getElementById('device-expiry'), Number(pickerBox.dataset.expiryDays), TokenForm.deviceExpiryChoices);
+    var expiryMenu = mountExpiryMenu(document.getElementById('device-expiry'), Number(pickerBox.dataset.expiryHours), TokenForm.deviceExpiryChoices(Number(pickerBox.dataset.requestedHours)));
     var catalog = [];
     var picker = null;
     loadJson('/api/v1/agent-roles')
@@ -640,7 +640,7 @@
       });
       (form.boards || []).forEach(function (id) { fields.push(['boards', id]); });
       if (form.roleId) fields.push(['role_id', form.roleId]);
-      fields.push(['expires_in_days', form.expiryDays > 0 ? String(form.expiryDays) : 'never']);
+      fields.push(['expires_in_hours', form.expiryDays > 0 ? String(form.expiryDays) : 'never']);
       return fields;
     },
     boardMatches: function (boards, term) {
@@ -675,12 +675,28 @@
         };
       });
     },
-    deviceExpiryChoices: function (now) {
-      return [{
-        days: 1,
-        label: '1 day',
-        ends: 'Ends ' + new Date(now + 86400000).toISOString().slice(0, 10) + ' UTC'
-      }].concat(TokenForm.expiryChoices(now));
+    deviceHoursLabel: function (hours) {
+      if (hours === 8760) return '1 year';
+      if (hours % 24 === 0) return hours / 24 + (hours === 24 ? ' day' : ' days');
+      return hours + (hours === 1 ? ' hour' : ' hours');
+    },
+    deviceExpiryChoices: function (requestedHours) {
+      return function (now) {
+        var named = requestedHours > 0;
+        var limit = named ? requestedHours : 8760;
+        var hours = [1, 8, 24, 720, 2160, 8760].filter(function (value) { return value <= limit; });
+        if (hours.indexOf(limit) < 0) hours.push(limit);
+        hours.sort(function (a, b) { return a - b; });
+        var choices = hours.map(function (value) {
+          return {
+            days: value,
+            label: TokenForm.deviceHoursLabel(value),
+            ends: 'Ends ' + new Date(now + value * 3600000).toISOString().slice(0, 10) + ' UTC'
+          };
+        });
+        if (!named) choices.push({ days: 0, label: 'Never', ends: 'No end date' });
+        return choices;
+      };
     },
     expiryDefault: 365,
     lifetimeChoices: () => [1, 2, 3, 4, 5, 6, 7, 8].map((hours) => ({
