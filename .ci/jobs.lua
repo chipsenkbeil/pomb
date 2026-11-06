@@ -71,7 +71,7 @@ return {
       matrix = { RUNNER },
       run = function()
         check_rust()
-        run(".dev/lint.sh")
+        run("dev lint")
       end,
     },
     test = {
