@@ -83,8 +83,8 @@ start_server "$serve_time"
 for hint in members timer; do
   api PUT /api/settings "{\"dismiss_hint\":\"$hint\"}" >/dev/null
 done
-vt=$(bash "$here/seed-visual-test.sh" "$base" "$jar" 2>"$work/seed-vt.err" | tail -1)
-ep=$(bash "$here/seed-epic.sh" "$base" "$jar" 2>"$work/seed-ep.err" | tail -1)
+vt=$(dev parity seed-visual-test "$base" "$jar" 2>"$work/seed-vt.err" | tail -1)
+ep=$(dev parity seed-epic "$base" "$jar" 2>"$work/seed-ep.err" | tail -1)
 
 date_header=$(curl -sI "$base/login" | rg -i '^date:' | tr -d '\r')
 jq -n --arg base "$base" --arg jar "$jar" --arg gm "$gm" --arg vt "$vt" --arg ep "$ep" \
