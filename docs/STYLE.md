@@ -1837,3 +1837,63 @@ printf 'Landed %s.\n' "$sha"
 # Bad
 printf 'land: landed %s\n' "$sha"
 ```
+
+### P13. Doc a small enum on the enum, not on each variant
+
+A small closed enum whose variant names explain themselves needs a doc comment
+only on the enum. This overrides rule 11 for those variants. A variant whose
+name does not explain itself keeps its own doc.
+
+Review
+
+```rust
+// Good
+/// A group a board page lists its templates under.
+pub enum Category {
+    Marketing,
+    Sales,
+    Finance,
+}
+
+// Bad
+pub enum Category {
+    /// Templates for marketing.
+    Marketing,
+    /// Templates for sales.
+    Sales,
+    /// Templates for finance.
+    Finance,
+}
+```
+
+### P14. Leave a handler's `?` on an `AppError` without context
+
+Rule 48 does not cover a handler returning `AppError` with `?`. `AppError::from`
+already turns a typed database refusal into the right status and turns anything
+else into a server error, so a `.context()` either reaches the client body or
+needs a second wrapper type. This overrides rule 48 for those handlers.
+
+Review
+
+```rust
+// Good
+db.set_active_timer(&timer).map_err(AppError::from)?;
+
+// Bad
+db.set_active_timer(&timer).context("Failed to set the active timer")?;
+```
+
+### P15. Let a test check static asset text read with `include_str!`
+
+A test may assert on the text of a static file read with `include_str!`, for a
+presence or absence check such as a required class or a banned glyph. Behavior
+stays in the JS tests, and the rest of the test logic stays in Rust.
+
+Review
+
+```rust
+#[test]
+fn style_css_should_keep_the_stripe_inset() {
+    assert!(include_str!("../../static/style.css").contains("inset 4px 0 0 var(--hl-stripe)"));
+}
+```
