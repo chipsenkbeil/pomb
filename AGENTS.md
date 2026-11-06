@@ -12,8 +12,9 @@ Docker required.
 The Pomb board "pomb" (`dev board`) is the single list of work. KanbanFlow
 parity gaps carry the `kf-parity` label, and each card holds its done-when
 outcomes. Release pipeline: build in a worktree, the orchestrator inspects the
-diff, a different worker verifies blind, `dev release`, the homelab switch,
-`dev verify`, then the card moves to Done. Contracts: `.dev/BUILD_CONTRACT.md`
+diff, a different worker verifies blind, `dev land` merges it into main and
+moves the card to Release, then `dev release`, the homelab switch,
+`dev verify`, and the Release cards move to Done. Contracts: `.dev/BUILD_CONTRACT.md`
 (L0-L4 gates) and `.dev/VERIFIER_SPEC.md` (adversarial evidence protocol);
 fixture `.dev/golden-master-board.json`.
 
@@ -32,7 +33,7 @@ or `cargo test` directly, and do not edit `.dev/lint.sh` above its
 | `dev build` | `cargo build --release` |
 | `dev release <commit> --batch N --summary "..."` | refuses, before any ci step, a commit whose `Cargo.toml` version equals main's or whose `Cargo.lock` `pomb` entry differs from `Cargo.toml`, then applies a verified commit to main on the remote of record, which mirrors to GitHub, in `.dev/worktrees/release-N`, commits `Release batch-N: ...`, runs `dev lint --remote`, `dev test --remote`, `dev nixcheck --remote` and `dev build --remote` one at a time on ci, checks for attribution, pushes to main on the remote of record, then prints the sha, nix hash and condition for the homelab request (`--hash-only <sha>` reprints the block for a pushed sha without touching git or running that refusal, `--env KEY=VALUE` lists service env changes, `--dry-run` skips the push and hash) |
 | `dev nixcheck` | builds a nextest archive, then runs the tests in a user, mount and network namespace with no `/usr/bin/env` and only the tools the Nix derivation provides on PATH, so a missing tool fails before release. Linux only |
-| `dev regress [REV]` | diffs this tree's screenshots against REV (default main on the remote of record) with the ci `regress` job on a browser runner and keeps the report as an artifact (`ci artifacts last`) |
+| `dev regress [REV]` | diffs this tree's screenshots against REV (default main on the remote of record) with the ci `regress` job on a browser runner and keeps the report as an artifact and prints the run id and the `ci cp` command that fetches it |
 | `dev verify <sha> --backup <file>` | read-only post-switch checks on green-box (build_sha, app.js, cross-site 403, journal, `/login`, OpenAPI server URL, `token_invalid`; `--cleanup <worktree>...` removes worktrees and merged branches, `--delete-branch <branch>` also deletes an unmerged one) |
 
 `dev lint` and `dev test` exit 0 before a change is done. Rust style follows
