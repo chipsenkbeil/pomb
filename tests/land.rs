@@ -296,7 +296,7 @@ fn land_should_push_the_commit_onto_current_main_after_lint_and_test_pass() {
     assert_eq!(fixture.calls(), ["lint", "test"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains(&format!("landed {}", fixture.remote_main())),
+        stdout.contains(&format!("Landed {}.", fixture.remote_main())),
         "{stdout}"
     );
     assert!(

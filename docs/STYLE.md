@@ -1720,9 +1720,9 @@ Review
 
 ### P5. Write new JavaScript in modern syntax
 
-New code in `static/` may use any modern JavaScript that every current browser
-supports: `const` and `let`, arrow functions, classes, modules and the like.
-Existing code stays as it is until it is touched for another reason.
+New JavaScript in `static/` and `tests/js/` always uses `const`, `let` and
+arrow functions, even beside ES5 neighbours. Old code converges as it is
+touched, and an existing file is not converted for its own sake.
 
 Review
 
@@ -1819,4 +1819,21 @@ pub(crate) fn format_local(at: Timestamp) -> String {
 
 // Bad
 pub(super) fn format_local(at: Timestamp) -> String {
+```
+
+### P12. Write a person-facing shell message as one sentence
+
+A message a person reads from a `.dev` script is a full sentence, capitalized,
+ending in a period, with no semicolon and no program prefix: the person ran the
+verb and knows which script speaks. Output another script or a card note parses
+is exempt.
+
+Review
+
+```bash
+# Good
+printf 'Landed %s.\n' "$sha"
+
+# Bad
+printf 'land: landed %s\n' "$sha"
 ```
