@@ -107,6 +107,7 @@ catalog! {
     LabelsManage, "labels.manage", "labels", Lead, "Highlight labels on a board, color them and add labels no task carries yet.";
     EpicsManage, "epics.manage", "epics", Lead, "Close, reopen or turn an epic back into a plain task.";
     SeatsManage, "seats.manage", "seats", Lead, "Drop a seat from a task and remove a seat from a board.";
+    SeatsTake, "seats.take", "seats", Work, "Take a seat on a task and record the holder's verdict.";
     TasksRead, "tasks.read", "tasks", Read, "Read tasks, subtasks and links.";
     TasksCreate, "tasks.create", "tasks", Work, "Create a task or an epic, and turn a subtask into a task.";
     TasksEdit, "tasks.edit", "tasks", Work, "Update a task, tick the boxes in its description, close and reopen an epic, bulk update and restore tasks.";
@@ -244,7 +245,11 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
     },
     StandardRole {
         name: "reviewer",
-        extra: &[Permission::TasksClaim, Permission::TasksMove],
+        extra: &[
+            Permission::TasksClaim,
+            Permission::TasksMove,
+            Permission::SeatsTake,
+        ],
     },
     StandardRole {
         name: "verifier",
@@ -252,6 +257,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
             Permission::TasksClaim,
             Permission::TasksMove,
             Permission::SubtasksCheck,
+            Permission::SeatsTake,
         ],
     },
     StandardRole {
@@ -278,6 +284,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
             Permission::TokensIssue,
             Permission::RolesGrant,
             Permission::SeatsManage,
+            Permission::SeatsTake,
         ],
     },
 ];
@@ -288,7 +295,7 @@ mod tests {
 
     use super::*;
 
-    const NAMES: [&str; 54] = [
+    const NAMES: [&str; 55] = [
         "boards.read",
         "boards.create",
         "boards.configure",
@@ -313,6 +320,7 @@ mod tests {
         "labels.manage",
         "epics.manage",
         "seats.manage",
+        "seats.take",
         "tasks.read",
         "tasks.create",
         "tasks.edit",
@@ -413,6 +421,7 @@ mod tests {
             "tasks.edit",
             "tasks.move",
             "tasks.claim",
+            "seats.take",
             "subtasks.edit",
             "subtasks.check",
             "links.write",
@@ -569,8 +578,11 @@ mod tests {
                     "time.write",
                 ],
             ),
-            ("reviewer", &["tasks.claim", "tasks.move"]),
-            ("verifier", &["tasks.claim", "tasks.move", "subtasks.check"]),
+            ("reviewer", &["tasks.claim", "tasks.move", "seats.take"]),
+            (
+                "verifier",
+                &["tasks.claim", "tasks.move", "subtasks.check", "seats.take"],
+            ),
             ("release", &["tasks.claim", "tasks.move"]),
             (
                 "lead",
@@ -592,6 +604,7 @@ mod tests {
                     "tokens.issue",
                     "roles.grant",
                     "seats.manage",
+                    "seats.take",
                 ],
             ),
         ];

@@ -988,17 +988,17 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::POST,
         "/api/tasks/:id/seats/take",
-        Permission::TasksEdit,
+        Permission::SeatsTake,
     ),
     (
         Method::POST,
         "/api/tasks/:id/seats/verdict",
-        Permission::TasksEdit,
+        Permission::SeatsTake,
     ),
     (
         Method::POST,
         "/api/tasks/:id/seats/ask-again",
-        Permission::TasksEdit,
+        Permission::TasksClaim,
     ),
     (Method::POST, "/api/tasks/:id/close", Permission::TasksEdit),
     (Method::POST, "/api/tasks/:id/reopen", Permission::TasksEdit),

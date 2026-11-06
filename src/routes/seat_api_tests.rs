@@ -9,7 +9,7 @@ use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
 use crate::models::{AccountId, Actor, AuthScope, Seat, SeatSlot, SeatVerdict};
-use crate::permissions::Permission;
+use crate::permissions::{Permission, STANDARD_ROLES};
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -100,6 +100,29 @@ impl Fixture {
         .await
     }
 
+    fn role_token(&self, role: &str) -> String {
+        let standard = STANDARD_ROLES
+            .iter()
+            .find(|standard| standard.name == role)
+            .expect("standard role");
+        let (mut record, raw) = new_api_token_record(&self.account, role, AuthScope::Work, None);
+        record.permissions = standard.permissions();
+        self.db.create_api_token(&record).expect("token");
+        raw
+    }
+
+    async fn as_token(&self, raw: &str, uri: &str, body: Value) -> Reply {
+        let bearer = format!("Bearer {raw}");
+        call(
+            &self.app,
+            "POST",
+            uri,
+            &[("authorization", bearer.as_str())],
+            Some(body),
+        )
+        .await
+    }
+
     async fn task(&self) -> String {
         let body = json!({"column_id": self.column, "name": "Card"});
         let made = self.bearer(OWNER, "POST", "/api/tasks", body).await;
@@ -170,6 +193,17 @@ impl Fixture {
                     .find(|seat| seat.name == name)
                     .expect("seat");
                 seat.lease_expires_at = Some("2020-01-01T00:00:00+00:00".to_string());
+                ((), true)
+            })
+            .expect("change")
+            .expect("task");
+    }
+
+    fn lapse_owner(&self, task: &str) {
+        self.db
+            .apply_task_change(task, Actor::SYSTEM, |row| {
+                let owner = row.owner.as_mut().expect("owner");
+                owner.lease_expires_at = Some("2020-01-01T00:00:00+00:00".to_string());
                 ((), true)
             })
             .expect("change")
@@ -417,4 +451,123 @@ async fn seat_drop_without_seats_manage_gets_403() {
     assert_eq!(dropped.status, StatusCode::OK, "{}", dropped.body);
     let removed = fx.browse("PUT", &board, shrunk).await;
     assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+}
+
+#[tokio::test]
+async fn seats_should_let_a_reviewer_role_token_take_a_seat_and_record_a_verdict() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let reviewer = fx.role_token("reviewer");
+
+    let body = json!({"seat": "code", "name": "reviewer", "ttl_seconds": 600});
+    let taken = fx.as_token(&reviewer, &seat_uri(&task, "take"), body).await;
+    assert_eq!(taken.status, StatusCode::OK, "{}", taken.body);
+    let body = json!({"seat": "code", "name": "reviewer", "verdict": "approved"});
+    let answered = fx
+        .as_token(&reviewer, &seat_uri(&task, "verdict"), body)
+        .await;
+    assert_eq!(answered.status, StatusCode::OK, "{}", answered.body);
+    assert_eq!(fx.seat(&task, "code").verdict, Some(SeatVerdict::Approved));
+}
+
+#[tokio::test]
+async fn seats_should_refuse_an_implementer_role_token_with_permission_denied() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let implementer = fx.role_token("implementer");
+
+    let take = json!({"seat": "code", "name": "builder"});
+    let verdict = json!({"seat": "code", "name": "builder", "verdict": "approved"});
+    for (tail, body) in [("take", take), ("verdict", verdict)] {
+        let refused = fx
+            .as_token(&implementer, &seat_uri(&task, tail), body)
+            .await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+        assert_eq!(refused.body["permission"], "seats.take");
+    }
+    assert_eq!(fx.seat(&task, "code").holder, None);
+}
+
+#[tokio::test]
+async fn take_task_seat_should_refuse_the_cards_live_owner() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let owned = fx.grab(OWNER, &task, "builder").await;
+    assert_eq!(owned.status, StatusCode::OK, "{}", owned.body);
+
+    let same = fx.take(OWNER, &task, "code", "builder").await;
+    assert_refused(&same, StatusCode::CONFLICT, "owner_seat");
+    let renamed = fx.take(OWNER, &task, "code", "someone else").await;
+    assert_refused(&renamed, StatusCode::CONFLICT, "owner_seat");
+    assert_eq!(fx.seat(&task, "code").holder, None);
+
+    let other = fx.task().await;
+    let uri = format!("/api/tasks/{other}/owner");
+    let member = fx.browse("POST", &uri, json!({"ttl_seconds": 600})).await;
+    assert_eq!(member.status, StatusCode::OK, "{}", member.body);
+    let sat = fx
+        .browse("POST", &seat_uri(&other, "take"), json!({"seat": "code"}))
+        .await;
+    assert_refused(&sat, StatusCode::CONFLICT, "owner_seat");
+    assert_eq!(fx.seat(&other, "code").holder, None);
+}
+
+#[tokio::test]
+async fn take_task_seat_should_let_another_token_take_a_seat_on_an_owned_card() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let owned = fx.grab(OWNER, &task, "builder").await;
+    assert_eq!(owned.status, StatusCode::OK, "{}", owned.body);
+
+    let taken = fx.take(REVIEWER, &task, "code", "reviewer").await;
+    assert_eq!(taken.status, StatusCode::OK, "{}", taken.body);
+    assert_eq!(taken.body[0]["holder"]["name"], "reviewer");
+    let browser = fx
+        .browse("POST", &seat_uri(&task, "take"), json!({"seat": "verify"}))
+        .await;
+    assert_eq!(browser.status, StatusCode::OK, "{}", browser.body);
+}
+
+#[tokio::test]
+async fn take_task_seat_should_let_an_owner_whose_lease_lapsed_take_a_seat() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let owned = fx.grab(OWNER, &task, "builder").await;
+    assert_eq!(owned.status, StatusCode::OK, "{}", owned.body);
+    fx.lapse_owner(&task);
+
+    let taken = fx.take(OWNER, &task, "code", "builder").await;
+    assert_eq!(taken.status, StatusCode::OK, "{}", taken.body);
+}
+
+#[tokio::test]
+async fn ask_again_should_work_for_the_owner_with_tasks_claim_alone() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let implementer = fx.role_token("implementer");
+    assert!(
+        !STANDARD_ROLES
+            .iter()
+            .find(|standard| standard.name == "implementer")
+            .expect("implementer")
+            .permissions()
+            .contains(&Permission::TasksEdit)
+    );
+    let uri = format!("/api/tasks/{task}/owner");
+    let body = json!({"name": "builder", "ttl_seconds": 600});
+    let owned = fx.as_token(&implementer, &uri, body).await;
+    assert_eq!(owned.status, StatusCode::OK, "{}", owned.body);
+    let taken = fx.take(REVIEWER, &task, "code", "reviewer").await;
+    assert_eq!(taken.status, StatusCode::OK, "{}", taken.body);
+    let changes = fx
+        .answer(REVIEWER, &task, "code", "changes_needed", Some("fix"))
+        .await;
+    assert_eq!(changes.status, StatusCode::OK, "{}", changes.body);
+
+    let body = json!({"name": "builder"});
+    let asked = fx
+        .as_token(&implementer, &seat_uri(&task, "ask-again"), body)
+        .await;
+    assert_eq!(asked.status, StatusCode::OK, "{}", asked.body);
+    assert_eq!(fx.seat(&task, "code").verdict, None);
 }

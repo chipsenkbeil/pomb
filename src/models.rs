@@ -1086,6 +1086,27 @@ impl OwnerHolder {
             _ => self == other,
         }
     }
+
+    /// Returns whether `other` acts through the same credential: the same token id for an agent
+    /// and the same account id for a member. The name an agent sent never counts, and an agent
+    /// with no token id matches no one.
+    #[must_use]
+    pub fn is_same_credential(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Human { id }, Self::Human { id: other }) => id == other,
+            (
+                Self::Agent {
+                    token_id: Some(token),
+                    ..
+                },
+                Self::Agent {
+                    token_id: Some(other),
+                    ..
+                },
+            ) => token == other,
+            _ => false,
+        }
+    }
 }
 
 /// The variant of an [`OwnerHolder`] as stored.

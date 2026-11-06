@@ -21750,7 +21750,9 @@ fn seat_lease_end(now: DateTime<Utc>, ttl_seconds: i64) -> String {
 /// Takes a seat on one task, as a reviewer starting its review. A seat nobody holds, or whose
 /// holder's lease lapsed while at work, goes to the first taker, and the holder that lapsed keeps
 /// no claim on it. A holder that takes its own seat again starts a new review and loses its
-/// verdict. Taking a seat sets no owner and moves no card.
+/// verdict. Taking a seat sets no owner and moves no card. Needs `seats.take`, which the work,
+/// lead and admin presets and the reviewer, verifier and lead roles hold. The task's live owner
+/// cannot take a seat on it.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/seats/take",
@@ -21763,7 +21765,7 @@ fn seat_lease_end(now: DateTime<Utc>, ttl_seconds: i64) -> String {
         (status = 400, description = "No `seat`, a missing name for a token, or `ttl_seconds` outside 1..86400"),
         (status = 403, description = "`take_over` sent with a token. `card_locked`: the task carries a locking label"),
         (status = 404, description = "Task not found, or it has no seat of that name"),
-        (status = 409, description = "`seat_held`: another holder works the seat with a live lease, or holds its verdict, and the request does not take over"),
+        (status = 409, description = "`seat_held`: another holder works the seat with a live lease, or holds its verdict, and the request does not take over. `owner_seat`: the caller is the task's live owner, the same token or the same member"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -21786,6 +21788,14 @@ async fn take_task_seat(
     let outcome = account
         .apply_task_change(&task, user.actor(), |row| {
             let now = Utc::now();
+            let owns = row
+                .live_owner(now)
+                .is_some_and(|owner| owner.holder.is_same_credential(&holder));
+            if owns {
+                let refusal = AppError::conflict("the task's owner cannot take a seat on it")
+                    .with_code(ErrorCode::OwnerSeat);
+                return (Err(refusal), false);
+            }
             let Some(seat) = find_seat(&mut row.seats, name) else {
                 return (Err(AppError::not_found("the task has no such seat")), false);
             };
@@ -21816,7 +21826,8 @@ async fn take_task_seat(
 
 /// Records the verdict of the seat's holder, Approved or Changes needed, with an optional
 /// revision that Pomb stores as sent. The seat then waits, its lease ends and the holder's name
-/// stays. Only the holder of a seat whose lease still holds may answer for it.
+/// stays. Only the holder of a seat whose lease still holds may answer for it. Needs
+/// `seats.take`.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/seats/verdict",
@@ -21876,7 +21887,7 @@ async fn set_task_seat_verdict(
 
 /// Asks for a fresh review. Every seat that answered Changes needed goes back to waiting with no
 /// verdict and no revision, and keeps its holder. A seat that answered Approved changes not at
-/// all. Only the task's live owner may ask.
+/// all. Only the task's live owner may ask. Needs `tasks.claim`.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/seats/ask-again",

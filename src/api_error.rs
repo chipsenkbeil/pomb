@@ -90,6 +90,8 @@ pub enum ErrorCode {
     SeatNotHeld,
     /// The caller is not the task's live owner, which the request needs (409).
     NotOwner,
+    /// The task's live owner cannot take a seat on its own task (409).
+    OwnerSeat,
     /// The claim fence is stale, mismatched or expired (409).
     StaleFence,
     /// The target column is at its WIP limit (409).

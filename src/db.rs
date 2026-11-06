@@ -1005,7 +1005,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 79;
+pub const SCHEMA_VERSION: u64 = 80;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1091,6 +1091,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "2ede0a454c015ba8cb29d4d975460326645220f6c4751abfa01773ea7d97af62",
     "79781e79136dc13b6cbe973f282c2f0b95c0406748922d77a924bb29f7a41770",
     "e1da24113ea1128afeaace95b5d5cd2e4876bd2b5d04f387dd1119807f4330e5",
+    "ddef6d5beb8718c6a99f0f42a1c37ba81b4eec45ec86ffd797cccfb89066835c",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1255,6 +1256,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 78) {
         added.push(Permission::SeatsManage);
     }
+    if from.is_none_or(|version| version < 80) {
+        added.push(Permission::SeatsTake);
+    }
     if !added.is_empty() {
         grant_added_permissions(txn, &added)?;
     }
@@ -1287,6 +1291,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
         assign_column_stages(txn)?;
         txn_recount_usage(txn)?;
     }
+    if from.is_none_or(|version| version < 80) {
+        grant_standard_roles_seats_take(txn)?;
+    }
     Ok(())
 }
 
@@ -1306,7 +1313,8 @@ fn assign_column_stages(txn: &WriteTransaction) -> DbResult<()> {
 }
 
 /// Adds `seats.manage` to each stored role named `lead` whose permissions are exactly the lead
-/// standard role without it, and leaves any other lead role as the owner set it.
+/// standard role without it and without `seats.take`, and leaves any other lead role as the owner
+/// set it.
 fn grant_lead_role_seats_manage(txn: &WriteTransaction) -> DbResult<()> {
     let added = Permission::SeatsManage.name();
     let old: BTreeSet<&str> = STANDARD_ROLES
@@ -1314,7 +1322,7 @@ fn grant_lead_role_seats_manage(txn: &WriteTransaction) -> DbResult<()> {
         .filter(|standard| standard.name == "lead")
         .flat_map(|standard| standard.permissions())
         .map(Permission::name)
-        .filter(|name| *name != added)
+        .filter(|name| *name != added && *name != Permission::SeatsTake.name())
         .collect();
     rewrite_rows(txn, AGENT_ROLES, |_, role| {
         if role.get("name").and_then(serde_json::Value::as_str) != Some("lead") {
@@ -1328,6 +1336,45 @@ fn grant_lead_role_seats_manage(txn: &WriteTransaction) -> DbResult<()> {
         };
         let names: BTreeSet<&str> = held.iter().filter_map(serde_json::Value::as_str).collect();
         if names != old || names.len() != held.len() {
+            return false;
+        }
+        held.push(serde_json::Value::from(added));
+        true
+    })
+}
+
+/// Adds `seats.take` to each stored role named `reviewer`, `verifier` or `lead` whose permissions
+/// are exactly its standard role without it, and leaves any other role as the owner set it.
+fn grant_standard_roles_seats_take(txn: &WriteTransaction) -> DbResult<()> {
+    let added = Permission::SeatsTake.name();
+    let old: Vec<(&str, BTreeSet<&str>)> = STANDARD_ROLES
+        .iter()
+        .filter(|standard| standard.extra.contains(&Permission::SeatsTake))
+        .map(|standard| {
+            let names = standard
+                .permissions()
+                .into_iter()
+                .map(Permission::name)
+                .filter(|name| *name != added)
+                .collect();
+            (standard.name, names)
+        })
+        .collect();
+    rewrite_rows(txn, AGENT_ROLES, |_, role| {
+        let Some(name) = role.get("name").and_then(serde_json::Value::as_str) else {
+            return false;
+        };
+        let Some((_, expected)) = old.iter().find(|(standard, _)| *standard == name) else {
+            return false;
+        };
+        let Some(held) = role
+            .get_mut("permissions")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return false;
+        };
+        let names: BTreeSet<&str> = held.iter().filter_map(serde_json::Value::as_str).collect();
+        if names != *expected || names.len() != held.len() {
             return false;
         }
         held.push(serde_json::Value::from(added));
@@ -14728,7 +14775,9 @@ mod schema_version_tests {
             let mut set: BTreeSet<Permission> = lead_role_permissions()
                 .difference(&BTreeSet::from(LEAD_ROLE_V73_ADDED))
                 .copied()
-                .filter(|permission| *permission != Permission::SeatsManage)
+                .filter(|permission| {
+                    !matches!(permission, Permission::SeatsManage | Permission::SeatsTake)
+                })
                 .collect();
             set.extend(extra.iter().copied());
             set
@@ -14758,6 +14807,128 @@ mod schema_version_tests {
         assert_eq!(role(&untouched).permissions, widened);
         assert_eq!(role(&owned).permissions, edited);
         assert_eq!(role(&other).permissions, held(&[]));
+    }
+
+    mod grant_standard_roles_seats_take {
+        use super::*;
+
+        #[test]
+        fn should_give_a_version_77_lead_role_both_seats_permissions() {
+            let (_dir, path) = temp_path();
+            let id = {
+                let db = Db::connect(&path).expect("connect");
+                let mut held = lead_role_permissions();
+                held.remove(&Permission::SeatsManage);
+                held.remove(&Permission::SeatsTake);
+                db.create_agent_role("a", "lead", held).expect("lead").id
+            };
+            stamp(&path, 77);
+
+            let db = Db::connect(&path).expect("open version 77");
+            let role: AgentRoleRow = read_one(&db.db, AGENT_ROLES, &id)
+                .expect("read")
+                .expect("row");
+            assert_eq!(role.permissions, lead_role_permissions());
+        }
+
+        fn without_take(role: &str) -> BTreeSet<Permission> {
+            let mut held = STANDARD_ROLES
+                .iter()
+                .find(|standard| standard.name == role)
+                .expect("standard role")
+                .permissions();
+            held.remove(&Permission::SeatsTake);
+            held
+        }
+
+        fn drop_take(object: &mut JsonObject) {
+            let held = object["permissions"].as_array_mut().expect("permissions");
+            held.retain(|name| name != "seats.take");
+        }
+
+        #[test]
+        fn should_grant_seats_take_to_preset_tokens_and_matching_stored_roles_once_at_upgrade() {
+            let (_dir, path) = temp_path();
+            let account = AccountId::ownerless();
+            let edited = {
+                let mut held = without_take("reviewer");
+                held.insert(Permission::TimeRead);
+                held
+            };
+            let (work, lead, custom, reviewer, verifier, lead_role, edited_role, planner) = {
+                let db = Db::connect(&path).expect("connect");
+                let mut tokens = Vec::new();
+                for scope in [AuthScope::Work, AuthScope::Provision, AuthScope::Work] {
+                    let (record, _) = new_api_token_record(&account, "old", scope, None);
+                    db.create_api_token(&record).expect("token");
+                    tokens.push(record.id);
+                }
+                let role = |name: &str, held: BTreeSet<Permission>| {
+                    db.create_agent_role(account.as_str(), name, held)
+                        .expect("role")
+                        .id
+                };
+                (
+                    tokens[0].clone(),
+                    tokens[1].clone(),
+                    tokens[2].clone(),
+                    role("reviewer", without_take("reviewer")),
+                    role("verifier", without_take("verifier")),
+                    role("lead", without_take("lead")),
+                    role("tester", edited.clone()),
+                    role("planner", without_take("planner")),
+                )
+            };
+            for id in [&work, &lead, &custom] {
+                edit_raw(&path, API_TOKENS, id, drop_take);
+            }
+            edit_raw(&path, API_TOKENS, &custom, |object| {
+                let held = object["permissions"].as_array_mut().expect("permissions");
+                held.retain(|name| name != "tasks.move");
+            });
+            stamp(&path, 79);
+
+            let db = Db::connect(&path).expect("open version 79");
+            let token = |id: &str| -> ApiTokenRecord {
+                read_one(&db.db, API_TOKENS, id)
+                    .expect("read")
+                    .expect("row")
+            };
+            let role = |id: &str| -> AgentRoleRow {
+                read_one(&db.db, AGENT_ROLES, id)
+                    .expect("read")
+                    .expect("row")
+            };
+            assert!(token(&work).permissions.contains(&Permission::SeatsTake));
+            assert!(token(&lead).permissions.contains(&Permission::SeatsTake));
+            assert!(!token(&custom).permissions.contains(&Permission::SeatsTake));
+            for (id, name) in [
+                (&reviewer, "reviewer"),
+                (&verifier, "verifier"),
+                (&lead_role, "lead"),
+            ] {
+                let standard = STANDARD_ROLES
+                    .iter()
+                    .find(|standard| standard.name == name)
+                    .expect("standard role");
+                assert_eq!(role(id).permissions, standard.permissions(), "{name}");
+            }
+            assert_eq!(role(&edited_role).permissions, edited);
+            assert_eq!(role(&planner).permissions, without_take("planner"));
+
+            drop(db);
+            edit_raw(&path, AGENT_ROLES, &reviewer, drop_take);
+            edit_raw(&path, API_TOKENS, &work, drop_take);
+            let db = Db::connect(&path).expect("reopen at version 80");
+            let kept: AgentRoleRow = read_one(&db.db, AGENT_ROLES, &reviewer)
+                .expect("read")
+                .expect("row");
+            assert_eq!(kept.permissions, without_take("reviewer"));
+            let kept: ApiTokenRecord = read_one(&db.db, API_TOKENS, &work)
+                .expect("read")
+                .expect("row");
+            assert!(!kept.permissions.contains(&Permission::SeatsTake));
+        }
     }
 
     fn upgraded_token_holding(held: &[&str]) -> ApiTokenRecord {
