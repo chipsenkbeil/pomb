@@ -1559,6 +1559,8 @@ mod tests {
                         name: "builder".to_string(),
                     },
                     lease_expires_at: Some("2026-10-01T11:00:00Z".to_string()),
+                    role: None,
+                    since: None,
                 });
                 ((), true)
             })

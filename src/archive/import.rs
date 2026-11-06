@@ -1569,6 +1569,8 @@ impl Builder<'_> {
         holder.map(|holder| Owner {
             holder,
             lease_expires_at: info.lease_expires_at,
+            role: None,
+            since: None,
         })
     }
 
@@ -2501,6 +2503,8 @@ mod tests {
                         name: "agent-a".to_string()
                     },
                     lease_expires_at: Some(soon),
+                    role: None,
+                    since: None,
                 }),
                 Some(Owner {
                     holder: OwnerHolder::Agent {
@@ -2508,12 +2512,16 @@ mod tests {
                         name: "coordinator".to_string()
                     },
                     lease_expires_at: None,
+                    role: None,
+                    since: None,
                 }),
                 Some(Owner {
                     holder: OwnerHolder::Human {
                         id: "acc".to_string()
                     },
                     lease_expires_at: None,
+                    role: None,
+                    since: None,
                 }),
                 None,
             ]
@@ -2536,6 +2544,8 @@ mod tests {
                     name: "builder".to_string()
                 },
                 lease_expires_at: Some("2026-10-01T11:00:00Z".to_string()),
+                role: None,
+                since: None,
             })
         );
 
@@ -2548,6 +2558,8 @@ mod tests {
                     id: "acc".to_string()
                 },
                 lease_expires_at: None,
+                role: None,
+                since: None,
             })
         );
 

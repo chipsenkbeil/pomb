@@ -326,6 +326,8 @@ impl TextCap {
     pub const LABELS: Self = Self::items("labels", 50);
     /// Most members on one task.
     pub const MEMBERS: Self = Self::items("member_ids", 50);
+    /// The role label an owner grab sends.
+    pub const OWNER_ROLE: Self = Self::chars("role", 40);
     /// The name of the agent session a task is the responsibility of.
     pub const RESPONSIBLE_SESSION: Self = Self::chars("responsible.name", 200);
     /// The change a reviewer suggests with a seat verdict.
@@ -1283,6 +1285,8 @@ fn live_holder_of(
             name: claim.claimant.clone(),
         },
         lease_expires_at: Some(claim.expires_at.clone()),
+        role: None,
+        since: None,
     })
 }
 
@@ -1295,6 +1299,13 @@ pub struct Owner {
     /// grab once it has passed, and the owner stays named.
     #[serde(default)]
     pub lease_expires_at: Option<String>,
+    /// A short label for the role an agent plays, as sent with its grab, or null. Pomb stores it
+    /// as given and never parses the agent's name.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// RFC3339 time the holder last changed, kept across renewals. Null when unknown.
+    #[serde(default)]
+    pub since: Option<String>,
 }
 
 impl Owner {
@@ -1317,6 +1328,8 @@ impl Owner {
         let unleased = |holder| Self {
             holder,
             lease_expires_at: None,
+            role: None,
+            since: None,
         };
         if let Some(claim) = claim.filter(|claim| claim.is_live(now)) {
             return Some(Self {
@@ -1325,6 +1338,8 @@ impl Owner {
                     name: claim.claimant.clone(),
                 },
                 lease_expires_at: Some(claim.expires_at.clone()),
+                role: None,
+                since: None,
             });
         }
         let human = |id: &String| unleased(OwnerHolder::Human { id: id.clone() });
@@ -1616,6 +1631,8 @@ impl TaskCard {
                 name: claim.claimant.clone(),
             },
             lease_expires_at: Some(claim.expires_at.clone()),
+            role: None,
+            since: None,
         })
     }
 

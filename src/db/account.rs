@@ -2168,9 +2168,10 @@ impl AccountDb {
         holder: &OwnerHolder,
         fence: u64,
         ttl_seconds: i64,
+        role: Option<&str>,
     ) -> DbResult<OwnerOutcome> {
         self.db
-            .renew_owner(&task.row().id, holder, fence, ttl_seconds)
+            .renew_owner(&task.row().id, holder, fence, ttl_seconds, role)
     }
 
     /// Ends the live lease of a holder and keeps the name.

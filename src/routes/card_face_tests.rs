@@ -322,3 +322,39 @@ async fn panel_should_offer_a_plain_take_for_a_lapsed_owner() {
     );
     assert!(!html.contains(r#"data-owner-act="release""#), "{html}");
 }
+
+#[tokio::test]
+async fn card_face_should_use_the_role_an_agent_sent_for_its_initials() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let builder = fx.token(None);
+    let grab = format!("/api/tasks/{task}/owner");
+    let body = json!({"name": "pomb/runner/12345", "ttl_seconds": 600, "role": "runner"});
+    fx.agent(&builder, &grab, body).await;
+
+    let html = fx.face(&task).await;
+    assert!(
+        html.contains(
+            "card-circle-owner card-circle-agent\" title=\"pomb/runner/12345\" style=\"\">RU</span>"
+        ),
+        "{html}"
+    );
+}
+
+#[tokio::test]
+async fn card_face_should_keep_the_name_initials_for_a_grab_without_a_role() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let builder = fx.token(None);
+    let grab = format!("/api/tasks/{task}/owner");
+    let body = json!({"name": "ship-it", "ttl_seconds": 600});
+    fx.agent(&builder, &grab, body).await;
+
+    let html = fx.face(&task).await;
+    assert!(
+        html.contains(
+            "card-circle-owner card-circle-agent\" title=\"ship-it\" style=\"\">SI</span>"
+        ),
+        "{html}"
+    );
+}

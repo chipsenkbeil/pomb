@@ -2,8 +2,8 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 
 use super::passkey_tests::{Reply, call};
-use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::{ApiDoc, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -386,6 +386,8 @@ async fn owner_migrated_owner_should_not_block_a_claim_or_a_fence() {
                     id: "member".to_string(),
                 },
                 lease_expires_at: None,
+                role: None,
+                since: None,
             });
             ((), true)
         })
@@ -449,4 +451,169 @@ async fn owner_grab_should_refuse_a_live_claim_from_before_the_owner_field() {
     let next = fx.grab(BETA, &task, "reviewer", Some(60)).await;
     assert_eq!(next.status, StatusCode::OK, "{}", next.body);
     assert_eq!(next.body["holder"]["name"], "reviewer");
+}
+
+#[tokio::test]
+async fn owner_grab_should_return_the_trimmed_role_and_keep_it_on_a_renew() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let body = json!({"name": "builder", "ttl_seconds": 60, "role": "  runner "});
+    let first = fx
+        .bearer(ALPHA, "POST", &owner_uri(&task, ""), None, body)
+        .await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    assert_eq!(first.body["role"], "runner");
+
+    let renewed = fx.renew(ALPHA, &task, "builder", &fence_of(&first)).await;
+    assert_eq!(renewed.status, StatusCode::OK, "{}", renewed.body);
+    assert_eq!(renewed.body["role"], "runner");
+    let detail = fx.detail(&task).await;
+    assert_eq!(detail["owner"]["role"], "runner");
+
+    let body = json!({"name": "builder", "ttl_seconds": 60});
+    let again = fx
+        .bearer(ALPHA, "POST", &owner_uri(&task, ""), None, body)
+        .await;
+    assert_eq!(again.body["role"], "runner");
+
+    let body = json!({"name": "builder", "ttl_seconds": 60, "role": "checker"});
+    let uri = owner_uri(&task, "/renew");
+    let changed = fx
+        .bearer(ALPHA, "POST", &uri, Some(&fence_of(&first)), body)
+        .await;
+    assert_eq!(changed.body["role"], "checker");
+}
+
+#[tokio::test]
+async fn owner_grab_should_refuse_a_role_over_forty_characters() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let body = |role: String| json!({"name": "builder", "ttl_seconds": 60, "role": role});
+    let long = fx
+        .bearer(
+            ALPHA,
+            "POST",
+            &owner_uri(&task, ""),
+            None,
+            body("r".repeat(41)),
+        )
+        .await;
+    assert_eq!(long.status, StatusCode::BAD_REQUEST, "{}", long.body);
+    assert!(
+        long.body["message"]
+            .as_str()
+            .is_some_and(|e| e.contains("role"))
+    );
+    let exact = fx
+        .bearer(
+            ALPHA,
+            "POST",
+            &owner_uri(&task, ""),
+            None,
+            body("r".repeat(40)),
+        )
+        .await;
+    assert_eq!(exact.status, StatusCode::OK, "{}", exact.body);
+    let blank = fx
+        .bearer(
+            ALPHA,
+            "POST",
+            &owner_uri(&task, ""),
+            None,
+            body("   ".to_string()),
+        )
+        .await;
+    assert_eq!(blank.body["role"], "r".repeat(40));
+}
+
+#[tokio::test]
+async fn owner_since_should_change_with_the_holder_and_stay_on_a_renew() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let first = fx.grab(ALPHA, &task, "builder", Some(60)).await;
+    let since = first.body["since"].as_str().expect("since").to_string();
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(&since).is_ok(),
+        "{since}"
+    );
+
+    let renewed = fx.renew(ALPHA, &task, "builder", &fence_of(&first)).await;
+    assert_eq!(renewed.body["since"], since.as_str());
+    let again = fx.grab(ALPHA, &task, "builder", Some(60)).await;
+    assert_eq!(again.body["since"], since.as_str());
+    let detail = fx.detail(&task).await;
+    assert_eq!(detail["owner"]["since"], since.as_str());
+
+    let taken = fx.take_over(&task).await;
+    assert_eq!(taken.status, StatusCode::OK, "{}", taken.body);
+    let taken_since = taken.body["since"].as_str().expect("since");
+    assert_ne!(taken_since, since);
+    assert!(taken.body["role"].is_null());
+}
+
+#[tokio::test]
+async fn owner_since_should_read_null_for_an_owner_stored_without_it() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let first = fx.grab(ALPHA, &task, "builder", Some(60)).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    fx.db
+        .apply_task_change(&task, Actor::SYSTEM, |row| {
+            let owner = row.owner.as_mut().expect("owner");
+            owner.since = None;
+            ((), true)
+        })
+        .expect("change");
+    let detail = fx.detail(&task).await;
+    assert!(detail["owner"]["since"].is_null());
+    assert!(detail["owner"]["role"].is_null());
+}
+
+#[test]
+fn owner_openapi_should_document_role_and_since() {
+    use utoipa::OpenApi;
+
+    let spec: Value =
+        serde_json::from_str(&ApiDoc::openapi().to_json().expect("json")).expect("spec");
+    let schemas = &spec["components"]["schemas"];
+    for field in ["role", "since"] {
+        let property = &schemas["OwnerView"]["properties"][field];
+        assert!(property.is_object(), "OwnerView lacks {field}");
+        assert!(property.to_string().contains("null"), "{field}: {property}");
+        let required = schemas["OwnerView"]["required"].to_string();
+        assert!(!required.contains(&format!("\"{field}\"")), "{required}");
+    }
+    for schema in ["GrabInput", "RenewInput"] {
+        let role = &schemas[schema]["properties"]["role"];
+        assert!(role.is_object(), "{schema} lacks role");
+        assert!(role["description"].is_string(), "{schema}: {role}");
+    }
+}
+
+#[tokio::test]
+async fn owner_claim_by_the_same_holder_should_keep_the_role_and_since() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let body = json!({"name": "builder", "ttl_seconds": 60, "role": "runner"});
+    let grab = fx
+        .bearer(ALPHA, "POST", &owner_uri(&task, ""), None, body)
+        .await;
+    assert_eq!(grab.status, StatusCode::OK, "{}", grab.body);
+
+    let claim = format!("/api/tasks/{task}/claim");
+    let body = json!({"claimant": "builder", "ttl_seconds": 60});
+    let claimed = fx.bearer(ALPHA, "POST", &claim, None, body).await;
+    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+    let detail = fx.detail(&task).await;
+    assert_eq!(detail["owner"]["role"], "runner");
+    assert_eq!(detail["owner"]["since"], grab.body["since"]);
+
+    let release = json!({"fence": claimed.body["fence"]});
+    let uri = format!("{claim}/release");
+    fx.bearer(ALPHA, "POST", &uri, None, release).await;
+    let body = json!({"claimant": "builder", "ttl_seconds": 60});
+    fx.bearer(ALPHA, "POST", &claim, None, body).await;
+    let detail = fx.detail(&task).await;
+    assert!(detail["owner"]["role"].is_null());
+    assert_ne!(detail["owner"]["since"], grab.body["since"]);
 }

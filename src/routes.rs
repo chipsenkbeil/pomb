@@ -2995,9 +2995,14 @@ impl SidePanel {
             .filter(|role| !role.is_empty());
         let mine = live && owner.as_ref().is_some_and(|owner| &owner.holder == viewer);
         let circle = match &owner {
-            Some(owner) => {
-                CardCircle::of_holder(db, &users, &settings, &owner.holder, claim_role, !live)?
-            }
+            Some(owner) => CardCircle::of_holder(
+                db,
+                &users,
+                &settings,
+                &owner.holder,
+                owner.role.clone().or(claim_role),
+                !live,
+            )?,
             None => None,
         };
         let take = (role.writes() && takes_owner && !mine).then(|| match &owner {
@@ -3959,7 +3964,11 @@ impl TaskView {
                 .then(|| row.live_claim().and_then(|claim| claim.role.clone()))
                 .flatten()
                 .filter(|role| !role.is_empty());
-            self.owner_circle = circle(&owner.holder, claim_role, !owner.is_live(now))?;
+            self.owner_circle = circle(
+                &owner.holder,
+                owner.role.clone().or(claim_role),
+                !owner.is_live(now),
+            )?;
         }
         for seat in seats {
             if let Some(holder) = &seat.holder
@@ -12189,6 +12198,19 @@ fn owner_holder(user: &AuthUser, name: Option<&str>) -> Result<OwnerHolder, AppE
     })
 }
 
+/// Returns the trimmed role label of an agent, or none when it is blank or the caller is a
+/// browser session, which holds the task as a member.
+fn owner_role(user: &AuthUser, role: Option<&str>) -> Result<Option<String>, AppError> {
+    let role = role.map(str::trim).filter(|role| !role.is_empty());
+    match role {
+        Some(role) if user.kind != CredentialKind::Session => {
+            TextCap::OWNER_ROLE.check(role)?;
+            Ok(Some(role.to_string()))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Parses the `If-Owner-Fence` header of a renew or release, which must carry one.
 fn owner_fence_required(headers: &HeaderMap) -> Result<u64, AppError> {
     fence_header(headers, IF_OWNER_FENCE, "If-Owner-Fence")?
@@ -12213,6 +12235,11 @@ struct OwnerView {
     holder: OwnerHolder,
     /// RFC3339 time the lease ends, or null for a lease that never ends.
     lease_expires_at: Option<String>,
+    /// The short role label the agent sent, or null. The card circle's initials come from it.
+    role: Option<String>,
+    /// RFC3339 time the holder last changed, which a renewal or a re-grab by the same holder
+    /// keeps. Null when unknown.
+    since: Option<String>,
     /// True while the lease holds. A task whose lease lapsed or was released keeps its owner, and
     /// anyone may grab it.
     live: bool,
@@ -12227,6 +12254,8 @@ impl OwnerView {
             live: fence > 0 && owner.is_live(Utc::now()),
             holder: owner.holder,
             lease_expires_at: owner.lease_expires_at,
+            role: owner.role,
+            since: owner.since,
             fence,
         }
     }
@@ -12243,6 +12272,10 @@ struct GrabInput {
     /// Replace a live owner. Only the browser may.
     #[serde(default)]
     take_over: bool,
+    /// A short label for the agent's role, trimmed, up to 40 characters, such as `runner`. The
+    /// card circle takes its initials from it. Ignored for the browser. A grab by the holder
+    /// that already holds the task without it keeps the stored role.
+    role: Option<String>,
 }
 
 /// The body of `POST /api/tasks/{id}/owner/renew`.
@@ -12253,6 +12286,8 @@ struct RenewInput {
     /// New lease length in seconds, 1 to 86400. Required.
     #[schema(value_type = i64, required = true)]
     ttl_seconds: Option<i64>,
+    /// A new role label, trimmed, up to 40 characters. Without it the stored role stays.
+    role: Option<String>,
 }
 
 /// The body of `POST /api/tasks/{id}/owner/release`.
@@ -12283,7 +12318,7 @@ fn owner_result(outcome: OwnerOutcome) -> Result<Json<OwnerView>, AppError> {
     request_body = GrabInput,
     responses(
         (status = 200, description = "The owner and its fence", body = OwnerView),
-        (status = 400, description = "Missing name for a token, ttl_seconds outside 1..86400, or a name over 200 characters"),
+        (status = 400, description = "Missing name for a token, ttl_seconds outside 1..86400, a name over 200 characters, or a role over 40 characters"),
         (status = 403, description = "`take_over` sent with a token"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`owner_held`: another holder's live lease holds the task, and the request does not take over"),
@@ -12307,6 +12342,7 @@ async fn grab_owner(
         holder: owner_holder(&user, input.name.as_deref())?,
         ttl_seconds: claim_ttl(input.ttl_seconds)?,
         take_over: input.take_over,
+        role: owner_role(&user, input.role.as_deref())?,
     };
     owner_result(
         account
@@ -12328,7 +12364,7 @@ async fn grab_owner(
     request_body = RenewInput,
     responses(
         (status = 200, description = "The owner and its fence", body = OwnerView),
-        (status = 400, description = "Missing If-Owner-Fence, name or ttl_seconds, or ttl_seconds outside 1..86400"),
+        (status = 400, description = "Missing If-Owner-Fence, name or ttl_seconds, ttl_seconds outside 1..86400, or a role over 40 characters"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`stale_fence`: the fence is not the task's latest or the lease lapsed. `owner_held`: another holder owns the task"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -12348,9 +12384,10 @@ async fn renew_owner(
     let holder = owner_holder(&user, input.name.as_deref())?;
     let ttl_seconds = claim_ttl(input.ttl_seconds)?
         .ok_or_else(|| AppError::bad_request("ttl_seconds is required"))?;
+    let role = owner_role(&user, input.role.as_deref())?;
     owner_result(
         account
-            .renew_owner(&task, &holder, fence, ttl_seconds)
+            .renew_owner(&task, &holder, fence, ttl_seconds, role.as_deref())
             .map_err(AppError::from)?,
     )
 }

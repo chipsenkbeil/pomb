@@ -549,6 +549,8 @@ pub struct GrabRequest {
     pub ttl_seconds: Option<i64>,
     /// Whether a live lease of another holder is replaced.
     pub take_over: bool,
+    /// The role label the owner shows, or none to keep the stored one on a renewal.
+    pub role: Option<String>,
 }
 
 /// Typed outcome for the owner operations on [`Db`].
@@ -1023,7 +1025,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 83;
+pub const SCHEMA_VERSION: u64 = 84;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1113,6 +1115,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "8f0a76c629391994f2e71f44847877943e826288031ba9748875ef75810bba01",
     "735ee709d084a3663625557b7e7ba31e2bff2c9e72847f21a133ac4071b36fe8",
     "00c82eb31b386bf84813988f8daf4462e6d9ad3d8ded1250c8ea0a6b801c613b",
+    "c4f0a082c10bab22b28d6094c470648980f407c4f5e66ac344589136f56b6856",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -11216,12 +11219,19 @@ impl Db {
                 claim.claimant, claim.fence, claim.expires_at
             );
             push_event(task, HistoryKind::Claimed, detail, actor);
+            let holder = OwnerHolder::Agent {
+                token_id: request.token_id.clone(),
+                name: claim.claimant.clone(),
+            };
+            let kept = task
+                .owner
+                .as_ref()
+                .filter(|owner| owner.is_live(now) && owner.holder.is_same_as(&holder));
             task.owner = Some(Owner {
-                holder: OwnerHolder::Agent {
-                    token_id: request.token_id.clone(),
-                    name: claim.claimant.clone(),
-                },
                 lease_expires_at: Some(claim.expires_at.clone()),
+                role: kept.and_then(|owner| owner.role.clone()),
+                since: kept.map_or_else(|| Some(now.to_rfc3339()), |owner| owner.since.clone()),
+                holder,
             });
             task.claim = Some(claim.clone());
             (ClaimOutcome::Granted(claim), RowWrite::Stamp)
@@ -11345,9 +11355,9 @@ impl Db {
 
     /// Makes `request.holder` the owner of a task in one write transaction. A task with no live
     /// lease, or with the holder's own, is granted. A live lease of another holder is returned as
-    /// [`OwnerOutcome::Held`] unless `request.take_over` is set. A new owner gets the next fence
-    /// and ends any live claim. The holder's own live lease keeps its fence and only changes its
-    /// end.
+    /// [`OwnerOutcome::Held`] unless `request.take_over` is set. A new owner gets the next fence,
+    /// ends any live claim and starts `since` now. The holder's own live lease keeps its fence and
+    /// its `since`, and changes its end and, when one is sent, its role.
     pub fn grab_owner(
         &self,
         task_id: &str,
@@ -11363,6 +11373,8 @@ impl Db {
                     let renewed = Owner {
                         holder: request.holder.clone(),
                         lease_expires_at: lease,
+                        role: request.role.clone().or(live.role),
+                        since: live.since,
                     };
                     if let (Some(claim), Some(end)) =
                         (task.claim.as_mut(), renewed.lease_expires_at.as_ref())
@@ -11389,6 +11401,8 @@ impl Db {
             let owner = Owner {
                 holder: request.holder.clone(),
                 lease_expires_at: lease,
+                role: request.role.clone(),
+                since: Some(now.to_rfc3339()),
             };
             let detail = format!(
                 "Owner grabbed by {} (fence {}){}",
@@ -11419,6 +11433,7 @@ impl Db {
         holder: &OwnerHolder,
         fence: u64,
         ttl_seconds: i64,
+        role: Option<&str>,
     ) -> DbResult<OwnerOutcome> {
         let outcome = self.change_task(
             task_id,
@@ -11443,6 +11458,9 @@ impl Db {
                     return (OwnerOutcome::Held(owner.clone()), stale);
                 }
                 owner.lease_expires_at = Some(lease_end(now, ttl_seconds));
+                if let Some(role) = role {
+                    owner.role = Some(role.to_string());
+                }
                 let renewed = owner.clone();
                 if let Some(claim) = task.claim.as_mut() {
                     claim.heartbeat_at = now.to_rfc3339();
@@ -18290,12 +18308,16 @@ mod owner_migration_tests {
                     name: "agent-a".to_string(),
                 },
                 lease_expires_at: Some(soon.to_rfc3339()),
+                role: None,
+                since: None,
             })
         );
         let unleased = |holder| {
             Some(Owner {
                 holder,
                 lease_expires_at: None,
+                role: None,
+                since: None,
             })
         };
         assert_eq!(owners[1], unleased(human("x")));
