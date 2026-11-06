@@ -19445,7 +19445,7 @@
         table.hidden = !bin.tasks.length;
         bin.tasks.forEach(function (item) {
           var tr = document.createElement('tr');
-          [item.name, item.location, item.deleted_by,
+          [item.id.slice(0, 8), item.name, item.location, item.deleted_by,
             new Date(item.deleted_at).toLocaleString(undefined, { hour12: accountPrefs.hour12 }),
             new Date(item.unrestorable_after).toLocaleString(undefined, { hour12: accountPrefs.hour12 })].forEach(function (text) {
             var td = document.createElement('td');
