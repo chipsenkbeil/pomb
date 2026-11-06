@@ -28,7 +28,7 @@ local function shell_quote(word)
 end
 
 local function check_rust()
-  ci.group("check rust " .. TOOLCHAIN, function()
+  ci.group("Check rust " .. TOOLCHAIN, function()
     run("rustup toolchain list | grep -q '^" .. TOOLCHAIN .. "-' || { echo 'image has no toolchain " .. TOOLCHAIN .. "' >&2; exit 1; }")
     run("rustc --version | grep -q '^rustc " .. TOOLCHAIN .. " ' && cargo nextest --version >/dev/null && cargo +nightly fmt --version >/dev/null")
   end)
