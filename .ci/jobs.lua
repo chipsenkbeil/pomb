@@ -48,8 +48,8 @@ out=$root/regress-out
 rm -rf "$out" && mkdir -p "$out"
 
 [ -d .ci-baseline ] || { echo "no .ci-baseline/ in the shipped tree" >&2; exit 1; }
-CARGO_TARGET_DIR=$root/target .dev/build.sh
-CARGO_TARGET_DIR=$root/target-baseline .dev/build.sh --manifest-path .ci-baseline/Cargo.toml
+CARGO_TARGET_DIR=$root/target dev build
+CARGO_TARGET_DIR=$root/target-baseline dev build -- --manifest-path .ci-baseline/Cargo.toml
 
 trap 'for s in "$out"/cand/state.json "$out"/base/state.json; do
   [ -f "$s" ] && kill "$(jq -r .pid "$s")" 2>/dev/null || true; done' EXIT
@@ -96,7 +96,7 @@ return {
       matrix = { RUNNER },
       run = function()
         check_rust()
-        run(".dev/build.sh")
+        run("dev build")
       end,
     },
     regress = {
