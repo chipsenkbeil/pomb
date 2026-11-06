@@ -82,7 +82,7 @@ return {
         for _, word in ipairs(ci.args) do
           args[#args + 1] = shell_quote(word)
         end
-        run(".dev/test.sh " .. table.concat(args, " "))
+        run("dev test " .. table.concat(args, " "))
       end,
     },
     nixcheck = {
