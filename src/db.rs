@@ -1005,7 +1005,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 80;
+pub const SCHEMA_VERSION: u64 = 81;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1092,6 +1092,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "79781e79136dc13b6cbe973f282c2f0b95c0406748922d77a924bb29f7a41770",
     "e1da24113ea1128afeaace95b5d5cd2e4876bd2b5d04f387dd1119807f4330e5",
     "ddef6d5beb8718c6a99f0f42a1c37ba81b4eec45ec86ffd797cccfb89066835c",
+    "8f0a76c629391994f2e71f44847877943e826288031ba9748875ef75810bba01",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1294,7 +1295,27 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 80) {
         grant_standard_roles_seats_take(txn)?;
     }
+    if from.is_none_or(|version| version < 81) {
+        assign_role_keys(txn)?;
+    }
     Ok(())
+}
+
+/// Sets each stored role's standard key from its current name, where the name is a standard
+/// role's.
+fn assign_role_keys(txn: &WriteTransaction) -> DbResult<()> {
+    rewrite_rows(txn, AGENT_ROLES, |_, role| {
+        let key = role
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|name| STANDARD_ROLES.iter().find(|standard| standard.name == name))
+            .map(|standard| standard.key);
+        let Some(key) = key else {
+            return false;
+        };
+        role.insert("standard".to_string(), serde_json::json!(key));
+        true
+    })
 }
 
 /// Sets each stored column's stage from its current name.
@@ -16010,6 +16031,7 @@ mod schema_fingerprint_tests {
         RegistrationMode, Responsible, SeatVerdict, SubtaskTemplate, TimeFormat, TimerMode,
         WebhookEvent, WeekStart,
     };
+    use crate::permissions::StandardKey;
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
     /// impl and records the shape it asks for: field names in sorted order,
@@ -16323,6 +16345,7 @@ mod schema_fingerprint_tests {
             shape::<ColorRow>("ColorRow"),
             shape::<ColumnRow>("ColumnRow"),
             shape::<ColumnStage>("ColumnStage"),
+            shape::<StandardKey>("StandardKey"),
             shape::<DeviceAuthRow>("DeviceAuthRow"),
             shape::<DiskLimits>("DiskLimits"),
             shape::<FieldColumn>("FieldColumn"),
@@ -18229,6 +18252,63 @@ mod owner_migration_tests {
         );
         assert_eq!(owners[3], unleased(human("m1")));
         assert_eq!(owners[4], None);
+    }
+}
+
+#[cfg(test)]
+mod role_key_upgrade_tests {
+    use super::*;
+    use crate::permissions::StandardKey;
+
+    fn stamp(path: &str, version: u64) {
+        let db = Database::create(path).expect("raw open");
+        let txn = db.begin_write().expect("write txn");
+        txn.open_table(META)
+            .expect("meta table")
+            .insert(SCHEMA_VERSION_KEY, version)
+            .expect("stamp");
+        txn.commit().expect("commit");
+    }
+
+    fn key_of(db: &Db, role: &str) -> Option<StandardKey> {
+        db.agent_role(AccountId::ownerless().as_str(), role)
+            .expect("read")
+            .expect("role")
+            .standard
+    }
+
+    #[test]
+    fn should_stamp_standard_role_keys_once_at_upgrade() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let path = path.to_str().expect("utf8 path");
+        let account = AccountId::ownerless();
+        let (reviewer, scribe) = {
+            let db = Db::connect(path).expect("connect");
+            let held = BTreeSet::from([Permission::TasksRead]);
+            let reviewer = db
+                .create_agent_role(account.as_str(), "reviewer", held.clone())
+                .expect("reviewer");
+            let scribe = db
+                .create_agent_role(account.as_str(), "scribe", held)
+                .expect("scribe");
+            assert_eq!(reviewer.standard, None);
+            (reviewer.id, scribe.id)
+        };
+        stamp(path, 79);
+        let db = Db::connect(path).expect("upgrade");
+        assert_eq!(key_of(&db, &reviewer), Some(StandardKey::Reviewer));
+        assert_eq!(key_of(&db, &scribe), None);
+        db.update_agent_role(account.as_str(), &reviewer, Some("checker"), None)
+            .expect("rename");
+        let held = BTreeSet::from([Permission::TasksRead]);
+        let custom = db
+            .create_agent_role(account.as_str(), "reviewer", held)
+            .expect("custom");
+        drop(db);
+        let db = Db::connect(path).expect("reopen");
+        assert_eq!(key_of(&db, &reviewer), Some(StandardKey::Reviewer));
+        assert_eq!(key_of(&db, &custom.id), None);
     }
 }
 

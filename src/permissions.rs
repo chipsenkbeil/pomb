@@ -194,10 +194,30 @@ impl Preset {
     }
 }
 
+/// The stable key of a standard role, which a role keeps through a rename.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandardKey {
+    /// The role that shapes a card.
+    Planner,
+    /// The role that works a task in progress.
+    Implementer,
+    /// The role that checks a task in review.
+    Reviewer,
+    /// The role that proves a task in verify.
+    Verifier,
+    /// The role that ships a task.
+    Release,
+    /// The role that runs the board's cards.
+    Lead,
+}
+
 /// One of the six agent roles every account starts from.
 #[derive(Copy, Clone, Debug)]
 pub struct StandardRole {
-    /// The role's name, its key.
+    /// The key a role created from this entry carries.
+    pub key: StandardKey,
+    /// The name a role created from this entry starts with.
     pub name: &'static str,
     /// The permissions the role holds beyond [`STANDARD_BASE`].
     pub extra: &'static [Permission],
@@ -224,6 +244,7 @@ pub const STANDARD_BASE: &[Permission] = &[
 /// The six standard roles, from the planner who shapes a card to the lead who runs the board's cards.
 pub const STANDARD_ROLES: &[StandardRole] = &[
     StandardRole {
+        key: StandardKey::Planner,
         name: "planner",
         extra: &[
             Permission::TasksCreate,
@@ -235,6 +256,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
         ],
     },
     StandardRole {
+        key: StandardKey::Implementer,
         name: "implementer",
         extra: &[
             Permission::TasksClaim,
@@ -244,6 +266,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
         ],
     },
     StandardRole {
+        key: StandardKey::Reviewer,
         name: "reviewer",
         extra: &[
             Permission::TasksClaim,
@@ -252,6 +275,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
         ],
     },
     StandardRole {
+        key: StandardKey::Verifier,
         name: "verifier",
         extra: &[
             Permission::TasksClaim,
@@ -261,10 +285,12 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
         ],
     },
     StandardRole {
+        key: StandardKey::Release,
         name: "release",
         extra: &[Permission::TasksClaim, Permission::TasksMove],
     },
     StandardRole {
+        key: StandardKey::Lead,
         name: "lead",
         extra: &[
             Permission::TasksCreate,

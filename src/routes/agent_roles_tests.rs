@@ -700,6 +700,28 @@ async fn standard_roles_should_keep_an_edited_template() {
 }
 
 #[tokio::test]
+async fn standard_roles_should_reuse_a_renamed_standard_role() {
+    let fx = Fixture::new();
+    let first = fx
+        .bearer(ALICE, "POST", STANDARD, Some(json!({"boards": []})))
+        .await;
+    let id = first.body["roles"][2]["id"].as_str().expect("id");
+    let uri = format!("/api/v1/agent-roles/{id}");
+    let renamed = fx
+        .browse(ALICE, "PATCH", &uri, Some(json!({"name": "checker"})))
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+
+    let again = fx
+        .bearer(ALICE, "POST", STANDARD, Some(json!({"boards": []})))
+        .await;
+    assert_eq!(again.body["created"], json!([]));
+    assert_eq!(again.body["roles"][2]["id"], json!(id));
+    let listed = fx.bearer(ALICE, "GET", "/api/v1/agent-roles", None).await;
+    assert_eq!(listed.body.as_array().expect("list").len(), 6);
+}
+
+#[tokio::test]
 async fn standard_roles_should_grant_every_listed_board() {
     let fx = Fixture::new();
     let second = fx.db.create_board(&fx.alice, "Second").expect("board");

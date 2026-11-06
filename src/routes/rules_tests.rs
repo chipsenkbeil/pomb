@@ -11,7 +11,7 @@ use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{ColumnKind, ColumnPatch, Db};
-use crate::models::{AuthScope, ColumnStage};
+use crate::models::{AccountId, AuthScope, ColumnStage};
 
 const MAX_BODY_BYTES: usize = 1 << 22;
 
@@ -30,6 +30,8 @@ enum Body {
 
 struct Fixture {
     _dir: tempfile::TempDir,
+    db: Db,
+    owner: AccountId,
     app: Router,
     board: String,
     backlog: String,
@@ -103,9 +105,13 @@ impl Fixture {
             role_tokens.insert(name, raw);
             role_ids.insert(name, role.id);
         }
-        let app = router(AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits()));
+        let app = router(
+            AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()),
+        );
         Self {
             _dir: dir,
+            db,
+            owner,
             app,
             board,
             backlog,
@@ -117,6 +123,15 @@ impl Fixture {
             role_tokens,
             role_ids,
         }
+    }
+
+    fn issue_role_token(&mut self, key: &'static str, role_id: &str) {
+        let (record, raw) = new_api_token_record(&self.owner, key, AuthScope::Admin, None);
+        self.db
+            .create_owner_token_as_role(role_id, record)
+            .expect("issue")
+            .expect("role");
+        self.role_tokens.insert(key, raw);
     }
 
     async fn call(&self, who: Who, method: &str, uri: &str, body: Body) -> (StatusCode, String) {
@@ -251,6 +266,47 @@ mod role_moves {
         let other = fx.task(&fx.stages["verify"], json!({})).await;
         let (status, text) = move_to(&fx, Who::Role("verifier"), &other, "done").await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    }
+
+    #[tokio::test]
+    async fn standard_moves_should_follow_a_renamed_standard_role() {
+        let mut fx = Fixture::new();
+        let reviewer = fx.role_ids["reviewer"].clone();
+        fx.db
+            .update_agent_role(fx.owner.as_str(), &reviewer, Some("checker"), None)
+            .expect("rename")
+            .expect("role");
+        fx.issue_role_token("checker", &reviewer);
+        let task = fx.task(&fx.stages["review"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Role("checker"), &task, "done").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(parse(&text)["code"], "role_move_forbidden", "{text}");
+        let (status, text) = move_to(&fx, Who::Role("checker"), &task, "verify").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn standard_moves_should_ignore_a_custom_role_with_a_standard_name() {
+        let mut fx = Fixture::new();
+        let standard = fx.role_ids["implementer"].clone();
+        let held = fx
+            .db
+            .agent_role(fx.owner.as_str(), &standard)
+            .expect("read")
+            .expect("role")
+            .permissions;
+        fx.db
+            .update_agent_role(fx.owner.as_str(), &standard, Some("worker"), None)
+            .expect("rename")
+            .expect("role");
+        let custom = fx
+            .db
+            .create_agent_role(fx.owner.as_str(), "implementer", held)
+            .expect("custom");
+        fx.issue_role_token("custom", &custom.id);
+        let task = fx.task(&fx.stages["progress"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Role("custom"), &task, "done").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
     }
 
     #[tokio::test]

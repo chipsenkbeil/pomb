@@ -9,7 +9,7 @@ use utoipa::ToSchema;
 use webauthn_rs::prelude::Passkey;
 
 use crate::disk::MIB;
-use crate::permissions::{Permission, Preset, STANDARD_ROLES};
+use crate::permissions::{Permission, Preset, STANDARD_ROLES, StandardKey};
 
 /// Pomodoro size of a task. `Many` (stored as 4) means ">3 pomodori".
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2155,6 +2155,10 @@ pub struct AgentRoleRow {
     /// falls.
     #[serde(default)]
     pub issued: u64,
+    /// The standard role this one stands for, which the standard role moves read instead of the
+    /// name. [`None`] for a role that stands in for none.
+    #[serde(default)]
+    pub standard: Option<StandardKey>,
 }
 
 impl AgentRoleRow {

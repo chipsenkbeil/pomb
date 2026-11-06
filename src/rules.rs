@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::models::{ColumnRow, ColumnStage};
+use crate::permissions::StandardKey;
 
 /// The board config bag key that holds the column rules.
 pub const CONFIG_KEY: &str = "column_rules";
@@ -131,39 +132,39 @@ impl ColumnRules {
         })
     }
 
-    /// Returns the ids of the columns a token issued as role `role_id`, named `role_name` when
-    /// it was issued, may move a task into from column `from`, or [`None`] when the board does
-    /// not limit that move. A board that stores no moves of its own gives the standard roles the
-    /// standard moves, wherever `columns` holds the stages they name.
+    /// Returns the ids of the columns a token issued as role `role_id`, which stands for the
+    /// `standard` role if it stands for one, may move a task into from column `from`, or
+    /// [`None`] when the board does not limit that move. A board that stores no moves of its own
+    /// gives the standard roles the standard moves, wherever `columns` holds the stages they name.
     #[must_use]
     pub fn role_targets(
         &self,
         role_id: &str,
-        role_name: &str,
+        standard: Option<StandardKey>,
         from: &str,
         columns: &[ColumnRow],
         blocked: Option<&str>,
     ) -> Option<BTreeSet<String>> {
         match &self.role_moves {
             Some(moves) => moves.get(role_id)?.get(from).cloned(),
-            None => standard_targets(role_name, from, columns, blocked),
+            None => standard_targets(standard, from, columns, blocked),
         }
     }
 
-    /// Returns the moves in force for each of `roles`, given as an id and a name: what the board
-    /// stores, or the standard moves when it stores none.
+    /// Returns the moves in force for each of `roles`, given as an id and the standard role it
+    /// stands for: what the board stores, or the standard moves when it stores none.
     #[must_use]
     pub fn effective_role_moves(
         &self,
-        roles: &[(&str, &str)],
+        roles: &[(&str, Option<StandardKey>)],
         columns: &[ColumnRow],
         blocked: Option<&str>,
     ) -> RoleMoves {
         let mut moves = RoleMoves::new();
-        for (role_id, role_name) in roles {
+        for (role_id, standard) in roles {
             for column in columns {
                 if let Some(targets) =
-                    self.role_targets(role_id, role_name, &column.id, columns, blocked)
+                    self.role_targets(role_id, *standard, &column.id, columns, blocked)
                 {
                     moves
                         .entry((*role_id).to_string())
@@ -226,8 +227,8 @@ impl ColumnRules {
 
 /// A standard role, the stage it moves tasks out of and the stages it may move them into.
 struct StandardMove {
-    /// The role's name.
-    role: &'static str,
+    /// The standard role that holds the move.
+    role: StandardKey,
     /// The stage the role moves a task out of.
     from: Stage,
     /// The stages the role may move it into.
@@ -272,40 +273,41 @@ impl Stage {
 /// onward, back to Ready or to Blocked, and no further.
 const STANDARD_MOVES: &[StandardMove] = &[
     StandardMove {
-        role: "implementer",
+        role: StandardKey::Implementer,
         from: Stage::InProgress,
         to: &[Stage::Review, Stage::Ready, Stage::Blocked],
     },
     StandardMove {
-        role: "reviewer",
+        role: StandardKey::Reviewer,
         from: Stage::Review,
         to: &[Stage::Verify, Stage::Ready, Stage::Blocked],
     },
     StandardMove {
-        role: "verifier",
+        role: StandardKey::Verifier,
         from: Stage::Verify,
         to: &[Stage::Release, Stage::Ready, Stage::Blocked],
     },
     StandardMove {
-        role: "release",
+        role: StandardKey::Release,
         from: Stage::Release,
         to: &[Stage::Done, Stage::Ready, Stage::Blocked],
     },
 ];
 
-/// Returns the columns the standard role `role_name` may move a task into from `from`, or
-/// [`None`] when it is not a standard role, or no column of the board holds the stage it works.
+/// Returns the columns the standard role `key` may move a task into from `from`, or
+/// [`None`] when the role stands for no standard role, or no column of the board holds the stage
+/// it works.
 /// Out of another column the role may pull a task into its own stage, or send it to Ready or
 /// Blocked, so two permitted moves never add up to one it may not make.
 fn standard_targets(
-    role_name: &str,
+    key: Option<StandardKey>,
     from: &str,
     columns: &[ColumnRow],
     blocked: Option<&str>,
 ) -> Option<BTreeSet<String>> {
     let standard = STANDARD_MOVES
         .iter()
-        .find(|standard| standard.role == role_name)?;
+        .find(|standard| Some(standard.role) == key)?;
     let leaving_own_stage = columns
         .iter()
         .find(|column| column.id == from)
@@ -741,7 +743,11 @@ mod tests {
             ]
         }
 
-        fn targets(role: &str, from: &str, columns: &[ColumnRow]) -> Option<Vec<String>> {
+        fn targets(
+            role: Option<StandardKey>,
+            from: &str,
+            columns: &[ColumnRow],
+        ) -> Option<Vec<String>> {
             ColumnRules::default()
                 .role_targets("id", role, from, columns, Some("blk"))
                 .map(|set| set.into_iter().collect())
@@ -749,40 +755,48 @@ mod tests {
 
         #[test]
         fn should_stop_an_implementer_short_of_done() {
-            let found = targets("implementer", "wip", &board()).unwrap();
+            let found = targets(Some(StandardKey::Implementer), "wip", &board()).unwrap();
             assert_eq!(found, vec!["blk", "ready", "rev"]);
         }
 
         #[test]
         fn should_send_a_verifier_on_to_release() {
-            let found = targets("verifier", "ver", &board()).unwrap();
+            let found = targets(Some(StandardKey::Verifier), "ver", &board()).unwrap();
             assert!(found.contains(&"rel".to_string()));
             assert!(!found.contains(&"done".to_string()));
         }
 
         #[test]
+        fn should_not_limit_a_role_that_stands_for_no_standard_role() {
+            assert_eq!(targets(None, "wip", &board()), None);
+        }
+
+        #[test]
         fn should_not_limit_other_roles() {
-            assert_eq!(targets("lead", "wip", &board()), None);
-            assert_eq!(targets("planner", "ready", &board()), None);
+            assert_eq!(targets(Some(StandardKey::Lead), "wip", &board()), None);
+            assert_eq!(targets(Some(StandardKey::Planner), "ready", &board()), None);
         }
 
         #[test]
         fn should_limit_a_role_out_of_every_other_column() {
-            let found = targets("implementer", "ready", &board()).unwrap();
+            let found = targets(Some(StandardKey::Implementer), "ready", &board()).unwrap();
             assert_eq!(found, vec!["blk", "wip"]);
-            let found = targets("implementer", "blk", &board()).unwrap();
+            let found = targets(Some(StandardKey::Implementer), "blk", &board()).unwrap();
             assert_eq!(found, vec!["ready", "wip"]);
         }
 
         #[test]
         fn should_apply_only_where_the_stages_exist() {
             let columns = vec![column("a", "Todo", false), column("b", "Doing", false)];
-            assert_eq!(targets("implementer", "b", &columns), None);
+            assert_eq!(targets(Some(StandardKey::Implementer), "b", &columns), None);
             let columns = vec![
                 column("wip", "in progress", false),
                 column("x", "Other", false),
             ];
-            assert_eq!(targets("implementer", "wip", &columns), None);
+            assert_eq!(
+                targets(Some(StandardKey::Implementer), "wip", &columns),
+                None
+            );
         }
 
         #[test]
@@ -793,7 +807,7 @@ mod tests {
                 staged("rev", "Peer check", ColumnStage::Review),
                 column("blk", "Blocked", false),
             ];
-            let found = targets("implementer", "wip", &columns).unwrap();
+            let found = targets(Some(StandardKey::Implementer), "wip", &columns).unwrap();
             assert_eq!(found, vec!["blk", "ready", "rev"]);
         }
 
@@ -807,8 +821,13 @@ mod tests {
                 unstaged("rel", "Release", false),
                 unstaged("done", "Done", true),
             ];
-            for role in ["implementer", "reviewer", "verifier", "release"] {
-                assert_eq!(targets(role, "wip", &columns), None);
+            for role in [
+                StandardKey::Implementer,
+                StandardKey::Reviewer,
+                StandardKey::Verifier,
+                StandardKey::Release,
+            ] {
+                assert_eq!(targets(Some(role), "wip", &columns), None);
             }
         }
 
@@ -818,7 +837,13 @@ mod tests {
                 role_moves: Some(RoleMoves::new()),
                 ..ColumnRules::default()
             };
-            let found = rules.role_targets("id", "implementer", "wip", &board(), Some("blk"));
+            let found = rules.role_targets(
+                "id",
+                Some(StandardKey::Implementer),
+                "wip",
+                &board(),
+                Some("blk"),
+            );
             assert_eq!(found, None);
         }
     }

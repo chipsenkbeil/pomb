@@ -85,7 +85,7 @@ use crate::passkey::{
     CEREMONY_TTL_SECONDS, CeremoniesFull, Enrollment, MAX_SETUP_CODE_GUESSES, PasskeyError,
     Registered, RelyingParty, SignedIn,
 };
-use crate::permissions::{Permission, Preset, STANDARD_ROLES};
+use crate::permissions::{Permission, Preset, STANDARD_ROLES, StandardKey};
 use crate::rules::{self, ColumnRules, EntryRule};
 use crate::webhook::{HostCheck, ProbeError};
 use crate::{AppState, image, markdown, search, webhook};
@@ -22101,9 +22101,13 @@ fn ensure_role_move_allowed(
     let columns = db.list_columns(&from.board_id).map_err(AppError::from)?;
     let blocked = board.row().blocked_column_id();
     let role_name = user.role_name.as_deref().unwrap_or_default();
+    let standard = db
+        .agent_role(role_id)
+        .map_err(AppError::from)?
+        .and_then(|role| role.standard);
     let allowed = ColumnRules::from_config(&board.row().config_json).role_targets(
         role_id,
-        role_name,
+        standard,
         &from.id,
         &columns,
         blocked.as_deref(),
@@ -22782,12 +22786,12 @@ fn board_settings_context(
     let board_fields = db.list_fields(board_id).map_err(AppError::from)?;
     let board_columns = db.list_columns(board_id).map_err(AppError::from)?;
     let agent_roles = db.list_agent_roles().map_err(AppError::from)?;
-    let role_names: Vec<(&str, &str)> = agent_roles
+    let role_keys: Vec<(&str, Option<StandardKey>)> = agent_roles
         .iter()
-        .map(|role| (role.id.as_str(), role.name.as_str()))
+        .map(|role| (role.id.as_str(), role.standard))
         .collect();
     let role_moves = rules.effective_role_moves(
-        &role_names,
+        &role_keys,
         &board_columns,
         board.blocked_column_id().as_deref(),
     );

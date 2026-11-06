@@ -131,6 +131,7 @@ pub(crate) fn txn_seed_standard_roles(txn: &WriteTransaction, account: &str) -> 
             created_at: now,
             updated_at: now,
             issued: 0,
+            standard: Some(standard.key),
         };
         write_one(txn, AGENT_ROLES, &role.id, &role)?;
         mmap_insert(txn, AGENT_ROLES_BY_ACCOUNT, account, &role.id)?;
@@ -259,6 +260,7 @@ impl Db {
             created_at: now,
             updated_at: now,
             issued: 0,
+            standard: None,
         };
         write_one(&txn, AGENT_ROLES, &role.id, &role)?;
         mmap_insert(&txn, AGENT_ROLES_BY_ACCOUNT, account, &role.id)?;
@@ -338,7 +340,14 @@ impl Db {
         let mut roles = Vec::new();
         let mut created = Vec::new();
         for standard in STANDARD_ROLES {
-            if let Some(role) = held.iter().find(|role| role.name == standard.name) {
+            let found = held
+                .iter()
+                .find(|role| role.standard == Some(standard.key))
+                .or_else(|| {
+                    held.iter()
+                        .find(|role| role.standard.is_none() && role.name == standard.name)
+                });
+            if let Some(role) = found {
                 roles.push(role.clone());
                 continue;
             }
@@ -357,6 +366,7 @@ impl Db {
                 created_at: now,
                 updated_at: now,
                 issued: 0,
+                standard: Some(standard.key),
             };
             write_one(&txn, AGENT_ROLES, &role.id, &role)?;
             mmap_insert(&txn, AGENT_ROLES_BY_ACCOUNT, account, &role.id)?;
