@@ -6175,6 +6175,9 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 .bshell-table .num { text-align: right; white-space: nowrap; }
 .bshell-table th:has(> .report-color-dot) { white-space: nowrap; }
 .bshell-scroll { overflow-x: auto; max-width: 100%; }
+.bshell-table td:first-child, .kf-table td:first-child, .bshell-table code, .kf-table code { overflow-wrap: anywhere; }
+.bshell-table .kf-btn, .kf-table .kf-btn { white-space: nowrap; }
+.bshell-scroll td:has(> .kf-btn) { width: auto; white-space: normal; }
 
 .bshell-list { list-style: disc; margin: 0.4rem 0 1rem 1.2rem; padding: 0; }
 .bshell-list li { overflow-wrap: anywhere; }
@@ -7598,8 +7601,6 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .board-settings-page .bshell-content a:not(.kf-btn) { color: #2096c8; text-decoration: none; }
 .board-settings-page .bshell-content a:not(.kf-btn):hover { text-decoration: underline; }
 .bshell-content a.kf-btn { text-decoration: none; }
-.token-table td:not(:first-child),
-.token-table th { white-space: nowrap; }
 .token-table th,
 .token-table td { padding-inline: 5px; font-size: 14px; }
 .token-table td:first-child { min-width: 7rem; overflow-wrap: anywhere; }
