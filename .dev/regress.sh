@@ -40,6 +40,11 @@ ci run --local --job regress -f | tee "$log" || status=$?
 run=$(sed -n 's/^run //p;q' "$log")
 if [ -n "$run" ]; then
   echo "run: $run" >&2
-  echo "report: ci cp $run:regress.1.archlinux-browser/regress-report.tgz DST" >&2
+  path=$(ci ps "$run" 2>/dev/null | awk '$1 ~ /regress-report\.tgz$/ {print $1; exit}') || true
+  if [ -n "$path" ]; then
+    echo "report: ci cp $run:$path DST" >&2
+  else
+    echo "The regress report is not in the run's artifacts. Run ci ps $run to list them." >&2
+  fi
 fi
 exit "$status"
