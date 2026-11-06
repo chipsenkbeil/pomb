@@ -27,11 +27,12 @@ or `cargo test` directly, and do not edit `.dev/lint.sh` above its
 
 | Command | Runs |
 |---|---|
-| `dev lint` | nightly `cargo fmt --check`, clippy with `-D warnings`, ast-grep, `cargo sort --check`, `cargo deny check bans`, the manifest, derive-order, module-doc and comment-spacing checks, then `node --check` on `static/app.js`, `static/passkey.js` and `static/pages.js` |
+| `dev lint` | nightly `cargo fmt --check`, clippy with `-D warnings`, ast-grep, `cargo sort --check`, `cargo deny check bans`, the manifest, derive-order, module-doc and comment-spacing checks, then `node --check` on `static/app.js`, `static/passkey.js`, `static/pages.js` and `static/docs.js` |
 | `dev test` | `cargo nextest run --all-features` (it takes any arguments), then `cargo test --doc --all-features` (only without arguments), then each `tests/js/*.js` with `node` against `static/app.js` |
 | `dev fmt` | `cargo +nightly fmt` with `rustfmt.toml` |
 | `dev build` | `cargo build --release` |
-| `dev release <commit> --batch N --summary "..."` | refuses, before any ci step, a commit whose `Cargo.toml` version equals main's or whose `Cargo.lock` `pomb` entry differs from `Cargo.toml`, then applies a verified commit to main on the remote of record, which mirrors to GitHub, in `.dev/worktrees/release-N`, commits `Release batch-N: ...`, runs `dev lint --remote`, `dev test --remote`, `dev nixcheck --remote` and `dev build --remote` one at a time on ci, checks for attribution, pushes to main on the remote of record, then prints the sha, nix hash and condition for the homelab request (`--hash-only <sha>` reprints the block for a pushed sha without touching git or running that refusal, `--env KEY=VALUE` lists service env changes, `--dry-run` skips the push and hash) |
+| `dev land <commit> --card ID` | refuses a commit that is not exactly one commit past main on the remote of record, which mirrors to GitHub, or that changes the version, applies it onto main, refuses attribution, runs `dev lint --remote` then `dev test --remote` on ci, pushes without forcing (applying it again on the new main when main moved, 3 attempts in all), notes the sha on the card, moves the card to Release, then removes the card's worktree and branch (and in jj its workspace and bookmark) |
+| `dev release --batch N --summary "..."` | refuses unless main on the remote of record has a commit since its last `v*` tag, bumps the version in `.dev/worktrees/release-N` and commits `Release batch-N: ...` with only `Cargo.toml` and `Cargo.lock`, runs `dev lint --remote`, `dev test --remote`, `dev nixcheck --remote` and `dev build --remote` one at a time on ci, checks for attribution, refuses when main moved, pushes main, tags `batch-N` and `vX.Y.Z`, then prints the sha, nix hash and condition for the homelab request (`--hash-only <sha>` reprints the block for a pushed sha, `--env KEY=VALUE` lists service env changes, `--dry-run` skips the push and hash) |
 | `dev nixcheck` | builds a nextest archive, then runs the tests in a user, mount and network namespace with no `/usr/bin/env` and only the tools the Nix derivation provides on PATH, so a missing tool fails before release. Linux only |
 | `dev regress [REV]` | diffs this tree's screenshots against REV (default main on the remote of record) with the ci `regress` job on a browser runner and keeps the report as an artifact and prints the run id and the `ci cp` command that fetches it |
 | `dev verify <sha> --backup <file>` | read-only post-switch checks on green-box (build_sha, app.js, cross-site 403, journal, `/login`, OpenAPI server URL, `token_invalid`; `--cleanup <worktree>...` removes worktrees and merged branches, `--delete-branch <branch>` also deletes an unmerged one) |
@@ -74,19 +75,21 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
   device approval. A child request that sets `preset` or `permissions` may give `tokens.issue`
   only when its issuer is a root token. A child created with `role_id` gets the role's
   permissions that its issuer also holds, and never `tokens.issue`. A child of a child never
-  holds `tokens.issue`, so the tree stops at two levels. The owner sets each issuer's
-  `child_lifetime_hours` in the browser (1 to 8, default 1). A child's `expires_in_hours`
+  holds `tokens.issue`, so the tree stops at two levels. An issuer's `child_lifetime_hours`
+  is 1 to 8, default 1, set when the owner creates it in the browser, and no edit changes it. A
+  child's `expires_in_hours`
   defaults to 1 and may not exceed the issuer's `child_lifetime_hours` (the API answers 400
   above it), and a child never expires after its issuer. Child tokens do not count toward an
   account's 50 tokens and have no count limit. An issuer gets 429 `rate_limited` after a burst
   of 20 child creations, then one more every 2 seconds. A token holding `tokens.issue` also
-  lists and revokes its own children over Bearer, and no other token's children. A token never
+  lists and revokes its own children over Bearer, and no other token's children. Any token, with no permission, revokes
+  itself and every token it issued with `POST /api/v1/auth/tokens/revoke-self` over Bearer, and
+  a browser session is refused there. A token never
   adds a passkey. Only the owner edits, renames or deletes an agent role, in the browser. A
   Bearer token only creates the standard roles the account lacks and grants or revokes a role on
   boards it holds. A token acts as a role when it is issued from the Settings form or by device
   approval, or as the child of a token holding `tokens.issue` made with `role_id`. A token edit
-  changes only the name and the child lifetime, so a permission or board change is a revoke and
-  a new token. Browser writes (every non-Bearer write, with or without a cookie) must be
+  changes only the name, so a permission, board or lifetime change is a revoke and a new token. Browser writes (every non-Bearer write, with or without a cookie) must be
   same-origin (`src/csrf.rs`, the router's outermost layer), and Bearer requests skip that
   check.
 - API prose lives in the utoipa annotations, `skill.md` covers workflow only,
