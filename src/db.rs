@@ -14835,7 +14835,10 @@ mod schema_version_tests {
                 .difference(&BTreeSet::from(LEAD_ROLE_V73_ADDED))
                 .copied()
                 .filter(|permission| {
-                    !matches!(permission, Permission::SeatsManage | Permission::SeatsTake)
+                    !matches!(
+                        permission,
+                        Permission::SeatsManage | Permission::SeatsTake | Permission::LinksDelete
+                    )
                 })
                 .collect();
             set.extend(extra.iter().copied());
@@ -14862,7 +14865,8 @@ mod schema_version_tests {
                 .expect("read")
                 .expect("row")
         };
-        let widened = lead_role_permissions();
+        let mut widened = held(&[]);
+        widened.extend(LEAD_ROLE_V73_ADDED);
         assert_eq!(role(&untouched).permissions, widened);
         assert_eq!(role(&owned).permissions, edited);
         assert_eq!(role(&other).permissions, held(&[]));

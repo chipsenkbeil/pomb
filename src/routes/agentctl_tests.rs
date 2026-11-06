@@ -1278,6 +1278,23 @@ async fn a_token_holding_links_delete_should_delete_any_link() {
     assert!(links_of(&fx, &a).await.is_empty());
 }
 
+#[tokio::test]
+async fn a_lead_token_should_delete_a_link_made_by_another_token_or_the_browser() {
+    let (_dir, fx) = fixture();
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+    let work = token_with(&fx, "agent", AuthScope::Work);
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+    let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
+
+    for who in [As::Bearer(&work), As::Admin] {
+        let link = link_as(&fx, who, &a, "related", &b).await;
+        let uri = format!("/api/tasks/{a}/links/{link}");
+        let (status, text) = request(&fx, As::Bearer(&lead), "DELETE", &uri, None, true).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+    assert!(links_of(&fx, &a).await.is_empty());
+}
+
 /// Creates a subtask as `who` and returns its id.
 async fn subtask_as(fx: &Fixture, who: As<'_>, task: &str, name: &str) -> String {
     let (status, text) = request(
@@ -5628,6 +5645,18 @@ async fn device_request_should_accept_a_day_with_a_delete_permission_and_longer_
         let (status, body, _) = start_device_with(&fx, extra.clone()).await;
         assert_eq!(status, StatusCode::OK, "{extra}: {body}");
     }
+}
+
+#[tokio::test]
+async fn device_request_should_accept_more_than_a_day_with_links_delete() {
+    let (_dir, fx) = fixture();
+    let body = json!({
+        "client_name": "agentctl on laptop",
+        "permissions": ["tasks.read", "links.delete"],
+        "expires_in_hours": 2160,
+    });
+    let (status, started) = start_device(&fx, body).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
 }
 
 #[tokio::test]

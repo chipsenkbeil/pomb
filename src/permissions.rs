@@ -119,7 +119,7 @@ catalog! {
     SubtasksCheck, "subtasks.check", "subtasks", Work, "Tick and untick subtasks.";
     SubtasksDelete, "subtasks.delete", "subtasks", Lead, "Delete any subtask, whoever created it, and turn a subtask into a task.";
     LinksWrite, "links.write", "links", Work, "Create task links, and delete the ones you created.";
-    LinksDelete, "links.delete", "links", Admin, "Delete any task link, whoever created it, and change a task's umbrella.";
+    LinksDelete, "links.delete", "links", Lead, "Delete any task link, whoever created it, and change a task's umbrella.";
     CommentsRead, "comments.read", "comments", Read, "Read comments.";
     CommentsWrite, "comments.write", "comments", Work, "Create comments, and edit or delete your own.";
     CommentsEditAny, "comments.edit_any", "comments", Admin, "Edit any comment, whoever wrote it.";
@@ -302,6 +302,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
             Permission::SubtasksCheck,
             Permission::SubtasksDelete,
             Permission::LinksWrite,
+            Permission::LinksDelete,
             Permission::LabelsManage,
             Permission::AttachmentsWrite,
             Permission::TimeWrite,
@@ -467,6 +468,7 @@ mod tests {
         let expected = HashSet::from([
             "tasks.bin",
             "subtasks.delete",
+            "links.delete",
             "boards.create",
             "columns.create",
             "columns.edit",
@@ -488,19 +490,21 @@ mod tests {
     }
 
     #[test]
-    fn delete_permissions_should_need_admin_except_subtasks_delete() {
+    fn delete_permissions_should_need_admin_except_subtasks_and_links_delete() {
         for preset in [Preset::Read, Preset::Work, Preset::Lead] {
             assert!(
-                held(preset)
-                    .iter()
-                    .all(|name| !name.ends_with(".delete") || *name == "subtasks.delete"),
+                held(preset).iter().all(|name| !name.ends_with(".delete")
+                    || matches!(*name, "subtasks.delete" | "links.delete")),
                 "{}",
                 preset.name()
             );
         }
         for permission in Permission::ALL {
             if permission.name().ends_with(".delete") {
-                let lowest = if *permission == Permission::SubtasksDelete {
+                let lowest = if matches!(
+                    permission,
+                    Permission::SubtasksDelete | Permission::LinksDelete
+                ) {
                     Preset::Lead
                 } else {
                     Preset::Admin
@@ -622,6 +626,7 @@ mod tests {
                     "subtasks.check",
                     "subtasks.delete",
                     "links.write",
+                    "links.delete",
                     "labels.manage",
                     "attachments.write",
                     "time.write",

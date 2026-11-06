@@ -24790,7 +24790,8 @@ const MAX_DEVICE_HOURS: i64 = 8_760;
 /// The hours a device token lives by default, 90 days.
 const DEFAULT_DEVICE_HOURS: i64 = 2_160;
 
-/// The hours a device token lives by default when the request holds a delete permission, 1 day.
+/// The hours a device token lives by default when the request holds a permanent delete permission,
+/// 1 day.
 const DELETE_DEVICE_HOURS: i64 = 24;
 
 /// A device request makes a root token, which the approving browser session grants. The approver
@@ -24823,9 +24824,10 @@ struct DeviceAuthInput {
     boards: Option<Vec<String>>,
     /// How long the token should live, 1 to 8760 hours (365 days). A request cannot ask for a token
     /// that never expires. The approver may shorten it but never lengthen it past this. Absent
-    /// keeps the default of 90 days, or 1 day when the request holds a delete permission, and the
-    /// approver of such a request may pick any expiry of 1 to 8760 hours, or none. A request that
-    /// holds a delete permission may ask for at most 24 hours, and a longer one gets a 400.
+    /// keeps the default of 90 days, or 1 day when the request holds a permanent delete permission,
+    /// and the approver of such a request may pick any expiry of 1 to 8760 hours, or none. A
+    /// request that holds a permanent delete permission (one only the admin preset holds) may ask
+    /// for at most 24 hours, and a longer one gets a 400.
     expires_in_hours: Option<i64>,
     /// Why the client asks, up to 200 characters. The approver sees it as the client's own words,
     /// which nothing verifies.
@@ -24872,7 +24874,7 @@ struct DeviceTokenResponse {
     security(()),
     responses(
         (status = 200, description = "Codes for the device", body = DeviceAuthResponse),
-        (status = 400, description = "Bad client_name or scopes, an unknown role, a role sent with scopes, preset or permissions, `expires_in_hours` outside 1 to 8760 or over 24 when the request holds a delete permission, more than 50 `boards`, a board name over 200 characters, or a `reason` over 200 characters"),
+        (status = 400, description = "Bad client_name or scopes, an unknown role, a role sent with scopes, preset or permissions, `expires_in_hours` outside 1 to 8760 or over 24 when the request holds a permanent delete permission (one only the admin preset holds), more than 50 `boards`, a board name over 200 characters, or a `reason` over 200 characters"),
         (status = 429, description = "`rate_limited`: 5 device requests from this client network, or 1000 in all, already wait for approval, or more than 10 starts a minute came from one client IP"),
     ),
 )]
@@ -24929,7 +24931,7 @@ async fn start_device_auth(
         }
         Some(hours) if hours > DELETE_DEVICE_HOURS && holds_delete(&permissions) => {
             return Err(AppError::bad_request(format!(
-                "expires_in_hours must be at most {DELETE_DEVICE_HOURS} when the request holds a delete permission"
+                "expires_in_hours must be at most {DELETE_DEVICE_HOURS} when the request holds a permanent delete permission (one only the admin preset holds)"
             )));
         }
         hours => hours,
@@ -25114,7 +25116,7 @@ struct DeviceTemplate {
     client_name: String,
     /// The scope the client requested, as a list of one for the template.
     scopes: Vec<String>,
-    /// Whether the request holds a delete permission, which the page warns about.
+    /// Whether the request holds a permanent delete permission, which the page warns about.
     requested_admin: bool,
     /// The permissions the request holds, comma separated, which the picker offers.
     requested_names: String,
@@ -25146,8 +25148,8 @@ struct DeviceTemplate {
     error: Option<String>,
 }
 
-/// Returns whether `permissions` holds a delete only the admin preset holds, which leaves out
-/// `subtasks.delete` of the lead preset.
+/// Returns whether `permissions` holds a permanent delete (one only the admin preset holds), which
+/// leaves out `subtasks.delete` and `links.delete` of the lead preset.
 fn holds_delete(permissions: &BTreeSet<Permission>) -> bool {
     permissions.iter().any(|permission| {
         permission.name().ends_with(".delete") && permission.lowest_preset() == Preset::Admin
@@ -28785,8 +28787,8 @@ Device pairing (RFC 8628) gives a client its own token without pasting one:
    cannot ask for a token that never expires. A board name that matches no board of the account is skipped,
    and a request naming none grants every board, including boards made later. A form with no
    expiry gets `expires_in_hours` when the request names it, else 1 day for a request that holds a
-   delete permission and 90 days for any other. A request that holds a delete permission and asks
-   for more than 24 hours gets a 400 when it starts.
+   permanent delete permission (one only the admin preset holds) and 90 days for any other. A
+   request that holds one and asks for more than 24 hours gets a 400 when it starts.
 3. The client polls `POST /api/v1/auth/device/token` with the `device_code`, waiting
    `interval_seconds` between polls, until it gets the token or a final error. The reply names
    the token's `scopes` and `permissions`.

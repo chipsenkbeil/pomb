@@ -2346,7 +2346,7 @@ mod tests {
             "/api/tasks/:id/links/:link_id",
             AuthScope::Work,
         ),
-        (Method::PUT, "/api/tasks/:id/umbrella", AuthScope::Admin),
+        (Method::PUT, "/api/tasks/:id/umbrella", AuthScope::Provision),
         (Method::POST, "/api/tasks/:id/seats", AuthScope::Work),
         (Method::DELETE, "/api/tasks/:id/seats", AuthScope::Work),
         (Method::POST, "/api/tasks/:id/seats/take", AuthScope::Work),
