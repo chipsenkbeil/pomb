@@ -1,11 +1,12 @@
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 
+use super::access_tests::{Payload, Seeded, Who, open, payload, seeded, send, uri};
 use super::passkey_tests::{Reply, call, make_epic};
 use super::server::{passkey_mode, unthrottled_limits};
-use super::{ROUTE_ACCESS, RouteClass, router};
+use super::{ROUTE_ACCESS, RouteClass, route_class, router};
 use crate::AppState;
-use crate::auth::{new_api_token_record, required_role};
+use crate::auth::{ROUTE_PERMISSIONS, new_api_token_record, required_role};
 use crate::db::{Db, LinkAddOutcome, NewTimeEntry};
 use crate::models::{
     AccountId, ActiveTimer, Actor, AuthScope, BoardRole, EntryKind, HistoryKind, LinkKind,
@@ -890,7 +891,7 @@ fn every_board_task_and_entity_route_should_be_listed_so_none_falls_back_to_owne
             RouteClass::Board | RouteClass::Task | RouteClass::Entity
         ) {
             assert!(
-                crate::auth::ROUTE_PERMISSIONS
+                ROUTE_PERMISSIONS
                     .iter()
                     .any(|(listed, path, _)| listed == method && path == pattern),
                 "{method} {pattern}"
@@ -1133,4 +1134,1036 @@ async fn timeline_page_should_tell_a_viewer_nothing_about_adding_tasks() {
         .send(STRANGER, "GET", &fx.fill("/b/{board}/timeline"), None)
         .await;
     assert_eq!(stranger.status, StatusCode::NOT_FOUND);
+}
+
+const ROLE_TABLE: &[(Method, &str, BoardRole, [u16; 3])] = &[
+    (
+        Method::GET,
+        "/b/:board_id",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/export",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/task-count",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/throughput",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/burndown",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/cumulative-flow",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/cycle-lead",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/due-date",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/board-history",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/monte-carlo",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/time-estimate",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/time-in-column",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/timeline",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::PATCH,
+        "/api/tasks/:id",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/tasks/:id",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/card",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/modal",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (Method::GET, "/t/:id", BoardRole::Viewer, [303, 303, 303]),
+    (
+        Method::POST,
+        "/api/tasks/:id/move",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/tasks/bulk",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/watch",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/checklist/:index",
+        BoardRole::Member,
+        [409, 409, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/time",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/time",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/subtasks",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/subtasks",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/subtasks/template",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/subtasks/from-template",
+        BoardRole::Member,
+        [200, 404, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/links",
+        BoardRole::Member,
+        [400, 400, 403],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/links",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::PUT,
+        "/api/tasks/:id/umbrella",
+        BoardRole::Member,
+        [400, 400, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/seats",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/seats",
+        BoardRole::Member,
+        [400, 400, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/seats/take",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/seats/verdict",
+        BoardRole::Member,
+        [409, 409, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/seats/ask-again",
+        BoardRole::Member,
+        [409, 409, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/links/:link_id",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/close",
+        BoardRole::Member,
+        [400, 400, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/reopen",
+        BoardRole::Member,
+        [400, 400, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/claim",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/claim/heartbeat",
+        BoardRole::Member,
+        [409, 409, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/claim/release",
+        BoardRole::Member,
+        [409, 409, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/owner",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/owner/renew",
+        BoardRole::Member,
+        [400, 400, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/owner/release",
+        BoardRole::Member,
+        [400, 400, 403],
+    ),
+    (
+        Method::PUT,
+        "/api/tasks/:id/subtasks/order",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::PATCH,
+        "/api/tasks/:id/subtasks/:sub_id",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/subtasks/:sub_id",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/subtasks/:sub_id/convert",
+        BoardRole::Member,
+        [201, 201, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/labels",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/events/wait",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/comments",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/comments",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::PATCH,
+        "/api/tasks/:id/comments/:comment_id",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/comments/:comment_id",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/comments/:comment_id/reactions",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/comments/:comment_id/answer",
+        BoardRole::Member,
+        [400, 400, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/escalate",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/attachments",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/attachments",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/attachments/link",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/attachments/document",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::PUT,
+        "/api/tasks/:id/attachments/:attachment_id/document",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::PUT,
+        "/api/tasks/:id/attachments/:attachment_id/cover",
+        BoardRole::Member,
+        [400, 400, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/attachments/:attachment_id/cover",
+        BoardRole::Member,
+        [400, 400, 403],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/attachments/:attachment_id/versions",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/attachments/:attachment_id/versions/:version_id",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/attachments/:attachment_id/file",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/attachments/:attachment_id/image",
+        BoardRole::Viewer,
+        [415, 415, 415],
+    ),
+    (
+        Method::PATCH,
+        "/api/tasks/:id/attachments/:attachment_id",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/attachments/:attachment_id",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/time-log-view",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/history-view",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/history-export",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/link-picker",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/time/entries/:id",
+        BoardRole::Viewer,
+        [200, 404, 404],
+    ),
+    (
+        Method::PUT,
+        "/api/time/entries/:id",
+        BoardRole::Member,
+        [200, 404, 404],
+    ),
+    (
+        Method::DELETE,
+        "/api/time/entries/:id",
+        BoardRole::Member,
+        [200, 404, 404],
+    ),
+    (
+        Method::PATCH,
+        "/api/columns/:id",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::DELETE,
+        "/api/columns/:id",
+        BoardRole::Owner,
+        [400, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/api/columns/:id/move",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::PATCH,
+        "/api/swimlanes/:id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/swimlanes/:id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/api/swimlanes/:id/move",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/swimlanes/merge",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::DELETE,
+        "/api/boards/:id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::PUT,
+        "/api/boards/:id/config",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/members",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::PUT,
+        "/api/boards/:id/members",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/boards/:id/members",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::PUT,
+        "/api/boards/:id/owner",
+        BoardRole::Owner,
+        [400, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/label-settings",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::PUT,
+        "/api/boards/:id/label-settings",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/labels",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/rules",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/seats",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::PUT,
+        "/api/boards/:id/seats",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::PUT,
+        "/api/boards/:id/rules",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/rules",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/columns",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/bin",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::DELETE,
+        "/api/bin/:id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/api/bin/:id/restore",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/tasks",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/epics",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/fields",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/fields",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::PATCH,
+        "/api/fields/:id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/fields/:id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/webhooks",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/webhooks",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::PATCH,
+        "/api/webhooks/:id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/webhooks/:id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/api/webhooks/:id/secret",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/inbound-addresses",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/inbound-addresses",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/api/inbound-addresses/:id/rotate",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/inbound-addresses/:id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/webhooks/test-dns",
+        BoardRole::Owner,
+        [400, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/webhooks/test-request",
+        BoardRole::Owner,
+        [400, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/export-data",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/history",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/archive",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/calendar-feeds",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/calendar-feeds",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/boards/:id/calendar-feeds/:feed_id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/report-bookmarks",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/report-bookmarks",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::PATCH,
+        "/api/boards/:id/report-bookmarks/:bookmark_id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/boards/:id/report-bookmarks/:bookmark_id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/delete",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/save-as-template",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/templates/:id",
+        BoardRole::Owner,
+        [200, 404, 404],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/colors",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/b/:board_id/settings",
+        BoardRole::Owner,
+        [303, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/layout",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/task-settings",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/advanced",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/fields",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/api-webhooks",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/api-webhooks/new",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/api-webhooks/:webhook_id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/add-from-email",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/colors",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/colors",
+        BoardRole::Owner,
+        [400, 403, 403],
+    ),
+    (
+        Method::PATCH,
+        "/api/boards/:id/colors/:color_id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/boards/:id/colors/:color_id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/colors/copy-from",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+];
+
+async fn status_as(
+    seeded: &Seeded,
+    method: &Method,
+    pattern: &str,
+    caller: Option<BoardRole>,
+) -> StatusCode {
+    let fx = open(seeded);
+    let class = route_class(method, pattern).expect("a listed route");
+    let mut target = uri(class, pattern, &fx.a_ids, &fx.a_ids);
+    let mut ids = fx.a_ids.clone();
+    ids.handle.clone_from(&fx.b_ids.handle);
+    let body = if *method == Method::PATCH && pattern == "/api/columns/:id" {
+        Some(Payload::Json(json!({"watched": true})))
+    } else {
+        payload(method, pattern, &ids)
+    };
+    if *method == Method::DELETE && pattern == "/api/boards/:id/members" {
+        target.push_str(&format!("?username={}", fx.b_ids.handle));
+    }
+    let cookie = match caller {
+        Some(BoardRole::Owner) => &fx.a_cookie,
+        _ => &fx.b_cookie,
+    };
+    let joins = match caller {
+        Some(role @ (BoardRole::Member | BoardRole::Viewer)) => Some(role),
+        Some(BoardRole::Owner)
+            if *method == Method::DELETE && pattern == "/api/boards/:id/members" =>
+        {
+            Some(BoardRole::Viewer)
+        }
+        _ => None,
+    };
+    if let Some(role) = joins {
+        fx.db
+            .set_board_member(&fx.a_ids.board, &fx.b_ids.handle, role)
+            .expect("join");
+    }
+    send(
+        &fx.app,
+        Who::Session(cookie),
+        method,
+        &target,
+        body.as_ref(),
+    )
+    .await
+    .0
+}
+
+#[test]
+fn role_table_should_match_required_role_for_every_row() {
+    for (method, pattern, role, _) in ROLE_TABLE {
+        assert!(
+            ROUTE_PERMISSIONS
+                .iter()
+                .any(|(listed, path, _)| listed == method && path == pattern),
+            "{method} {pattern} is not in ROUTE_PERMISSIONS"
+        );
+        assert_eq!(required_role(method, pattern), *role, "{method} {pattern}");
+    }
+}
+
+#[test]
+fn role_table_should_list_each_board_task_and_entity_route_once() {
+    for (index, (method, pattern, _, _)) in ROLE_TABLE.iter().enumerate() {
+        assert!(
+            ROLE_TABLE[..index]
+                .iter()
+                .all(|(other, path, _, _)| other != method || path != pattern),
+            "{method} {pattern} is listed twice"
+        );
+        assert!(
+            matches!(
+                route_class(method, pattern),
+                Some(RouteClass::Board | RouteClass::Task | RouteClass::Entity)
+            ),
+            "{method} {pattern} is not a board, task or entity route"
+        );
+    }
+    for (method, pattern, class, _) in ROUTE_ACCESS {
+        if matches!(
+            class,
+            RouteClass::Board | RouteClass::Task | RouteClass::Entity
+        ) {
+            assert!(
+                ROLE_TABLE
+                    .iter()
+                    .any(|(listed, path, _, _)| listed == method && path == pattern),
+                "{method} {pattern} is missing from ROLE_TABLE"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn each_role_should_get_the_pinned_status_on_every_board_task_and_entity_route() {
+    let seeded = seeded().await;
+    for (method, pattern, _, expected) in ROLE_TABLE {
+        let callers = [
+            Some(BoardRole::Owner),
+            Some(BoardRole::Member),
+            Some(BoardRole::Viewer),
+            None,
+        ];
+        let wanted = [expected[0], expected[1], expected[2], 404];
+        for (caller, wanted) in callers.into_iter().zip(wanted) {
+            let status = status_as(&seeded, method, pattern, caller).await;
+            assert_eq!(status.as_u16(), wanted, "{caller:?} {method} {pattern}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_viewer_should_reach_no_write_but_column_watch_and_leaving_the_board() {
+    let seeded = seeded().await;
+    for (method, pattern, _, _) in ROLE_TABLE {
+        let leaves = (*method == Method::PATCH && *pattern == "/api/columns/:id")
+            || (*method == Method::DELETE && *pattern == "/api/boards/:id/members");
+        if *method == Method::GET || *method == Method::HEAD || leaves {
+            continue;
+        }
+        let status = status_as(&seeded, method, pattern, Some(BoardRole::Viewer)).await;
+        assert!(
+            matches!(status, StatusCode::FORBIDDEN | StatusCode::NOT_FOUND),
+            "{method} {pattern}: {status}"
+        );
+    }
 }

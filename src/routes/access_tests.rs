@@ -50,9 +50,9 @@ pub(crate) struct Ids {
     /// The account itself.
     account: String,
     /// The account's handle, which names it in a request body.
-    handle: String,
+    pub(crate) handle: String,
     /// The board every other row sits on.
-    board: String,
+    pub(crate) board: String,
     /// A second board, for routes that name two.
     board2: String,
     /// A column on [`Ids::board`].
@@ -133,38 +133,38 @@ impl Ids {
 
 /// Two accounts on one instance: A owns one of everything, and B attacks with its own token and
 /// session.
-struct Accounts {
+pub(crate) struct Accounts {
     /// Keeps the database directory alive.
     _dir: tempfile::TempDir,
     /// The database file, compared byte for byte around an attack.
     path: PathBuf,
     /// The database behind [`Accounts::app`].
-    db: Db,
+    pub(crate) db: Db,
     /// The router under test.
-    app: axum::Router,
+    pub(crate) app: axum::Router,
     /// Account A, the victim.
     a: AccountId,
     /// Account B, the attacker.
     b: AccountId,
     /// A's admin-scope API token.
-    a_token: String,
+    pub(crate) a_token: String,
     /// B's admin-scope API token.
-    b_token: String,
+    pub(crate) b_token: String,
     /// A's session cookie.
-    a_cookie: String,
+    pub(crate) a_cookie: String,
     /// B's session cookie.
-    b_cookie: String,
+    pub(crate) b_cookie: String,
     /// The rows A owns.
-    a_ids: Ids,
+    pub(crate) a_ids: Ids,
     /// The rows B owns.
-    b_ids: Ids,
+    pub(crate) b_ids: Ids,
     /// The session cookie of an account that waits for approval, in multi mode only.
     pending_cookie: Option<String>,
 }
 
 /// Credentials a request carries.
 #[derive(Copy, Clone, Debug)]
-enum Who<'a> {
+pub(crate) enum Who<'a> {
     /// No credential at all.
     Anonymous,
     /// An API token.
@@ -175,7 +175,7 @@ enum Who<'a> {
 
 /// A request body.
 #[derive(Clone, Debug)]
-enum Payload {
+pub(crate) enum Payload {
     /// A JSON body.
     Json(Value),
     /// A URL-encoded form body.
@@ -397,7 +397,7 @@ pub(crate) fn seed(
 }
 
 /// A closed database file holding the two accounts, which each test copies.
-struct Seeded {
+pub(crate) struct Seeded {
     /// Keeps the seeded file's directory alive.
     _dir: tempfile::TempDir,
     /// The seeded file.
@@ -455,7 +455,7 @@ async fn seed_passkey(
 }
 
 /// Seeds the two accounts, A first so it is the instance's admin.
-async fn seeded() -> Seeded {
+pub(crate) async fn seeded() -> Seeded {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("seed.redb");
     let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
@@ -643,7 +643,7 @@ async fn registered() -> Seeded {
 }
 
 /// Opens a fresh copy of the seeded file behind a passkey-mode app.
-fn open(seeded: &Seeded) -> Accounts {
+pub(crate) fn open(seeded: &Seeded) -> Accounts {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("access.redb");
     std::fs::copy(&seeded.path, &path).expect("copy the seeded file");
@@ -675,7 +675,7 @@ async fn accounts() -> Accounts {
 }
 
 /// Sends one request and returns its status and body.
-async fn send(
+pub(crate) async fn send(
     app: &axum::Router,
     who: Who<'_>,
     method: &Method,
@@ -754,7 +754,7 @@ fn param<'a>(class: RouteClass, path: &str, name: &str, main: &'a Ids, sub: &'a 
 }
 
 /// Fills a route pattern's main id from `main` and the ids of rows inside it from `sub`.
-fn uri(class: RouteClass, path: &str, main: &Ids, sub: &Ids) -> String {
+pub(crate) fn uri(class: RouteClass, path: &str, main: &Ids, sub: &Ids) -> String {
     path.split('/')
         .map(|segment| match segment.strip_prefix(':') {
             Some(name) => param(class, path, name, main, sub).to_string(),
@@ -766,7 +766,7 @@ fn uri(class: RouteClass, path: &str, main: &Ids, sub: &Ids) -> String {
 
 /// Returns a body that passes validation, naming the ids in `body_ids` wherever the body holds
 /// one, so a request reaches the row its path names. A write route with none listed sends `{}`.
-fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
+pub(crate) fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
     let json = match (method, path) {
         (&Method::POST, "/b/:board_id/settings") => {
             return Some(Payload::Form("name=Renamed".to_string()));
