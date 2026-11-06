@@ -2038,6 +2038,24 @@ const ROLE_TABLE: &[(Method, &str, BoardRole, [u16; 3])] = &[
         BoardRole::Owner,
         [200, 403, 403],
     ),
+    (
+        Method::POST,
+        "/api/boards/:id/limit-groups",
+        BoardRole::Owner,
+        [400, 403, 403],
+    ),
+    (
+        Method::PATCH,
+        "/api/boards/:id/limit-groups/:group_id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
+    (
+        Method::DELETE,
+        "/api/boards/:id/limit-groups/:group_id",
+        BoardRole::Owner,
+        [200, 403, 403],
+    ),
 ];
 
 async fn status_as(

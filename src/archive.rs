@@ -22,8 +22,8 @@ pub use spool::Spool;
 use crate::db::{BoardSnapshot, DbResult, OfflineDb};
 use crate::models::{
     ActorKind, BoardRow, ColorRow, ColumnRow, ColumnStage, FieldColumn, FieldDefRow, FieldKind,
-    FieldOwner, HistoryKind, LaneLimit, LinkKind, OwnerHolder, Responsible, SwimlaneRow, TaskClaim,
-    TaskKind, TaskLink, TaskRow, TimeEntryRow,
+    FieldOwner, HistoryKind, LaneLimit, LimitGroup, LinkKind, OwnerHolder, Responsible,
+    SwimlaneRow, TaskClaim, TaskKind, TaskLink, TaskRow, TimeEntryRow,
 };
 use crate::taskjson::TaskArray;
 
@@ -92,6 +92,8 @@ struct Document<'a> {
     colors: Vec<ColorInfo>,
     /// The board's custom field definitions, in board order.
     custom_fields: Vec<FieldInfo>,
+    /// The board's limit groups.
+    limit_groups: Vec<LimitGroupInfo>,
     /// Every task of the board, grouped by column in board order, which the stream fills in.
     tasks: Vec<TaskInfo>,
 }
@@ -116,8 +118,23 @@ struct BoardDocument {
     colors: Vec<ColorInfo>,
     /// The board's custom field definitions.
     custom_fields: Vec<FieldInfo>,
+    /// The board's limit groups. An archive with no key has none.
+    #[serde(default)]
+    limit_groups: Vec<LimitGroupInfo>,
     /// Every task of the board.
     tasks: Vec<TaskInfo>,
+}
+
+/// A limit group as `board.json` describes it.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LimitGroupInfo {
+    /// The group's id.
+    id: String,
+    /// The ids of the columns the group covers.
+    column_ids: Vec<String>,
+    /// The most cards the columns of the group hold together.
+    limit: i64,
 }
 
 /// A board as `board.json` describes it.
@@ -636,6 +653,16 @@ fn column_info(column: ColumnRow) -> ColumnInfo {
     }
 }
 
+/// Returns the document's description of `group`.
+#[must_use]
+fn limit_group_info(group: &LimitGroup) -> LimitGroupInfo {
+    LimitGroupInfo {
+        id: group.id.clone(),
+        column_ids: group.column_ids.clone(),
+        limit: group.limit,
+    }
+}
+
 /// Returns the document's description of `lane`.
 fn lane_info(lane: SwimlaneRow) -> LaneInfo {
     LaneInfo {
@@ -1003,6 +1030,12 @@ impl Archive {
             swimlanes: lanes.into_iter().map(lane_info).collect(),
             colors: colors.into_iter().map(color_info).collect(),
             custom_fields: fields.into_iter().map(field_info).collect(),
+            limit_groups: snapshot
+                .board()
+                .limit_groups
+                .iter()
+                .map(limit_group_info)
+                .collect(),
             tasks: Vec::new(),
         };
         let mut files = Vec::new();

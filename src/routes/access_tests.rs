@@ -14,7 +14,7 @@ use crate::AppState;
 use crate::auth::{PENDING_ROUTES, new_api_token_record, required_permission, required_role};
 use crate::db::{
     AccountDb, BookmarkAdd, BootstrapToken, Change, Db, FeedAdd, FencedWrite, FieldCreateOutcome,
-    LinkAddOutcome, NewComment, NewInbound, NewWebhook,
+    GroupWrite, LinkAddOutcome, NewComment, NewInbound, NewWebhook,
 };
 use crate::models::{
     AccountId, Actor, ActorKind, AuthScope, BoardAccess, BoardRole, FieldDefRow, FieldKind,
@@ -41,6 +41,7 @@ const SUB_ID_PARAMS: &[&str] = &[
     "color_id",
     "feed_id",
     "bookmark_id",
+    "group_id",
     "webhook_id",
 ];
 
@@ -81,6 +82,8 @@ pub(crate) struct Ids {
     feed: String,
     /// A shared report bookmark of [`Ids::board`].
     bookmark: String,
+    /// A limit group on [`Ids::board`].
+    limit_group: String,
     /// A custom field on [`Ids::board`].
     field: String,
     /// A webhook on [`Ids::board`].
@@ -101,7 +104,7 @@ pub(crate) struct Ids {
 
 impl Ids {
     /// Returns every id, for blanking them out of an answer.
-    fn all(&self) -> [&str; 24] {
+    fn all(&self) -> [&str; 25] {
         [
             &self.account,
             &self.board,
@@ -119,6 +122,7 @@ impl Ids {
             &self.color,
             &self.feed,
             &self.bookmark,
+            &self.limit_group,
             &self.field,
             &self.webhook,
             &self.inbound,
@@ -270,6 +274,18 @@ fn seed_bookmark(db: &Db, board: &str, account: &str) -> String {
     }
 }
 
+/// Adds a limit group over the first two columns of `board` and returns its id.
+fn seed_limit_group(db: &Db, board: &str, column: &str) -> String {
+    let second = db.create_column(board, "Second", None).expect("column");
+    match db
+        .add_limit_group(board, vec![column.to_string(), second], 5)
+        .expect("group")
+    {
+        GroupWrite::Saved(group) => group.id,
+        other => panic!("group not added: {other:?}"),
+    }
+}
+
 /// Adds a calendar feed to `board` and returns its id.
 fn seed_feed(db: &Db, board: &str, name: &str) -> String {
     match db
@@ -377,6 +393,7 @@ pub(crate) fn seed(
         color: db.list_colors(&board).expect("colors")[1].id.clone(),
         feed: seed_feed(db, &board, name),
         bookmark: seed_bookmark(db, &board, account.as_str()),
+        limit_group: seed_limit_group(db, &board, &column),
         field: seed_field(db, &board),
         webhook: seed_webhook(db, &board),
         inbound: seed_inbound(db, &board, &column),
@@ -734,6 +751,7 @@ fn param<'a>(class: RouteClass, path: &str, name: &str, main: &'a Ids, sub: &'a 
         "color_id" => &sub.color,
         "feed_id" => &sub.feed,
         "bookmark_id" => &sub.bookmark,
+        "group_id" => &sub.limit_group,
         "webhook_id" => &sub.webhook,
         "index" => "0",
         "id" => match class {
@@ -790,6 +808,9 @@ pub(crate) fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Pay
         (&Method::POST, "/api/boards/:id/calendar-feeds") => json!({"label": "Sneak"}),
         (&Method::POST, "/api/boards/:id/report-bookmarks") => {
             json!({"report": "burndown", "name": "Sneak"})
+        }
+        (&Method::POST, "/api/boards/:id/limit-groups") => {
+            json!({"column_ids": [body_ids.column], "limit": 1})
         }
         (&Method::PATCH, "/api/boards/:id/report-bookmarks/:bookmark_id") => {
             json!({"name": "Renamed"})
@@ -903,6 +924,7 @@ fn missing() -> Ids {
         color: fresh(),
         feed: fresh(),
         bookmark: fresh(),
+        limit_group: fresh(),
         field: fresh(),
         webhook: fresh(),
         inbound: fresh(),

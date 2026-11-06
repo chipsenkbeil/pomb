@@ -27,6 +27,7 @@ mod files;
 mod import;
 mod inbound;
 mod instance;
+mod limit_groups;
 mod membership;
 mod notifications;
 mod outbox;
@@ -85,6 +86,10 @@ pub use self::import::{BoardImport, FileImport, TaskImport};
 pub use self::inbound::{InboundColumnMissing, IssuedInbound, MAX_PREFIX_CHARS, NewInbound};
 use self::inbound::{txn_drop_inbound, txn_remove_inbound};
 pub use self::instance::InstanceDb;
+pub use self::limit_groups::{ColumnMove, GroupWrite};
+use self::limit_groups::{
+    txn_group_over_limit, txn_leave_limit_groups, txn_order_splits_group, txn_sort_groups,
+};
 pub use self::membership::{
     AccountAction, AccountDeleteOutcome, AccountSummary, AdminActionOutcome, ModeSwitch,
     NewAccount, RecoverOutcome, RegisterOutcome, Revoked,
@@ -725,6 +730,11 @@ pub enum MoveOutcome {
         count: usize,
         limit: i64,
     },
+    /// Refused: the limit group of the target column holds `count` tasks against `limit`.
+    GroupLimit {
+        count: usize,
+        limit: i64,
+    },
 }
 
 /// Where a question's write moves the task.
@@ -760,6 +770,13 @@ pub enum QuestionWrite {
         /// The column's limit.
         limit: i64,
     },
+    /// Refused: the limit group of the target column holds `count` tasks against `limit`.
+    GroupLimit {
+        /// Tasks the group holds.
+        count: usize,
+        /// The group's limit.
+        limit: i64,
+    },
     /// Refused: the comment is not a question.
     NoQuestion,
     /// Refused: the question has its answer already.
@@ -785,6 +802,7 @@ impl QuestionWrite {
             MoveOutcome::StaleFence => Self::StaleFence,
             MoveOutcome::OpenChildren { count } => Self::OpenChildren { count },
             MoveOutcome::WipLimit { count, limit } => Self::WipLimit { count, limit },
+            MoveOutcome::GroupLimit { count, limit } => Self::GroupLimit { count, limit },
         };
         Ok(refusal)
     }
@@ -1005,7 +1023,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 82;
+pub const SCHEMA_VERSION: u64 = 83;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1094,6 +1112,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "ddef6d5beb8718c6a99f0f42a1c37ba81b4eec45ec86ffd797cccfb89066835c",
     "8f0a76c629391994f2e71f44847877943e826288031ba9748875ef75810bba01",
     "735ee709d084a3663625557b7e7ba31e2bff2c9e72847f21a133ac4071b36fe8",
+    "00c82eb31b386bf84813988f8daf4462e6d9ad3d8ded1250c8ea0a6b801c613b",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -5481,6 +5500,7 @@ fn txn_insert_board(
         config_json: "{}".to_string(),
         report_bookmarks: Vec::new(),
         seats: Vec::new(),
+        limit_groups: Vec::new(),
     };
     txn_store_owned(txn, BOARDS, &id, &row, over)?;
     mmap_insert(txn, BOARDS_BY_OWNER, owner.as_str(), &id)?;
@@ -7408,12 +7428,12 @@ impl Db {
         self.update_column(id, &patch)
     }
 
-    /// Reorder a column within its board; positions are renumbered densely.
-    /// Returns false when the column is unknown.
-    pub fn move_column(&self, id: &str, position: i64) -> DbResult<bool> {
+    /// Reorders a column within its board and renumbers the positions densely. A move that would
+    /// split a limit group's columns apart is refused.
+    pub fn move_column(&self, id: &str, position: i64) -> DbResult<ColumnMove> {
         let txn = self.db.begin_write()?;
         let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, id)? else {
-            return Ok(false);
+            return Ok(ColumnMove::NotFound);
         };
         let mut columns: Vec<ColumnRow> =
             txn_indexed_rows(&txn, COLUMNS_BY_BOARD, &column.board_id, COLUMNS)?;
@@ -7421,12 +7441,17 @@ impl Db {
         columns.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
         let at = position.clamp(0, columns.len() as i64) as usize;
         columns.insert(at, column);
+        let order: Vec<&str> = columns.iter().map(|column| column.id.as_str()).collect();
+        if txn_order_splits_group(&txn, &columns[at].board_id, &order)? {
+            return Ok(ColumnMove::BreaksGroup);
+        }
+        txn_sort_groups(&txn, &columns[at].board_id, &order)?;
         for (index, mut row) in columns.into_iter().enumerate() {
             row.position = index as i64;
             txn_store_owned(&txn, COLUMNS, &row.id, &row, OverQuota::Allow)?;
         }
         txn.commit()?;
-        Ok(true)
+        Ok(ColumnMove::Moved)
     }
 
     /// Replace a board's whole color palette with a copy of another board's
@@ -7624,6 +7649,7 @@ impl Db {
                 mmap_remove(&txn, INBOUND_BY_BOARD, &column.board_id, &address.id)?;
             }
         }
+        txn_leave_limit_groups(&txn, &column.board_id, id)?;
         txn_remove_owned::<ColumnRow>(&txn, COLUMNS, id)?;
         mmap_remove(&txn, COLUMNS_BY_BOARD, &column.board_id, id)?;
         txn.commit()?;
@@ -11680,6 +11706,14 @@ impl Db {
                     return Ok(MoveOutcome::WipLimit { count, limit });
                 }
             }
+        }
+        if guards.enforce_wip
+            && old_column_id != column_id
+            && task.is_work()
+            && let Some((count, limit)) =
+                txn_group_over_limit(txn, &target.board_id, id, &old_column_id, column_id)?
+        {
+            return Ok(MoveOutcome::GroupLimit { count, limit });
         }
 
         let old_column: Option<ColumnRow> = txn_read_one(txn, COLUMNS, &old_column_id)?;
@@ -16036,10 +16070,10 @@ mod schema_fingerprint_tests {
     use super::*;
     use crate::models::{
         AgentRoleGrantRow, AgentRoleRow, Avatar, AvatarKind, BoardEventRow, BoardMemberRow,
-        BoardRole, BreakActivity, DiskLimits, FieldColumn, InviteRow, NotificationRow, OutboxRow,
-        OwnerHolder, ParentToken, PruneSettings, PruneStatus, QuestionChoice, Quotas, RateLimits,
-        RegistrationMode, Responsible, SeatVerdict, SubtaskTemplate, TimeFormat, TimerMode,
-        WebhookEvent, WeekStart,
+        BoardRole, BreakActivity, DiskLimits, FieldColumn, InviteRow, LimitGroup, NotificationRow,
+        OutboxRow, OwnerHolder, ParentToken, PruneSettings, PruneStatus, QuestionChoice, Quotas,
+        RateLimits, RegistrationMode, Responsible, SeatVerdict, SubtaskTemplate, TimeFormat,
+        TimerMode, WebhookEvent, WeekStart,
     };
     use crate::permissions::StandardKey;
 
@@ -16364,6 +16398,7 @@ mod schema_fingerprint_tests {
             shape::<InboundAddressRow>("InboundAddressRow"),
             shape::<InstanceSettings>("InstanceSettings"),
             shape::<InviteRow>("InviteRow"),
+            shape::<LimitGroup>("LimitGroup"),
             shape::<NotificationRow>("NotificationRow"),
             shape::<ParentToken>("ParentToken"),
             shape::<PasskeyRow>("PasskeyRow"),
@@ -16586,6 +16621,7 @@ mod first_board_tests {
                 config_json: serde_json::json!({ "archived": archived }).to_string(),
                 report_bookmarks: Vec::new(),
                 seats: Vec::new(),
+                limit_groups: Vec::new(),
             };
             write_one(&txn, BOARDS, id, &row).expect("write board");
             mmap_insert(&txn, BOARDS_BY_OWNER, "", id).expect("index board");

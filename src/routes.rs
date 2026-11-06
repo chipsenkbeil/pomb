@@ -3,6 +3,7 @@ mod calendar_export;
 mod docs;
 mod export;
 mod inbound;
+mod limit_groups;
 mod local_time;
 mod multipart;
 mod slot;
@@ -60,7 +61,7 @@ use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
     AdminActionOutcome, AgentRoleNameTaken, BoardDenied, BookmarkAdd, BookmarkPatch, Bound,
     ChangeOutcome, ChildLinks, ChildRef, ChildTokenRefusal, ClaimOutcome, ClaimRequest,
-    ColumnDeleteOutcome, ColumnKind, ColumnWatch, CommentWrite, Commit, CopyTasks,
+    ColumnDeleteOutcome, ColumnKind, ColumnMove, ColumnWatch, CommentWrite, Commit, CopyTasks,
     DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment, EntryEdit,
     EpicCloseOutcome, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome,
     GrabRequest, InboundColumnMissing, InstanceDb, LargestUse, LinkAddOutcome, LinkDeleteOutcome,
@@ -395,6 +396,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/boards/:id/report-bookmarks/:bookmark_id",
             patch(update_report_bookmark).delete(delete_report_bookmark),
+        )
+        .route(
+            "/api/boards/:id/limit-groups",
+            post(limit_groups::create_limit_group),
+        )
+        .route(
+            "/api/boards/:id/limit-groups/:group_id",
+            patch(limit_groups::update_limit_group).delete(limit_groups::delete_limit_group),
         )
         .route("/api/calendar-export", get(export_calendar))
         .route("/b/:board_id/settings/delete", get(board_delete_page))
@@ -1102,6 +1111,19 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::PUT, "/api/boards/:id/rules", Board, Grows),
         (Method::GET, "/b/:board_id/settings/rules", Board, No),
         (Method::GET, "/api/boards/:id/columns", Board, No),
+        (Method::POST, "/api/boards/:id/limit-groups", Board, Grows),
+        (
+            Method::PATCH,
+            "/api/boards/:id/limit-groups/:group_id",
+            Board,
+            Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/boards/:id/limit-groups/:group_id",
+            Board,
+            Exempt,
+        ),
         (Method::GET, "/api/boards/:id/bin", Board, No),
         (Method::DELETE, "/api/bin/:id", Entity, Exempt),
         (Method::POST, "/api/bin/:id/restore", Entity, Grows),
@@ -9966,7 +9988,7 @@ struct MoveTaskInput {
         (status = 400, description = "Unknown column"),
         (status = 403, description = "`role_move_forbidden`: the token was issued as a role and the board's column rules do not let that role move a task out of its column into this one. `card_locked`: the task carries a locking label"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit). `stale_fence`: a live claim holds another fence. `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column. Without a code: the target board's numbering has no number left"),
+        (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit), or the limit group of the column is full (n/limit). `stale_fence`: a live claim holds another fence. `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column. Without a code: the target board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -10110,6 +10132,12 @@ async fn move_task(
                 AppError::conflict(format!("column WIP limit reached ({count}/{limit})"))
                     .with_code(ErrorCode::WipLimitReached),
             );
+        }
+        MoveOutcome::GroupLimit { count, limit } => {
+            return Err(AppError::conflict(format!(
+                "limit group WIP limit reached ({count}/{limit})"
+            ))
+            .with_code(ErrorCode::WipLimitReached));
         }
     }
 
@@ -10602,7 +10630,9 @@ async fn bulk_tasks(
                 MoveOutcome::Moved => {}
                 MoveOutcome::NotFound => return Err(AppError::not_found("task not found")),
                 MoveOutcome::OpenChildren { count } => return Err(epic_has_open_children(count)),
-                MoveOutcome::StaleFence | MoveOutcome::WipLimit { .. } => {
+                MoveOutcome::StaleFence
+                | MoveOutcome::WipLimit { .. }
+                | MoveOutcome::GroupLimit { .. } => {
                     return Err(AppError::conflict("the tasks could not be moved"));
                 }
             }
@@ -13660,6 +13690,10 @@ fn question_comment(written: QuestionWrite) -> Result<TaskComment, AppError> {
         QuestionWrite::OpenChildren { count } => Err(epic_has_open_children(count)),
         QuestionWrite::WipLimit { count, limit } => Err(AppError::conflict(format!(
             "column WIP limit reached ({count}/{limit})"
+        ))
+        .with_code(ErrorCode::WipLimitReached)),
+        QuestionWrite::GroupLimit { count, limit } => Err(AppError::conflict(format!(
+            "limit group WIP limit reached ({count}/{limit})"
         ))
         .with_code(ErrorCode::WipLimitReached)),
         QuestionWrite::NoQuestion => Err(AppError::bad_request("the comment is not a question")),
@@ -17349,6 +17383,7 @@ struct MoveColumnInput {
     request_body = MoveColumnInput,
     responses(
         (status = 200, description = "Column moved"),
+        (status = 400, description = "The move would split the columns of a limit group apart"),
         (status = 403, description = "`permission_denied`: the token lacks `columns.reorder`"),
         (status = 404, description = "Column not found"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -17364,13 +17399,16 @@ async fn move_column(
     let db = &account;
 
     let column = found(db.column(&id), "column not found")?;
-    if !db
+    match db
         .move_column(&column, input.position)
         .map_err(AppError::from)?
     {
-        return Err(AppError::not_found("column not found"));
+        ColumnMove::Moved => Ok(StatusCode::OK),
+        ColumnMove::NotFound => Err(AppError::not_found("column not found")),
+        ColumnMove::BreaksGroup => Err(AppError::bad_request(
+            "the move would split the columns of a limit group apart",
+        )),
     }
-    Ok(StatusCode::OK)
 }
 
 /// Deletes a column. Refuses with 400 while it still holds tasks.
@@ -19178,6 +19216,9 @@ struct BoardDetail {
     columns: Vec<ColumnListItem>,
     /// Swimlanes in board order.
     swimlanes: Vec<SwimlaneListItem>,
+    /// The limit groups, each one card limit shared by adjacent columns, with the cards its columns
+    /// hold now.
+    limit_groups: Vec<limit_groups::LimitGroupView>,
 }
 
 /// Returns a board's id, name, ordered columns and ordered swimlanes, the ids an agent needs to
@@ -19216,11 +19257,13 @@ async fn get_board_detail(
         })
         .collect();
     let board = board.into_row();
+    let limit_groups = limit_groups::LimitGroupView::all(db, &board.limit_groups)?;
     Ok(Json(BoardDetail {
         id: board.id,
         name: board.name,
         columns,
         swimlanes,
+        limit_groups,
     }))
 }
 
@@ -29005,6 +29048,9 @@ them, which the Backups section of the settings page calls after a confirmation.
         create_report_bookmark,
         update_report_bookmark,
         delete_report_bookmark,
+        limit_groups::create_limit_group,
+        limit_groups::update_limit_group,
+        limit_groups::delete_limit_group,
         export_calendar,
         serve_calendar_feed,
         create_board,
@@ -29197,6 +29243,9 @@ them, which the Backups section of the settings page calls after a confirmation.
             inbound::InboundMail,
             inbound::ReceivedMail,
             inbound::CreateInboundInput,
+            limit_groups::LimitGroupView,
+            limit_groups::LimitGroupInput,
+            limit_groups::LimitGroupChange,
             WebhookView,
             WebhookEvent,
             CreatedWebhookView,
@@ -29381,6 +29430,9 @@ mod openapi;
 
 #[cfg(test)]
 mod limits_tests;
+
+#[cfg(test)]
+mod limit_groups_tests;
 
 #[cfg(test)]
 mod members_tests;
@@ -31570,6 +31622,7 @@ mod tests {
             config_json: "{}".into(),
             report_bookmarks: Vec::new(),
             seats: Vec::new(),
+            limit_groups: Vec::new(),
         };
         let columns = vec![ColumnRow {
             id: "c1".into(),

@@ -1279,6 +1279,21 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/boards/:id/report-bookmarks/:bookmark_id",
         Permission::BoardsConfigure,
     ),
+    (
+        Method::POST,
+        "/api/boards/:id/limit-groups",
+        Permission::ColumnsEdit,
+    ),
+    (
+        Method::PATCH,
+        "/api/boards/:id/limit-groups/:group_id",
+        Permission::ColumnsEdit,
+    ),
+    (
+        Method::DELETE,
+        "/api/boards/:id/limit-groups/:group_id",
+        Permission::ColumnsEdit,
+    ),
     (Method::GET, "/api/calendar-export", Permission::BoardsRead),
     (
         Method::GET,
@@ -2461,6 +2476,21 @@ mod tests {
         (Method::PATCH, "/api/columns/:id", AuthScope::Provision),
         (Method::DELETE, "/api/columns/:id", AuthScope::Admin),
         (Method::POST, "/api/columns/:id/move", AuthScope::Provision),
+        (
+            Method::POST,
+            "/api/boards/:id/limit-groups",
+            AuthScope::Provision,
+        ),
+        (
+            Method::PATCH,
+            "/api/boards/:id/limit-groups/:group_id",
+            AuthScope::Provision,
+        ),
+        (
+            Method::DELETE,
+            "/api/boards/:id/limit-groups/:group_id",
+            AuthScope::Provision,
+        ),
         (Method::POST, "/api/swimlanes", AuthScope::Provision),
         (Method::PATCH, "/api/swimlanes/:id", AuthScope::Provision),
         (Method::DELETE, "/api/swimlanes/:id", AuthScope::Admin),

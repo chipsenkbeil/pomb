@@ -14,16 +14,17 @@ use super::spool::Spool;
 use super::tar::{self, Cap, Data, ReadLimits};
 use super::{
     AttachmentInfo, BOARD_JSON, BoardDocument, ColorInfo, ColumnInfo, CommentInfo, EventInfo,
-    FORMAT, FieldInfo, LaneInfo, LinkInfo, OwnerHolderInfo, OwnerInfo, ResponsibleInfo,
-    SubtaskInfo, TaskInfo, TimeInfo, VersionInfo, attachment_path, version_path,
+    FORMAT, FieldInfo, LaneInfo, LimitGroupInfo, LinkInfo, OwnerHolderInfo, OwnerInfo,
+    ResponsibleInfo, SubtaskInfo, TaskInfo, TimeInfo, VersionInfo, attachment_path, version_path,
 };
 use crate::db::{AccountDb, BoardImport, Db, FileImport, MAX_HISTORY_TEXT_CHARS, TaskImport};
 use crate::models::{
     AccountId, AttachmentVersion, BreakActivity, ColorRow, ColumnRow, ColumnStage, EntryKind,
-    FieldDefRow, FieldKind, LaneLimit, LinkKind, MAIN_SWIMLANE_KEY, NUMBERING_KEY, Numbering,
-    Owner, OwnerHolder, Quotas, Responsible, Subtask, SwimlaneRow, TaskAttachment, TaskClaim,
-    TaskComment, TaskEvent, TaskKind, TaskLink, TaskRow, TextCap, TimeEntryRow, custom_color_hexes,
-    is_custom_color, parse_due_time, standard_color, valid_field_key,
+    FieldDefRow, FieldKind, LaneLimit, LimitGroup, LinkKind, MAIN_SWIMLANE_KEY, MAX_LIMIT_GROUPS,
+    NUMBERING_KEY, Numbering, Owner, OwnerHolder, Quotas, Responsible, Subtask, SwimlaneRow,
+    TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskKind, TaskLink, TaskRow, TextCap,
+    TimeEntryRow, custom_color_hexes, is_custom_color, parse_due_time, standard_color,
+    valid_field_key,
 };
 use crate::routes::{
     LANE_HEIGHT_MAX_PX, LANE_HEIGHT_MIN_PX, MAX_COMMENT_AUTHOR_CHARS, MAX_COMMENT_BYTES,
@@ -431,6 +432,7 @@ impl Builder<'_> {
 
         let colors = self.colors(document.colors)?;
         let columns = self.columns(document.columns)?;
+        let limit_groups = self.limit_groups(document.limit_groups, &columns)?;
         let mut swimlanes = self.swimlanes(document.swimlanes)?;
         let mut settings = self.settings(document.board.settings, &document.tasks)?;
         if swimlanes.is_empty() {
@@ -466,6 +468,7 @@ impl Builder<'_> {
             columns,
             swimlanes,
             fields,
+            limit_groups,
             tasks,
         };
         Ok((import, self.counts))
@@ -578,6 +581,35 @@ impl Builder<'_> {
                 stage: column
                     .stage
                     .unwrap_or_else(|| ColumnStage::from_legacy_name(&column.name)),
+            });
+        }
+        Ok(rows)
+    }
+
+    /// Returns the limit groups of `groups`, each on the fresh ids of `columns`, refused under the
+    /// rules of [`LimitGroup::check`].
+    fn limit_groups(
+        &mut self,
+        groups: Vec<LimitGroupInfo>,
+        columns: &[ColumnRow],
+    ) -> Result<Vec<LimitGroup>, ImportError> {
+        ceiling(groups.len(), MAX_LIMIT_GROUPS as u32, "limit groups")?;
+        let mut ordered: Vec<&ColumnRow> = columns.iter().collect();
+        ordered.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+        let order: Vec<&str> = ordered.iter().map(|column| column.id.as_str()).collect();
+        let mut rows: Vec<LimitGroup> = Vec::with_capacity(groups.len());
+        for group in groups {
+            let column_ids = group
+                .column_ids
+                .iter()
+                .map(|old| resolve(&self.columns, old, "the column of a limit group"))
+                .collect::<Result<Vec<_>, _>>()?;
+            LimitGroup::check(&order, &rows, &column_ids, group.limit)
+                .map_err(|why| ImportError::invalid(format!("a limit group: {why}")))?;
+            rows.push(LimitGroup {
+                id: fresh_id(),
+                column_ids,
+                limit: group.limit,
             });
         }
         Ok(rows)
@@ -1645,7 +1677,7 @@ mod tests {
 
     use super::*;
     use crate::archive::Archive;
-    use crate::db::{ColumnKind, NewComment};
+    use crate::db::{ColumnKind, GroupWrite, NewComment};
     use crate::models::{API_TOKEN_ACTOR, Actor, ActorKind, FieldOwner, InstanceMode};
 
     fn now() -> DateTime<Utc> {
@@ -3489,5 +3521,89 @@ mod tests {
         document["columns"][0]["stage"] = json!("verify");
         let (import, _) = read(&document).expect("a board");
         assert_eq!(import.columns[0].stage, Some(ColumnStage::Verify));
+    }
+
+    #[must_use]
+    fn three_columns() -> Value {
+        let mut document = base();
+        let first = document["columns"][0].clone();
+        let column = |id: &str, position: i64| {
+            let mut column = first.clone();
+            column["id"] = json!(id);
+            column["name"] = json!(id);
+            column["position"] = json!(position);
+            column
+        };
+        document["columns"] = json!([column("c1", 0), column("c2", 1), column("c3", 2)]);
+        document
+    }
+
+    #[test]
+    fn read_board_should_resolve_limit_group_columns_to_the_fresh_column_ids() {
+        let mut document = three_columns();
+        document["limit_groups"] = json!([{"id": "g1", "column_ids": ["c2", "c1"], "limit": 2}]);
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(import.limit_groups.len(), 1);
+        assert_eq!(import.limit_groups[0].limit, 2);
+        assert_eq!(
+            import.limit_groups[0].column_ids,
+            vec![import.columns[1].id.clone(), import.columns[0].id.clone()]
+        );
+    }
+
+    #[test]
+    fn read_board_should_refuse_limit_groups_that_break_the_rules() {
+        let refused = |groups: Value| {
+            let mut document = three_columns();
+            document["limit_groups"] = groups;
+            read(&document).is_err()
+        };
+        assert!(refused(
+            json!([{"id": "g", "column_ids": ["c1", "c3"], "limit": 2}])
+        ));
+        assert!(refused(
+            json!([{"id": "g", "column_ids": ["c1", "c9"], "limit": 2}])
+        ));
+        assert!(refused(
+            json!([{"id": "g", "column_ids": ["c1", "c2"], "limit": 0}])
+        ));
+        assert!(refused(json!([
+            {"id": "g", "column_ids": ["c1", "c2"], "limit": 2},
+            {"id": "h", "column_ids": ["c2", "c3"], "limit": 2}
+        ])));
+    }
+
+    #[test]
+    fn import_should_keep_the_limit_groups_of_an_export() {
+        let seeded = seed();
+        let db = &seeded.world.db;
+        let columns: Vec<String> = db
+            .list_columns(&seeded.board)
+            .expect("columns")
+            .into_iter()
+            .map(|column| column.id)
+            .collect();
+        let saved = db
+            .add_limit_group(&seeded.board, columns, 4)
+            .expect("group");
+        assert!(matches!(saved, GroupWrite::Saved(_)), "{saved:?}");
+        let original = export(db, &seeded.account, &seeded.board);
+        assert_eq!(document_of(&original)["limit_groups"][0]["limit"], 4);
+
+        let (imported, _) = import_into(db, &seeded.account, "chip", &original).expect("import");
+        let groups = db
+            .board(&imported)
+            .expect("read")
+            .expect("board")
+            .limit_groups;
+        let imported_columns: Vec<String> = db
+            .list_columns(&imported)
+            .expect("columns")
+            .into_iter()
+            .map(|column| column.id)
+            .collect();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].limit, 4);
+        assert_eq!(groups[0].column_ids, imported_columns);
     }
 }

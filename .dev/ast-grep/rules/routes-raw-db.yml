@@ -25,6 +25,7 @@ ignores:
   - src/routes/labels_tests.rs
   - src/routes/inbound_tests.rs
   - src/routes/limits_tests.rs
+  - src/routes/limit_groups_tests.rs
   - src/routes/members_tests.rs
   - src/routes/roles_tests.rs
   - src/routes/multi_tests.rs

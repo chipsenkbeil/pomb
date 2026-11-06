@@ -103,6 +103,7 @@ fn spec_should_expose_exactly_the_operation_ids_the_annotations_set() {
 
     let mut annotations = annotated_handlers(include_str!("../routes.rs"));
     annotations.extend(annotated_handlers(include_str!("inbound.rs")));
+    annotations.extend(annotated_handlers(include_str!("limit_groups.rs")));
     let missing: Vec<_> = annotations
         .iter()
         .filter(|(_, id)| id.is_none())

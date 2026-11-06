@@ -8,14 +8,15 @@ use super::usage::{
     txn_store_task,
 };
 use super::{
-    COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, Db, DbResult, ENTRIES_BY_TASK, FIELD_DEFS,
+    BOARDS, COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, Db, DbResult, ENTRIES_BY_TASK, FIELD_DEFS,
     FIELDS_BY_BOARD, LINKS_BY_TARGET, SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS,
     TASKS_BY_COLUMN, mmap_insert, txn_ensure_board_colors, txn_ensure_single_default,
-    txn_insert_board, txn_merge_board_config, txn_refuse_board_over_bytes, txn_refuse_over_quota,
+    txn_insert_board, txn_merge_board_config, txn_read_one, txn_refuse_board_over_bytes,
+    txn_refuse_over_quota, txn_store_board,
 };
 use crate::models::{
-    AccountId, Actor, ColorRow, ColumnRow, FieldDefRow, Quota, SwimlaneRow, TaskRow, TextCap,
-    TimeEntryRow,
+    AccountId, Actor, BoardRow, ColorRow, ColumnRow, FieldDefRow, LimitGroup, Quota, SwimlaneRow,
+    TaskRow, TextCap, TimeEntryRow,
 };
 
 /// The spooled bytes of one attachment's file.
@@ -56,6 +57,8 @@ pub struct BoardImport {
     pub swimlanes: Vec<SwimlaneRow>,
     /// The board's custom field definitions.
     pub fields: Vec<FieldDefRow>,
+    /// The board's limit groups, over the ids of `columns`.
+    pub limit_groups: Vec<LimitGroup>,
     /// The board's tasks.
     pub tasks: Vec<TaskImport>,
 }
@@ -118,6 +121,12 @@ impl Db {
             column.board_id.clone_from(&board_id);
             txn_store_owned(&txn, COLUMNS, &column.id, &column, OverQuota::Refuse)?;
             mmap_insert(&txn, COLUMNS_BY_BOARD, &board_id, &column.id)?;
+        }
+        if !import.limit_groups.is_empty()
+            && let Some(mut board) = txn_read_one::<BoardRow>(&txn, BOARDS, &board_id)?
+        {
+            board.limit_groups = import.limit_groups;
+            txn_store_board(&txn, &board, OverQuota::Refuse)?;
         }
         txn_refuse_over_quota(
             &txn,
@@ -297,6 +306,7 @@ mod tests {
             columns: vec![column],
             swimlanes: Vec::new(),
             fields: Vec::new(),
+            limit_groups: Vec::new(),
             tasks: vec![TaskImport {
                 row,
                 files: vec![FileImport {
@@ -390,6 +400,7 @@ mod tests {
             }],
             swimlanes: Vec::new(),
             fields: Vec::new(),
+            limit_groups: Vec::new(),
             tasks: vec![first, second],
         };
         let before = db.stored_bytes_by_account().expect("usage");

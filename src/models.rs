@@ -463,6 +463,84 @@ pub struct BoardRow {
     /// The seats the board offers, which a new task copies, in the order the board lists them.
     #[serde(default)]
     pub seats: Vec<SeatSlot>,
+    /// The limit groups of the board, each one card limit shared by adjacent columns.
+    #[serde(default)]
+    pub limit_groups: Vec<LimitGroup>,
+}
+
+/// Most limit groups one board holds.
+pub const MAX_LIMIT_GROUPS: usize = 20;
+
+/// One card limit shared by a run of adjacent columns of a board.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LimitGroup {
+    /// The group's id.
+    pub id: String,
+    /// The ids of the columns the group covers, in board order.
+    pub column_ids: Vec<String>,
+    /// The most cards the columns of the group hold together.
+    pub limit: i64,
+}
+
+impl LimitGroup {
+    /// Returns whether the group covers column `column_id`.
+    #[must_use]
+    pub fn holds(&self, column_id: &str) -> bool {
+        self.column_ids.iter().any(|held| held == column_id)
+    }
+
+    /// Returns whether the group's columns sit next to each other in `order`, the ids of the
+    /// board's columns in board order.
+    #[must_use]
+    pub fn is_adjacent_in(&self, order: &[&str]) -> bool {
+        let mut places: Vec<usize> = Vec::with_capacity(self.column_ids.len());
+        for id in &self.column_ids {
+            match order.iter().position(|column| column == id) {
+                Some(place) => places.push(place),
+                None => return false,
+            }
+        }
+        places.sort_unstable();
+        places.windows(2).all(|pair| pair[1] == pair[0] + 1)
+    }
+
+    /// Returns why a group of `column_ids` with `limit` is refused beside the `others` already on
+    /// the board, whose columns are `order` in board order: a limit under 1, fewer than two
+    /// columns, a column listed twice or not on the board, a column another group covers, or
+    /// columns that are not adjacent.
+    pub fn check(
+        order: &[&str],
+        others: &[Self],
+        column_ids: &[String],
+        limit: i64,
+    ) -> Result<(), String> {
+        if limit < 1 {
+            return Err("the limit must be at least 1".to_string());
+        }
+        if column_ids.len() < 2 {
+            return Err("a limit group needs at least two columns".to_string());
+        }
+        for (index, id) in column_ids.iter().enumerate() {
+            if !order.contains(&id.as_str()) {
+                return Err(format!("column {id} is not on the board"));
+            }
+            if column_ids[..index].contains(id) {
+                return Err(format!("column {id} is listed twice"));
+            }
+            if others.iter().any(|other| other.holds(id)) {
+                return Err(format!("column {id} belongs to another limit group"));
+            }
+        }
+        let group = Self {
+            id: String::new(),
+            column_ids: column_ids.to_vec(),
+            limit,
+        };
+        if !group.is_adjacent_in(order) {
+            return Err("the columns of a limit group must be adjacent".to_string());
+        }
+        Ok(())
+    }
 }
 
 /// The chart reports that keep bookmarks, by the last segment of their page path.

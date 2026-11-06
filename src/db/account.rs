@@ -16,18 +16,19 @@ use super::{
     AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardMember,
     BoardSnapshot, BookmarkAdd, BookmarkPatch, COLUMNS, COLUMNS_BY_BOARD, Change, ChangeOutcome,
     ChildLinks, ChildTokenRefusal, ClaimOutcome, ClaimRequest, ColorDeleteOutcome,
-    ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Commit, CopyTasks, Db, DbResult,
-    DeviceGrant, EntryEdit, EpicCloseOutcome, EventRead, FIELD_DEFS, FeedAdd, FencedWrite,
-    FieldCreateOutcome, GrabRequest, INBOUND_ADDRESSES, Incoming, IssuedInbound, LINKS_BY_TARGET,
-    LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkRefusal, MemberSet, MoveGuards, MoveOutcome,
-    NewComment, NewInbound, NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage,
-    OwnerChange, OwnerOutcome, PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome, QuestionMove,
-    QuestionWrite, Reads, RestoreOutcome, RoleTokenRefusal, Rows, SWIMLANES, SessionEndOutcome,
-    SessionListing, SessionToken, StandardRoles, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
-    SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
-    TaskContext, TemplateDeleteOutcome, TokenEdit, UmbrellaChange, WEBHOOKS, WebhookPatch,
-    first_board, index_in, link_event_target, links_blocked_in, no_signed_in_account, read_in,
-    redacted_history, role_in, task_role_in,
+    ColumnDeleteOutcome, ColumnKind, ColumnMove, ColumnPatch, CommentWrite, Commit, CopyTasks, Db,
+    DbResult, DeviceGrant, EntryEdit, EpicCloseOutcome, EventRead, FIELD_DEFS, FeedAdd,
+    FencedWrite, FieldCreateOutcome, GrabRequest, GroupWrite, INBOUND_ADDRESSES, Incoming,
+    IssuedInbound, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkRefusal,
+    MemberSet, MoveGuards, MoveOutcome, NewComment, NewInbound, NewTaskPlacement, NewTimeEntry,
+    NewWebhook, NotificationPage, OwnerChange, OwnerOutcome, PasskeyAddOutcome,
+    PasskeyDeleteOutcome, PurgeOutcome, QuestionMove, QuestionWrite, Reads, RestoreOutcome,
+    RoleTokenRefusal, Rows, SWIMLANES, SessionEndOutcome, SessionListing, SessionToken,
+    StandardRoles, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
+    SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, TaskContext,
+    TemplateDeleteOutcome, TokenEdit, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board,
+    index_in, link_event_target, links_blocked_in, no_signed_in_account, read_in, redacted_history,
+    role_in, task_role_in,
 };
 use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission, required_role,
@@ -36,10 +37,10 @@ use crate::models::{
     AccountId, AccountStatus, ActiveTimer, Actor, AgentRoleRow, ApiTokenRecord, Avatar, BinRow,
     BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CommentQuestion,
     CoverChange, DeviceAuthRow, EscalationTier, EventKind, FieldDefRow, InboundAddressRow,
-    LinkKind, Numbering, OwnerHolder, ParentToken, PasskeyRow, PruneNotice, QuestionAnswer,
-    RecoveryCodeRow, ReportBookmark, SeatSlot, Settings, SwimlaneRow, TaskAttachment, TaskBrief,
-    TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
-    WebhookRow,
+    LimitGroup, LinkKind, Numbering, OwnerHolder, ParentToken, PasskeyRow, PruneNotice,
+    QuestionAnswer, RecoveryCodeRow, ReportBookmark, SeatSlot, Settings, SwimlaneRow,
+    TaskAttachment, TaskBrief, TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow,
+    TimeEntryRow, UserRow, WebhookRow,
 };
 use crate::permissions::Permission;
 
@@ -1067,6 +1068,38 @@ impl AccountDb {
         self.db.set_board_seats(&board.row().id, seats)
     }
 
+    /// Adds a limit group to a board, as [`Db::add_limit_group`] does.
+    pub fn add_limit_group(
+        &self,
+        board: &OwnedBoard,
+        column_ids: Vec<String>,
+        limit: i64,
+    ) -> DbResult<GroupWrite> {
+        self.db.add_limit_group(&board.row().id, column_ids, limit)
+    }
+
+    /// Changes a limit group of a board, as [`Db::update_limit_group`] does.
+    pub fn update_limit_group(
+        &self,
+        board: &OwnedBoard,
+        group_id: &str,
+        column_ids: Option<Vec<String>>,
+        limit: Option<i64>,
+    ) -> DbResult<GroupWrite> {
+        self.db
+            .update_limit_group(&board.row().id, group_id, column_ids, limit)
+    }
+
+    /// Unlinks a limit group of a board, as [`Db::remove_limit_group`] does.
+    pub fn remove_limit_group(&self, board: &OwnedBoard, group_id: &str) -> DbResult<bool> {
+        self.db.remove_limit_group(&board.row().id, group_id)
+    }
+
+    /// Returns how many cards a limit group of a board holds, as [`Db::limit_group_count`] does.
+    pub fn limit_group_count(&self, group: &LimitGroup) -> DbResult<usize> {
+        self.db.limit_group_count(group)
+    }
+
     /// Gives a board a task numbering, as [`Db::activate_numbering`] does.
     pub fn activate_numbering(
         &self,
@@ -1323,7 +1356,7 @@ impl AccountDb {
     }
 
     /// Moves a column within its board.
-    pub fn move_column(&self, column: &OwnedColumn, position: i64) -> DbResult<bool> {
+    pub fn move_column(&self, column: &OwnedColumn, position: i64) -> DbResult<ColumnMove> {
         self.db.move_column(&column.row().id, position)
     }
 
