@@ -40,7 +40,7 @@ kill $(jq -r .pid /tmp/parity-3420/state.json)
 `dev parity start-server` always passes `--database-path` (a fresh redb in the
 workdir) and `--auth none`, so the first request creates the owner, named
 `owner`. It seeds the Golden Master board
-(`.dev/tools/seed-golden-master.sh`, `.dev/golden-master-board.json`) and the
+(`dev tools seed-golden-master`, `.dev/golden-master-board.json`) and the
 Visual Test board (`dev parity seed-visual-test`), and writes `state.json`. The
 server clock is frozen with libfaketime: the Golden Master board is seeded on
 2026-09-30 15:22 and served from 2026-10-16 18:00 (America/Chicago), the day of

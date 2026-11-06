@@ -27,7 +27,6 @@ set -euo pipefail
 
 bin=${1:?binary} port=${2:?port} work=${3:?workdir}
 here=$(cd "$(dirname "$0")" && pwd)
-tools=$here/../tools
 seed_time=${PARITY_SEED_TIME:-2026-09-30 15:22:00}
 serve_time=${PARITY_SERVE_TIME:-2026-10-16 18:00:00}
 tz=${PARITY_TZ:-America/Chicago}
@@ -69,7 +68,7 @@ api() { curl -sS -f -b "$jar" -H 'Accept: application/json' -H 'Content-Type: ap
 : >"$work/server-$port.log"
 start_server "$seed_time"
 
-gm=$(bash "$tools/seed-golden-master.sh" --as-of 2026-09-30 "$base" "$jar" 2>"$work/seed-gm.err" | tail -1)
+gm=$(dev tools seed-golden-master --as-of 2026-09-30 "$base" "$jar" 2>"$work/seed-gm.err" | tail -1)
 
 # The golden board shows inline subtasks on every column and the colour legend.
 for col in $(curl -sS -b "$jar" "$base/api/boards/$gm/columns" | jq -r '.[].id'); do
