@@ -57,10 +57,10 @@ trap 'for s in "$out"/cand/state.json "$out"/base/state.json; do
 .dev/parity/start-server.sh "$root/target-baseline/release/pomb" 3420 "$out/base" >/dev/null
 
 rc=0
-.dev/parity/regress.sh --candidate "$out/cand/state.json" \
+dev parity regress --candidate "$out/cand/state.json" \
   --baseline "$out/base/state.json" --out "$out/report" || rc=$?
-.dev/parity/overflow.sh "$out/cand/state.json" 390 || rc=$?
-.dev/parity/finder.sh --candidate "$out/cand/state.json" || rc=$?
+dev parity overflow "$out/cand/state.json" 390 || rc=$?
+dev parity finder --candidate "$out/cand/state.json" || rc=$?
 echo "$rc" >"$out/rc"
 tar czf "$root/regress-report.tgz" -C "$out" report
 ]=]
