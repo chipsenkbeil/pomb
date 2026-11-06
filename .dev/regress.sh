@@ -6,7 +6,8 @@
 #
 # Exports REV to .ci-baseline/, runs the ci regress job on the working copy,
 # and removes .ci-baseline/ on every exit. Exits with the job's status. The
-# report (diff images included) is kept as an artifact: `ci artifacts last`.
+# report (diff images included) is kept as an artifact that `ci cp RUN:PATH DST`
+# fetches, and the run id and that command print at the end.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -27,13 +28,18 @@ if [ -e .ci-baseline ]; then
   exit 1
 fi
 
-trap 'rm -rf .ci-baseline' EXIT
+log=$(mktemp)
+trap 'rm -rf .ci-baseline "$log"' EXIT
 trap 'exit 130' INT TERM
 
 git archive "$rev" --prefix=.ci-baseline/ | tar -x
 
 status=0
-ci run --local --job regress -f || status=$?
+ci run --local --job regress -f | tee "$log" || status=$?
 
-echo "report: ci artifacts last" >&2
+run=$(sed -n 's/^run //p;q' "$log")
+if [ -n "$run" ]; then
+  echo "run: $run" >&2
+  echo "report: ci cp $run:regress.1.archlinux-browser/regress-report.tgz DST" >&2
+fi
 exit "$status"
