@@ -12,7 +12,8 @@
 -- and removes the directory again.
 --
 -- The job keeps regress-report.tgz (report.json plus candidate, baseline and
--- diff screenshots); fetch it with `ci artifacts last`.
+-- diff screenshots). `ci ps RUN` lists the files and `ci cp RUN:PATH DST`
+-- fetches one.
 
 local TOOLCHAIN = "1.99.1"
 
