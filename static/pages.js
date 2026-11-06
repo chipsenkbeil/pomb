@@ -264,8 +264,14 @@
       })
       .catch(function (ex) { pickerBox.textContent = 'Could not load permissions: ' + ex.message; });
     loadJson('/api/boards')
-      .then(function (boards) { boardPicker.setBoards(boards); })
+      .then(function (boards) { boardPicker.setBoards(TokenForm.deviceBoards(boards, pickerBox.dataset.boardIds)); })
       .catch(function (ex) { error.textContent = 'Could not load boards: ' + ex.message; error.hidden = false; });
+    var edit = document.getElementById('device-edit');
+    var toggle = document.getElementById('device-edit-toggle');
+    if (toggle) toggle.addEventListener('click', function () {
+      edit.hidden = !edit.hidden;
+      toggle.setAttribute('aria-expanded', String(!edit.hidden));
+    });
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       window.pombPasskey.attempt(error, 'Could not approve: ', function () {
@@ -626,6 +632,11 @@
     },
     deviceCatalog: function (catalog, requested) {
       return catalog.filter(function (item) { return requested.indexOf(item.name) >= 0; });
+    },
+    deviceBoards: function (boards, ids) {
+      if (!ids) return boards;
+      var allowed = ids.split(',');
+      return boards.filter(function (board) { return allowed.indexOf(board.id) >= 0; });
     },
     deviceRoles: function (catalog, roles, requested) {
       var needed = TokenForm.required(catalog);

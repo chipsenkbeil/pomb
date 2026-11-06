@@ -3114,6 +3114,11 @@ textarea.tm-field-input { resize: vertical; }
 .device-code code { font-size: 1.1rem; letter-spacing: 0.08em; }
 .device-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 0.6rem; margin-top: 1rem; }
 .login-card.device-card { width: min(720px, 100%); }
+.device-summary { display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 1rem; margin: 0 0 1rem; font-size: 0.9rem; }
+.device-summary dt { font-weight: 600; }
+.device-summary dd { margin: 0; overflow-wrap: anywhere; }
+.device-summary ul { margin: 0; padding-left: 1.1rem; }
+.device-every-board { margin: 0; padding: 0.3rem 0.6rem; border-radius: 6px; background: #fef3c7; color: #92400e; font-weight: 600; }
 .device-card .perm-picker { margin: 1rem 0 0; }
 .login-card .pk-field label.pk-label { margin: 0; font-size: 14px; }
 .login-card .pk-custom label.pk-check { display: flex; align-items: flex-start; gap: 10px; margin: 0; font-size: 13px; font-weight: 400; }

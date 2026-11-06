@@ -168,6 +168,17 @@ check('the default expiry is one of the choices',
 var asked = ['boards.read', 'tasks.read', 'tasks.create'];
 check('the device picker offers only the requested permissions',
   TokenForm.deviceCatalog(catalog, asked).map(function (item) { return item.name; }), asked);
+check('the device boards keep only the matched ones',
+  TokenForm.deviceBoards([{ id: 'b1', name: 'A' }, { id: 'b2', name: 'B' }, { id: 'b3', name: 'C' }], 'b3,b1').map(function (board) { return board.id; }), ['b1', 'b3']);
+check('the device boards stay whole for a request naming none',
+  TokenForm.deviceBoards([{ id: 'b1', name: 'A' }], '').length, 1);
+var devicePage = fs.readFileSync('templates/device.html', 'utf8');
+var at = function (text) { return devicePage.indexOf(text); };
+check('the device page shows the summary, then Approve and Deny, before the edit controls',
+  at('id="device-summary"') > 0 && at('id="device-summary"') < at('>Deny<') && at('>Deny<') < at('id="device-edit"')
+    && at('>Approve<') < at('id="device-edit"') && at('id="device-picker"') > at('id="device-edit"'), true);
+check('the device edit panel starts hidden',
+  /id="device-edit" hidden/.test(devicePage), true);
 var deviceRoleList = [
   { id: 'r1', name: 'reviewer', permissions: ['tasks.read', 'tasks.create'] },
   { id: 'r2', name: 'lead', permissions: ['tasks.read', 'tasks.bin'] },

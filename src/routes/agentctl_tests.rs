@@ -5609,6 +5609,44 @@ async fn device_request_should_refuse_expires_in_hours_outside_1_to_8760() {
 }
 
 #[tokio::test]
+async fn device_request_should_refuse_more_than_a_day_with_a_delete_permission() {
+    let (_dir, fx) = fixture();
+    for hours in [25, 8760] {
+        let (status, body, _) =
+            start_device_with(&fx, json!({"scopes": ["admin"], "expires_in_hours": hours})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{hours}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn device_request_should_accept_a_day_with_a_delete_permission_and_longer_without() {
+    let (_dir, fx) = fixture();
+    for extra in [
+        json!({"scopes": ["admin"], "expires_in_hours": 24}),
+        json!({"scopes": ["read"], "expires_in_hours": 8760}),
+    ] {
+        let (status, body, _) = start_device_with(&fx, extra.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{extra}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn device_request_should_accept_ninety_days_for_the_lead_role_and_preset() {
+    let (_dir, fx) = fixture();
+    for extra in [
+        json!({"role": "lead", "expires_in_hours": 2160}),
+        json!({"preset": "lead", "expires_in_hours": 2160}),
+    ] {
+        let mut body = json!({"client_name": "agentctl on laptop"});
+        body.as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
+        let (status, started) = start_device(&fx, body).await;
+        assert_eq!(status, StatusCode::OK, "{extra}: {started}");
+    }
+}
+
+#[tokio::test]
 async fn device_request_should_refuse_an_overlong_reason_or_too_many_boards() {
     let (_dir, fx) = fixture();
     let long = "r".repeat(201);
@@ -5701,11 +5739,12 @@ async fn device_approval_should_refuse_an_expiry_longer_than_requested() {
 }
 
 #[tokio::test]
-async fn device_page_should_default_and_cap_the_expiry_at_the_requested_hours() {
+async fn device_page_should_preselect_and_cap_the_expiry_at_the_requested_hours() {
     let (_dir, fx) = fixture();
     for (extra, default, requested) in [
         (json!({"expires_in_hours": 8}), 8, 8),
-        (json!({"expires_in_hours": 8760}), 2160, 8760),
+        (json!({"expires_in_hours": 8760}), 8760, 8760),
+        (json!({"scopes": ["admin"], "expires_in_hours": 8}), 8, 8),
         (json!({}), 2160, 0),
         (json!({"scopes": ["admin"]}), 24, 0),
     ] {
@@ -5724,6 +5763,68 @@ async fn device_page_should_default_and_cap_the_expiry_at_the_requested_hours() 
             "{extra}: {page}"
         );
     }
+}
+
+/// Starts a device request with `extra` and returns the confirm page the admin sees for it.
+async fn device_page_for(fx: &Fixture, extra: Value) -> String {
+    let (status, started, _) = start_device_with(fx, extra).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let user_code = started["user_code"].as_str().expect("user_code");
+    let (status, page) =
+        form_post(fx, As::Admin, "/device", &format!("user_code={user_code}")).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    page
+}
+
+#[tokio::test]
+async fn device_page_should_escape_the_reason_and_list_skipped_boards() {
+    let (_dir, fx) = fixture();
+    let page = device_page_for(
+        &fx,
+        json!({"reason": "<script>alert(1)</script>", "boards": ["Agentctl", "<b>Nope</b>"], "expires_in_hours": 8}),
+    )
+    .await;
+    assert!(!page.contains("<script>alert(1)</script>"), "{page}");
+    assert!(
+        page.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+        "{page}"
+    );
+    assert!(page.contains("<li>Agentctl</li>"), "{page}");
+    assert!(!page.contains("device-every-board"), "{page}");
+    assert!(page.contains("Skipped, not boards of yours:"), "{page}");
+    assert!(page.contains("&lt;b&gt;Nope&lt;/b&gt;"), "{page}");
+    assert!(!page.contains("<b>Nope</b>"), "{page}");
+    assert!(page.contains("After 8 hours"), "{page}");
+    assert!(page.contains("data-board-ids=\""), "{page}");
+}
+
+#[tokio::test]
+async fn device_page_should_offer_no_approval_when_no_named_board_is_the_approvers() {
+    let (_dir, fx) = fixture();
+    let page = device_page_for(&fx, json!({"boards": ["Nope"]})).await;
+    assert!(
+        page.contains("None of the boards the request names is a board of yours."),
+        "{page}"
+    );
+    assert!(
+        page.contains("Skipped, not boards of yours: Nope."),
+        "{page}"
+    );
+    assert!(!page.contains("btn-primary"), "{page}");
+    assert!(!page.contains("device-edit-toggle"), "{page}");
+    assert!(!page.contains("device-every-board"), "{page}");
+}
+
+#[tokio::test]
+async fn device_page_should_highlight_a_request_naming_no_boards() {
+    let (_dir, fx) = fixture();
+    let page = device_page_for(&fx, json!({})).await;
+    assert!(
+        page.contains("Every board, including boards made later."),
+        "{page}"
+    );
+    assert!(page.contains("None given"), "{page}");
+    assert!(!page.contains("Skipped, not boards of yours:"), "{page}");
 }
 
 #[tokio::test]

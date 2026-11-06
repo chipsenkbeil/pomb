@@ -17,14 +17,29 @@
       <input type="hidden" name="user_code" value="{{ user_code }}">
     </form>
     <p class="login-error" id="device-error" hidden></p>
+    <dl class="device-summary" id="device-summary">
+      <dt>Client</dt><dd>{{ client_name }}</dd>
+      <dt>Reason</dt><dd>{% if let Some(reason) = reason %}{{ reason }} <span class="settings-hint">(the client's own words, not verified)</span>{% else %}None given{% endif %}</dd>
+      <dt>{% if let Some(role) = requested_role %}Role {{ role }} can{% else %}Can{% endif %}</dt>
+      <dd><ul>{% for line in permission_lines %}<li>{{ line }}</li>{% endfor %}</ul></dd>
+      <dt>Boards</dt>
+      <dd>{% if every_board %}<p class="device-every-board">Every board, including boards made later.</p>{% else if no_board_match %}<p class="login-error device-no-match">None of the boards the request names is a board of yours.</p>
+        {% else %}<ul>{% for name in matched_boards %}<li>{{ name }}</li>{% endfor %}</ul>{% endif %}
+        {% if !skipped_boards.is_empty() && !every_board %}<p class="settings-hint device-skipped">Skipped, not boards of yours: {{ skipped_boards.join(", ") }}.</p>{% endif %}</dd>
+      <dt>Expires</dt><dd>After {{ expiry_text }}</dd>
+    </dl>
     <form id="device-approve" method="post" action="/device/approve">
       <input type="hidden" name="user_code" value="{{ user_code }}">
-      <div id="device-picker" class="perm-picker" data-requested="{{ requested_names }}" data-role="{{ role_name }}" data-expiry-hours="{{ default_hours }}" data-requested-hours="{{ requested_hours }}"><p class="settings-hint">Loading permissions&hellip;</p></div>
-      <div id="device-boards" class="perm-picker"></div>
-      <div id="device-expiry" class="perm-picker"></div>
       <div class="device-actions">
         <button type="submit" form="device-deny" class="btn">Deny</button>
-        <button type="submit" class="btn btn-primary">Approve</button>
+        {% if !no_board_match %}<button type="button" class="btn" id="device-edit-toggle" aria-expanded="false" aria-controls="device-edit">Edit</button>
+        <button type="submit" class="btn btn-primary">Approve</button>{% endif %}
+      </div>
+      <div id="device-edit" hidden>
+      <p class="settings-hint">You can only narrow the request: drop permissions, drop boards or shorten the expiry.</p>
+      <div id="device-picker" class="perm-picker" data-requested="{{ requested_names }}" data-role="{{ role_name }}" data-expiry-hours="{{ default_hours }}" data-requested-hours="{{ requested_hours }}" data-board-ids="{{ matched_board_ids }}"><p class="settings-hint">Loading permissions&hellip;</p></div>
+      <div id="device-boards" class="perm-picker"></div>
+      <div id="device-expiry" class="perm-picker"></div>
       </div>
     </form>
     {% else if step == "approved" %}

@@ -24781,7 +24781,8 @@ struct DeviceAuthInput {
     /// How long the token should live, 1 to 8760 hours (365 days). A request cannot ask for a token
     /// that never expires. The approver may shorten it but never lengthen it past this. Absent
     /// keeps the default of 90 days, or 1 day when the request holds a delete permission, and the
-    /// approver of such a request may pick any expiry of 1 to 8760 hours, or none.
+    /// approver of such a request may pick any expiry of 1 to 8760 hours, or none. A request that
+    /// holds a delete permission may ask for at most 24 hours, and a longer one gets a 400.
     expires_in_hours: Option<i64>,
     /// Why the client asks, up to 200 characters. The approver sees it as the client's own words,
     /// which nothing verifies.
@@ -24828,7 +24829,7 @@ struct DeviceTokenResponse {
     security(()),
     responses(
         (status = 200, description = "Codes for the device", body = DeviceAuthResponse),
-        (status = 400, description = "Bad client_name or scopes, an unknown role, a role sent with scopes, preset or permissions, `expires_in_hours` outside 1 to 8760, more than 50 `boards`, a board name over 200 characters, or a `reason` over 200 characters"),
+        (status = 400, description = "Bad client_name or scopes, an unknown role, a role sent with scopes, preset or permissions, `expires_in_hours` outside 1 to 8760 or over 24 when the request holds a delete permission, more than 50 `boards`, a board name over 200 characters, or a `reason` over 200 characters"),
         (status = 429, description = "`rate_limited`: 5 device requests from this client network, or 1000 in all, already wait for approval, or more than 10 starts a minute came from one client IP"),
     ),
 )]
@@ -24881,6 +24882,11 @@ async fn start_device_auth(
         Some(hours) if !(1..=MAX_DEVICE_HOURS).contains(&hours) => {
             return Err(AppError::bad_request(format!(
                 "expires_in_hours must be 1-{MAX_DEVICE_HOURS}"
+            )));
+        }
+        Some(hours) if hours > DELETE_DEVICE_HOURS && holds_delete(&permissions) => {
+            return Err(AppError::bad_request(format!(
+                "expires_in_hours must be at most {DELETE_DEVICE_HOURS} when the request holds a delete permission"
             )));
         }
         hours => hours,
@@ -25076,6 +25082,24 @@ struct DeviceTemplate {
     default_hours: i64,
     /// The hours the request asks for, or 0 when it names none, which caps the picker's choices.
     requested_hours: i64,
+    /// The reason the client gave, which nobody verified.
+    reason: Option<String>,
+    /// The standard role the request named, whether or not the account holds it.
+    requested_role: Option<String>,
+    /// What each requested permission allows, in plain words.
+    permission_lines: Vec<&'static str>,
+    /// The boards of the account the request names, or empty for every board.
+    matched_boards: Vec<String>,
+    /// The ids of `matched_boards`, comma separated, which the edit picker is limited to.
+    matched_board_ids: String,
+    /// The names in the request that match no board of the account.
+    skipped_boards: Vec<String>,
+    /// Whether the request names no boards, which means every board, later ones included.
+    every_board: bool,
+    /// Whether the request names boards and the account holds none of them.
+    no_board_match: bool,
+    /// The expiry the approval gets when the owner changes nothing, in plain words.
+    expiry_text: String,
     error: Option<String>,
 }
 
@@ -25087,15 +25111,16 @@ fn holds_delete(permissions: &BTreeSet<Permission>) -> bool {
     })
 }
 
-/// Returns the hours of the expiry a request gets when the owner picks none: the default for its
-/// permissions, cut to the hours it asks for.
+/// Returns the hours of the expiry a request gets when the owner picks none: the hours it asks for,
+/// or the default for its permissions when it names none.
 fn device_default_hours(row: &DeviceAuthRow) -> i64 {
-    let default = if holds_delete(&row.permissions) {
-        DELETE_DEVICE_HOURS
-    } else {
-        DEFAULT_DEVICE_HOURS
-    };
-    default.min(row.requested_hours.unwrap_or(MAX_DEVICE_HOURS))
+    row.requested_hours.unwrap_or_else(|| {
+        if holds_delete(&row.permissions) {
+            DELETE_DEVICE_HOURS
+        } else {
+            DEFAULT_DEVICE_HOURS
+        }
+    })
 }
 
 /// Returns the boards of `db` that `row` asks for by name, or every board when it names none. Names
@@ -25117,6 +25142,19 @@ fn device_requested_boards(db: &AccountDb, row: &DeviceAuthRow) -> Result<BoardA
     Ok(BoardAccess::Only(ids))
 }
 
+/// Returns `hours` in plain words, as a count of years, days or hours.
+#[must_use]
+fn hours_phrase(hours: i64) -> String {
+    let (count, unit) = if hours == MAX_DEVICE_HOURS {
+        (1, "year")
+    } else if hours % 24 == 0 {
+        (hours / 24, "day")
+    } else {
+        (hours, "hour")
+    };
+    format!("{count} {unit}{}", if count == 1 { "" } else { "s" })
+}
+
 impl DeviceTemplate {
     fn enter(user_code: &str, error: Option<&str>) -> Self {
         Self {
@@ -25129,11 +25167,21 @@ impl DeviceTemplate {
             role_name: String::new(),
             default_hours: 0,
             requested_hours: 0,
+            reason: None,
+            requested_role: None,
+            permission_lines: Vec::new(),
+            matched_boards: Vec::new(),
+            matched_board_ids: String::new(),
+            skipped_boards: Vec::new(),
+            every_board: false,
+            no_board_match: false,
+            expiry_text: String::new(),
             error: error.map(str::to_string),
         }
     }
 
     fn with(step: &'static str, row: &DeviceAuthRow) -> Self {
+        let default_hours = device_default_hours(row);
         Self {
             step,
             user_code: auth::display_user_code(&row.user_code),
@@ -25146,11 +25194,53 @@ impl DeviceTemplate {
                 .map(|permission| permission.name())
                 .collect::<Vec<_>>()
                 .join(","),
-            default_hours: device_default_hours(row),
+            default_hours,
             requested_hours: row.requested_hours.unwrap_or(0),
+            reason: row.reason.clone(),
+            requested_role: row.requested_role.clone(),
+            permission_lines: row
+                .permissions
+                .iter()
+                .map(|permission| permission.description())
+                .collect(),
+            matched_boards: Vec::new(),
+            matched_board_ids: String::new(),
+            skipped_boards: Vec::new(),
+            every_board: row.requested_boards.is_empty(),
+            no_board_match: false,
+            expiry_text: hours_phrase(default_hours),
             role_name: String::new(),
             error: None,
         }
+    }
+
+    /// Returns the page listing the boards of `db` that `row` names and the names it skips.
+    fn with_boards(mut self, db: &AccountDb, row: &DeviceAuthRow) -> Result<Self, AppError> {
+        if row.requested_boards.is_empty() {
+            return Ok(self);
+        }
+        let boards = db.list_boards().map_err(AppError::from)?;
+        let matched: Vec<_> = boards
+            .iter()
+            .filter(|board| row.requested_boards.contains(&board.name))
+            .collect();
+        self.skipped_boards = row
+            .requested_boards
+            .iter()
+            .filter(|name| !matched.iter().any(|board| &board.name == *name))
+            .cloned()
+            .collect();
+        self.matched_board_ids = matched
+            .iter()
+            .map(|board| board.id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        self.no_board_match = matched.is_empty();
+        self.matched_boards = matched
+            .into_iter()
+            .map(|board| board.name.clone())
+            .collect();
+        Ok(self)
     }
 
     /// Returns the page preselecting the standard role `row` asked for, when `db` holds a role of
@@ -25345,6 +25435,7 @@ async fn device_lookup(
     {
         Some(row) => Ok(DeviceTemplate::with("confirm", &row)
             .with_role(&account, &row)?
+            .with_boards(&account, &row)?
             .into_response()),
         None => {
             // An already-decided code is not a guess; only codes that
@@ -25432,6 +25523,7 @@ fn device_decide(
             Err(message) => {
                 let page = DeviceTemplate::with("confirm", row)
                     .with_role(db, row)?
+                    .with_boards(db, row)?
                     .with_error(&message);
                 return Ok((StatusCode::BAD_REQUEST, page).into_response());
             }
@@ -28649,8 +28741,9 @@ Device pairing (RFC 8628) gives a client its own token without pasting one:
    (never included), a board outside `boards` or a permission beyond the request, and a request
    cannot ask for a token that never expires. A board name that matches no board of the account is skipped,
    and a request naming none grants every board, including boards made later. A form with no
-   expiry gets 1 day for a request that holds a delete permission and 90 days for any other, cut
-   to `expires_in_hours`.
+   expiry gets `expires_in_hours` when the request names it, else 1 day for a request that holds a
+   delete permission and 90 days for any other. A request that holds a delete permission and asks
+   for more than 24 hours gets a 400 when it starts.
 3. The client polls `POST /api/v1/auth/device/token` with the `device_code`, waiting
    `interval_seconds` between polls, until it gets the token or a final error. The reply names
    the token's `scopes` and `permissions`.
