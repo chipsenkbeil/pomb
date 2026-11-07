@@ -62,7 +62,16 @@ dev parity regress --candidate "$out/cand/state.json" \
 dev parity overflow "$out/cand/state.json" 390 || rc=$?
 dev parity finder --candidate "$out/cand/state.json" || rc=$?
 echo "$rc" >"$out/rc"
-tar czf "$root/regress-report.tgz" -C "$out" report
+seeders=$out/seeders
+for pair in cand:candidate base:baseline; do
+  src=${pair%%:*}
+  dst=$seeders/${pair##*:}
+  mkdir -p "$dst"
+  for f in seed-gm.err seed-vt.err seed-ep.err; do
+    [ -f "$out/$src/$f" ] && cp "$out/$src/$f" "$dst/$f" || true
+  done
+done
+tar czf "$root/regress-report.tgz" -C "$out" report -C "$seeders" candidate baseline
 ]=]
 
 return {
