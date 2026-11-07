@@ -1898,6 +1898,54 @@ fn style_css_should_keep_the_stripe_inset() {
 }
 ```
 
+### P16. Keep a dry run on the `Commit` enum
+
+A db function on a write path takes a `Commit` argument and ends its
+transaction with `Commit::Write` or `Commit::Discard`. A dry run passes
+`Commit::Discard`, so the function never takes a `bool` flag or a second
+function for the dry run, and the dry run runs the same code as a real write.
+
+Review
+
+```rust
+// Good
+pub fn change_links_logged(
+    &self,
+    ids: &[String],
+    edit: &LinkEdit<'_>,
+    commit: Commit,
+    actor: Actor<'_>,
+) -> DbResult<ChangeOutcome<LinkRefusal>> {
+
+// Bad
+pub fn change_links_logged(
+    &self,
+    ids: &[String],
+    edit: &LinkEdit<'_>,
+    dry_run: bool,
+    actor: Actor<'_>,
+) -> DbResult<ChangeOutcome<LinkRefusal>> {
+```
+
+### P17. Write a version doc entry for one change as one sentence
+
+A doc comment on a version-specific item that records a single change is one
+plain sentence. A numbered list is for two or more items, so a list of one is
+never written. P10 keeps schema history out of doc comments, so this covers only
+an item that exists for one version, such as a per-version migration constant,
+and its entry names that version and no other.
+
+Review
+
+```rust
+// Good
+/// The permissions the lead standard role gained in version 73.
+
+// Bad
+/// Version 73 changes:
+/// 1. Adds `subtasks.check` to the lead standard role.
+```
+
 ### P22. Import at the top of the file, leave private modules undocumented, and keep short header values inline
 
 Every `use` sits in the file's import block, or in a test module's, and never
