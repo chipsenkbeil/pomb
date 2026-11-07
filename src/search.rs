@@ -1,21 +1,3 @@
-//! The card finder: parsing a query, matching it against a card, and ranking the matches.
-//!
-//! A query is a list of terms separated by spaces. A plain word matches fuzzily, a quoted phrase
-//! matches as an exact case-insensitive substring, and `key:value` terms (`in:`, `board:`,
-//! `column:`, `label:`, `color:` and `is:`) filter. A leading `-` turns any term into an
-//! exclusion. Every term must hold for a card to match.
-//!
-//! # Fuzzy words
-//!
-//! A word matches a text when its characters appear in the text in order, case-insensitively, and
-//! the first one sits at the start of a word of the text. A match with fewer skipped characters
-//! scores better, and a match earlier in the text breaks a tie.
-//!
-//! # Ranking
-//!
-//! Matches sort by status (open, then done, then archived), then by the best field that matched
-//! (title, description, subtasks, comments), then by score, then by name and id.
-
 use std::collections::HashMap;
 use std::mem::{Discriminant, discriminant};
 use std::time::Instant;
@@ -224,7 +206,12 @@ struct Word {
     needle: Needle,
 }
 
-/// A parsed query.
+/// A parsed card finder query.
+///
+/// A query is a list of terms separated by spaces. A plain word matches fuzzily, a quoted phrase
+/// matches as an exact case-insensitive substring, and `key:value` terms (`in:`, `board:`,
+/// `column:`, `label:`, `color:` and `is:`) filter. A leading `-` turns any term into an
+/// exclusion. Every term must hold for a card to match.
 #[derive(Clone, Debug)]
 pub struct Query {
     /// The fields the text terms search.
@@ -402,6 +389,10 @@ impl Query {
     }
 
     /// Returns the [`Hit`] for `task` on `board` when the task matches, or [`None`].
+    ///
+    /// A word matches a text when its characters appear in the text in order, case-insensitively,
+    /// and the first one sits at the start of a word of the text. A match with fewer skipped
+    /// characters scores better, and a match earlier in the text breaks a tie.
     ///
     /// # Errors
     ///

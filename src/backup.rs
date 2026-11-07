@@ -6,6 +6,7 @@
 //! Rotation and cleanup touch only files and directories whose names match those patterns
 //! exactly, so anything else the owner keeps in the directory is left alone.
 
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
@@ -429,8 +430,6 @@ fn files_of(name: &str) -> String {
 
 /// Says whether two paths name the same file, by canonical path or by device and inode.
 fn is_same_file(a: &Path, b: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-
     if let (Ok(a), Ok(b)) = (a.canonicalize(), b.canonicalize())
         && a == b
     {

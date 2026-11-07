@@ -1,10 +1,3 @@
-//! Image sniffing: which of PNG, JPEG, WebP and GIF a file's first bytes are, and the size its
-//! header declares, without decoding any pixel.
-//!
-//! The type comes from the magic bytes alone and a client's own type is never read. SVG is none
-//! of the four, so it is never served as an image. An image whose header declares more than
-//! [`MAX_SIDE`] pixels on a side or [`MAX_PIXELS`] in all is refused.
-
 /// Most bytes of a file the header parse reads.
 pub const PREFIX_BYTES: usize = 1 << 20;
 
@@ -16,6 +9,10 @@ const MAX_PIXELS: u64 = 40_000_000;
 
 /// Returns the `Content-Type` of the image `head` starts, or [`None`] when it is no PNG, JPEG, WebP
 /// or GIF, its header is cut off or invalid, or its size is over the caps.
+///
+/// The type comes from the magic bytes alone and a client's own type is never read. SVG is none
+/// of the four, so it is never served as an image. An image whose header declares more than
+/// [`MAX_SIDE`] pixels on a side or [`MAX_PIXELS`] in all is refused, and no pixel is decoded.
 #[must_use]
 pub fn sniff(head: &[u8]) -> Option<&'static str> {
     let (content_type, width, height) = if head.starts_with(b"\x89PNG\r\n\x1a\n") {

@@ -17027,6 +17027,8 @@ mod ownership_tests {
 #[cfg(test)]
 mod session_tests {
     use super::*;
+    use crate::auth::new_api_token_record;
+    use crate::models::AuthScope;
 
     /// An open database with one account and its path's directory.
     fn open() -> (tempfile::TempDir, Db, AccountId) {
@@ -17363,9 +17365,6 @@ mod session_tests {
 
     #[test]
     fn upgrade_from_version_17_should_drop_sessions_and_keep_tokens_and_passkeys() {
-        use crate::auth::new_api_token_record;
-        use crate::models::AuthScope;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("v17.redb");
         let path = path.to_str().expect("utf8");

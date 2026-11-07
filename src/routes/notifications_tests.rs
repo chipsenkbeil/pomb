@@ -1,6 +1,7 @@
 use axum::Router;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
+use tower::ServiceExt;
 
 use super::passkey_tests::{Reply, call};
 use super::router;
@@ -295,8 +296,6 @@ async fn the_settings_page_should_list_every_event_with_an_in_app_checkbox() {
 
 #[tokio::test]
 async fn saving_the_settings_form_should_keep_the_muted_kinds() {
-    use tower::ServiceExt;
-
     let fx = Fixture::new();
     fx.send(
         "PUT",

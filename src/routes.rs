@@ -33,10 +33,16 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Form, Json, Router, middleware};
 use base64::Engine as _;
-use chrono::{DateTime, Datelike, Duration, Local, Utc};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use chrono::{
+    DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, Offset as _, Timelike as _, Utc,
+};
 use http_body::Body as _;
+use rand::RngCore;
 use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use utoipa::openapi::path::Operation;
 use utoipa::openapi::security::{
     ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme,
@@ -61,21 +67,21 @@ use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
     AdminActionOutcome, AgentRoleNameTaken, BoardDenied, BookmarkAdd, BookmarkPatch, Bound,
     ChangeOutcome, ChildLinks, ChildRef, ChildTokenRefusal, ClaimOutcome, ClaimRequest,
-    ColumnDeleteOutcome, ColumnKind, ColumnMove, ColumnWatch, CommentWrite, Commit, CopyTasks,
-    DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment, EntryEdit,
-    EpicCloseOutcome, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome,
-    GrabRequest, InboundColumnMissing, InstanceDb, LargestUse, LinkAddOutcome, LinkDeleteOutcome,
-    LinkEdit, LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MemberSet,
-    MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment,
-    NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedColumn,
-    OwnedTask, OwnerChange, OwnerOutcome, PaletteStrandsColor, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuestionMove, QuestionWrite, QuotaExceeded,
-    RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked, RoleDenied, RoleTokenRefusal,
-    SessionEndOutcome, SessionListing, SessionRefused, SessionToken, SwimlaneDeleteOutcome,
-    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext, TokenEdit,
-    TokenNameTaken, UmbrellaChange, UmbrellaPart, UmbrellaRef, WebhookColumnMissing, WebhookPatch,
-    carry_fields, clean_labels, local_day, merge_metadata, push_change_event, push_column_event,
-    push_event, round_estimate,
+    ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnMove, ColumnWatch, CommentWrite,
+    Commit, CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment,
+    EntryEdit, EpicCloseOutcome, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome,
+    FirstPasskeyOutcome, GrabRequest, InboundColumnMissing, InstanceDb, LargestUse, LinkAddOutcome,
+    LinkDeleteOutcome, LinkEdit, LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD,
+    MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME,
+    NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted,
+    OwnedBoard, OwnedColumn, OwnedTask, OwnerChange, OwnerOutcome, PaletteStrandsColor,
+    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuestionMove, QuestionWrite,
+    QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked, RoleDenied,
+    RoleTokenRefusal, SessionEndOutcome, SessionListing, SessionRefused, SessionToken,
+    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext,
+    TemplateDeleteOutcome, TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart, UmbrellaRef,
+    WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels, local_day, merge_metadata,
+    push_change_event, push_column_event, push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -94,9 +100,6 @@ use crate::{AppState, image, markdown, search, webhook};
 /// Build the full router. The auth middleware layer is added *before*
 /// `/login` and `/setup` are registered, so those two stay public.
 pub fn router(state: AppState) -> Router {
-    #[cfg(debug_assertions)]
-    use tower_http::services::ServeDir;
-
     let router = Router::new()
         .route("/", get(root))
         .route("/logout", post(logout))
@@ -637,7 +640,11 @@ pub fn router(state: AppState) -> Router {
     // Static assets come from disk in debug builds so edits show without a rebuild, and are embedded in release builds
     // Release needs no `./static` directory next to the binary
     #[cfg(debug_assertions)]
-    let router = router.nest_service("/static", ServeDir::new("static"));
+    let router = {
+        use tower_http::services::ServeDir;
+
+        router.nest_service("/static", ServeDir::new("static"))
+    };
     #[cfg(not(debug_assertions))]
     let router = router.route("/static/*path", get(serve_embedded_static));
 
@@ -851,610 +858,1513 @@ enum Writes {
 /// The class of every route the router registers and what it writes, as (method, axum path,
 /// class, writes).
 const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
-    use RouteClass::{Account, AccountSession, Admin, Board, Entity, Public, Task};
-    use Writes::{Exempt, Grows, No};
     &[
-        (Method::GET, "/", Account, No),
-        (Method::POST, "/logout", Account, Exempt),
-        (Method::GET, "/settings", Account, No),
-        (Method::POST, "/settings", Account, Grows),
-        (Method::GET, "/b/:board_id", Board, No),
-        (Method::GET, "/b/:board_id/export", Board, No),
-        (Method::GET, "/b/:board_id/task-count", Board, No),
-        (Method::GET, "/b/:board_id/throughput", Board, No),
-        (Method::GET, "/b/:board_id/burndown", Board, No),
-        (Method::GET, "/b/:board_id/cumulative-flow", Board, No),
-        (Method::GET, "/b/:board_id/cycle-lead", Board, No),
-        (Method::GET, "/b/:board_id/due-date", Board, No),
-        (Method::GET, "/b/:board_id/board-history", Board, No),
-        (Method::GET, "/b/:board_id/monte-carlo", Board, No),
-        (Method::GET, "/b/:board_id/time-estimate", Board, No),
-        (Method::GET, "/b/:board_id/time-in-column", Board, No),
-        (Method::GET, "/b/:board_id/timeline", Board, No),
-        (Method::POST, "/api/tasks", Account, Grows),
-        (Method::GET, "/api/tasks", Account, No),
-        (Method::GET, "/api/search", Account, No),
-        (Method::GET, "/api/notifications", AccountSession, No),
+        (Method::GET, "/", RouteClass::Account, Writes::No),
+        (Method::POST, "/logout", RouteClass::Account, Writes::Exempt),
+        (Method::GET, "/settings", RouteClass::Account, Writes::No),
+        (
+            Method::POST,
+            "/settings",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
+        (Method::GET, "/b/:board_id", RouteClass::Board, Writes::No),
+        (
+            Method::GET,
+            "/b/:board_id/export",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/task-count",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/throughput",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/burndown",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/cumulative-flow",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/cycle-lead",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/due-date",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/board-history",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/monte-carlo",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/time-estimate",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/time-in-column",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/timeline",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/tasks",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
+        (Method::GET, "/api/tasks", RouteClass::Account, Writes::No),
+        (Method::GET, "/api/search", RouteClass::Account, Writes::No),
+        (
+            Method::GET,
+            "/api/notifications",
+            RouteClass::AccountSession,
+            Writes::No,
+        ),
         (
             Method::POST,
             "/api/notifications/read",
-            AccountSession,
-            Grows,
+            RouteClass::AccountSession,
+            Writes::Grows,
         ),
         (
             Method::POST,
             "/api/notifications/:id/read",
-            AccountSession,
-            Grows,
+            RouteClass::AccountSession,
+            Writes::Grows,
         ),
-        (Method::DELETE, "/api/notifications", AccountSession, Exempt),
+        (
+            Method::DELETE,
+            "/api/notifications",
+            RouteClass::AccountSession,
+            Writes::Exempt,
+        ),
         (
             Method::DELETE,
             "/api/notifications/:id",
-            AccountSession,
-            Exempt,
+            RouteClass::AccountSession,
+            Writes::Exempt,
         ),
-        (Method::GET, "/api/tasks/:id", Task, No),
-        (Method::PATCH, "/api/tasks/:id", Task, Grows),
-        (Method::DELETE, "/api/tasks/:id", Task, Exempt),
-        (Method::GET, "/api/tasks/:id/card", Task, No),
-        (Method::GET, "/api/tasks/:id/modal", Task, No),
-        (Method::GET, "/t/:id", Task, No),
-        (Method::POST, "/api/tasks/:id/move", Task, Grows),
-        (Method::POST, "/api/boards/:id/tasks/bulk", Board, Grows),
-        (Method::POST, "/api/tasks/:id/watch", Task, Grows),
-        (Method::POST, "/api/markdown/preview", Account, No),
-        (Method::POST, "/api/tasks/:id/checklist/:index", Task, Grows),
-        (Method::POST, "/api/tasks/:id/time", Task, Grows),
-        (Method::GET, "/api/tasks/:id/time", Task, No),
-        (Method::POST, "/api/tasks/:id/subtasks", Task, Grows),
-        (Method::DELETE, "/api/tasks/:id/subtasks", Task, Exempt),
+        (Method::GET, "/api/tasks/:id", RouteClass::Task, Writes::No),
+        (
+            Method::PATCH,
+            "/api/tasks/:id",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/tasks/:id",
+            RouteClass::Task,
+            Writes::Exempt,
+        ),
+        (
+            Method::GET,
+            "/api/tasks/:id/card",
+            RouteClass::Task,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/tasks/:id/modal",
+            RouteClass::Task,
+            Writes::No,
+        ),
+        (Method::GET, "/t/:id", RouteClass::Task, Writes::No),
+        (
+            Method::POST,
+            "/api/tasks/:id/move",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/boards/:id/tasks/bulk",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/watch",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/markdown/preview",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/checklist/:index",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/time",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/tasks/:id/time",
+            RouteClass::Task,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/subtasks",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/tasks/:id/subtasks",
+            RouteClass::Task,
+            Writes::Exempt,
+        ),
         (
             Method::POST,
             "/api/tasks/:id/subtasks/template",
-            Task,
-            Grows,
+            RouteClass::Task,
+            Writes::Grows,
         ),
         (
             Method::POST,
             "/api/tasks/:id/subtasks/from-template",
-            Task,
-            Grows,
+            RouteClass::Task,
+            Writes::Grows,
         ),
-        (Method::POST, "/api/tasks/:id/links", Task, Grows),
-        (Method::GET, "/api/tasks/:id/links", Task, No),
-        (Method::PUT, "/api/tasks/:id/umbrella", Task, Grows),
-        (Method::POST, "/api/tasks/:id/seats", Task, Grows),
-        (Method::DELETE, "/api/tasks/:id/seats", Task, Exempt),
-        (Method::POST, "/api/tasks/:id/seats/take", Task, Grows),
-        (Method::POST, "/api/tasks/:id/seats/verdict", Task, Grows),
-        (Method::POST, "/api/tasks/:id/seats/ask-again", Task, Grows),
+        (
+            Method::POST,
+            "/api/tasks/:id/links",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/tasks/:id/links",
+            RouteClass::Task,
+            Writes::No,
+        ),
+        (
+            Method::PUT,
+            "/api/tasks/:id/umbrella",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/seats",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/tasks/:id/seats",
+            RouteClass::Task,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/seats/take",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/seats/verdict",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/seats/ask-again",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
         (
             Method::DELETE,
             "/api/tasks/:id/links/:link_id",
-            Task,
-            Exempt,
+            RouteClass::Task,
+            Writes::Exempt,
         ),
-        (Method::POST, "/api/tasks/:id/close", Task, Grows),
-        (Method::POST, "/api/tasks/:id/reopen", Task, Grows),
-        (Method::POST, "/api/tasks/:id/claim", Task, Grows),
-        (Method::POST, "/api/tasks/:id/claim/heartbeat", Task, Grows),
-        (Method::POST, "/api/tasks/:id/claim/release", Task, Grows),
-        (Method::POST, "/api/tasks/:id/owner", Task, Grows),
-        (Method::POST, "/api/tasks/:id/owner/renew", Task, Grows),
-        (Method::POST, "/api/tasks/:id/owner/release", Task, Grows),
-        (Method::PUT, "/api/tasks/:id/subtasks/order", Task, Grows),
+        (
+            Method::POST,
+            "/api/tasks/:id/close",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/reopen",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/claim",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/claim/heartbeat",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/claim/release",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/owner",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/owner/renew",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/owner/release",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::PUT,
+            "/api/tasks/:id/subtasks/order",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
         (
             Method::PATCH,
             "/api/tasks/:id/subtasks/:sub_id",
-            Task,
-            Grows,
+            RouteClass::Task,
+            Writes::Grows,
         ),
         (
             Method::DELETE,
             "/api/tasks/:id/subtasks/:sub_id",
-            Task,
-            Exempt,
+            RouteClass::Task,
+            Writes::Exempt,
         ),
         (
             Method::POST,
             "/api/tasks/:id/subtasks/:sub_id/convert",
-            Task,
-            Grows,
+            RouteClass::Task,
+            Writes::Grows,
         ),
-        (Method::GET, "/api/boards/:id/labels", Board, No),
-        (Method::GET, "/api/boards/:id/events/wait", Board, No),
-        (Method::POST, "/api/tasks/:id/comments", Task, Grows),
-        (Method::GET, "/api/tasks/:id/comments", Task, No),
+        (
+            Method::GET,
+            "/api/boards/:id/labels",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/events/wait",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/comments",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/tasks/:id/comments",
+            RouteClass::Task,
+            Writes::No,
+        ),
         (
             Method::PATCH,
             "/api/tasks/:id/comments/:comment_id",
-            Task,
-            Grows,
+            RouteClass::Task,
+            Writes::Grows,
         ),
         (
             Method::DELETE,
             "/api/tasks/:id/comments/:comment_id",
-            Task,
-            Exempt,
+            RouteClass::Task,
+            Writes::Exempt,
         ),
         (
             Method::POST,
             "/api/tasks/:id/comments/:comment_id/reactions",
-            Task,
-            Grows,
+            RouteClass::Task,
+            Writes::Grows,
         ),
         (
             Method::POST,
             "/api/tasks/:id/comments/:comment_id/answer",
-            Task,
-            Grows,
+            RouteClass::Task,
+            Writes::Grows,
         ),
-        (Method::POST, "/api/tasks/:id/escalate", Task, Grows),
-        (Method::GET, "/api/tasks/:id/attachments", Task, No),
-        (Method::POST, "/api/tasks/:id/attachments", Task, Grows),
-        (Method::POST, "/api/tasks/:id/attachments/link", Task, Grows),
+        (
+            Method::POST,
+            "/api/tasks/:id/escalate",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/tasks/:id/attachments",
+            RouteClass::Task,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/attachments",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/attachments/link",
+            RouteClass::Task,
+            Writes::Grows,
+        ),
         (
             Method::POST,
             "/api/tasks/:id/attachments/document",
-            Task,
-            Grows,
+            RouteClass::Task,
+            Writes::Grows,
         ),
         (
             Method::PUT,
             "/api/tasks/:id/attachments/:attachment_id/document",
-            Task,
-            Grows,
+            RouteClass::Task,
+            Writes::Grows,
         ),
         (
             Method::PUT,
             "/api/tasks/:id/attachments/:attachment_id/cover",
-            Task,
-            Grows,
+            RouteClass::Task,
+            Writes::Grows,
         ),
         (
             Method::DELETE,
             "/api/tasks/:id/attachments/:attachment_id/cover",
-            Task,
-            Grows,
+            RouteClass::Task,
+            Writes::Grows,
         ),
         (
             Method::GET,
             "/api/tasks/:id/attachments/:attachment_id/versions",
-            Task,
-            No,
+            RouteClass::Task,
+            Writes::No,
         ),
         (
             Method::GET,
             "/api/tasks/:id/attachments/:attachment_id/versions/:version_id",
-            Task,
-            No,
+            RouteClass::Task,
+            Writes::No,
         ),
         (
             Method::GET,
             "/api/tasks/:id/attachments/:attachment_id/file",
-            Task,
-            No,
+            RouteClass::Task,
+            Writes::No,
         ),
         (
             Method::GET,
             "/api/tasks/:id/attachments/:attachment_id/image",
-            Task,
-            No,
+            RouteClass::Task,
+            Writes::No,
         ),
         (
             Method::PATCH,
             "/api/tasks/:id/attachments/:attachment_id",
-            Task,
-            Grows,
+            RouteClass::Task,
+            Writes::Grows,
         ),
         (
             Method::DELETE,
             "/api/tasks/:id/attachments/:attachment_id",
-            Task,
-            Exempt,
+            RouteClass::Task,
+            Writes::Exempt,
         ),
-        (Method::GET, "/api/tasks/:id/time-log-view", Task, No),
-        (Method::GET, "/api/tasks/:id/history-view", Task, No),
-        (Method::GET, "/api/tasks/:id/history-export", Task, No),
-        (Method::GET, "/api/tasks/:id/link-picker", Task, No),
-        (Method::GET, "/api/time/entries/:id", Entity, No),
-        (Method::PUT, "/api/time/entries/:id", Entity, Grows),
-        (Method::DELETE, "/api/time/entries/:id", Entity, Exempt),
-        (Method::GET, "/api/members", Account, No),
-        (Method::POST, "/api/time/manual", Account, Grows),
-        (Method::POST, "/api/timer/start", Account, Grows),
-        (Method::GET, "/api/timer/status", Account, No),
-        (Method::POST, "/api/timer/stop", Account, Exempt),
-        (Method::POST, "/api/timer/retarget", Account, Grows),
-        (Method::GET, "/api/timer/today", Account, No),
-        (Method::GET, "/api/timer/settings", Account, No),
-        (Method::GET, "/timer/log", Account, No),
-        (Method::GET, "/timer/statistics", Account, No),
-        (Method::GET, "/api/timer/log", Account, No),
-        (Method::GET, "/api/timer/time-spent", Account, No),
-        (Method::GET, "/api/timer/statistics", Account, No),
-        (Method::GET, "/api/settings", Account, No),
-        (Method::PUT, "/api/settings", Account, Grows),
-        (Method::GET, "/api/avatar", Account, No),
-        (Method::PUT, "/api/avatar", Account, Grows),
-        (Method::POST, "/api/columns", Account, Grows),
-        (Method::PATCH, "/api/columns/:id", Entity, Grows),
-        (Method::DELETE, "/api/columns/:id", Entity, Exempt),
-        (Method::POST, "/api/columns/:id/move", Entity, Grows),
-        (Method::POST, "/api/swimlanes", Account, Grows),
-        (Method::PATCH, "/api/swimlanes/:id", Entity, Grows),
-        (Method::DELETE, "/api/swimlanes/:id", Entity, Exempt),
-        (Method::POST, "/api/swimlanes/:id/move", Entity, Grows),
+        (
+            Method::GET,
+            "/api/tasks/:id/time-log-view",
+            RouteClass::Task,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/tasks/:id/history-view",
+            RouteClass::Task,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/tasks/:id/history-export",
+            RouteClass::Task,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/tasks/:id/link-picker",
+            RouteClass::Task,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/time/entries/:id",
+            RouteClass::Entity,
+            Writes::No,
+        ),
+        (
+            Method::PUT,
+            "/api/time/entries/:id",
+            RouteClass::Entity,
+            Writes::Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/time/entries/:id",
+            RouteClass::Entity,
+            Writes::Exempt,
+        ),
+        (Method::GET, "/api/members", RouteClass::Account, Writes::No),
+        (
+            Method::POST,
+            "/api/time/manual",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/timer/start",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/timer/status",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/timer/stop",
+            RouteClass::Account,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/timer/retarget",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/timer/today",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/timer/settings",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (Method::GET, "/timer/log", RouteClass::Account, Writes::No),
+        (
+            Method::GET,
+            "/timer/statistics",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/timer/log",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/timer/time-spent",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/timer/statistics",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/settings",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::PUT,
+            "/api/settings",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
+        (Method::GET, "/api/avatar", RouteClass::Account, Writes::No),
+        (
+            Method::PUT,
+            "/api/avatar",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/columns",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
+        (
+            Method::PATCH,
+            "/api/columns/:id",
+            RouteClass::Entity,
+            Writes::Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/columns/:id",
+            RouteClass::Entity,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/columns/:id/move",
+            RouteClass::Entity,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/swimlanes",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
+        (
+            Method::PATCH,
+            "/api/swimlanes/:id",
+            RouteClass::Entity,
+            Writes::Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/swimlanes/:id",
+            RouteClass::Entity,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/swimlanes/:id/move",
+            RouteClass::Entity,
+            Writes::Grows,
+        ),
         (
             Method::POST,
             "/api/boards/:id/swimlanes/merge",
-            Board,
-            Grows,
+            RouteClass::Board,
+            Writes::Grows,
         ),
-        (Method::GET, "/api/boards", Account, No),
-        (Method::POST, "/api/boards", Account, Grows),
-        (Method::POST, "/api/boards/import", Account, Grows),
-        (Method::GET, "/api/boards/:id", Board, No),
-        (Method::DELETE, "/api/boards/:id", Board, Exempt),
-        (Method::PUT, "/api/boards/:id/config", Board, Grows),
-        (Method::GET, "/api/boards/:id/members", Board, No),
-        (Method::PUT, "/api/boards/:id/members", Board, Grows),
-        (Method::DELETE, "/api/boards/:id/members", Board, Exempt),
-        (Method::PUT, "/api/boards/:id/owner", Board, Grows),
-        (Method::GET, "/api/boards/:id/label-settings", Board, No),
-        (Method::PUT, "/api/boards/:id/label-settings", Board, Grows),
-        (Method::GET, "/b/:board_id/settings/labels", Board, No),
-        (Method::GET, "/api/boards/:id/rules", Board, No),
-        (Method::GET, "/api/boards/:id/seats", Board, No),
-        (Method::PUT, "/api/boards/:id/seats", Board, Grows),
-        (Method::PUT, "/api/boards/:id/rules", Board, Grows),
-        (Method::GET, "/b/:board_id/settings/rules", Board, No),
-        (Method::GET, "/api/boards/:id/columns", Board, No),
-        (Method::POST, "/api/boards/:id/limit-groups", Board, Grows),
+        (Method::GET, "/api/boards", RouteClass::Account, Writes::No),
+        (
+            Method::POST,
+            "/api/boards",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/boards/import",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::DELETE,
+            "/api/boards/:id",
+            RouteClass::Board,
+            Writes::Exempt,
+        ),
+        (
+            Method::PUT,
+            "/api/boards/:id/config",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/members",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::PUT,
+            "/api/boards/:id/members",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/boards/:id/members",
+            RouteClass::Board,
+            Writes::Exempt,
+        ),
+        (
+            Method::PUT,
+            "/api/boards/:id/owner",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/label-settings",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::PUT,
+            "/api/boards/:id/label-settings",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/settings/labels",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/rules",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/seats",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::PUT,
+            "/api/boards/:id/seats",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
+        (
+            Method::PUT,
+            "/api/boards/:id/rules",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/settings/rules",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/columns",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/boards/:id/limit-groups",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
         (
             Method::PATCH,
             "/api/boards/:id/limit-groups/:group_id",
-            Board,
-            Grows,
+            RouteClass::Board,
+            Writes::Grows,
         ),
         (
             Method::DELETE,
             "/api/boards/:id/limit-groups/:group_id",
-            Board,
-            Exempt,
+            RouteClass::Board,
+            Writes::Exempt,
         ),
-        (Method::GET, "/api/boards/:id/bin", Board, No),
-        (Method::DELETE, "/api/bin/:id", Entity, Exempt),
-        (Method::POST, "/api/bin/:id/restore", Entity, Grows),
-        (Method::GET, "/api/boards/:id/tasks", Board, No),
-        (Method::GET, "/api/boards/:id/epics", Board, No),
-        (Method::POST, "/api/boards/:id/fields", Board, Grows),
-        (Method::GET, "/api/boards/:id/fields", Board, No),
-        (Method::PATCH, "/api/fields/:id", Entity, Grows),
-        (Method::DELETE, "/api/fields/:id", Entity, Exempt),
-        (Method::POST, "/api/boards/:id/webhooks", Board, Grows),
-        (Method::GET, "/api/boards/:id/webhooks", Board, No),
-        (Method::PATCH, "/api/webhooks/:id", Entity, Grows),
-        (Method::DELETE, "/api/webhooks/:id", Entity, Exempt),
-        (Method::GET, "/api/webhooks/:id/secret", Entity, No),
-        (Method::GET, "/api/boards/:id/inbound-addresses", Board, No),
+        (
+            Method::GET,
+            "/api/boards/:id/bin",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::DELETE,
+            "/api/bin/:id",
+            RouteClass::Entity,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/bin/:id/restore",
+            RouteClass::Entity,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/tasks",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/epics",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/boards/:id/fields",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/fields",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::PATCH,
+            "/api/fields/:id",
+            RouteClass::Entity,
+            Writes::Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/fields/:id",
+            RouteClass::Entity,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/boards/:id/webhooks",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/webhooks",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::PATCH,
+            "/api/webhooks/:id",
+            RouteClass::Entity,
+            Writes::Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/webhooks/:id",
+            RouteClass::Entity,
+            Writes::Exempt,
+        ),
+        (
+            Method::GET,
+            "/api/webhooks/:id/secret",
+            RouteClass::Entity,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/inbound-addresses",
+            RouteClass::Board,
+            Writes::No,
+        ),
         (
             Method::POST,
             "/api/boards/:id/inbound-addresses",
-            Board,
-            Grows,
+            RouteClass::Board,
+            Writes::Grows,
         ),
         (
             Method::POST,
             "/api/inbound-addresses/:id/rotate",
-            Entity,
-            Grows,
+            RouteClass::Entity,
+            Writes::Grows,
         ),
-        (Method::DELETE, "/api/inbound-addresses/:id", Entity, Exempt),
-        (Method::POST, "/api/inbound/:address", Public, Grows),
+        (
+            Method::DELETE,
+            "/api/inbound-addresses/:id",
+            RouteClass::Entity,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/inbound/:address",
+            RouteClass::Public,
+            Writes::Grows,
+        ),
         (
             Method::POST,
             "/api/boards/:id/webhooks/test-dns",
-            Board,
-            Exempt,
+            RouteClass::Board,
+            Writes::Exempt,
         ),
         (
             Method::POST,
             "/api/boards/:id/webhooks/test-request",
-            Board,
-            Exempt,
+            RouteClass::Board,
+            Writes::Exempt,
         ),
-        (Method::GET, "/api/boards/:id/export-data", Board, No),
-        (Method::GET, "/api/boards/:id/history", Board, No),
-        (Method::GET, "/api/boards/:id/archive", Board, No),
-        (Method::GET, "/api/boards/:id/calendar-feeds", Board, No),
-        (Method::POST, "/api/boards/:id/calendar-feeds", Board, Grows),
+        (
+            Method::GET,
+            "/api/boards/:id/export-data",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/history",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/archive",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/boards/:id/calendar-feeds",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/boards/:id/calendar-feeds",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
         (
             Method::DELETE,
             "/api/boards/:id/calendar-feeds/:feed_id",
-            Board,
-            Exempt,
+            RouteClass::Board,
+            Writes::Exempt,
         ),
-        (Method::GET, "/api/boards/:id/report-bookmarks", Board, No),
+        (
+            Method::GET,
+            "/api/boards/:id/report-bookmarks",
+            RouteClass::Board,
+            Writes::No,
+        ),
         (
             Method::POST,
             "/api/boards/:id/report-bookmarks",
-            Board,
-            Grows,
+            RouteClass::Board,
+            Writes::Grows,
         ),
         (
             Method::PATCH,
             "/api/boards/:id/report-bookmarks/:bookmark_id",
-            Board,
-            Grows,
+            RouteClass::Board,
+            Writes::Grows,
         ),
         (
             Method::DELETE,
             "/api/boards/:id/report-bookmarks/:bookmark_id",
-            Board,
-            Exempt,
+            RouteClass::Board,
+            Writes::Exempt,
         ),
-        (Method::GET, "/api/calendar-export", Account, No),
-        (Method::GET, "/b/:board_id/settings/delete", Board, No),
-        (Method::GET, "/boards/new", Account, No),
-        (Method::GET, "/boards/archived", Account, No),
+        (
+            Method::GET,
+            "/api/calendar-export",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/settings/delete",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (Method::GET, "/boards/new", RouteClass::Account, Writes::No),
+        (
+            Method::GET,
+            "/boards/archived",
+            RouteClass::Account,
+            Writes::No,
+        ),
         (
             Method::POST,
             "/api/boards/:id/save-as-template",
-            Board,
-            Grows,
+            RouteClass::Board,
+            Writes::Grows,
         ),
-        (Method::GET, "/api/templates", Account, No),
-        (Method::DELETE, "/api/templates/:id", Entity, Exempt),
-        (Method::GET, "/b/:board_id/settings/colors", Board, No),
-        (Method::GET, "/b/:board_id/settings", Board, No),
-        (Method::POST, "/b/:board_id/settings", Board, Grows),
-        (Method::GET, "/b/:board_id/settings/layout", Board, No),
+        (
+            Method::GET,
+            "/api/templates",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::DELETE,
+            "/api/templates/:id",
+            RouteClass::Entity,
+            Writes::Exempt,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/settings/colors",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/settings",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/b/:board_id/settings",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/settings/layout",
+            RouteClass::Board,
+            Writes::No,
+        ),
         (
             Method::GET,
             "/b/:board_id/settings/task-settings",
-            Board,
-            No,
+            RouteClass::Board,
+            Writes::No,
         ),
-        (Method::GET, "/b/:board_id/settings/advanced", Board, No),
-        (Method::GET, "/b/:board_id/settings/fields", Board, No),
-        (Method::GET, "/b/:board_id/settings/api-webhooks", Board, No),
+        (
+            Method::GET,
+            "/b/:board_id/settings/advanced",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/settings/fields",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/b/:board_id/settings/api-webhooks",
+            RouteClass::Board,
+            Writes::No,
+        ),
         (
             Method::GET,
             "/b/:board_id/settings/api-webhooks/new",
-            Board,
-            No,
+            RouteClass::Board,
+            Writes::No,
         ),
         (
             Method::GET,
             "/b/:board_id/settings/api-webhooks/:webhook_id",
-            Board,
-            No,
+            RouteClass::Board,
+            Writes::No,
         ),
         (
             Method::GET,
             "/b/:board_id/settings/add-from-email",
-            Board,
-            No,
+            RouteClass::Board,
+            Writes::No,
         ),
-        (Method::GET, "/api/boards/:id/colors", Board, No),
-        (Method::POST, "/api/boards/:id/colors", Board, Grows),
+        (
+            Method::GET,
+            "/api/boards/:id/colors",
+            RouteClass::Board,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/boards/:id/colors",
+            RouteClass::Board,
+            Writes::Grows,
+        ),
         (
             Method::PATCH,
             "/api/boards/:id/colors/:color_id",
-            Board,
-            Grows,
+            RouteClass::Board,
+            Writes::Grows,
         ),
         (
             Method::DELETE,
             "/api/boards/:id/colors/:color_id",
-            Board,
-            Exempt,
+            RouteClass::Board,
+            Writes::Exempt,
         ),
         (
             Method::POST,
             "/api/boards/:id/colors/copy-from",
-            Board,
-            Grows,
+            RouteClass::Board,
+            Writes::Grows,
         ),
-        (Method::POST, "/api/v1/auth/tokens", AccountSession, Grows),
+        (
+            Method::POST,
+            "/api/v1/auth/tokens",
+            RouteClass::AccountSession,
+            Writes::Grows,
+        ),
         (
             Method::POST,
             "/api/v1/auth/tokens/inspect",
-            AccountSession,
-            Exempt,
+            RouteClass::AccountSession,
+            Writes::Exempt,
         ),
-        (Method::GET, "/api/v1/agent-roles", Account, No),
-        (Method::GET, "/api/v1/agent-roles/:id", Account, No),
+        (
+            Method::GET,
+            "/api/v1/agent-roles",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/v1/agent-roles/:id",
+            RouteClass::Account,
+            Writes::No,
+        ),
         (
             Method::DELETE,
             "/api/v1/agent-roles/:id",
-            AccountSession,
-            Exempt,
+            RouteClass::AccountSession,
+            Writes::Exempt,
         ),
-        (Method::POST, "/api/v1/agent-roles", AccountSession, Grows),
+        (
+            Method::POST,
+            "/api/v1/agent-roles",
+            RouteClass::AccountSession,
+            Writes::Grows,
+        ),
         (
             Method::PATCH,
             "/api/v1/agent-roles/:id",
-            AccountSession,
-            Grows,
+            RouteClass::AccountSession,
+            Writes::Grows,
         ),
-        (Method::POST, "/api/v1/agent-roles/standard", Account, Grows),
+        (
+            Method::POST,
+            "/api/v1/agent-roles/standard",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
         (
             Method::PUT,
             "/api/v1/agent-roles/:id/boards/:board_id",
-            Account,
-            Grows,
+            RouteClass::Account,
+            Writes::Grows,
         ),
         (
             Method::DELETE,
             "/api/v1/agent-roles/:id/boards/:board_id",
-            Account,
-            Exempt,
+            RouteClass::Account,
+            Writes::Exempt,
         ),
         (
             Method::POST,
             "/api/v1/agent-roles/:id/boards/:board_id/revoke-tokens",
-            Account,
-            Exempt,
+            RouteClass::Account,
+            Writes::Exempt,
         ),
         (
             Method::POST,
             "/api/v1/agent-roles/:id/revoke-tokens",
-            AccountSession,
-            Exempt,
+            RouteClass::AccountSession,
+            Writes::Exempt,
         ),
-        (Method::GET, "/api/v1/auth/tokens", AccountSession, No),
-        (Method::GET, "/api/v1/auth/tokens/:id", AccountSession, No),
+        (
+            Method::GET,
+            "/api/v1/auth/tokens",
+            RouteClass::AccountSession,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/v1/auth/tokens/:id",
+            RouteClass::AccountSession,
+            Writes::No,
+        ),
         (
             Method::PATCH,
             "/api/v1/auth/tokens/:id",
-            AccountSession,
-            Exempt,
+            RouteClass::AccountSession,
+            Writes::Exempt,
         ),
         (
             Method::DELETE,
             "/api/v1/auth/tokens/:id",
-            AccountSession,
-            Exempt,
+            RouteClass::AccountSession,
+            Writes::Exempt,
         ),
         (
             Method::POST,
             "/api/v1/auth/tokens/revoke-self",
-            Account,
-            Exempt,
+            RouteClass::Account,
+            Writes::Exempt,
         ),
-        (Method::POST, "/api/v1/auth/tokens/children", Account, Grows),
-        (Method::GET, "/api/v1/auth/tokens/children", Account, No),
+        (
+            Method::POST,
+            "/api/v1/auth/tokens/children",
+            RouteClass::Account,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/v1/auth/tokens/children",
+            RouteClass::Account,
+            Writes::No,
+        ),
         (
             Method::DELETE,
             "/api/v1/auth/tokens/children",
-            Account,
-            Exempt,
+            RouteClass::Account,
+            Writes::Exempt,
         ),
         (
             Method::DELETE,
             "/api/v1/auth/tokens/children/:id",
-            Account,
-            Exempt,
+            RouteClass::Account,
+            Writes::Exempt,
         ),
         (
             Method::DELETE,
             "/api/v1/auth/tokens/:id/children",
-            AccountSession,
-            Exempt,
+            RouteClass::AccountSession,
+            Writes::Exempt,
         ),
-        (Method::GET, "/api/v1/auth/whoami", Account, No),
-        (Method::GET, "/api/v1/auth/permissions", Account, No),
-        (Method::POST, "/api/v1/auth/passkeys", AccountSession, Grows),
-        (Method::GET, "/api/v1/auth/passkeys", AccountSession, No),
+        (
+            Method::GET,
+            "/api/v1/auth/whoami",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/v1/auth/permissions",
+            RouteClass::Account,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/v1/auth/passkeys",
+            RouteClass::AccountSession,
+            Writes::Grows,
+        ),
+        (
+            Method::GET,
+            "/api/v1/auth/passkeys",
+            RouteClass::AccountSession,
+            Writes::No,
+        ),
         (
             Method::POST,
             "/api/v1/auth/passkeys/options",
-            AccountSession,
-            Grows,
+            RouteClass::AccountSession,
+            Writes::Grows,
         ),
         (
             Method::DELETE,
             "/api/v1/auth/passkeys/:id",
-            AccountSession,
-            Exempt,
+            RouteClass::AccountSession,
+            Writes::Exempt,
         ),
         (
             Method::POST,
             "/api/v1/auth/reauth/options",
-            AccountSession,
-            Exempt,
+            RouteClass::AccountSession,
+            Writes::Exempt,
         ),
-        (Method::POST, "/api/v1/auth/reauth", AccountSession, Exempt),
+        (
+            Method::POST,
+            "/api/v1/auth/reauth",
+            RouteClass::AccountSession,
+            Writes::Exempt,
+        ),
         (
             Method::POST,
             "/api/v1/auth/sessions/sign-out-others",
-            AccountSession,
-            Exempt,
+            RouteClass::AccountSession,
+            Writes::Exempt,
         ),
-        (Method::GET, "/api/v1/auth/sessions", AccountSession, No),
+        (
+            Method::GET,
+            "/api/v1/auth/sessions",
+            RouteClass::AccountSession,
+            Writes::No,
+        ),
         (
             Method::DELETE,
             "/api/v1/auth/sessions/:id",
-            AccountSession,
-            Exempt,
+            RouteClass::AccountSession,
+            Writes::Exempt,
         ),
-        (Method::GET, "/api/v1/backups", Admin, No),
-        (Method::POST, "/api/v1/backups", Admin, Exempt),
-        (Method::PUT, "/api/v1/backups/settings", Admin, Exempt),
+        (
+            Method::GET,
+            "/api/v1/backups",
+            RouteClass::Admin,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/v1/backups",
+            RouteClass::Admin,
+            Writes::Exempt,
+        ),
+        (
+            Method::PUT,
+            "/api/v1/backups/settings",
+            RouteClass::Admin,
+            Writes::Exempt,
+        ),
         (
             Method::DELETE,
             "/api/v1/backups/unnamed-files",
-            Admin,
-            Exempt,
+            RouteClass::Admin,
+            Writes::Exempt,
         ),
         (
             Method::POST,
             "/api/v1/account/recovery-code",
-            AccountSession,
-            Grows,
+            RouteClass::AccountSession,
+            Writes::Grows,
         ),
         (
             Method::POST,
             "/api/v1/account/delete",
-            AccountSession,
-            Exempt,
+            RouteClass::AccountSession,
+            Writes::Exempt,
         ),
-        (Method::GET, "/api/v1/admin/invites", Admin, No),
-        (Method::POST, "/api/v1/admin/invites", Admin, Exempt),
-        (Method::DELETE, "/api/v1/admin/invites/:id", Admin, Exempt),
-        (Method::GET, "/api/v1/admin/accounts", Admin, No),
-        (Method::DELETE, "/api/v1/admin/accounts/:id", Admin, Exempt),
+        (
+            Method::GET,
+            "/api/v1/admin/invites",
+            RouteClass::Admin,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/v1/admin/invites",
+            RouteClass::Admin,
+            Writes::Exempt,
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/admin/invites/:id",
+            RouteClass::Admin,
+            Writes::Exempt,
+        ),
+        (
+            Method::GET,
+            "/api/v1/admin/accounts",
+            RouteClass::Admin,
+            Writes::No,
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/admin/accounts/:id",
+            RouteClass::Admin,
+            Writes::Exempt,
+        ),
         (
             Method::POST,
             "/api/v1/admin/accounts/:id/approve",
-            Admin,
-            Exempt,
+            RouteClass::Admin,
+            Writes::Exempt,
         ),
         (
             Method::POST,
             "/api/v1/admin/accounts/:id/suspend",
-            Admin,
-            Exempt,
+            RouteClass::Admin,
+            Writes::Exempt,
         ),
         (
             Method::POST,
             "/api/v1/admin/accounts/:id/unsuspend",
-            Admin,
-            Exempt,
+            RouteClass::Admin,
+            Writes::Exempt,
         ),
-        (Method::PUT, "/api/v1/admin/settings", Admin, Exempt),
-        (Method::GET, "/admin", Admin, No),
-        (Method::GET, "/pending", Account, No),
-        (Method::GET, "/device", AccountSession, No),
-        (Method::POST, "/device", AccountSession, Grows),
-        (Method::POST, "/device/approve", AccountSession, Exempt),
-        (Method::POST, "/device/deny", AccountSession, Exempt),
-        (Method::GET, "/login", Public, No),
-        (Method::POST, "/api/v1/auth/sign-in/options", Public, Exempt),
-        (Method::POST, "/api/v1/auth/sign-in", Public, Exempt),
-        (Method::POST, "/api/v1/auth/setup/options", Public, Exempt),
-        (Method::POST, "/api/v1/auth/setup", Public, Exempt),
-        (Method::GET, "/signup", Public, No),
-        (Method::GET, "/signup/:token", Public, No),
-        (Method::POST, "/api/v1/auth/register/options", Public, Grows),
-        (Method::POST, "/api/v1/auth/register", Public, Grows),
-        (Method::GET, "/recover", Public, No),
-        (Method::POST, "/api/v1/auth/recover/options", Public, Exempt),
-        (Method::POST, "/api/v1/auth/recover", Public, Exempt),
-        (Method::POST, "/api/v1/auth/device", Public, Grows),
-        (Method::POST, "/api/v1/auth/device/token", Public, Exempt),
-        (Method::GET, "/skill.md", Public, No),
-        (Method::GET, "/llms.txt", Public, No),
-        (Method::GET, "/api/v1/openapi.json", Public, No),
-        (Method::GET, "/docs", Public, No),
-        (Method::GET, "/docs/api.md", Public, No),
-        (Method::GET, "/api/v1/version", Public, No),
-        (Method::GET, "/api/calendar-feed/:token", Public, No),
-        (Method::GET, "/setup", Public, No),
-        (Method::GET, "/static/*path", Public, No),
+        (
+            Method::PUT,
+            "/api/v1/admin/settings",
+            RouteClass::Admin,
+            Writes::Exempt,
+        ),
+        (Method::GET, "/admin", RouteClass::Admin, Writes::No),
+        (Method::GET, "/pending", RouteClass::Account, Writes::No),
+        (
+            Method::GET,
+            "/device",
+            RouteClass::AccountSession,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/device",
+            RouteClass::AccountSession,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/device/approve",
+            RouteClass::AccountSession,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/device/deny",
+            RouteClass::AccountSession,
+            Writes::Exempt,
+        ),
+        (Method::GET, "/login", RouteClass::Public, Writes::No),
+        (
+            Method::POST,
+            "/api/v1/auth/sign-in/options",
+            RouteClass::Public,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/v1/auth/sign-in",
+            RouteClass::Public,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/v1/auth/setup/options",
+            RouteClass::Public,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/v1/auth/setup",
+            RouteClass::Public,
+            Writes::Exempt,
+        ),
+        (Method::GET, "/signup", RouteClass::Public, Writes::No),
+        (
+            Method::GET,
+            "/signup/:token",
+            RouteClass::Public,
+            Writes::No,
+        ),
+        (
+            Method::POST,
+            "/api/v1/auth/register/options",
+            RouteClass::Public,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/v1/auth/register",
+            RouteClass::Public,
+            Writes::Grows,
+        ),
+        (Method::GET, "/recover", RouteClass::Public, Writes::No),
+        (
+            Method::POST,
+            "/api/v1/auth/recover/options",
+            RouteClass::Public,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/v1/auth/recover",
+            RouteClass::Public,
+            Writes::Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/v1/auth/device",
+            RouteClass::Public,
+            Writes::Grows,
+        ),
+        (
+            Method::POST,
+            "/api/v1/auth/device/token",
+            RouteClass::Public,
+            Writes::Exempt,
+        ),
+        (Method::GET, "/skill.md", RouteClass::Public, Writes::No),
+        (Method::GET, "/llms.txt", RouteClass::Public, Writes::No),
+        (
+            Method::GET,
+            "/api/v1/openapi.json",
+            RouteClass::Public,
+            Writes::No,
+        ),
+        (Method::GET, "/docs", RouteClass::Public, Writes::No),
+        (Method::GET, "/docs/api.md", RouteClass::Public, Writes::No),
+        (
+            Method::GET,
+            "/api/v1/version",
+            RouteClass::Public,
+            Writes::No,
+        ),
+        (
+            Method::GET,
+            "/api/calendar-feed/:token",
+            RouteClass::Public,
+            Writes::No,
+        ),
+        (Method::GET, "/setup", RouteClass::Public, Writes::No),
+        (Method::GET, "/static/*path", RouteClass::Public, Writes::No),
     ]
 };
 
@@ -2531,7 +3441,6 @@ struct FieldOptionView {
 
 impl FieldInputView {
     fn new(def: &FieldDefRow, value: Option<&serde_json::Value>) -> Self {
-        use serde_json::Value;
         let chosen = |option: &str| match value {
             Some(Value::String(choice)) => choice == option,
             Some(Value::Array(items)) => items.iter().any(|item| item.as_str() == Some(option)),
@@ -9787,8 +10696,6 @@ where
     Tz: chrono::TimeZone,
     Tz::Offset: std::fmt::Display,
 {
-    use chrono::Timelike as _;
-
     // chrono reads second 60 as a leap second (nanoseconds past 1e9);
     // browsers cannot parse it, so it is rejected in every form.
     let raw = raw.trim();
@@ -9873,8 +10780,6 @@ fn resolve_local_time<Tz>(local: chrono::NaiveDateTime, tz: &Tz) -> Option<DateT
 where
     Tz: chrono::TimeZone,
 {
-    use chrono::Offset as _;
-
     [local - Duration::days(1), local, local + Duration::days(1)]
         .iter()
         .map(|probe| tz.offset_from_utc_datetime(probe).fix())
@@ -14747,8 +15652,6 @@ async fn read_listed_image(
     id: &str,
     budget: u64,
 ) -> Option<Vec<u8>> {
-    use tokio::io::AsyncReadExt;
-
     let limit = budget.min(LISTED_IMAGE_BYTES);
     let (file, _) = account.open_attachment(task, id).ok().flatten()?;
     let mut bytes = Vec::new();
@@ -14865,8 +15768,6 @@ async fn show_attachment_image(
     Extension(_user): Extension<AuthUser>,
     Path((id, attachment_id)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
-    use tokio::io::{AsyncReadExt, AsyncSeekExt};
-
     let db = &account;
     let task = found(db.task(&id), "task not found")?;
     if !task.row().attachments.iter().any(|a| a.id == attachment_id) {
@@ -16684,7 +17585,6 @@ async fn api_time_spent(
     Extension(_user): Extension<AuthUser>,
     Query(q): Query<TimeSpentQuery>,
 ) -> Result<Json<TimeSpentReport>, AppError> {
-    use chrono::NaiveDate;
     let today = Local::now().date_naive();
     let bad = || AppError::bad_request("invalid date");
     let from = match q.from {
@@ -16875,7 +17775,6 @@ async fn api_timer_statistics(
     Extension(_user): Extension<AuthUser>,
     Query(q): Query<TimerStatisticsQuery>,
 ) -> Result<Json<TimerStatisticsReport>, AppError> {
-    use chrono::NaiveDate;
     let db = &account;
     let today = Local::now().date_naive();
     let bad = || AppError::bad_request("invalid date");
@@ -17123,7 +18022,6 @@ fn parse_manual_range(
     from: &str,
     to: &str,
 ) -> Result<(DateTime<Local>, i64), AppError> {
-    use chrono::NaiveDateTime;
     let bad = || AppError::bad_request("invalid date or time");
     let parse = |s: &str| {
         NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
@@ -18401,9 +19299,6 @@ async fn board_archive(
 
 /// Generates a fresh calendar-feed bearer token.
 fn generate_feed_token() -> String {
-    use base64::Engine as _;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use rand::RngCore;
     let mut raw = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut raw);
     URL_SAFE_NO_PAD.encode(raw)
@@ -22523,7 +23418,6 @@ async fn delete_template(
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::db::TemplateDeleteOutcome;
     let template = found(account.template(&id), "template not found")?;
     match account.delete_template(&template).map_err(AppError::from)? {
         TemplateDeleteOutcome::Deleted => Ok(StatusCode::OK),
@@ -23469,7 +24363,6 @@ async fn delete_board_color(
     Extension(user): Extension<AuthUser>,
     Path((id, color_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::db::ColorDeleteOutcome;
     let db = &account;
 
     if !db.board_exists(&id).map_err(AppError::from)? {
@@ -29529,30 +30422,42 @@ mod units_tests;
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, Duration, Local, Timelike, Utc};
+    use askama::Template;
+    use axum::http::{Method, StatusCode};
+    use base64::Engine as _;
+    use chrono::{DateTime, Duration, Local, NaiveDate, Offset as _, TimeZone as _, Timelike, Utc};
+    use chrono_tz::America::New_York;
+    use chrono_tz::Europe::London;
+    use tower::ServiceExt;
     use utoipa::OpenApi;
 
+    use super::SubtaskDisplay::{All, Hide, NextUnfinished, Unfinished};
     use super::docs::SKILL_VERSION;
     use super::local_time::{LocalTime, Shape};
     use super::server::passkey_mode;
     use super::{
-        ApiDoc, AvatarView, Build, COMPLETION_GRACE_SECS, ColorView, CommentReaction,
-        CreatedWebhookView, EstimateUnit, RepeatCadence, SubtaskDisplay, TaskCardDisplay,
-        TimerSession, UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed,
-        csv_field, entry_badge, estimate_hours_to_size, format_added, format_due,
+        ApiDoc, AvatarView, BandView, BoardDeleteTemplate, BoardLayout, BoardTemplate, Build,
+        COMPLETION_GRACE_SECS, CellView, ColorView, ColumnHead, CommentReaction,
+        CreatedWebhookView, EstimateUnit, RepeatCadence, ShellChrome, SubtaskDisplay,
+        TaskCardDisplay, TimerSession, UpdateColumnInput, UpdateTaskInput, build_board_export_data,
+        build_ical_feed, csv_field, done_drop_position, done_group_label, entry_badge,
+        estimate_hours_to_size, folds_done_subtasks, format_added, format_due,
         format_entry_duration, format_estimate_hours, format_pomodori, format_relative_day,
         format_time_kf, format_timeline, generate_feed_token, ical_escape, ical_fold, is_overdue,
-        log_timer_session, normalize_due_input, normalize_estimate_hours, parse_manual_range,
-        parse_repeat_cadence, reaction_pills, router, subtasks_on_face, timer_status_view,
+        log_timer_session, needs_lane_label_column, normalize_due_input, normalize_due_input_at,
+        normalize_due_input_in, normalize_estimate_hours, parse_manual_range, parse_repeat_cadence,
+        place_overdue_strips, reaction_pills, router, subtasks_on_face, timer_status_view,
         version_info,
     };
+    use crate::auth::is_event_wait;
     use crate::db::{BootstrapToken, Db, NewTimeEntry};
     use crate::layouts::{LAYOUTS, chip_labels};
     use crate::models::{
-        AccountId, Actor, ActorKind, ApiTokenRecord, AuthScope, BoardRole, ColumnRow, EntryKind,
-        FeedTask, FieldDefRow, FieldKind, FieldOwner, HistoryKind, MAX_BOARD_FEEDS,
-        MAX_REPORT_BOOKMARKS, SECONDS_PER_DAY, TaskKind, TaskRow, TimeFormat, WebhookEvent,
-        WebhookRow, WeekStart,
+        AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
+        AuthScope, BoardRole, BoardRow, BreakActivity, ColorRow, ColumnRow, EntryKind, FeedTask,
+        FieldDefRow, FieldKind, FieldOwner, HistoryKind, MAX_BOARD_FEEDS, MAX_REPORT_BOOKMARKS,
+        SECONDS_PER_DAY, Subtask, SwimlaneRow, TaskKind, TaskRow, TimeFormat, TimerMode, UserRow,
+        WebhookEvent, WebhookRow, WeekStart,
     };
     use crate::{AppState, BODY_LIMIT_BYTES, auth, markdown};
 
@@ -29578,10 +30483,6 @@ mod tests {
 
     #[test]
     fn is_event_wait_should_match_only_a_get_of_a_boards_wait_path() {
-        use axum::http::Method;
-
-        use crate::auth::is_event_wait;
-
         assert!(is_event_wait(&Method::GET, "/api/boards/b1/events/wait"));
         for (method, path) in [
             (Method::POST, "/api/boards/b1/events/wait"),
@@ -29608,10 +30509,6 @@ mod tests {
     /// A grouping date outside the current year carries its year.
     #[test]
     fn done_group_label_should_add_the_year_outside_the_current_year() {
-        use chrono::NaiveDate;
-
-        use super::done_group_label;
-
         let today = NaiveDate::from_ymd_opt(2026, 10, 17).expect("date");
         let day = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).expect("date");
         assert_eq!(done_group_label(day(2026, 10, 17), today), "Today");
@@ -29700,10 +30597,6 @@ mod tests {
     /// The delete page flags the last board so the UI refuses up front.
     #[test]
     fn board_delete_page_should_flag_only_the_last_board() {
-        use askama::Template;
-
-        use super::{BoardDeleteTemplate, ShellChrome};
-
         let render = |delete_refusal| {
             BoardDeleteTemplate {
                 board_id: "b".into(),
@@ -29747,10 +30640,6 @@ mod tests {
     }
 
     fn render_delete_page(build: Build) -> String {
-        use askama::Template;
-
-        use super::{BoardDeleteTemplate, ShellChrome};
-
         BoardDeleteTemplate {
             board_id: "b".into(),
             board_name: "Only".into(),
@@ -29822,8 +30711,6 @@ mod tests {
     /// Three subtasks show in full, and a longer list folds its done ones.
     #[test]
     fn folds_done_subtasks_should_follow_kanbanflow_truncation() {
-        use super::folds_done_subtasks;
-        use crate::models::Subtask;
         let sub = |done: bool| Subtask {
             id: String::new(),
             name: String::new(),
@@ -29885,7 +30772,6 @@ mod tests {
 
     #[test]
     fn card_display_should_parse_each_subtasks_option() {
-        use SubtaskDisplay::{All, Hide, NextUnfinished, Unfinished};
         let parse = |value: &str| {
             let bag = format!(r#"{{"prop_subtasks":"{value}"}}"#);
             TaskCardDisplay::from_config_json(&bag).content.subtasks
@@ -29900,7 +30786,6 @@ mod tests {
 
     #[test]
     fn face_subtasks_should_list_the_unfinished_ones_a_column_asks_for() {
-        use SubtaskDisplay::{All, Hide, NextUnfinished, Unfinished};
         let sub = |name: &str, done: bool| crate::models::Subtask {
             id: name.into(),
             name: name.into(),
@@ -29951,7 +30836,6 @@ mod tests {
     }
 
     fn local_on(date: chrono::NaiveDate, hour: u32) -> String {
-        use chrono::TimeZone as _;
         let at = date.and_hms_opt(hour, 0, 0).expect("valid time");
         Local
             .from_local_datetime(&at)
@@ -29964,8 +30848,6 @@ mod tests {
     /// are logged, and only completed pomodori feed the long-break cycle.
     #[test]
     fn log_timer_session_should_complete_overtime_and_log_taskless_work() {
-        use crate::models::{ActiveTimer, TimerMode};
-
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("timer.redb");
         let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
@@ -30049,9 +30931,6 @@ mod tests {
     /// session started, so a pomodoro that crosses midnight counts on the day it began.
     #[test]
     fn timer_status_should_count_a_pomodoro_on_the_day_it_started() {
-        use crate::db::NewTimeEntry;
-        use crate::models::EntryKind;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("timer.redb");
         let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
@@ -30166,8 +31045,6 @@ mod tests {
     /// stopwatch, and still completes.
     #[test]
     fn log_timer_session_should_cap_a_session_left_running_for_days() {
-        use crate::models::{ActiveTimer, TimerMode};
-
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("timer.redb");
         let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
@@ -30427,8 +31304,6 @@ mod tests {
     /// the build SHA (or "unknown" when the build didn't bake one in).
     #[tokio::test]
     async fn version_endpoint_should_report_build_identity() {
-        use tower::ServiceExt;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let db = crate::db::Db::connect(
             dir.path()
@@ -30524,8 +31399,6 @@ mod tests {
     /// The board columns list exposes `wip_limit` and `is_done`.
     #[tokio::test]
     async fn columns_list_should_include_wip_limit_and_is_done() {
-        use tower::ServiceExt;
-
         let (_dir, fx) = kf221_fixture();
         let response = fx
             .app
@@ -30557,8 +31430,6 @@ mod tests {
     /// task's id.
     #[tokio::test]
     async fn create_task_json_accept_should_return_201_with_id() {
-        use tower::ServiceExt;
-
         let (_dir, fx) = kf221_fixture();
         let payload = serde_json::json!({"name": "Json task", "column_id": fx.col_wip});
         let response = fx
@@ -30586,8 +31457,6 @@ mod tests {
     /// The default POST /api/tasks response stays the HTML card fragment the htmx UI appends.
     #[tokio::test]
     async fn create_task_default_should_stay_html_fragment() {
-        use tower::ServiceExt;
-
         let (_dir, fx) = kf221_fixture();
         let payload = serde_json::json!({"name": "Html task", "column_id": fx.col_wip});
         let response = fx
@@ -30642,8 +31511,6 @@ mod tests {
     /// attribution.
     #[tokio::test]
     async fn comments_json_should_list_and_override_author() {
-        use tower::ServiceExt;
-
         let (_dir, fx) = kf221_fixture();
 
         // Create a task via the API (JSON path hands us the id)
@@ -30723,8 +31590,6 @@ mod tests {
     /// port or subdomain) is refused, while same-origin, header-less, and Bearer writes go through.
     #[tokio::test]
     async fn cross_origin_cookie_writes_should_be_refused() {
-        use tower::ServiceExt;
-
         let (_dir, fx) = kf221_fixture();
         let mint = axum::http::Request::builder()
             .method("POST")
@@ -30861,7 +31726,6 @@ mod tests {
 
     impl Kf420Fixture {
         async fn send(&self, method: &str, uri: &str, site: &str) -> axum::response::Response {
-            use tower::ServiceExt;
             let request = axum::http::Request::builder()
                 .method(method)
                 .uri(uri)
@@ -30883,7 +31747,6 @@ mod tests {
         }
 
         async fn send_json(&self, method: &str, uri: &str, body: &str) -> axum::response::Response {
-            use tower::ServiceExt;
             let request = axum::http::Request::builder()
                 .method(method)
                 .uri(uri)
@@ -30912,8 +31775,6 @@ mod tests {
     /// without `started_at` it stays a 404.
     #[tokio::test]
     async fn timer_stop_should_treat_an_already_stopped_session_as_success() {
-        use crate::models::{ActiveTimer, TimerMode};
-
         let fx = kf420_fixture();
         let response = fx.post_json("/api/timer/stop", "{}").await;
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
@@ -30947,8 +31808,6 @@ mod tests {
     /// A log entry's time range joins its two times with a hyphen.
     #[tokio::test]
     async fn timer_log_should_join_time_ranges_with_a_hyphen() {
-        use crate::models::{ActiveTimer, TimerMode};
-
         let fx = kf420_fixture();
         let timer = ActiveTimer {
             task_id: None,
@@ -31231,8 +32090,6 @@ mod tests {
     /// even for a timer whose task is gone.
     #[tokio::test]
     async fn timer_should_stop_with_its_task_and_status_reads_should_never_write() {
-        use crate::models::{ActiveTimer, TimerMode};
-
         let fx = kf420_fixture();
         let timer_on = |task_id: &str| ActiveTimer {
             task_id: Some(task_id.to_string()),
@@ -31289,8 +32146,6 @@ mod tests {
     /// it never logged.
     #[tokio::test]
     async fn stopping_an_orphaned_timer_should_log_the_session_task_less() {
-        use crate::models::{ActiveTimer, TimerMode};
-
         let fx = kf420_fixture();
         fx.db
             .set_active_timer(
@@ -31317,8 +32172,6 @@ mod tests {
     /// A stopwatch entry is never logged as interrupted.
     #[tokio::test]
     async fn stopping_a_stopwatch_should_not_log_an_interruption() {
-        use crate::models::{ActiveTimer, TimerMode};
-
         let fx = kf420_fixture();
         fx.db
             .set_active_timer(
@@ -31345,8 +32198,6 @@ mod tests {
     /// match the log.
     #[tokio::test]
     async fn stopping_an_orphaned_break_should_log_a_task_less_entry() {
-        use crate::models::{ActiveTimer, TimerMode};
-
         let fx = kf420_fixture();
         fx.db
             .set_active_timer(
@@ -31373,8 +32224,6 @@ mod tests {
     /// A column PATCH that fails validation writes nothing, and a valid one applies every field.
     #[tokio::test]
     async fn update_column_should_write_nothing_when_any_field_is_invalid() {
-        use tower::ServiceExt;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let db = crate::db::Db::connect(
             dir.path()
@@ -31650,9 +32499,6 @@ mod tests {
     /// parts.
     #[test]
     fn build_board_export_data_should_assemble_lookups() {
-        use crate::models::{
-            AccountRole, AccountStatus, BoardRow, ColorRow, ColumnRow, SwimlaneRow, UserRow,
-        };
         let board = BoardRow {
             id: "b1".into(),
             name: "Work".into(),
@@ -31966,13 +32812,6 @@ mod tests {
         role: BoardRole,
         tweak: impl FnOnce(&mut [super::BandView]),
     ) -> (usize, Vec<usize>, String) {
-        use askama::Template;
-
-        use super::{
-            BandView, BoardLayout, BoardTemplate, CellView, ColorView, ColumnHead, ShellChrome,
-            needs_lane_label_column, place_overdue_strips,
-        };
-
         let columns: Vec<ColumnHead> = ["Backlog", "To Do", "In Progress", "In Review", "Done"]
             .iter()
             .enumerate()
@@ -32175,8 +33014,6 @@ mod tests {
     /// A lane's cell shows its count under a limit, and flags it when exceeded.
     #[test]
     fn lane_cell_should_show_n_over_limit_and_flag_an_exceeded_one() {
-        use super::CellView;
-
         let cell = |count, limit| CellView {
             column_id: "c".into(),
             swimlane_id: "l".into(),
@@ -32293,8 +33130,6 @@ mod tests {
         uri: &str,
         json: Option<serde_json::Value>,
     ) -> (axum::http::StatusCode, String) {
-        use tower::ServiceExt;
-
         let mut builder = axum::http::Request::builder()
             .method(method)
             .uri(uri)
@@ -32462,8 +33297,6 @@ mod tests {
     /// the handler's 400 that names the limit.
     #[tokio::test]
     async fn attachment_upload_should_accept_files_up_to_five_mib() {
-        use base64::Engine as _;
-
         let (_dir, fx) = kf221_fixture();
         let (status, task) = create_task_json(&fx, serde_json::json!({})).await;
         assert_eq!(status, axum::http::StatusCode::CREATED);
@@ -32830,10 +33663,6 @@ mod tests {
     /// mode with its own session id.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_timer_starts_should_pair_timer_and_session() {
-        use tower::ServiceExt;
-
-        use crate::models::{ActiveTimer, TimerMode};
-
         let (_dir, fx) = kf221_fixture();
         let start = |app: axum::Router, cookie: String, mode: &'static str| async move {
             let request = axum::http::Request::builder()
@@ -32886,8 +33715,6 @@ mod tests {
     /// A duplicated single-valued parameter on either task list is a 400 naming it.
     #[tokio::test]
     async fn task_lists_should_refuse_a_duplicated_parameter() {
-        use axum::http::StatusCode;
-
         let (_dir, fx) = kf221_fixture();
         let board = fx.board_id.clone();
         let cases = [
@@ -32941,8 +33768,6 @@ mod tests {
     /// name, and a valid one still redirects.
     #[tokio::test]
     async fn board_rename_should_reject_blank_and_long_names_with_400() {
-        use tower::ServiceExt;
-
         let (_dir, fx) = kf221_fixture();
         let post_name = |name: String| {
             axum::http::Request::builder()
@@ -32985,8 +33810,6 @@ mod tests {
     /// Every accepted format normalizes to RFC3339, and garbage and out-of-range values are errors.
     #[test]
     fn normalize_due_input_should_reject_unparseable() {
-        use super::normalize_due_input_in;
-
         let zone = chrono_tz::Europe::London;
         let ok = |raw: &str| normalize_due_input_in(raw, &zone).expect(raw);
         assert_eq!(ok("2026-10-20T08:00:00Z"), "2026-10-20T08:00:00Z");
@@ -33015,9 +33838,6 @@ mod tests {
     /// transition, with the UTC instant each must resolve to (the earlier
     /// one when repeated), or None when the transition skips it.
     fn dst_transition_cases() -> Vec<(&'static str, chrono_tz::Tz, Option<&'static str>)> {
-        use chrono_tz::America::New_York;
-        use chrono_tz::Europe::London;
-
         let mut cases = Vec::new();
 
         // London fall-back: 02:00 BST becomes 01:00 GMT at 01:00Z
@@ -33112,8 +33932,6 @@ mod tests {
     /// DST transition seconds resolve correctly in explicit zones.
     #[test]
     fn normalize_due_input_should_resolve_dst_transition_seconds() {
-        use super::normalize_due_input_in;
-
         for (raw, zone, expected) in dst_transition_cases() {
             let got = due_as_utc(normalize_due_input_in(raw, &zone));
             assert_eq!(got.as_deref(), expected, "{raw} in {zone}");
@@ -33189,8 +34007,6 @@ mod tests {
     /// `POMB_DST_ZONE` names that zone.
     #[test]
     fn dst_transition_should_resolve_cases_in_local_zone() {
-        use chrono::{Offset as _, TimeZone as _};
-
         let Ok(zone) = std::env::var("POMB_DST_ZONE") else {
             return;
         };
@@ -33354,7 +34170,6 @@ mod tests {
     /// SubtaskDetail always carries due_at, so the schema requires it.
     #[test]
     fn subtask_detail_schema_should_require_due_at() {
-        use utoipa::OpenApi;
         let spec: serde_json::Value =
             serde_json::from_str(&ApiDoc::openapi().to_json().expect("json")).expect("spec");
         let required = &spec["components"]["schemas"]["SubtaskDetail"]["required"];
@@ -33555,8 +34370,6 @@ mod tests {
     /// pomodori once one was.
     #[tokio::test]
     async fn statistics_best_day_should_be_null_without_pomodori() {
-        use tower::ServiceExt;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let db = crate::db::Db::connect(
             dir.path()
@@ -33946,8 +34759,6 @@ mod tests {
     /// tokens), a wrong token gets 401, and a request without a token is still sent to /setup.
     #[tokio::test]
     async fn env_token_should_work_before_setup() {
-        use tower::ServiceExt;
-
         const ENV_TOKEN: &str = "pomb_kf397_env_token_for_tests";
         let dir = tempfile::tempdir().expect("tempdir");
         let db = crate::db::Db::connect(
@@ -34023,8 +34834,6 @@ mod tests {
     /// date group.
     #[test]
     fn done_drop_position_should_follow_the_on_screen_group() {
-        use super::done_drop_position;
-
         let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 16);
         let older = chrono::NaiveDate::from_ymd_opt(2026, 10, 2);
         let now = today.expect("valid date");
@@ -34150,8 +34959,6 @@ mod tests {
     /// unpadded local fields still parse.
     #[test]
     fn normalize_due_input_should_reject_second_sixty() {
-        use super::normalize_due_input_in;
-
         let london = chrono_tz::Europe::London;
         let dublin = chrono_tz::Europe::Dublin;
         let utc = chrono_tz::UTC;
@@ -34217,8 +35024,6 @@ mod tests {
     /// first lane, where the task lands.
     #[tokio::test]
     async fn cross_board_done_drop_should_use_the_target_boards_lane() {
-        use tower::ServiceExt;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("xboard.redb");
         let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
@@ -34287,8 +35092,6 @@ mod tests {
     /// its body cell carries the name.
     #[tokio::test]
     async fn collapsed_column_should_render_count_header_and_body_name() {
-        use tower::ServiceExt;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let db = crate::db::Db::connect(
             dir.path()
@@ -34356,8 +35159,6 @@ mod tests {
     /// in every zone, and the documented unpadded fields still parse.
     #[test]
     fn normalize_due_input_should_require_four_digit_year_and_one_separator() {
-        use super::normalize_due_input_in;
-
         let utc = chrono_tz::UTC;
         let dublin = chrono_tz::Europe::Dublin;
         for zone in [&utc, &dublin] {
@@ -34484,8 +35285,6 @@ mod tests {
     /// every board, account control).
     #[tokio::test]
     async fn settings_pages_should_render_the_global_top_bar() {
-        use tower::ServiceExt;
-
         let (_dir, fx) = kf221_fixture();
         for path in ["settings", "settings/colors", "settings/delete"] {
             let response = fx
@@ -34880,8 +35679,6 @@ mod tests {
     /// date time.
     #[test]
     fn date_only_due_in_a_dst_gap_should_name_the_board_time() {
-        use super::normalize_due_input_at;
-
         let london = chrono_tz::Europe::London;
         let half_past_one = chrono::NaiveTime::from_hms_opt(1, 30, 0).expect("time");
         let err = normalize_due_input_at("2027-03-28", &london, half_past_one).expect_err("gap");
@@ -35196,8 +35993,6 @@ mod tests {
     /// Two concurrent deletes of a board's only two columns never leave it with none.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_column_deletes_should_leave_one_column() {
-        use tower::ServiceExt;
-
         let (_dir, fx) = kf221_fixture();
         for round in 0..40 {
             let board = fx
@@ -35444,8 +36239,6 @@ mod tests {
         id: &str,
         query: &str,
     ) -> (axum::http::HeaderMap, String) {
-        use tower::ServiceExt;
-
         let request = axum::http::Request::builder()
             .uri(format!("/api/tasks/{id}/history-export{query}"))
             .header("cookie", &fx.cookie)
@@ -36178,8 +36971,6 @@ mod tests {
     /// to that activity's statistics.
     #[tokio::test]
     async fn task_less_break_should_reach_the_log_and_break_statistics() {
-        use crate::models::{ActiveTimer, BreakActivity, TimerMode};
-
         let (_dir, fx) = kf221_fixture();
         let mut settings = fx.db.settings(&fx.user_id).expect("settings");
         settings.break_activities = vec![BreakActivity {
@@ -36674,8 +37465,6 @@ mod tests {
         uri: &str,
         token: &str,
     ) -> (axum::http::StatusCode, String) {
-        use tower::ServiceExt;
-
         let request = axum::http::Request::builder()
             .method(method)
             .uri(uri)
@@ -36855,8 +37644,6 @@ mod tests {
         headers: &[(&str, &str)],
         body: Option<&str>,
     ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
-        use tower::ServiceExt;
-
         let mut builder = axum::http::Request::builder().method(method).uri(uri);
         for (name, value) in headers {
             builder = builder.header(*name, *value);
@@ -37108,8 +37895,6 @@ mod tests {
 
     #[tokio::test]
     async fn timer_stop_and_switch_should_store_the_account_handle() {
-        use crate::models::{ActiveTimer, TimerMode};
-
         let (_dir, fx) = kf221_fixture();
         let (_, token) = store_token(&fx, "writer", AuthScope::Admin, None);
         let bearer = format!("Bearer {token}");

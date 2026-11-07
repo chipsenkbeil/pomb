@@ -520,10 +520,14 @@ pub(crate) fn read_files(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         BLOCK, Cap, Data, ImportError, ReadLimits, Spool, ZEROS, entry_header, header, padding,
         pax_record, read_files,
     };
+    use crate::disk::{DiskGuard, DiskProbe, MIB};
+    use crate::models::DiskLimits;
 
     #[test]
     fn padding_should_round_up_to_a_whole_block() {
@@ -629,11 +633,6 @@ mod tests {
 
     #[test]
     fn read_files_should_refuse_a_small_file_that_would_cross_the_floor_before_creating_it() {
-        use std::sync::Arc;
-
-        use crate::disk::{DiskGuard, DiskProbe, MIB};
-        use crate::models::DiskLimits;
-
         let floor = u64::from(DiskLimits::DEFAULT_MIN_FREE_MIB);
         let probe = DiskProbe {
             stored: Arc::new(|| Ok(1)),

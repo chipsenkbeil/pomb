@@ -21,7 +21,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rand::{RngCore, thread_rng};
+use rand::{Rng, RngCore, thread_rng};
 use sha2::{Digest, Sha256};
 
 use crate::AppState;
@@ -462,7 +462,6 @@ pub fn verify_recovery_code(row: Option<&RecoveryCodeRow>, typed: &str) -> bool 
 
 /// A device-pairing user code in canonical form, e.g. "BCDFGHJK".
 pub fn generate_user_code() -> String {
-    use rand::Rng;
     let mut rng = thread_rng();
     (0..USER_CODE_LEN)
         .map(|_| USER_CODE_ALPHABET[rng.gen_range(0..USER_CODE_ALPHABET.len())] as char)

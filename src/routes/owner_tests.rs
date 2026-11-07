@@ -1,5 +1,6 @@
 use axum::http::StatusCode;
 use serde_json::{Value, json};
+use utoipa::OpenApi;
 
 use super::passkey_tests::{Reply, call};
 use super::server::{passkey_mode, unthrottled_limits};
@@ -571,8 +572,6 @@ async fn owner_since_should_read_null_for_an_owner_stored_without_it() {
 
 #[test]
 fn owner_openapi_should_document_role_and_since() {
-    use utoipa::OpenApi;
-
     let spec: Value =
         serde_json::from_str(&ApiDoc::openapi().to_json().expect("json")).expect("spec");
     let schemas = &spec["components"]["schemas"];

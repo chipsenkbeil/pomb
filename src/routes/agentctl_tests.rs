@@ -1,12 +1,15 @@
 use std::collections::BTreeSet;
+use std::io::Read;
 
 use axum::http::StatusCode;
+use base64::Engine as _;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+use utoipa::OpenApi;
 
 use super::passkey_tests::{make_epic, make_plain};
 use super::server::passkey_mode;
-use super::{DeviceApproveForm, device_grant, router};
+use super::{ApiDoc, DeviceApproveForm, device_grant, router};
 use crate::auth::new_api_token_record;
 use crate::db::{
     BootstrapToken, ChildTokenRefusal, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT, NewComment,
@@ -679,10 +682,6 @@ async fn task_list_should_keep_its_board_filter_across_pages() {
 
 #[test]
 fn openapi_should_document_the_page_shape_on_both_task_lists() {
-    use utoipa::OpenApi;
-
-    use super::ApiDoc;
-
     let json = ApiDoc::openapi().to_json().expect("spec serializes");
     let spec: Value = serde_json::from_str(&json).expect("valid json");
     for (path, schema) in [
@@ -715,8 +714,6 @@ fn openapi_should_document_the_page_shape_on_both_task_lists() {
 
 #[test]
 fn openapi_should_keep_optional_params_and_the_json_task_responses() {
-    use utoipa::OpenApi;
-
     let json = super::ApiDoc::openapi().to_json().expect("spec serializes");
     let spec: Value = serde_json::from_str(&json).expect("valid json");
     let list = &spec["paths"]["/api/boards/{id}/tasks"]["get"]["parameters"];
@@ -755,8 +752,6 @@ fn openapi_should_keep_optional_params_and_the_json_task_responses() {
 
 #[test]
 fn openapi_should_list_agentctl_paths_and_schemas() {
-    use utoipa::OpenApi;
-
     let json = super::ApiDoc::openapi().to_json().expect("spec serializes");
     let spec: Value = serde_json::from_str(&json).expect("valid json");
     for path in [
@@ -3793,8 +3788,6 @@ async fn the_column_delete_moves_should_send_a_valid_position() {
 
 #[test]
 fn task_row_schema_text_should_have_no_rustdoc_links() {
-    use utoipa::OpenApi;
-
     let spec = super::ApiDoc::openapi().to_json().expect("json");
     assert!(
         !spec.contains("[`"),
@@ -3919,9 +3912,6 @@ fn stored_comments_without_kinds_should_read_as_user_comments() {
 
 #[tokio::test]
 async fn attachment_docs_and_schema_should_match_the_served_download_route() {
-    use base64::Engine as _;
-    use utoipa::OpenApi;
-
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Files"})).await;
     let data = base64::engine::general_purpose::STANDARD.encode(b"hello");
@@ -3958,8 +3948,6 @@ async fn attachment_docs_and_schema_should_match_the_served_download_route() {
 
 #[tokio::test]
 async fn renaming_an_attachment_should_keep_its_extension_and_log_the_change() {
-    use base64::Engine as _;
-
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Files"})).await;
     let upload = |name: &'static str| {
@@ -4030,8 +4018,6 @@ fn stored(fx: &Fixture, task: &str) -> Value {
 
 #[tokio::test]
 async fn rejected_task_extras_should_leave_the_stored_row_unchanged() {
-    use base64::Engine as _;
-
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Extras"})).await;
     let (_, sub) = call(
@@ -4187,8 +4173,6 @@ async fn rejected_task_extras_should_leave_the_stored_row_unchanged() {
 
 #[tokio::test]
 async fn task_extras_should_save_their_change_and_history_event_together() {
-    use base64::Engine as _;
-
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Extras"})).await;
     let base = format!("/api/tasks/{id}");
@@ -4681,7 +4665,6 @@ async fn fields_null_should_be_a_400_on_create_and_patch() {
         "a carriage return is a line break too"
     );
 
-    use utoipa::OpenApi;
     let spec: Value =
         serde_json::from_str(&super::ApiDoc::openapi().to_json().expect("json")).expect("spec");
     for schema in ["UpdateTaskInput", "CreateTaskInput"] {
@@ -10923,10 +10906,6 @@ async fn listing_attachments_should_show_a_board_limited_token_only_its_boards()
 
 #[tokio::test]
 async fn attachment_list_should_appear_in_the_openapi_spec_and_the_api_docs() {
-    use utoipa::OpenApi;
-
-    use super::ApiDoc;
-
     let spec: Value =
         serde_json::from_str(&ApiDoc::openapi().to_json().expect("json")).expect("spec");
     let operation = &spec["paths"]["/api/tasks/{id}/attachments"]["get"];
@@ -10939,8 +10918,6 @@ async fn attachment_list_should_appear_in_the_openapi_spec_and_the_api_docs() {
 
 #[tokio::test]
 async fn only_an_admin_token_should_detach_an_attachment_and_free_its_storage() {
-    use base64::Engine as _;
-
     let (_dir, fx) = fixture();
     let work = token_with(&fx, "worker", AuthScope::Work);
     let lead = token_with(&fx, "lead", AuthScope::Provision);
@@ -12194,8 +12171,6 @@ async fn a_restricted_token_should_not_read_the_names_of_a_board_outside_its_set
 
 #[tokio::test]
 async fn a_restricted_token_archive_should_not_hold_the_names_of_a_board_outside_its_set() {
-    use std::io::Read;
-
     let (_dir, fx) = fixture();
     let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
     let hidden = board["id"].as_str().expect("board id").to_string();
@@ -12712,9 +12687,6 @@ async fn kind_and_closed_should_appear_on_task_detail_the_board_task_list_and_th
     assert_eq!(item(&children[0])["kind"], "task");
     assert_eq!(item(&children[0])["closed"], false);
 
-    use utoipa::OpenApi;
-
-    use super::ApiDoc;
     let spec: Value =
         serde_json::from_str(&ApiDoc::openapi().to_json().expect("json")).expect("spec");
     let schemas = &spec["components"]["schemas"];
