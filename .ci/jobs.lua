@@ -53,8 +53,8 @@ CARGO_TARGET_DIR=$root/target-baseline dev build -- --manifest-path .ci-baseline
 
 trap 'for s in "$out"/cand/state.json "$out"/base/state.json; do
   [ -f "$s" ] && kill "$(jq -r .pid "$s")" 2>/dev/null || true; done' EXIT
-.dev/parity/start-server.sh "$root/target/release/pomb" 3421 "$out/cand" >/dev/null
-.dev/parity/start-server.sh "$root/target-baseline/release/pomb" 3420 "$out/base" >/dev/null
+dev parity start-server "$root/target/release/pomb" 3421 "$out/cand" >/dev/null
+dev parity start-server "$root/target-baseline/release/pomb" 3420 "$out/base" >/dev/null
 
 rc=0
 dev parity regress --candidate "$out/cand/state.json" \

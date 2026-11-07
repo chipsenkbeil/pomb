@@ -5,8 +5,8 @@
 //       --candidate CAND_STATE.json --baseline BASE_STATE.json --out DIR \
 //       [--manifest manifest.json] [--only id,id] [--max-diff N] [--fuzz 1%]
 //
-// Start two servers with start-server.sh (two ports, two workdirs) so both
-// have the same seed and frozen clock. Writes DIR/candidate/<id>.png,
+// Start two servers with dev parity start-server (two ports, two workdirs)
+// so both have the same seed and frozen clock. Writes DIR/candidate/<id>.png,
 // DIR/baseline/<id>.png, DIR/diff/<id>.png (differing pixels in red) and
 // DIR/report.json. Exit status is 1 when any entry differs by more than
 // --max-diff pixels (default 0) or fails to replay. No golden data is used.

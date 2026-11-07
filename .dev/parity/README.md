@@ -21,7 +21,7 @@ box (marked in the entry note).
   with its Chromium (installed with `PLAYWRIGHT_BROWSERS_PATH=0`).
 - libfaketime (`brew install libfaketime`, or the `faketime` package on Linux),
   `jq`, `curl`, `rg`, ImageMagick (`magick`, regression mode only).
-  `start-server.sh` preloads `/opt/homebrew/lib/faketime/libfaketime.1.dylib`
+  `dev parity start-server` preloads `/opt/homebrew/lib/faketime/libfaketime.1.dylib`
   through `DYLD_INSERT_LIBRARIES` on macOS and
   `/usr/lib/faketime/libfaketime.so.1` through `LD_PRELOAD` on Linux; set
   `FAKETIME_LIB` to the library path on any other install.
