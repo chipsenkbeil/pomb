@@ -98,7 +98,7 @@ return {
       matrix = { RUNNER },
       run = function()
         check_rust()
-        run(".dev/nixcheck.sh")
+        run("dev nixcheck")
       end,
     },
     build = {
