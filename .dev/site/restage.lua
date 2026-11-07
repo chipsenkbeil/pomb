@@ -1,20 +1,13 @@
-#!/usr/bin/env bash
-# Make the next update real: dev site restage nightly [--bad]
-# local
-# flags: --bad
-set -euo pipefail
+--[[
+local
+positional
+flags: --bad
+Make the next update real: dev site restage nightly [--bad]
+]]
+local site = require("pomb.site")
 
-# shellcheck source-path=SCRIPTDIR source=__common.sh
-source "$(dirname "$0")/__common.sh"
-
-channel="${1:-}"
-mode="${2:-}"
-if [[ "$channel" != nightly ]] || [[ -n "$mode" && "$mode" != --bad ]]; then
-  echo "usage: dev site restage nightly [--bad]" >&2
-  exit 2
-fi
-
-pomb_ssh BAD="${mode:+1}" bash -s <<'REMOTE'
+local BAD_FLAG = "--bad"
+local SCRIPT = [==[
 set -euo pipefail
 exec 9>/run/lock/pomb-update-nightly.lock
 if ! flock -n 9; then
@@ -52,4 +45,14 @@ if [[ -n "${BAD:-}" ]]; then
   cp "$prev/commit" "$cur/commit"
 fi
 echo "nightly: current -> $(basename "$(readlink "$base/current")")"
-REMOTE
+]==]
+
+local ctx = ...
+local channel = ctx.args[1] or ""
+local mode = ctx.args[2] or ""
+if channel ~= site.CHANNEL.NIGHTLY or (mode ~= "" and mode ~= BAD_FLAG) then
+    io.stderr:write("usage: dev site restage nightly [--bad]\n")
+    return site.USAGE
+end
+
+return site.ssh_script(SCRIPT, { "BAD=" .. (mode ~= "" and "1" or ""), "bash", "-s" })

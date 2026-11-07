@@ -1,12 +1,11 @@
-#!/usr/bin/env bash
-# Show service states, current releases, last update results and disk use
-# local
-set -euo pipefail
+--[[
+local
+positional
+Show service states, current releases, last update results and disk use
+]]
+local site = require("pomb.site")
 
-# shellcheck source-path=SCRIPTDIR source=__common.sh
-source "$(dirname "$0")/__common.sh"
-
-pomb_ssh bash -s <<'REMOTE'
+local SCRIPT = [==[
 set -u
 units="pomb-stable.service pomb-nightly.service pomb-update@stable.timer pomb-update@nightly.timer cloudflared.service"
 echo "== units (enabled / active)"
@@ -50,4 +49,6 @@ ss -ltn | awk 'NR==1 || /:300[12]\b/'
 echo "== disk"
 df -h / | tail -n 1
 du -sh /opt/pomb /var/lib/pomb 2>/dev/null
-REMOTE
+]==]
+
+return site.ssh_script(SCRIPT, { "bash", "-s" })
