@@ -6,7 +6,7 @@ Usage: dev release --batch N --summary "<text>" [--env KEY=VALUE]... [--dry-run]
        dev release --hash-only <sha> [--batch N] [--env KEY=VALUE]...
 Each card lands on main through dev land after its own verification, so a release adds only the version bump. Steps, any failure aborts before the push:
 1. Refuse unless <remote>/main has a commit since its last v* tag.
-2. Bump the version with .dev/__bump_version.sh in .dev/worktrees/release-<N> on <remote>/main and commit "Release batch-<N>: <summary>" with only Cargo.toml and Cargo.lock. Then refuse unless the new version differs from the last v* tag's and Cargo.lock's pomb entry matches it.
+2. Bump the version with dev __bump_version in .dev/worktrees/release-<N> on <remote>/main and commit "Release batch-<N>: <summary>" with only Cargo.toml and Cargo.lock. Then refuse unless the new version differs from the last v* tag's and Cargo.lock's pomb entry matches it.
 3. Run dev lint --remote, dev test --remote, dev nixcheck --remote and dev build --remote through __gate, one at a time on ci, logging to a temp dir. A failing gate aborts before the push, and so does a gate whose ci run is not a new passed run of the release worktree with source local.
 4. Refuse attribution trailers in the new commit and refuse when <remote>/main moved since step 1, then push to main on the remote of record.
 5. Tag batch-<N> and v<version> at the pushed commit with __push_tag, then compute the nix hash of the commit's tree and print the request block. A failed tag prints the __push_tag command to rerun for it.
@@ -149,7 +149,6 @@ end
 
 local opts = parse(ctx.args)
 local repo = main_repo_of(ctx.root)
-local tools = ctx.root .. "/.dev"
 
 if opts.hash_only ~= "" then
     if not opts.hash_only:find("^[0-9a-f]+$") or #opts.hash_only ~= 40 then
@@ -199,7 +198,7 @@ if devos.run(git(repo, "worktree", "add", "-q", "--detach", rel, base), { cwd = 
     die(("git worktree add failed for %s"):format(rel))
 end
 local bumped
-bumped, code = devos.capture({ "bash", tools .. "/__bump_version.sh", wt }, { cwd = wt })
+bumped, code = devos.capture({ "dev", "__bump_version", wt }, { cwd = wt })
 if code ~= 0 then
     die(("version bump failed (worktree left at %s)"):format(wt))
 end
@@ -224,7 +223,7 @@ if code ~= 0 then
     die(("cannot read Cargo.toml at %s"):format(last_tag))
 end
 assert(fs.write(tag_toml, tagged))
-local guard = devos.run({ "bash", tools .. "/__version_guard.sh", tag_toml, "Cargo.toml", "Cargo.lock" }, { cwd = wt })
+local guard = devos.run({ "dev", "__version_guard", tag_toml, "Cargo.toml", "Cargo.lock" }, { cwd = wt })
 fs.remove(tag_toml)
 if guard ~= 0 then
     die(("version %s fails the check against %s (worktree left at %s)"):format(new_version, last_tag, wt))

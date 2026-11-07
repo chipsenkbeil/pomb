@@ -21,8 +21,8 @@ local FILES = {
     "__push_main.lua",
     "__push_tag.lua",
     "lua/pomb/forge.lua",
-    "__bump_version.sh",
-    "__version_guard.sh",
+    "__bump_version.lua",
+    "__version_guard.lua",
 }
 
 local STUB_DEV = [[
