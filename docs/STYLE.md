@@ -585,10 +585,11 @@ fn prompt(feedback: super::PasswordFeedback) -> Result<String> {
 
 ### 96. Put a `#[cfg]`-gated import inside the item it serves
 
-A `#[cfg(...)]`-gated import goes in the gated `mod` or the gated function's
-body, never at the top level of a file. rustfmt never moves an import between
-scopes, so the attribute stays on the right import. A gated `pub use` or
-`pub(crate) use` re-export stays at the top level.
+A `#[cfg(...)]`-gated import goes in the gated `mod`, the gated function's
+body, or a gated block inside a function, never at the top level of a file.
+rustfmt never moves an import between scopes, so the attribute stays on the
+right import. A gated `pub use` or `pub(crate) use` re-export stays at the top
+level.
 
 Lint: `lint.lua` cfg imports
 
@@ -602,6 +603,17 @@ fn detach(command: &mut Command) -> io::Result<()> {
     use std::os::windows::process::CommandExt;
 
     command.creation_flags(DETACHED_PROCESS);
+    Ok(())
+}
+
+fn spawn(command: &mut Command) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        command.creation_flags(DETACHED_PROCESS);
+    }
+    command.spawn()?;
     Ok(())
 }
 
