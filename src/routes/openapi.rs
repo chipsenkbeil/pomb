@@ -842,3 +842,14 @@ fn spec_should_describe_the_board_import_and_its_caps() {
         assert!(counts[field].is_object(), "{field}");
     }
 }
+
+#[test]
+fn openapi_should_mark_the_bulk_preview_values_nullable() {
+    let spec = spec();
+    let schema = &spec["components"]["schemas"]["BulkTaskPreview"];
+
+    for field in ["before", "after"] {
+        let property = schema["properties"][field].to_string();
+        assert!(property.contains("\"null\""), "{field}: {property}");
+    }
+}

@@ -21466,7 +21466,7 @@
         var row = document.createElement('tr');
         [task.name, task.before, task.after].forEach(function (text) {
           var cell = document.createElement('td');
-          cell.textContent = text;
+          cell.textContent = text === null ? '(none)' : text;
           row.appendChild(cell);
         });
         body.appendChild(row);

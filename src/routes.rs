@@ -10590,10 +10590,10 @@ struct BulkTaskPreview {
     id: String,
     /// The task name.
     name: String,
-    /// The value the action changes, as the task holds it now. The text (none) stands for no value.
-    before: String,
-    /// The value the task holds after the action.
-    after: String,
+    /// The value the action changes, as the task holds it now, or null when it holds none.
+    before: Option<String>,
+    /// The value the task holds after the action, or null when it holds none.
+    after: Option<String>,
 }
 
 /// The outcome of a bulk task request.
@@ -10700,9 +10700,8 @@ async fn bulk_tasks(
                 .map_err(AppError::from)?
                 .filter(|color| color.row().board_id == board.row().id)
                 .ok_or_else(|| AppError::bad_request("unknown color"))?;
-            let show: BulkShow = |task, context, _| {
-                color_value(task.color_id.as_deref(), &context.colors).unwrap_or_else(none_text)
-            };
+            let show: BulkShow =
+                |task, context, _| color_value(task.color_id.as_deref(), &context.colors);
             bulk_change(db, &tasks, commit, actor, show, None, |task, _| {
                 task.color_id = Some(color.row().id.clone());
                 task.size = color_value_to_size(&color.row().value);
@@ -10717,8 +10716,7 @@ async fn bulk_tasks(
                     "labels needs add_labels or remove_labels",
                 ));
             }
-            let show: BulkShow =
-                |task, _, _| event_value(&task.labels.join(", ")).unwrap_or_else(none_text);
+            let show: BulkShow = |task, _, _| event_value(&task.labels.join(", "));
             bulk_change(db, &tasks, commit, actor, show, None, |task, _| {
                 task.labels = patched_labels(&task.labels, None, Some(&add), Some(&remove));
                 Ok(())
@@ -10962,29 +10960,24 @@ async fn bulk_tasks(
 }
 
 /// Renders the value a bulk action changes on one task, from the context of the write.
-type BulkShow = fn(&TaskRow, &TaskContext, &[UserRow]) -> String;
-
-/// Returns the text of a missing value.
-fn none_text() -> String {
-    NO_VALUE.to_string()
-}
+type BulkShow = fn(&TaskRow, &TaskContext, &[UserRow]) -> Option<String>;
 
 /// Renders the members of `task` by user name.
-fn show_members(task: &TaskRow, _: &TaskContext, users: &[UserRow]) -> String {
-    member_names(&task.member_ids, users).unwrap_or_else(none_text)
+fn show_members(task: &TaskRow, _: &TaskContext, users: &[UserRow]) -> Option<String> {
+    member_names(&task.member_ids, users)
 }
 
 /// Renders how many subtasks `task` holds.
-fn show_subtasks(task: &TaskRow, _: &TaskContext, _: &[UserRow]) -> String {
-    match task.subtasks.len() {
+fn show_subtasks(task: &TaskRow, _: &TaskContext, _: &[UserRow]) -> Option<String> {
+    Some(match task.subtasks.len() {
         1 => "1 subtask".to_string(),
         count => format!("{count} subtasks"),
-    }
+    })
 }
 
 /// Renders the due date of `task`.
-fn show_due(task: &TaskRow, _: &TaskContext, _: &[UserRow]) -> String {
-    due_value(task).unwrap_or_else(none_text)
+fn show_due(task: &TaskRow, _: &TaskContext, _: &[UserRow]) -> Option<String> {
+    due_value(task)
 }
 
 /// What a `due_dates` request does to each task.
@@ -11161,7 +11154,7 @@ fn show_relations(
     db: &AccountDb,
     links: &[(LinkKind, String)],
     names: &mut HashMap<String, String>,
-) -> Result<String, AppError> {
+) -> Result<Option<String>, AppError> {
     let mut parts = Vec::with_capacity(links.len());
     for (kind, target_id) in links {
         if !names.contains_key(target_id) {
@@ -11174,11 +11167,7 @@ fn show_relations(
         }
         parts.push(format!("{} {}", link_phrase(*kind), names[target_id]));
     }
-    Ok(if parts.is_empty() {
-        none_text()
-    } else {
-        parts.join(", ")
-    })
+    Ok((!parts.is_empty()).then(|| parts.join(", ")))
 }
 
 /// Returns the column of each of `tasks` and the recycle bin they would move to.
@@ -11190,8 +11179,8 @@ fn delete_previews(db: &AccountDb, tasks: &[OwnedTask]) -> Result<Vec<BulkTaskPr
             Ok(BulkTaskPreview {
                 id: task.row().id.clone(),
                 name: task.row().name.clone(),
-                before: column.row().name.clone(),
-                after: "Recycle bin".to_string(),
+                before: Some(column.row().name.clone()),
+                after: Some("Recycle bin".to_string()),
             })
         })
         .collect()
@@ -11220,8 +11209,8 @@ fn move_previews(
             Ok(BulkTaskPreview {
                 id: task.row().id.clone(),
                 name: task.row().name.clone(),
-                before: place(held.row())?,
-                after: after.clone(),
+                before: Some(place(held.row())?),
+                after: Some(after.clone()),
             })
         })
         .collect()

@@ -836,7 +836,7 @@ async fn bulk_dry_run_should_list_old_and_new_labels_and_change_nothing() {
         reply.body["tasks"],
         json!([
             {"id": a, "name": "a", "before": "old", "after": "new"},
-            {"id": b, "name": "b", "before": "(none)", "after": "new"},
+            {"id": b, "name": "b", "before": null, "after": "new"},
         ])
     );
     let after = fx.db.task(&a).expect("read").expect("task");
@@ -884,7 +884,7 @@ async fn bulk_dry_run_should_list_old_and_new_members_and_change_nothing() {
     let reply = fx.bulk(&board, body).await;
 
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    assert_eq!(reply.body["tasks"][0]["before"], "(none)");
+    assert_eq!(reply.body["tasks"][0]["before"], json!(null));
     assert_eq!(reply.body["tasks"][0]["after"], "admin");
     assert!(
         fx.db
@@ -1223,10 +1223,10 @@ async fn bulk_due_delete_should_clear_the_date_and_its_target_and_list_it_in_a_d
         json!({"task_ids": [a, b], "action": "due_dates", "due_mode": "delete", "dry_run": true});
     let reply = fx.bulk(&board, dry).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    assert_eq!(reply.body["tasks"][1]["before"], "(none)");
-    assert_eq!(reply.body["tasks"][1]["after"], "(none)");
-    assert_ne!(reply.body["tasks"][0]["before"], "(none)");
-    assert_eq!(reply.body["tasks"][0]["after"], "(none)");
+    assert_eq!(reply.body["tasks"][1]["before"], json!(null));
+    assert_eq!(reply.body["tasks"][1]["after"], json!(null));
+    assert_ne!(reply.body["tasks"][0]["before"], json!(null));
+    assert_eq!(reply.body["tasks"][0]["after"], json!(null));
     assert!(fx.row(&a).due_at.is_some());
 
     let body = json!({"task_ids": [a, b], "action": "due_dates", "due_mode": "delete"});
@@ -1629,4 +1629,54 @@ async fn bulk_delete_should_queue_webhook_events_and_none_for_a_dry_run() {
     let real = json!({"task_ids": [a, b], "action": "delete"});
     assert_eq!(fx.bulk(&board, real).await.status, StatusCode::OK);
     assert_eq!(queued(), base + 2);
+}
+
+#[tokio::test]
+async fn bulk_dry_run_should_return_null_for_a_missing_value() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = fx.task(&columns[0], "a").await;
+    assert!(
+        fx.db
+            .update_task(&a, None, None, None, Some(None))
+            .expect("clear")
+    );
+    assert_eq!(fx.row(&a).color_id, None);
+    let colors = fx.db.list_colors(&board).expect("colors");
+    let red = colors.iter().find(|c| c.value == "red").expect("red");
+    let requests = [
+        json!({"action": "color", "color_id": red.id}),
+        json!({"action": "labels", "add_labels": ["new"]}),
+        json!({"action": "members", "add_member_ids": [fx.admin.as_str()]}),
+        json!({"action": "due_dates", "due_mode": "add", "due_at": "2031-02-03T10:00:00+00:00"}),
+    ];
+
+    for mut body in requests {
+        body["task_ids"] = json!([a]);
+        body["dry_run"] = json!(true);
+        let reply = fx.bulk(&board, body.clone()).await;
+
+        assert_eq!(reply.status, StatusCode::OK, "{body} {}", reply.body);
+        assert_eq!(reply.body["tasks"][0]["before"], json!(null), "{body}");
+        assert!(reply.body["tasks"][0]["after"].is_string(), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn bulk_dry_run_should_not_return_the_none_text_for_a_real_value_spelled_none() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let a = labelled(&fx, &columns[0], "a", &["(none)"]).await;
+
+    let body = json!({
+        "task_ids": [a],
+        "action": "labels",
+        "add_labels": ["other"],
+        "dry_run": true,
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["tasks"][0]["before"], "(none)");
+    assert_eq!(reply.body["tasks"][0]["after"], "(none), other");
 }
