@@ -1958,19 +1958,12 @@ Review
 /// 1. Adds `subtasks.check` to the lead standard role.
 ```
 
-### P22. Import at the top of the file, leave private modules undocumented, and keep short header values inline
+### P22. Import at the top of the file
 
 Every `use` sits in the file's import block, or in a test module's, and never
 inside a function body. A `#[cfg]`-gated import still follows rule 96 and goes
 in the gated item, which may be a gated block inside a function. This extends
 rule 31 to a trait or a type one function uses.
-
-A private module gets no `//!` block, as rule 14 says. Its text goes on the
-item docs of what it exports.
-
-A short response header value such as `nosniff` or `private, no-cache` stays
-inline where it is read. Only a long security policy such as
-`SECURITY_POLICY` gets a named constant.
 
 Review
 
@@ -1984,13 +1977,44 @@ async fn read_prefix(file: &mut File) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-response.headers_mut().insert(CACHE_CONTROL, HeaderValue::from_static("private, no-cache"));
-
 // Bad
 async fn read_prefix(file: &mut File) -> io::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
     ...
 }
+```
 
+### P23. Leave a private module undocumented
+
+A private module gets no `//!` block, as rule 14 says. Its text goes on the
+item docs of what it exports.
+
+Review
+
+```rust
+// Good
+mod csrf;
+
+/// Refuses a browser write that is not same-origin.
+pub fn check_origin(request: &Request) -> Result<(), Refusal> {
+
+// Bad
+//! Same-origin checks for browser writes.
+mod csrf;
+```
+
+### P24. Keep a short header value inline
+
+A short response header value such as `nosniff` or `private, no-cache` stays
+inline where it is read. Only a long security policy such as
+`SECURITY_POLICY` gets a named constant.
+
+Review
+
+```rust
+// Good
+response.headers_mut().insert(CACHE_CONTROL, HeaderValue::from_static("private, no-cache"));
+
+// Bad
 const IMAGE_CACHE: &str = "private, no-cache";
 ```
