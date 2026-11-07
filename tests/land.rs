@@ -1,5 +1,5 @@
 //! `.dev/land.sh` applies one verified commit onto the remote's current main, refuses attribution
-//! and package version changes before any gate, runs lint then test on ci through `dev __gate`,
+//! and package version changes before any gate, runs lint then test on ci through `__gate.sh`,
 //! and pushes only after both pass. A landed card moves to Release, and the worktree and branch
 //! its commit came from are removed. Each test copies the land script and its helpers into a clone
 //! of a bare remote in a tempdir, and puts stub `dev`, `ci`, `jj` and `jj-git-guard` scripts
@@ -19,35 +19,7 @@ use tempfile::TempDir;
 const CARD: &str = "abc123";
 const RELEASE: &str = "release";
 
-const HELPERS: [&str; 2] = ["land.sh", "__remote.sh"];
-
-const VERBS: [&str; 4] = [
-    "__gate.lua",
-    "__push_main.lua",
-    "__push_tag.lua",
-    "lua/pomb/forge.lua",
-];
-
-fn real_dev() -> PathBuf {
-    std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
-        .map(|dir| dir.join("dev"))
-        .find(|path| path.is_file())
-        .expect("dev on PATH")
-}
-
-fn copy_verbs(dev: &Path) {
-    for verb in VERBS {
-        let to = dev.join(verb);
-        fs::create_dir_all(to.parent().expect("parent")).expect("verb dir");
-        fs::copy(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join(".dev")
-                .join(verb),
-            to,
-        )
-        .expect("copy verb");
-    }
-}
+const HELPERS: [&str; 4] = ["land.sh", "__gate.sh", "__push_main.sh", "__remote.sh"];
 
 fn manifest(version: &str) -> String {
     format!("[package]\nname = \"pomb\"\nversion = \"{version}\"\n")
@@ -72,8 +44,7 @@ impl Fixture {
         git(&work, &["checkout", "-q", "-b", "main"]);
         fs::write(work.join("Cargo.toml"), manifest("1.0.0")).expect("write manifest");
         fs::write(work.join("Cargo.lock"), lock("1.0.0")).expect("write lock");
-        copy_verbs(&work.join(".dev"));
-        git(&work, &["add", "-f", "."]);
+        git(&work, &["add", "."]);
         git(&work, &["commit", "-q", "-m", "base"]);
         git(&work, &["push", "-q", "origin", "main"]);
         fs::create_dir_all(work.join(".dev")).expect("dev dir");
@@ -97,8 +68,7 @@ impl Fixture {
         write_script(
             &bin.join("dev"),
             &format!(
-                "case \"$1\" in __*) exec '{real}' \"$@\";; esac\nif [ \"$1\" = board ]; then echo \"$*\" >>'{notes}'; exit 0; fi\ntouch '{state}'\necho \"$1\" >>'{calls}'\nstatus=passed\nexit_code=0\nif [ -e '{fails}/fail-'\"$1\" ]; then status=failed; exit_code=1; fi\nprintf '{{\"run\":\"r%s\",\"repo\":\"%s-0123456789abcdef\",\"source\":\"local\",\"status\":\"%s\"}}\\n' \"$(wc -l <'{state}')\" \"$(basename \"$PWD\")\" \"$status\" >>'{state}'\nexit $exit_code",
-                real = real_dev().display(),
+                "if [ \"$1\" = board ]; then echo \"$*\" >>'{notes}'; exit 0; fi\ntouch '{state}'\necho \"$1\" >>'{calls}'\nstatus=passed\nexit_code=0\nif [ -e '{fails}/fail-'\"$1\" ]; then status=failed; exit_code=1; fi\nprintf '{{\"run\":\"r%s\",\"repo\":\"%s-0123456789abcdef\",\"source\":\"local\",\"status\":\"%s\"}}\\n' \"$(wc -l <'{state}')\" \"$(basename \"$PWD\")\" \"$status\" >>'{state}'\nexit $exit_code",
                 calls = calls.display(),
                 notes = notes.display(),
                 fails = fails.display(),
@@ -116,7 +86,7 @@ impl Fixture {
         write_script(
             &bin.join("jj"),
             &format!(
-                "[ \"$1\" != root ] || exit 1\necho \"$*\" >>'{root}/jjcalls'\n[ \"$1\" = --no-pager ] && shift\nif [ \"$1 $2\" = 'workspace list' ]; then cat '{root}/workspaces' 2>/dev/null; fi\nif [ \"$1 $2\" = 'bookmark list' ]; then cat '{root}/bookmarks' 2>/dev/null; fi\nexit 0"
+                "echo \"$*\" >>'{root}/jjcalls'\n[ \"$1\" = --no-pager ] && shift\nif [ \"$1 $2\" = 'workspace list' ]; then cat '{root}/workspaces' 2>/dev/null; fi\nif [ \"$1 $2\" = 'bookmark list' ]; then cat '{root}/bookmarks' 2>/dev/null; fi\nexit 0"
             ),
         );
         write_script(

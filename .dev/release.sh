@@ -19,9 +19,9 @@
 #      source local.
 #   4. Refuse attribution trailers in the new commit and refuse when <remote>/main moved since
 #      step 1, then push to main on the remote of record.
-#   5. Tag batch-<N> and v<version> at the pushed commit with .dev/__push_tag, then compute
+#   5. Tag batch-<N> and v<version> at the pushed commit with .dev/__push_tag.sh, then compute
 #      the nix hash of the commit's tree and print the request block. A failed tag prints the
-#      __push_tag command to rerun for it.
+#      __push_tag.sh command to rerun for it.
 #
 # The remote of record is forge.remote, else gerrit when that remote exists, else origin.
 # On gerrit the release commit carries a Change-Id trailer.
@@ -149,14 +149,14 @@ printf 'release: logs in %s\n' "$logs"
 export CARGO_TARGET_DIR="$PWD/target"
 for gate in lint test nixcheck build; do
     printf 'release: dev %s --remote ...\n' "$gate"
-    ran=$(DEV_AGENT="pomb/release/$batch" dev __gate "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
+    ran=$(DEV_AGENT="pomb/release/$batch" bash "$tools/__gate.sh" "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
         die "dev $gate --remote did not pass on this worktree: $(cat "$logs/$gate.err"), see $logs/$gate.log (worktree left at $main_repo/$wt)"
     printf 'release: %s ci run %s\n' "$gate" "$ran"
 done
 printf 'release: gates ok: %s\n' "$(rg -o 'Summary.*' "$logs/test.log" | tail -1)"
 
 # 4. attribution check, then push
-dev __push_main "$PWD" --check || die "attribution check failed (worktree left at $main_repo/$wt)"
+bash "$tools/__push_main.sh" "$PWD" --check || die "attribution check failed (worktree left at $main_repo/$wt)"
 git fetch -q "$remote"
 [ "$(git rev-parse "$remote/main")" = "$base" ] ||
     die "$remote/main moved past ${base:0:7} while the gates ran; rerun dev release (worktree left at $main_repo/$wt)"
@@ -164,12 +164,12 @@ if [ "$dry_run" -eq 1 ]; then
     printf 'release: dry run, not pushed. Release commit %s in %s/%s\n' "$sha" "$main_repo" "$wt"
     exit 0
 fi
-dev __push_main "$PWD" || die "push failed (worktree left at $main_repo/$wt)"
+bash "$tools/__push_main.sh" "$PWD" || die "push failed (worktree left at $main_repo/$wt)"
 
 # 5. tags, nix hash and the request
 tag_reruns=""
 for tag in "batch-$batch" "v$new_version"; do
-    dev __push_tag "$tag" "$sha" || tag_reruns+=" && dev __push_tag $tag $sha"
+    bash "$tools/__push_tag.sh" "$tag" "$sha" || tag_reruns+=" && bash $tools/__push_tag.sh $tag $sha"
 done
 [ -z "$tag_reruns" ] || die "pushed $sha but tagging failed; rerun: ${tag_reruns# && }, then dev release --hash-only $sha"
 hash=$(nix_hash "$sha") ||

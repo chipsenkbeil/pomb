@@ -10,10 +10,10 @@
 #      the pomb entry of Cargo.lock: only dev release bumps the version.
 #   2. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>. On gerrit the commit
 #      gets a Change-Id trailer when it has none.
-#   3. Refuse attribution trailers through __push_main --check, before any gate.
-#   4. Run dev lint --remote, then dev test --remote, through __gate, one at a time on ci,
+#   3. Refuse attribution trailers through __push_main.sh --check, before any gate.
+#   4. Run dev lint --remote, then dev test --remote, through __gate.sh, one at a time on ci,
 #      logging to a temp dir. The first failing gate aborts.
-#   5. Push to main through __push_main, remove the land worktree, print the landed sha, note it
+#   5. Push to main through __push_main.sh, remove the land worktree, print the landed sha, note it
 #      on the card with dev board note and move the card to Release with dev board move. Then remove
 #      the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch.
 #      In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the
@@ -105,19 +105,19 @@ while :; do
     fi
     sha=$(git rev-parse HEAD)
 
-    dev __push_main "$PWD" --check || die "The attribution check failed, and the worktree is left at $main_repo/$wt."
+    bash "$tools/__push_main.sh" "$PWD" --check || die "The attribution check failed, and the worktree is left at $main_repo/$wt."
 
     logs=$(mktemp -d "${TMPDIR:-/tmp}/land-$card.XXXXXX")
     printf 'Attempt %s of %s, with logs in %s.\n' "$attempt" "$attempts" "$logs"
     for gate in lint test; do
         printf 'Running dev %s --remote.\n' "$gate"
-        ran=$(DEV_AGENT="pomb/land/$card" dev __gate "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
+        ran=$(DEV_AGENT="pomb/land/$card" bash "$tools/__gate.sh" "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
             die "The dev $gate --remote gate did not pass on this worktree: $(cat "$logs/$gate.err"), so see $logs/$gate.log, and the worktree is left at $main_repo/$wt."
         printf 'The %s gate ran as ci run %s.\n' "$gate" "$ran"
     done
 
     status=0
-    dev __push_main "$PWD" || status=$?
+    bash "$tools/__push_main.sh" "$PWD" || status=$?
     [ "$status" -eq 0 ] && break
     [ "$status" -eq 3 ] || die "The push failed with status $status, and the worktree is left at $main_repo/$wt."
     [ "$attempt" -lt "$attempts" ] || die "The branch $remote/main moved on $attempts times, so nothing was pushed, the worktree is left at $main_repo/$wt, and you should land the card again."
