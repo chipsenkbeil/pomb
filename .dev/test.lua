@@ -1,7 +1,7 @@
 --[[
 positional
 Run the test suite. nextest skips doctests, so they get their own step.
-Arguments go to nextest (`dev test -- -j 1 module`), doctests run only when there are none, and each tests/js script runs with node against static/app.js.
+Arguments go to nextest (`dev test -- -j 1 module`), doctests run only when there are none, each tests/js script runs with node against static/app.js, and every .dev/tests/*_test.lua runs last, arguments or not.
 ]]
 local devos = require("dev.os")
 local fs = require("dev.fs")
@@ -37,4 +37,4 @@ for _, name in ipairs(names) do
         end
     end
 end
-return 0
+return require("dev.testrun").run(ctx.root)
