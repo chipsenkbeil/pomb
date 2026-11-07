@@ -22,12 +22,12 @@ fixture `.dev/golden-master-board.json`.
 
 Run everything through `dev`, which executes the scripts in `.dev/`. Those
 scripts are the sanctioned entry point: do not call `cargo fmt`, `cargo clippy`
-or `cargo test` directly, and do not edit `.dev/lint.sh` above its
-`# --- project-specific checks below ---` marker (`dev sync` owns that part).
+or `cargo test` directly, and do not edit `.dev/lint.lua` above its
+`-- --- project-specific checks below ---` marker (`dev sync` owns that part).
 
 | Command | Runs |
 |---|---|
-| `dev lint` | nightly `cargo fmt --check`, clippy with `-D warnings`, ast-grep, `cargo sort --check`, `cargo deny check bans`, the manifest, derive-order, module-doc and comment-spacing checks, then `node --check` on `static/app.js`, `static/passkey.js`, `static/pages.js` and `static/docs.js` |
+| `dev lint` | nightly `cargo fmt --check`, clippy with `-D warnings` (and a release pass when the source mentions `debug_assertions`), `ast-grep scan` and `ast-grep test`, `cargo sort --check`, `cargo deny check -W unmaintained`, the manifests check, the source checks (derive order, module docs, cfg imports, comment periods and runs, getters, doc headings, comment spacing, unsafe), then the project checks: `node --check` on `static/app.js`, `static/passkey.js`, `static/pages.js` and `static/docs.js`, no inline scripts, no C build tools in the dependency tree, `shellcheck` and `shfmt` on `.dev/site` scripts, private details, and parity history entries |
 | `dev test` | `cargo nextest run --all-features` (it takes any arguments), then `cargo test --doc --all-features` (only without arguments), then each `tests/js/*.js` with `node` against `static/app.js` |
 | `dev fmt` | `cargo +nightly fmt` with `rustfmt.toml` |
 | `dev build` | `cargo build --release` |
