@@ -365,6 +365,28 @@ async fn watched_flags(fx: &Fixture) -> Vec<(String, bool)> {
 }
 
 #[tokio::test]
+async fn board_columns_should_report_limit_unit() {
+    let (_dir, fx) = fixture();
+    fx.db
+        .set_column_config(&fx.doing, r#"{"wip_limit_type":"hours"}"#)
+        .expect("config");
+    let columns_uri = format!("/api/boards/{}/columns", fx.board_id);
+    let detail_uri = format!("/api/boards/{}", fx.board_id);
+
+    let (status, columns) = send(&fx, "GET", &columns_uri, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{columns}");
+    assert_eq!(columns[0]["name"], "Todo");
+    assert_eq!(columns[0]["limit_unit"], "count");
+    assert_eq!(columns[1]["name"], "Doing");
+    assert_eq!(columns[1]["limit_unit"], "hours");
+
+    let (status, detail) = send(&fx, "GET", &detail_uri, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["columns"][0]["limit_unit"], "count");
+    assert_eq!(detail["columns"][1]["limit_unit"], "hours");
+}
+
+#[tokio::test]
 async fn watching_a_column_should_show_in_the_api_until_it_is_unwatched() {
     let (_dir, fx) = fixture();
     assert_eq!(watched_flags(&fx).await[0], ("Todo".to_string(), false));

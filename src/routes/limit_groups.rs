@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 use super::{AppError, found, parse_body};
 use crate::auth::AuthUser;
 use crate::db::{AccountDb, GroupWrite};
-use crate::models::LimitGroup;
+use crate::models::{LimitGroup, LimitUnit};
 
 /// A card limit shared by a run of adjacent columns of a board.
 #[derive(Clone, Debug, Serialize, ToSchema)]
@@ -19,6 +19,8 @@ pub(crate) struct LimitGroupView {
     column_ids: Vec<String>,
     /// The most cards the columns of the group hold together.
     limit: i64,
+    /// What `limit` counts: always `count`, since a limit group counts cards only.
+    limit_unit: LimitUnit,
     /// The cards the columns of the group hold now.
     count: usize,
 }
@@ -30,6 +32,7 @@ impl LimitGroupView {
             id: group.id.clone(),
             column_ids: group.column_ids.clone(),
             limit: group.limit,
+            limit_unit: LimitUnit::Count,
             count: db.limit_group_count(group).map_err(AppError::from)?,
         })
     }

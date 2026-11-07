@@ -211,6 +211,14 @@ async fn board_detail_should_list_each_group_with_its_columns_limit_and_count() 
 }
 
 #[tokio::test]
+async fn limit_groups_should_report_count_unit() {
+    let fx = Fixture::new();
+    fx.group(&[0, 1], 2).await;
+    let detail = fx.board_detail().await;
+    assert_eq!(detail["limit_groups"][0]["limit_unit"], "count");
+}
+
+#[tokio::test]
 async fn limit_group_should_change_its_limit_and_unlink() {
     let fx = Fixture::new();
     let made = fx.group(&[0, 1], 2).await;

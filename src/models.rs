@@ -776,6 +776,14 @@ pub struct ColumnRow {
     pub stage: Option<ColumnStage>,
 }
 
+/// What a WIP limit counts: tasks, or their estimated hours.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LimitUnit {
+    Count,
+    Hours,
+}
+
 /// A step of the pull model that a board column can stand in for. Blocked and Done are not
 /// stages: the board config and `is_done` name those columns.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -835,6 +843,16 @@ impl ColumnRow {
     pub fn wip_limit_in_hours(&self) -> bool {
         let bag: serde_json::Value = serde_json::from_str(&self.config_json).unwrap_or_default();
         bag["wip_limit_type"] == "hours"
+    }
+
+    /// Returns what the WIP limit counts, tasks or their estimated hours.
+    #[must_use]
+    pub fn wip_limit_unit(&self) -> LimitUnit {
+        if self.wip_limit_in_hours() {
+            LimitUnit::Hours
+        } else {
+            LimitUnit::Count
+        }
     }
 
     /// Renames the column to `name` and remembers the old name in `former_names`, forgetting the

@@ -5579,15 +5579,16 @@ struct BoardMemberInput {
     role: MemberRoleInput,
 }
 
-/// One board column in `GET /api/boards/:id/columns`: `{ "id", "name", "wip_limit", "is_done",
-/// "is_blocked" }`
-/// (Move-task dialog board switcher).
+/// One board column in `GET /api/boards/:id/columns` and `GET /api/boards/:id`: `{ "id", "name",
+/// "wip_limit", "limit_unit", "is_done", "is_blocked" }` (Move-task dialog board switcher).
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct ColumnListItem {
     id: String,
     name: String,
     /// WIP limit; null when unset.
     wip_limit: Option<i64>,
+    /// What the WIP limit counts: `count` for tasks, `hours` for estimated hours.
+    limit_unit: LimitUnit,
     /// Whether tasks moved here count as Done.
     is_done: bool,
     /// The step of the pull model the column stands in for, or null for none.
@@ -20110,6 +20111,7 @@ fn board_columns(db: &AccountDb, board_id: &str) -> Result<Vec<ColumnListItem>, 
         .map(|column| ColumnListItem {
             watched: column.watched_by(account),
             is_blocked: board.row().is_blocked_column(&column.id),
+            limit_unit: column.wip_limit_unit(),
             id: column.id,
             name: column.name,
             wip_limit: column.wip_limit,
