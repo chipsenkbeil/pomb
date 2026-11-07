@@ -2,11 +2,9 @@ var src = require('fs').readFileSync(process.argv[2], 'utf8');
 var start = src.indexOf('  var Notifications = {');
 var end = src.indexOf('  function initNotificationsPanel() {', start);
 if (start < 0 || end < start) throw new Error('notifications object not found');
-
+const LocalTime = require('../../static/pure.js').LocalTime;
 const accountPrefs = { hour12: true };
-const ltStart = src.indexOf('  var LocalTime = (function () {');
-const ltEnd = src.indexOf('\n  })();\n', ltStart) + '\n  })();\n'.length;
-const LocalTime = new Function('accountPrefs', src.slice(ltStart, ltEnd) + '\nreturn LocalTime;')(accountPrefs);
+LocalTime.use(accountPrefs);
 var synced = 0;
 var TimerUI = { syncBell: function () { synced++; } };
 var replies = {};

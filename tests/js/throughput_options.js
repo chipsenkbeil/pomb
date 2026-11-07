@@ -24,7 +24,7 @@ function escapeHtml(s) {
 var accountPrefs = { hour12: true, weekStart: 1 };
 eval(fn('  function daysIntoWeek(d) {'));
 eval(fn('  function clockText(d) {'));
-eval(fn('  function isoDate(d) {'));
+const { isoDate } = require('../../static/pure.js');
 eval(block('  var ReportChart = (function () {'));
 eval(block('  var ReportBreakdown = (function () {'));
 eval(block('  var ColumnHistory = (function () {'));

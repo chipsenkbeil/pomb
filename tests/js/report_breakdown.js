@@ -8,7 +8,7 @@ function block(start) {
 }
 var document = { getElementById: function () { return null; } };
 function escapeHtml(s) { return String(s); }
-eval(src.slice(src.indexOf('  function isoDate(d) {'), src.indexOf('\n  }\n', src.indexOf('  function isoDate(d) {')) + 4));
+const { isoDate } = require('../../static/pure.js');
 eval(block('  var ReportBreakdown = (function () {'));
 eval(block('  var TimeEstimatePage = (function () {'));
 

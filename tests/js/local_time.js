@@ -1,10 +1,5 @@
-var src = require('fs').readFileSync(process.argv[2], 'utf8');
-var from = src.indexOf('  var LocalTime = (function () {');
-var to = src.indexOf('\n  })();\n', from);
-if (from < 0 || to < 0) { console.log('FAIL not found: LocalTime'); process.exit(1); }
-var accountPrefs = { hour12: true };
-var LocalTime;
-eval(src.slice(from, to + '\n  })();\n'.length));
+const { LocalTime } = require('../../static/pure.js');
+LocalTime.use({ hour12: true });
 
 var failures = 0;
 function check(name, got, want) {

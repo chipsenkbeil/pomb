@@ -390,7 +390,7 @@ end
 
 local json = require("dev.json")
 
-local SCRIPTS = { "static/app.js", "static/passkey.js", "static/pages.js", "static/docs.js" }
+local SCRIPTS = { "static/pure.js", "static/app.js", "static/passkey.js", "static/pages.js", "static/docs.js" }
 local PRIVACY_OCTET = "(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
 local PRIVACY_IP = "(?<![0-9A-Za-z.§])"
     .. PRIVACY_OCTET
@@ -404,6 +404,7 @@ local PRIVACY_ALLOW = ".dev/privacy-allow.txt"
 local PRIVACY_CHUNK = 500
 
 local SYNTAX_NAMES = {
+    ["static/pure.js"] = "pure js syntax",
     ["static/app.js"] = "js syntax",
     ["static/passkey.js"] = "passkey js syntax",
     ["static/pages.js"] = "pages js syntax",

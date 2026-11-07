@@ -1,5 +1,6 @@
 var fs = require('fs');
 var src = fs.readFileSync(process.argv[2], 'utf8');
+const { isoDate } = require('../../static/pure.js');
 function block(start) {
   var from = src.indexOf(start);
   if (from < 0) throw new Error(start + ' not found');
@@ -23,7 +24,6 @@ function fn(start) {
 eval(fn('  function daysIntoWeek(d) {'));
 eval(fn('  function clockText(d) {'));
 eval(block('  var ReportChart = (function () {'));
-eval(src.slice(src.indexOf('  function isoDate(d) {'), src.indexOf('\n  }\n', src.indexOf('  function isoDate(d) {')) + 4));
 eval(block('  var ReportBreakdown = (function () {'));
 eval(block('  var ColumnHistory = (function () {'));
 eval(block('  var ReportRange = (function () {'));

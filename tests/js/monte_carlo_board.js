@@ -1,5 +1,6 @@
 var fs = require('fs');
 var src = fs.readFileSync(process.argv[2], 'utf8');
+const { isoDate } = require('../../static/pure.js');
 function block(start) {
   var from = src.indexOf(start);
   if (from < 0) throw new Error(start + ' not found');
@@ -9,7 +10,6 @@ function block(start) {
 var document = { getElementById: function () { return null; } };
 function escapeHtml(s) { return String(s); }
 eval(block('  var ReportChart = (function () {'));
-eval(src.slice(src.indexOf('  function isoDate(d) {'), src.indexOf('\n  }\n', src.indexOf('  function isoDate(d) {')) + 4));
 eval(block('  var ReportBreakdown = (function () {'));
 eval(block('  var ReportFile = (function () {'));
 eval(block('  var MonteCarloPage = (function () {'));
