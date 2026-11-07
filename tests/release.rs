@@ -12,15 +12,40 @@ use std::process::{Command, Output};
 
 const RELEASE: [&str; 4] = ["--batch", "7", "--summary", "cut it"];
 
-const SCRIPTS: [&str; 7] = [
+const SCRIPTS: [&str; 4] = [
     "release.sh",
     "__bump_version.sh",
     "__version_guard.sh",
-    "__push_main.sh",
-    "__push_tag.sh",
-    "__gate.sh",
     "__remote.sh",
 ];
+
+const VERBS: [&str; 4] = [
+    "__gate.lua",
+    "__push_main.lua",
+    "__push_tag.lua",
+    "lua/pomb/forge.lua",
+];
+
+fn real_dev() -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+        .map(|dir| dir.join("dev"))
+        .find(|path| path.is_file())
+        .expect("dev on PATH")
+}
+
+fn copy_verbs(dev: &Path) {
+    for verb in VERBS {
+        let to = dev.join(verb);
+        fs::create_dir_all(to.parent().expect("parent")).expect("verb dir");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(".dev")
+                .join(verb),
+            to,
+        )
+        .expect("copy verb");
+    }
+}
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -93,6 +118,9 @@ fn fixture(tagged_version: &str, main_version: &str, cards_after_tag: usize) -> 
         &repo,
         &["remote", "add", "origin", remote.to_str().expect("utf8")],
     );
+    copy_verbs(&repo.join(".dev"));
+    git(&repo, &["add", "-f", ".dev"]);
+    git(&repo, &["commit", "-q", "-m", "Add dev verbs"]);
     commit_version(&repo, tagged_version, "Release batch-1: first");
     git(
         &repo,
@@ -106,7 +134,7 @@ fn fixture(tagged_version: &str, main_version: &str, cards_after_tag: usize) -> 
     }
     git(&repo, &["push", "-q", "origin", "main", "--tags"]);
     let dev = repo.join(".dev");
-    fs::create_dir(&dev).expect("dev dir");
+    fs::create_dir_all(&dev).expect("dev dir");
     for script in SCRIPTS {
         fs::copy(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -123,13 +151,15 @@ fn fixture(tagged_version: &str, main_version: &str, cards_after_tag: usize) -> 
     write_script(
         &bin.join("dev"),
         &format!(
-            "echo \"$1\" >>'{gates}'\n\
+            "case \"$1\" in __*) exec '{real}' \"$@\";; esac\n\
+             echo \"$1\" >>'{gates}'\n\
              [ -z \"$MOVE_MAIN\" ] || git -C \"$MOVE_MAIN\" push -q origin HEAD:main\n\
              [ \"$1\" != \"$FAIL_GATE\" ] || exit 1\n\
              n=$(jq '.runs|length' '{state}')\n\
              jq --arg id \"run$n\" '.runs += [{{run:$id,repo:\"release-7-0123\",source:\"local\",kind:\"run\",status:\"passed\"}}]' '{state}' >'{state}.next'\n\
              mv '{state}.next' '{state}'\n\
              echo 'Summary [1s] 1 tests run: 1 passed'",
+            real = real_dev().display(),
             gates = gates.display(),
             state = state.display(),
         ),
@@ -361,11 +391,11 @@ fn release_should_print_the_tag_rerun_command_when_tagging_fails() {
     let err = stderr(&out);
     assert!(err.contains("rerun: "), "{err}");
     assert!(
-        err.contains(&format!("__push_tag.sh batch-7 {head}")),
+        err.contains(&format!("dev __push_tag batch-7 {head}")),
         "{err}"
     );
     assert!(err.contains("dev release --hash-only"), "{err}");
-    assert!(!err.contains("__push_tag.sh v0.5.86"), "{err}");
+    assert!(!err.contains("dev __push_tag v0.5.86"), "{err}");
     assert_eq!(
         git(&fx.remote, &["rev-parse", "refs/tags/v0.5.86^{commit}"]),
         head
@@ -389,7 +419,7 @@ fn release_should_print_the_tag_rerun_command_when_the_tag_push_fails() {
     let head = git(&fx.remote, &["rev-parse", "main"]);
     let err = stderr(&out);
     assert!(
-        err.contains(&format!("__push_tag.sh batch-7 {head}")),
+        err.contains(&format!("dev __push_tag batch-7 {head}")),
         "{err}"
     );
     assert!(git(&fx.repo, &["tag", "-l", "batch-7"]).is_empty());
