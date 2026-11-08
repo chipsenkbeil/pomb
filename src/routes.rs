@@ -8701,17 +8701,20 @@ struct SearchQuery {
     /// Most results to return, from 1 to 100, default 25.
     #[param(value_type = Option<i64>)]
     limit: Option<String>,
+    /// The `next_cursor` of the previous page, to read the page after it.
+    cursor: Option<String>,
 }
 
 impl SearchQuery {
     /// Parses raw query pairs, refusing a repeated parameter.
     fn from_pairs(pairs: Vec<(String, String)>) -> Result<Self, AppError> {
-        refuse_repeats(&pairs, &["q", "limit"])?;
+        refuse_repeats(&pairs, &["q", "limit", "cursor"])?;
         let mut query = Self::default();
         for (key, value) in pairs {
             match key.as_str() {
                 "q" => query.q = Some(value),
                 "limit" => query.limit = Some(value),
+                "cursor" => query.cursor = Some(value),
                 _ => {}
             }
         }
@@ -8727,6 +8730,8 @@ struct SearchPage {
     /// True when more cards matched than `limit` returns, or the time budget ended the search
     /// before it read every card.
     truncated: bool,
+    /// Pass as `cursor` to read the next page. Null on the last page.
+    next_cursor: Option<String>,
 }
 
 /// Searches the cards of every board the caller can read.
@@ -8759,6 +8764,11 @@ struct SearchPage {
 /// subtask or comment in the task's own list. A query of filters alone matches every card that
 /// passes them and reports `title` with no ranges.
 ///
+/// `label:needs:human` lists the cards waiting on the owner across every board the token sees. When
+/// more cards match than `limit` returns, `next_cursor` is set: pass it as `cursor` to read the
+/// next page. The cursor is an offset into the ranked results, so a write between two pages can
+/// shift what a page holds. A `cursor` that is not a whole number answers 400 `invalid_request`.
+///
 /// A token limited to some boards searches only those, and a `board:` term naming another board
 /// finds nothing. The search stops after 2 seconds and returns what it has found, with
 /// `truncated` set.
@@ -8770,7 +8780,7 @@ struct SearchPage {
     params(SearchQuery),
     responses(
         (status = 200, description = "The matching cards, best first, up to `limit`", body = SearchPage),
-        (status = 400, description = "`invalid_request`: a missing or blank `q`, an unknown or malformed term, or a `limit` outside 1 to 100"),
+        (status = 400, description = "`invalid_request`: a missing or blank `q`, an unknown or malformed term, a `limit` outside 1 to 100, or a `cursor` that is not a whole number"),
         (status = 401, description = "Missing or invalid credentials"),
         (status = 503, description = "`busy`: the server is reading its limit of whole boards, or this account is, and this one waited more than 10 seconds for its turn"),
     ),
@@ -8788,6 +8798,7 @@ async fn search_cards(
         DEFAULT_SEARCH_LIMIT,
         MAX_SEARCH_LIMIT,
     )?;
+    let offset = parse_search_cursor(query.cursor.as_deref())?;
     let slot = match Slot::Board(account.account_id().as_str())
         .acquire(&state)
         .await
@@ -8798,11 +8809,25 @@ async fn search_cards(
     let budget = std::time::Duration::from_secs(SEARCH_BUDGET_SECS);
     let page = tokio::task::spawn_blocking(move || {
         let _held = slot;
-        run_search(&account, &terms, limit, budget)
+        run_search(&account, &terms, limit, offset, budget)
     })
     .await
     .map_err(|error| AppError::internal(error.to_string()))??;
     Ok(Json(page).into_response())
+}
+
+/// Reads the offset a search `cursor` holds, or 0 for none.
+fn parse_search_cursor(raw: Option<&str>) -> Result<usize, AppError> {
+    let Some(raw) = raw else {
+        return Ok(0);
+    };
+    let digits = !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit());
+    match raw.parse::<usize>() {
+        Ok(offset) if digits => Ok(offset),
+        _ => Err(AppError::bad_request(format!(
+            "invalid cursor \"{raw}\": use the next_cursor of a previous page"
+        ))),
+    }
 }
 
 /// Reads every board the token reaches, one transaction per board, and ranks the cards `terms`
@@ -8811,6 +8836,7 @@ fn run_search(
     account: &AccountDb,
     terms: &search::Query,
     limit: usize,
+    offset: usize,
     budget: std::time::Duration,
 ) -> Result<SearchPage, AppError> {
     let deadline = std::time::Instant::now() + budget;
@@ -8844,13 +8870,17 @@ fn run_search(
         }
     }
     search::Hit::rank(&mut hits);
+    let mut hits: Vec<search::Hit> = hits.into_iter().skip(offset).collect();
+    let mut next_cursor = None;
     if hits.len() > limit {
         hits.truncate(limit);
         truncated = true;
+        next_cursor = Some(offset.saturating_add(limit).to_string());
     }
     Ok(SearchPage {
         items: hits,
         truncated,
+        next_cursor,
     })
 }
 
@@ -15821,7 +15851,7 @@ fn picker_candidates(
     terms: &search::Query,
 ) -> Result<LinkPickerTemplate, AppError> {
     let budget = std::time::Duration::from_secs(SEARCH_BUDGET_SECS);
-    let page = run_search(account, terms, usize::MAX, budget)?;
+    let page = run_search(account, terms, usize::MAX, 0, budget)?;
     let mut reads = account.unrestricted_link_reads().map_err(AppError::from)?;
     let own_links = reads.task_links(id).map_err(AppError::from)?;
     let umbrella = reads.umbrella(&own_links).map_err(AppError::from)?;

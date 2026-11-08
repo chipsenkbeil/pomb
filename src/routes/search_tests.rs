@@ -474,7 +474,7 @@ async fn search_should_stop_when_the_time_budget_is_spent() {
     let Seeded { fx, .. } = seeded().await;
     let account = fx.db.account(&fx.admin);
     let terms = Query::parse("deploy").expect("a query");
-    let spent = run_search(&account, &terms, 25, Duration::ZERO)
+    let spent = run_search(&account, &terms, 25, 0, Duration::ZERO)
         .ok()
         .expect("a page");
     assert!(spent.truncated);
@@ -483,6 +483,7 @@ async fn search_should_stop_when_the_time_budget_is_spent() {
         &account,
         &terms,
         25,
+        0,
         Duration::from_secs(SEARCH_BUDGET_SECS),
     )
     .ok()
@@ -655,4 +656,99 @@ async fn search_should_answer_within_the_budget_over_the_golden_board() {
         }
     }
     assert_eq!(fx.names("is:done").await.len(), 3);
+}
+
+async fn needs_human_fixture() -> (Fixture, String, String) {
+    let fx = Fixture::new();
+    let (alpha, alpha_columns) = fx.board("Alpha", &["Todo"], "none");
+    let (beta, beta_columns) = fx.board("Beta", &["Todo"], "none");
+    for (column, board, count) in [
+        (&alpha_columns[0], "alpha", 3),
+        (&beta_columns[0], "beta", 2),
+    ] {
+        for index in 0..count {
+            fx.task(json!({
+                "column_id": column,
+                "name": format!("Ask {board} {index}"),
+                "labels": ["needs:human"],
+            }))
+            .await;
+        }
+    }
+    fx.task(json!({"column_id": alpha_columns[0], "name": "Quiet card"}))
+        .await;
+    (fx, alpha, beta)
+}
+
+#[tokio::test]
+async fn search_should_return_needs_human_cards_from_every_board_the_token_sees() {
+    let (fx, alpha, beta) = needs_human_fixture().await;
+    let reply = fx.search("label:needs:human").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let items = reply.body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 5, "{}", reply.body);
+    for (board, count) in [(&alpha, 3), (&beta, 2)] {
+        let hits = items.iter().filter(|item| item["board_id"] == *board);
+        assert_eq!(hits.count(), count, "{}", reply.body);
+    }
+    assert!(items.iter().all(|item| item["name"] != "Quiet card"));
+}
+
+#[tokio::test]
+async fn search_should_leave_out_a_board_outside_the_tokens_set() {
+    let (fx, alpha, beta) = needs_human_fixture().await;
+    let (mut record, raw) = new_api_token_record(&fx.admin, "limited", AuthScope::Read, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([beta.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+    let reply = fx.search_as(&raw, "label:needs:human").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let items = reply.body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2, "{}", reply.body);
+    assert!(items.iter().all(|item| item["board_id"] == beta));
+    assert!(items.iter().all(|item| item["board_id"] != alpha));
+}
+
+#[tokio::test]
+async fn search_should_page_past_the_limit_with_the_returned_cursor() {
+    let (fx, _, _) = needs_human_fixture().await;
+    let query = encode("label:needs:human");
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let mut uri = format!("/api/search?q={query}&limit=2");
+        if let Some(cursor) = &cursor {
+            uri.push_str(&format!("&cursor={cursor}"));
+        }
+        let reply = fx.send(&fx.token, "GET", &uri, None).await;
+        assert_eq!(reply.status, StatusCode::OK, "{uri}: {}", reply.body);
+        seen.extend(names_of(&reply));
+        pages += 1;
+        match reply.body["next_cursor"].as_str() {
+            Some(next) => cursor = Some(next.to_string()),
+            None => break,
+        }
+        assert!(pages < 10, "the cursor never ended");
+    }
+    assert_eq!(pages, 3);
+    assert_eq!(seen.len(), 5);
+    assert_eq!(seen.iter().collect::<BTreeSet<_>>().len(), 5, "{seen:?}");
+    let all = fx.names("label:needs:human").await;
+    assert_eq!(seen, all);
+}
+
+#[tokio::test]
+async fn search_should_refuse_a_malformed_cursor() {
+    let (fx, _, _) = needs_human_fixture().await;
+    for cursor in ["abc", "-1", "1.5", "", "99999999999999999999999"] {
+        let uri = format!("/api/search?q=ask&cursor={cursor}");
+        let reply = fx.send(&fx.token, "GET", &uri, None).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{cursor}: {}",
+            reply.body
+        );
+        assert_eq!(reply.code.as_deref(), Some("invalid_request"), "{cursor}");
+    }
 }
