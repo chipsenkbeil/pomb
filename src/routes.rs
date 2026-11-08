@@ -10654,7 +10654,7 @@ struct BulkTasksResult {
     responses(
         (status = 200, description = "Every task changed, or would change under `dry_run`", body = BulkTasksResult),
         (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks, a link the tasks cannot hold or a `parent` or `child` link whose umbrella is not an epic (`not_epic`)"),
-        (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task, or a task it links to, carries a locking label and the token is not the owner's. `role_move_forbidden`: a `move` by a token issued as a role that the board's column rules do not let move one of the tasks out of its column into the target"),
+        (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task carries a locking label, or a task it links to carries one and the link is not `blocked_by` or `related`, and the token is not the owner's. `role_move_forbidden`: a `move` by a token issued as a role that the board's column rules do not let move one of the tasks out of its column into the target"),
         (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
         (status = 409, description = "`epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -10865,9 +10865,11 @@ async fn bulk_tasks(
                     "a relation target is one of the tasks",
                 ));
             }
-            for (_, target_id) in &add {
+            for (kind, target_id) in &add {
                 let target = found(db.task(target_id), "task or target not found")?;
-                ensure_unlocked(db, &user, target.board_id(), target.row())?;
+                if !matches!(kind, LinkKind::BlockedBy | LinkKind::Related) {
+                    ensure_unlocked(db, &user, target.board_id(), target.row())?;
+                }
             }
             for (_, target_id) in &remove {
                 ensure_task_id_unlocked(db, &user, target_id)?;
@@ -11982,6 +11984,7 @@ struct CreateLinkInput {
     responses(
         (status = 200, description = "The link, as seen from this task", body = TaskLink),
         (status = 400, description = "unknown link kind, target is the task itself, link would create a cycle, the tasks already have a relation of another type, the child already has an umbrella, the link would put the umbrella under its own child, or the umbrella is not an epic (`not_epic`)"),
+        (status = 403, description = "`card_locked`: the task carries a locking label, or the kind is not `blocked_by` or `related` and the target carries one"),
         (status = 404, description = "Task or target not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -12003,7 +12006,9 @@ async fn create_task_link(
         return Err(AppError::bad_request("target is the task itself"));
     }
     let target = found(account.task(&input.target_id), missing)?;
-    ensure_unlocked(&account, &user, target.board_id(), target.row())?;
+    if !matches!(kind, LinkKind::BlockedBy | LinkKind::Related) {
+        ensure_unlocked(&account, &user, target.board_id(), target.row())?;
+    }
     match account
         .add_task_link(&task, kind, &target, user.token_id.as_deref(), user.actor())
         .map_err(AppError::from)?

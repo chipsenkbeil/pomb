@@ -1574,7 +1574,7 @@ async fn bulk_relations_should_refuse_a_locked_target() {
     let body = json!({
         "task_ids": [a],
         "action": "relations",
-        "add_links": [{"kind": "related", "target_id": locked}],
+        "add_links": [{"kind": "blocks", "target_id": locked}],
     });
     let reply = fx.bulk_as(&work, &board, body).await;
 

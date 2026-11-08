@@ -874,11 +874,6 @@ mod locked {
                 Body::Json(json!({"kind": "child", "target_id": ids.task})),
             ),
             (
-                "POST",
-                format!("/api/tasks/{}/links", ids.other),
-                Body::Json(json!({"kind": "related", "target_id": ids.task})),
-            ),
-            (
                 "PUT",
                 format!("/api/tasks/{}/umbrella", ids.other),
                 Body::Json(json!({"target_id": ids.task})),
@@ -1017,6 +1012,83 @@ mod locked {
             let (status, text) = fx.call(Who::Session, "GET", &uri, Body::Empty).await;
             assert_eq!(status, StatusCode::OK, "{text}");
         }
+    }
+
+    #[tokio::test]
+    async fn token_should_link_blocked_by_a_locked_task() {
+        let fx = Fixture::new();
+        let locked = fx.locked_task().await;
+        for kind in ["blocked_by", "related"] {
+            let other = fx.task(&fx.backlog, json!({})).await;
+            let uri = format!("/api/tasks/{other}/links");
+            let link = json!({"kind": kind, "target_id": locked});
+            let (status, text) = fx.json(Who::Token, "POST", &uri, link).await;
+            assert_eq!(status, StatusCode::OK, "{kind}: {text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn token_should_still_be_refused_a_link_that_changes_the_locked_card() {
+        let fx = Fixture::new();
+        let locked = fx.locked_task().await;
+        for kind in ["blocks", "parent", "child"] {
+            let other = fx.task(&fx.backlog, json!({})).await;
+            let uri = format!("/api/tasks/{other}/links");
+            let link = json!({"kind": kind, "target_id": locked});
+            let (status, text) = fx.json(Who::Token, "POST", &uri, link).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{kind}: {text}");
+            assert_eq!(parse(&text)["code"], "card_locked", "{kind}: {text}");
+        }
+        let other = fx.task(&fx.backlog, json!({})).await;
+        for kind in ["blocked_by", "blocks", "related", "parent", "child"] {
+            let uri = format!("/api/tasks/{locked}/links");
+            let link = json!({"kind": kind, "target_id": other});
+            let (status, text) = fx.json(Who::Token, "POST", &uri, link).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{kind}: {text}");
+            assert_eq!(parse(&text)["code"], "card_locked", "{kind}: {text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn bulk_relations_should_link_blocked_by_a_locked_task() {
+        let fx = Fixture::new();
+        let locked = fx.locked_task().await;
+        let other = fx.task(&fx.backlog, json!({})).await;
+        let uri = format!("/api/boards/{}/tasks/bulk", fx.board);
+        let body = json!({
+            "task_ids": [other],
+            "action": "relations",
+            "add_links": [{"kind": "blocked_by", "target_id": locked}],
+        });
+        let (status, text) = fx.json(Who::Token, "POST", &uri, body).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn bulk_relations_should_still_refuse_a_link_that_changes_the_locked_card() {
+        let fx = Fixture::new();
+        let locked = fx.locked_task().await;
+        let uri = format!("/api/boards/{}/tasks/bulk", fx.board);
+        for kind in ["blocks", "parent", "child"] {
+            let other = fx.task(&fx.backlog, json!({})).await;
+            let body = json!({
+                "task_ids": [other],
+                "action": "relations",
+                "add_links": [{"kind": kind, "target_id": locked}],
+            });
+            let (status, text) = fx.json(Who::Token, "POST", &uri, body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{kind}: {text}");
+            assert_eq!(parse(&text)["code"], "card_locked", "{kind}: {text}");
+        }
+        let other = fx.task(&fx.backlog, json!({})).await;
+        let body = json!({
+            "task_ids": [locked],
+            "action": "relations",
+            "add_links": [{"kind": "related", "target_id": other}],
+        });
+        let (status, text) = fx.json(Who::Token, "POST", &uri, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(parse(&text)["code"], "card_locked", "{text}");
     }
 
     #[tokio::test]
