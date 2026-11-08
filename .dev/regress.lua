@@ -2,7 +2,7 @@
 local
 positional
 Diff this tree's screenshots against a baseline revision on a ci browser runner.
-REV defaults to main on the remote of record. The revision is exported to .ci-baseline/, the ci regress job runs on the working copy, and .ci-baseline/ is removed on every exit. The report, diff images included, is kept as a ci artifact, and the run id and the `ci cp` command that fetches it print at the end.
+REV defaults to the merge-base of HEAD and main on the remote of record, so a candidate behind main reports only its own diffs. The baseline sha prints to stderr before the run. The revision is exported to .ci-baseline/, the ci regress job runs on the working copy, and .ci-baseline/ is removed on every exit. The report, diff images included, is kept as a ci artifact, and the run id and the `ci cp` command that fetches it print at the end.
 ]]
 local devos = require("dev.os")
 local forge = require("dev.forge")
@@ -15,9 +15,31 @@ local stderr = io.stderr
 local BASELINE = ".ci-baseline"
 local INTERRUPTED = 130
 
+local function resolve_sha(rev)
+    local out, code = devos.capture(
+        { "git", "rev-parse", "--verify", "--quiet", rev .. "^{commit}" },
+        { cwd = root, stderr = "null" }
+    )
+    local sha = out:match("^%x+")
+    if code ~= 0 or not sha then
+        verb.die("Cannot resolve " .. rev .. " to a commit.")
+    end
+    return sha
+end
+
+local function merge_base(remote_main)
+    local out, code =
+        devos.capture({ "git", "merge-base", "HEAD", remote_main }, { cwd = root, stderr = "null" })
+    local sha = out:match("^%x+")
+    if code ~= 0 or not sha then
+        verb.die("HEAD and " .. remote_main .. " have no merge-base.")
+    end
+    return sha
+end
+
 local function baseline_rev(requested)
     if requested ~= nil and requested ~= "" then
-        return requested
+        return resolve_sha(requested)
     end
     local found, why = forge.resolve(root)
     if not found then
@@ -27,7 +49,7 @@ local function baseline_rev(requested)
     if code ~= 0 then
         return nil, code
     end
-    return found.remote .. "/main"
+    return merge_base(found.remote .. "/main")
 end
 
 local function export(rev, dir)
@@ -88,6 +110,7 @@ local rev, fetch_code = baseline_rev(ctx.args[1])
 if not rev then
     return fetch_code
 end
+stderr:write("baseline: ", rev, "\n")
 
 if fs.exists(root .. "/" .. BASELINE) then
     verb.die("Refusing to start because " .. BASELINE .. "/ already exists.")
