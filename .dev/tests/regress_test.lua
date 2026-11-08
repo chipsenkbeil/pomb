@@ -15,7 +15,14 @@ devos.defaults.env = {
 }
 
 local STUB_CI = [[
+if [ "$1" = -C ]; then cd "$2" || exit 2; fi
 cat .ci-baseline/marker >>'@dir@/seen'
+pwd -P >'@dir@/where'
+cat marker >'@dir@/staged_marker'
+cat extra >'@dir@/staged_extra'
+if [ -e ignored ]; then echo yes >'@dir@/staged_ignored'; fi
+git -C '@work@' status --porcelain >'@dir@/status_during'
+if [ -e '@dir@/fail' ]; then exit 1; fi
 exit 0
 ]]
 
@@ -48,9 +55,13 @@ local function fixture()
     local moved = commit(work, "moved")
     git(work, "push", "-q", "gerrit", "main")
     git(work, "checkout", "-q", "card")
+    assert(fs.write(work .. "/.gitignore", "ignored\n"))
+    assert(fs.write(work .. "/ignored", "x\n"))
+    assert(fs.write(work .. "/extra", "extra\n"))
     assert(fs.mkdir(work .. "/bin"))
     local stub = work .. "/bin/ci"
-    assert(fs.write(stub, "#!/bin/sh\n" .. STUB_CI:gsub("@dir@", dir)))
+    local body = STUB_CI:gsub("@dir@", dir):gsub("@work@", work)
+    assert(fs.write(stub, "#!/bin/sh\n" .. body))
     assert(devos.run({ "chmod", "755", stub }) == 0)
     return { dir = dir, work = work, base = base, moved = moved }
 end
@@ -85,4 +96,40 @@ t.test("regress uses an explicit REV unchanged", function()
     local _, code, err = testenv.verb(fix.work, { "regress", "gerrit/main" })
     t.eq(code, 0, err)
     t.eq(seen(fix), "moved\n")
+end)
+
+t.test("regress leaves the working tree untouched", function()
+    local fix = fixture()
+    local before = git(fix.work, "status", "--porcelain")
+    local _, code, err = testenv.verb(fix.work, { "regress" })
+    t.eq(code, 0, err)
+    t.eq((fs.read(fix.dir .. "/status_during"):gsub("%s+$", "")), before)
+    t.eq(git(fix.work, "status", "--porcelain"), before)
+    t.ok(not fs.exists(fix.work .. "/.ci-baseline"))
+end)
+
+t.test("regress ships the baseline inside the staged tree", function()
+    local fix = fixture()
+    local _, code, err = testenv.verb(fix.work, { "regress" })
+    t.eq(code, 0, err)
+    t.ok(fs.read(fix.dir .. "/where") ~= fix.work)
+    t.eq(seen(fix), "base\n")
+    t.eq(fs.read(fix.dir .. "/staged_marker"), "card\n")
+    t.eq(fs.read(fix.dir .. "/staged_extra"), "extra\n")
+    t.ok(not fs.exists(fix.dir .. "/staged_ignored"))
+end)
+
+t.test("regress removes the staged tree after a passing run", function()
+    local fix = fixture()
+    local _, code, err = testenv.verb(fix.work, { "regress" })
+    t.eq(code, 0, err)
+    t.ok(not fs.exists((fs.read(fix.dir .. "/where"):gsub("%s+$", ""))))
+end)
+
+t.test("regress removes the staged tree after a failing run", function()
+    local fix = fixture()
+    assert(fs.write(fix.dir .. "/fail", ""))
+    local _, code = testenv.verb(fix.work, { "regress" })
+    t.ok(code ~= 0)
+    t.ok(not fs.exists((fs.read(fix.dir .. "/where"):gsub("%s+$", ""))))
 end)

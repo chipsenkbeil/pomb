@@ -2,7 +2,7 @@
 local
 positional
 Diff this tree's screenshots against a baseline revision on a ci browser runner.
-REV defaults to the merge-base of HEAD and main on the remote of record, so a candidate behind main reports only its own diffs. The baseline sha prints to stderr before the run. The revision is exported to .ci-baseline/, the ci regress job runs on the working copy, and .ci-baseline/ is removed on every exit. The report, diff images included, is kept as a ci artifact, and the run id and the `ci cp` command that fetches it print at the end.
+REV defaults to the merge-base of HEAD and main on the remote of record, so a candidate behind main reports only its own diffs. The baseline sha prints to stderr before the run. A temporary directory holds a copy of the working copy's tracked and unignored files plus the revision exported to .ci-baseline/, the ci regress job runs on that directory, and the directory is removed on every exit, so the working tree is never written. The report, diff images included, is kept as a ci artifact, and the run id and the `ci cp` command that fetches it print at the end.
 ]]
 local devos = require("dev.os")
 local forge = require("dev.forge")
@@ -52,7 +52,21 @@ local function baseline_rev(requested)
     return merge_base(found.remote .. "/main")
 end
 
-local function export(rev, dir)
+local function stage(tree)
+    return devos.run({
+        "bash",
+        "-o",
+        "pipefail",
+        "-c",
+        'git ls-files -z --cached --others --exclude-standard | while IFS= read -r -d "" path; do '
+            .. 'if [ -e "$path" ] || [ -L "$path" ]; then printf "%s\\0" "$path"; fi; done '
+            .. '| tar -cf - --null -T - | tar -xf - -C "$1"',
+        "bash",
+        tree,
+    }, { cwd = root }) or 1
+end
+
+local function export(rev, dir, tree)
     local archive = dir .. "/baseline.tar"
     local code = devos.run({
         "git",
@@ -64,18 +78,19 @@ local function export(rev, dir)
     if code ~= 0 then
         return code
     end
-    return devos.run({ "tar", "-xf", archive }, { cwd = root }) or 1
+    return devos.run({ "tar", "-xf", archive, "-C", tree }, { cwd = root }) or 1
 end
 
-local function run_job(log)
+local function run_job(log, tree)
     return devos.run({
         "bash",
         "-o",
         "pipefail",
         "-c",
-        'ci run --local --job regress -f | tee "$1"',
+        'ci -C "$2" run --local --job regress -f | tee "$1"',
         "bash",
         log,
+        tree,
     }, { cwd = root, env = { DEV_AGENT = "pomb/regress" } }) or 1
 end
 
@@ -122,19 +137,26 @@ if not dir then
 end
 
 local ok, code = pcall(function()
-    local exported = export(rev, dir)
+    local tree = dir .. "/tree"
+    if not fs.mkdir(tree) then
+        return 1
+    end
+    local staged = stage(tree)
+    if staged ~= 0 then
+        return staged
+    end
+    local exported = export(rev, dir, tree)
     if exported ~= 0 then
         return exported
     end
     local log = dir .. "/log"
-    local status = run_job(log)
+    local status = run_job(log, tree)
     if status ~= INTERRUPTED then
         report(log)
     end
     return status
 end)
 
-fs.remove(root .. "/" .. BASELINE, { recursive = true })
 fs.remove(dir, { recursive = true })
 if not ok then
     error(code, 0)
