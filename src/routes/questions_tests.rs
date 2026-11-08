@@ -841,3 +841,46 @@ async fn a_question_after_setting_the_blocked_column_by_patch_should_move_the_ca
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(row(&fx, &task).column_id, fx.blocked);
 }
+
+#[tokio::test]
+async fn question_should_name_held_and_limit_time_with_units_when_an_hours_column_is_full() {
+    let fx = fixture();
+    let limited = fx
+        .db
+        .create_column(&fx.board_id, "Held", None)
+        .expect("column");
+    let (status, patched) = send(
+        &fx,
+        Caller::Browser,
+        "PATCH",
+        &format!("/api/columns/{limited}"),
+        Some(json!({"wip_limit": 4, "config_json": "{\"wip_limit_type\":\"hours\"}"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{patched}");
+    let (status, view) = send(
+        &fx,
+        Caller::Browser,
+        "PUT",
+        &format!("/api/boards/{}/config", fx.board_id),
+        Some(json!({"blocked_column_id": limited})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    let (status, filler) = send(
+        &fx,
+        Caller::Browser,
+        "POST",
+        "/api/tasks",
+        Some(json!({"column_id": limited, "name": "Filler", "estimate_hours": 3.8333333333})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{filler}");
+    let task = card(&fx, json!({"estimate_hours": 1})).await;
+
+    let (status, body) = ask(&fx, &task, question(&fx)).await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "wip_limit_reached", "{body}");
+    assert_eq!(body["message"], "column WIP limit reached (3h 50m/4h)");
+}

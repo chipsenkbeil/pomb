@@ -81,8 +81,8 @@ use crate::db::{
     RoleTokenRefusal, SessionEndOutcome, SessionListing, SessionRefused, SessionToken,
     SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext,
     TemplateDeleteOutcome, TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart, UmbrellaRef,
-    WebhookColumnMissing, WebhookPatch, carry_fields, clean_labels, local_day, merge_metadata,
-    push_change_event, push_column_event, push_event, round_estimate,
+    WebhookColumnMissing, WebhookPatch, WipHeld, carry_fields, clean_labels, local_day,
+    merge_metadata, push_change_event, push_column_event, push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -10334,7 +10334,7 @@ struct MoveTaskInput {
         (status = 400, description = "Unknown column"),
         (status = 403, description = "`role_move_forbidden`: the token was issued as a role and the board's column rules do not let that role move a task out of its column into this one. `card_locked`: the task carries a locking label"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit), or the limit group of the column is full (n/limit). `stale_fence`: a live claim holds another fence. `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column. Without a code: the target board's numbering has no number left"),
+        (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit, or held/limit time for an hours limit), or the limit group of the column is full (n/limit). `stale_fence`: a live claim holds another fence. `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column. Without a code: the target board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -10473,12 +10473,7 @@ async fn move_task(
         MoveOutcome::NotFound => return Err(AppError::not_found("task not found")),
         MoveOutcome::StaleFence => return Err(stale_fence()),
         MoveOutcome::OpenChildren { count } => return Err(epic_has_open_children(count)),
-        MoveOutcome::WipLimit { count, limit } => {
-            return Err(
-                AppError::conflict(format!("column WIP limit reached ({count}/{limit})"))
-                    .with_code(ErrorCode::WipLimitReached),
-            );
-        }
+        MoveOutcome::WipLimit { held, limit } => return Err(column_wip_limit(held, limit)),
         MoveOutcome::GroupLimit { count, limit } => {
             return Err(AppError::conflict(format!(
                 "limit group WIP limit reached ({count}/{limit})"
@@ -12358,6 +12353,18 @@ fn epic_has_open_children(count: usize) -> AppError {
     .with_code(ErrorCode::EpicHasOpenChildren)
 }
 
+/// Returns the 409 for a full target column, naming time with units for an hours limit.
+fn column_wip_limit(held: WipHeld, limit: i64) -> AppError {
+    let amounts = match held {
+        WipHeld::Tasks(count) => format!("{count}/{limit}"),
+        WipHeld::Minutes(minutes) => {
+            format!("{}/{}", format_minutes(minutes), format_minutes(limit * 60))
+        }
+    };
+    AppError::conflict(format!("column WIP limit reached ({amounts})"))
+        .with_code(ErrorCode::WipLimitReached)
+}
+
 /// Claims a task, or renews the caller's own live claim.
 #[utoipa::path(
     post,
@@ -14063,10 +14070,7 @@ fn question_comment(written: QuestionWrite) -> Result<TaskComment, AppError> {
         QuestionWrite::NotFound => Err(AppError::not_found("task or comment not found")),
         QuestionWrite::StaleFence => Err(stale_fence()),
         QuestionWrite::OpenChildren { count } => Err(epic_has_open_children(count)),
-        QuestionWrite::WipLimit { count, limit } => Err(AppError::conflict(format!(
-            "column WIP limit reached ({count}/{limit})"
-        ))
-        .with_code(ErrorCode::WipLimitReached)),
+        QuestionWrite::WipLimit { held, limit } => Err(column_wip_limit(held, limit)),
         QuestionWrite::GroupLimit { count, limit } => Err(AppError::conflict(format!(
             "limit group WIP limit reached ({count}/{limit})"
         ))

@@ -14540,3 +14540,72 @@ async fn planner_set_should_edit_but_not_tick() {
 async fn implementer_set_should_claim_and_move_but_neither_edit_nor_tick() {
     assert_standard_role_follows("implementer").await;
 }
+
+#[tokio::test]
+async fn move_should_name_held_and_limit_time_with_units_when_an_hours_column_is_full() {
+    let (_dir, fx) = fixture();
+    let limited = fx
+        .db
+        .create_column(&fx.board_id, "Review", None)
+        .expect("column");
+    let limit = json!({"wip_limit": 4, "config_json": "{\"wip_limit_type\":\"hours\"}"});
+    let (status, patched) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/columns/{limited}"),
+        Some(limit),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{patched}");
+    create(
+        &fx,
+        json!({"column_id": limited, "name": "Held", "estimate_hours": 3.8333333333}),
+    )
+    .await;
+    let mover = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Mover", "estimate_hours": 1}),
+    )
+    .await;
+
+    let (status, text) = request(
+        &fx,
+        As::Admin,
+        "POST",
+        &format!("/api/tasks/{mover}/move"),
+        Some(json!({"column_id": limited, "position": 0})),
+        true,
+    )
+    .await;
+
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::CONFLICT, "column WIP limit reached (3h 50m/4h)")
+    );
+}
+
+#[tokio::test]
+async fn move_should_keep_the_count_message_for_a_count_column() {
+    let (_dir, fx) = fixture();
+    let limited = fx
+        .db
+        .create_column(&fx.board_id, "Review", Some(1))
+        .expect("column");
+    create(&fx, json!({"column_id": limited, "name": "Held"})).await;
+    let mover = create(&fx, json!({"column_id": fx.col_todo, "name": "Mover"})).await;
+
+    let (status, text) = request(
+        &fx,
+        As::Admin,
+        "POST",
+        &format!("/api/tasks/{mover}/move"),
+        Some(json!({"column_id": limited, "position": 0})),
+        true,
+    )
+    .await;
+
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::CONFLICT, "column WIP limit reached (1/1)")
+    );
+}

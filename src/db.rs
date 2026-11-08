@@ -716,6 +716,15 @@ pub enum ChangeOutcome<E> {
     NotFound,
 }
 
+/// What a WIP-limited column holds: tasks for a count limit, estimated minutes for an hours limit.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum WipHeld {
+    /// Tasks held, against a limit of tasks.
+    Tasks(usize),
+    /// Estimated minutes held, against a limit of hours.
+    Minutes(i64),
+}
+
 /// Typed outcome for [`Db::move_task_logged`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MoveOutcome {
@@ -727,9 +736,9 @@ pub enum MoveOutcome {
     OpenChildren {
         count: usize,
     },
-    /// Refused: the target column holds `count` tasks against `limit`.
+    /// Refused: the target column holds `held` against `limit`.
     WipLimit {
-        count: usize,
+        held: WipHeld,
         limit: i64,
     },
     /// Refused: the limit group of the target column holds `count` tasks against `limit`.
@@ -765,10 +774,10 @@ pub enum QuestionWrite {
         /// Children that are not Done.
         count: usize,
     },
-    /// Refused: the target column holds `count` tasks against `limit`.
+    /// Refused: the target column holds `held` against `limit`.
     WipLimit {
-        /// Tasks the column holds.
-        count: usize,
+        /// What the column holds.
+        held: WipHeld,
         /// The column's limit.
         limit: i64,
     },
@@ -803,7 +812,7 @@ impl QuestionWrite {
             MoveOutcome::NotFound => Self::NotFound,
             MoveOutcome::StaleFence => Self::StaleFence,
             MoveOutcome::OpenChildren { count } => Self::OpenChildren { count },
-            MoveOutcome::WipLimit { count, limit } => Self::WipLimit { count, limit },
+            MoveOutcome::WipLimit { held, limit } => Self::WipLimit { held, limit },
             MoveOutcome::GroupLimit { count, limit } => Self::GroupLimit { count, limit },
         };
         Ok(refusal)
@@ -11711,7 +11720,7 @@ impl Db {
                     .sum();
                 if minutes(&task) > 0 && held + minutes(&task) > limit * 60 {
                     return Ok(MoveOutcome::WipLimit {
-                        count: (held as usize).div_ceil(60),
+                        held: WipHeld::Minutes(held),
                         limit,
                     });
                 }
@@ -11721,7 +11730,10 @@ impl Db {
                     .filter(|other| other.id != id && other.is_work())
                     .count();
                 if count as i64 >= limit {
-                    return Ok(MoveOutcome::WipLimit { count, limit });
+                    return Ok(MoveOutcome::WipLimit {
+                        held: WipHeld::Tasks(count),
+                        limit,
+                    });
                 }
             }
         }
