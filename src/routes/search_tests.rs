@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 
-use super::passkey_tests::{Reply, call};
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::{Reply, call};
 use super::{SEARCH_BUDGET_SECS, router, run_search};
 use crate::AppState;
 use crate::auth::new_api_token_record;

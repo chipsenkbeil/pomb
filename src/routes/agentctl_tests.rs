@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use utoipa::OpenApi;
 
-use super::passkey_tests::{make_epic, make_plain};
 use super::server::passkey_mode;
+use super::test_support::{make_epic, make_plain};
 use super::{ApiDoc, DeviceApproveForm, device_grant, router};
 use crate::auth::new_api_token_record;
 use crate::db::{

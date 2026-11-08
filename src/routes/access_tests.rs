@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::multi_tests::admin_settings;
-use super::passkey_tests::{Reply, SoftAuthenticator, add_passkey, call, session_of};
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::{Reply, SoftAuthenticator, add_passkey, call, session_of};
 use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
 use crate::auth::{PENDING_ROUTES, new_api_token_record, required_permission, required_role};

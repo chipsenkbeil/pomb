@@ -6,9 +6,9 @@ use tower::ServiceExt;
 
 use super::access_tests::mint_token;
 use super::multi_tests::{Instance, finish, pair, recovery_code, start};
-use super::passkey_tests::{Reply, SoftAuthenticator, add_passkey, call, session_of, sign_in};
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::{Reply, SoftAuthenticator, add_passkey, call, session_of, sign_in};
 use crate::auth::REAUTH_WINDOW_SECS;
 use crate::db::Db;
 use crate::passkey::MAX_CEREMONIES_PER_NETWORK;

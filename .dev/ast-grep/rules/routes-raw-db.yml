@@ -42,6 +42,7 @@ ignores:
   - src/routes/seat_api_tests.rs
   - src/routes/seats_tests.rs
   - src/routes/server.rs
+  - src/routes/test_support.rs
   - src/routes/webhook_tests.rs
   - src/routes/units_tests.rs
   - src/routes/history_values_tests.rs

@@ -29777,6 +29777,9 @@ mod notifications_tests;
 mod passkey_tests;
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
 mod prune_tests;
 
 #[cfg(test)]

@@ -2,8 +2,8 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use super::passkey_tests::make_plain;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::make_plain;
 use super::{EPIC_TEMPLATE, router};
 use crate::AppState;
 use crate::db::Db;

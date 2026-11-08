@@ -1979,6 +1979,21 @@ var config = {
 };
 ```
 
+### P20. Keep helpers shared by route test files in `test_support.rs`
+
+A helper that two or more route test files use lives in
+`src/routes/test_support.rs`, and no test file imports from another test file.
+
+Review
+
+```rust
+// Good
+use super::test_support::{Reply, call};
+
+// Bad
+use super::passkey_tests::{Reply, call};
+```
+
 ### P22. Import at the top of the file
 
 Every `use` sits in the file's import block, or in a test module's, and never

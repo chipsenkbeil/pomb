@@ -4,8 +4,8 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
-use super::passkey_tests::{Reply, call};
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::{Reply, call};
 use super::{MAX_AVATAR_BYTES, router};
 use crate::auth::new_api_token_record;
 use crate::db::Db;

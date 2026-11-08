@@ -5,9 +5,9 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use super::passkey_tests::{Reply, call, none_mode};
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::{Reply, call, none_mode};
 use crate::auth::{hash_inbound_address, new_api_token_record};
 use crate::db::{AccountAction, AdminActionOutcome, Db, MAX_INBOUND_PER_BOARD, NewInbound};
 use crate::limit::Limits;

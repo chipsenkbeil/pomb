@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 
-use super::passkey_tests::{Reply, call};
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::{Reply, call};
 use super::{history_actor, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;

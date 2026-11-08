@@ -3,9 +3,9 @@ use std::collections::BTreeSet;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 
-use super::passkey_tests::{Reply, call};
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::{Reply, call};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{AccountAction, Db};

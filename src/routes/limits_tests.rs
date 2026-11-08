@@ -20,9 +20,9 @@ use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
-use super::passkey_tests::{Reply, call};
 use super::server::{passkey_mode, unthrottled_limits};
 use super::slot::SEND_SECS;
+use super::test_support::{Reply, call};
 use super::{
     AppError, REQUEST_TIMEOUT_SECS, ROUTE_ACCESS, SLOW_REQUEST_TIMEOUT_SECS, Writes, router,
 };

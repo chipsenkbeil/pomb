@@ -10,8 +10,8 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::Value;
 use tower::ServiceExt;
 
-use super::passkey_tests::{call, make_epic};
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::{call, make_epic};
 use super::{
     AppError, CancelOnDrop, ImportedBoard, ROUTE_ACCESS, Writes, import_spool, router, run_import,
 };

@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
-use super::passkey_tests::{Reply, call};
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::{Reply, call};
 use super::{REQUEST_TIMEOUT_SECS, router};
 use crate::auth::new_api_token_record;
 use crate::db::{Db, NewTaskPlacement};
