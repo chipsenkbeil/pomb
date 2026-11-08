@@ -26,6 +26,35 @@
   --btn-bg: #ffffff;
   --btn-hover: #f9fafb;
   --btn-border: #d1d5db;
+  --topbar-bg: #333333;
+  --topbar-ink: #f9fafb;
+  --topbar-ink-muted: #d1d5db;
+  --topbar-ink-strong: #ffffff;
+  --topbar-well-bg: #515151;
+  --topbar-well-hover-bg: #5c5c5c;
+  --topbar-ghost-hover-bg: rgba(255, 255, 255, 0.08);
+  --topbar-tab-hover-bg: rgba(255, 255, 255, 0.06);
+  --topbar-focus-ring: #93c5fd;
+  --topbar-avatar-bg: #ffffff;
+  --topbar-avatar-ink: #98540f;
+  --topbar-avatar-hover-bg: #e5e5e5;
+  --topbar-search-key-border: #7a7a7a;
+  --boards-btn-hover-bg: #404040;
+  --board-tab-active-bg: #1f2937;
+  --board-tab-active-border: #374151;
+  --board-tab-chip-bg: #2dd4bf;
+  --finder-btn-ink: #494949;
+  --ink-subtle: #6b7280;
+  --ink-faint: #9ca3af;
+  --link-ink: #2563eb;
+  --divider: #e5e7eb;
+  --divider-soft: #f3f4f6;
+  --notification-unread-bg: #eff6ff;
+  --danger-soft-bg: #fef2f2;
+  --layout-list-bg: #ffffff;
+  --layout-list-border: #e2e5ea;
+  --layout-list-divider: #eef0f2;
+  --layout-list-hover-bg: #eef0f2;
 }
 
 * { box-sizing: border-box; }
@@ -59,8 +88,8 @@ body {
   justify-content: space-between;
   height: 34px;
   padding: 0 10px;
-  background: #333333;
-  color: #f9fafb;
+  background: var(--topbar-bg);
+  color: var(--topbar-ink);
   position: sticky;
   top: 0;
   z-index: 50;
@@ -71,7 +100,7 @@ body {
    its exact (10,4) offset via margin-top instead of vertical centering. */
 .topbar-left { display: flex; align-items: flex-start; align-self: stretch; gap: 0.9rem; }
 .topbar-right { display: flex; align-items: center; gap: 10px; }
-.user { color: #d1d5db; font-size: 0.9rem; }
+.user { color: var(--topbar-ink-muted); font-size: 0.9rem; }
 /* KF-029: initials avatar circle in the dark top bar (KanbanFlow parity). */
 /* KF-195: the avatar is now the account-menu button. */
 /* KF-213: the avatar sits in a rounded-square well like the other top-bar
@@ -79,7 +108,7 @@ body {
    button's rect, so restyling the wrap does not move the menu. */
 .account-wrap {
   position: relative;
-  background: #515151;
+  background: var(--topbar-well-bg);
   border-radius: 2px;
   width: 36px;
   height: 26px;
@@ -88,15 +117,15 @@ body {
   justify-content: center;
   flex: none;
 }
-.account-wrap:hover { background: #5c5c5c; }
+.account-wrap:hover { background: var(--topbar-well-hover-bg); }
 /* KF-234: top-bar account avatar is KanbanFlow's white circle with brown
    initials (GM-005) — not a dark disc with white initials. */
 .user-avatar {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: #ffffff;
-  color: #98540f;
+  background: var(--topbar-avatar-bg);
+  color: var(--topbar-avatar-ink);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -107,22 +136,22 @@ body {
   padding: 0;
   cursor: pointer;
 }
-button.user-avatar:hover { background: #e5e5e5; }
-button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+button.user-avatar:hover { background: var(--topbar-avatar-hover-bg); }
+button.user-avatar:focus-visible { outline: 2px solid var(--topbar-focus-ring); outline-offset: 2px; }
 /* KF-195: account dropdown menu in the dark top bar. */
 .account-menu-head {
   padding: 0.45rem 0.6rem;
   font-size: 0.8rem;
-  color: #6b7280;
-  border-bottom: 1px solid #e5e7eb;
+  color: var(--ink-subtle);
+  border-bottom: 1px solid var(--divider);
   margin-bottom: 0.3rem;
   white-space: nowrap;
 }
 .account-menu-build {
   padding: 0.45rem 0.6rem 0.2rem;
   font-size: 0.75rem;
-  color: #9ca3af;
-  border-top: 1px solid #e5e7eb;
+  color: var(--ink-faint);
+  border-top: 1px solid var(--divider);
   margin-top: 0.3rem;
   white-space: nowrap;
   user-select: none;
@@ -136,7 +165,7 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   font-size: 0.85rem;
   font-weight: 700;
   color: var(--ink); /* panel lives inside the dark topbar; don't inherit its white */
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--divider);
   margin-bottom: 0.3rem;
   white-space: nowrap;
 }
@@ -148,10 +177,10 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   padding: 0;
   font-size: 0.75rem;
   font-weight: 600;
-  color: #2563eb;
+  color: var(--link-ink);
   cursor: pointer;
 }
-.notifications-gear { display: inline-flex; color: #6b7280; }
+.notifications-gear { display: inline-flex; color: var(--ink-subtle); }
 .notifications-gear:hover { color: var(--ink); }
 .notifications-list { max-height: 24rem; overflow-y: auto; }
 .notification-row {
@@ -161,7 +190,7 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   padding: 0.45rem 0.6rem;
   font-size: 0.85rem;
   color: var(--ink);
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--divider-soft);
 }
 .notification-row { position: relative; padding-right: 1.8rem; }
 .notification-dismiss {
@@ -173,13 +202,13 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   padding: 0 0.2rem;
   font-size: 1rem;
   line-height: 1;
-  color: #6b7280;
+  color: var(--ink-subtle);
   cursor: pointer;
 }
 .notification-dismiss:hover { color: var(--ink); }
-.notification-row--unread { background: #eff6ff; }
-.notification-time { font-size: 0.7rem; color: #6b7280; }
-.notification-link { font-size: 0.7rem; font-weight: 700; color: #2563eb; text-decoration: none; }
+.notification-row--unread { background: var(--notification-unread-bg); }
+.notification-time { font-size: 0.7rem; color: var(--ink-subtle); }
+.notification-link { font-size: 0.7rem; font-weight: 700; color: var(--link-ink); text-decoration: none; }
 .notifications-more {
   display: block;
   width: 100%;
@@ -187,23 +216,23 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   background: none;
   border: none;
   font-size: 0.8rem;
-  color: #2563eb;
+  color: var(--link-ink);
   cursor: pointer;
 }
 .notifications-more[hidden], .notifications-empty[hidden] { display: none; }
 .notifications-empty {
   padding: 0.9rem 0.6rem;
   font-size: 0.85rem;
-  color: #6b7280;
+  color: var(--ink-subtle);
   text-align: center;
   white-space: nowrap;
 }
 /* KF-030/KF-031: icon buttons in the dark top bar (KanbanFlow parity).
    KF-213: rounded-square button wells (were bare icons). */
 .topbar-icon-btn {
-  background: #515151;
+  background: var(--topbar-well-bg);
   border: none;
-  color: #d1d5db;
+  color: var(--topbar-ink-muted);
   font-size: 1.1rem;
   cursor: pointer;
   padding: 0;
@@ -216,8 +245,8 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   border-radius: 2px;
   flex: none;
 }
-.topbar-icon-btn:hover { color: #fff; background: #5c5c5c; }
-.topbar-icon-btn:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+.topbar-icon-btn:hover { color: var(--topbar-ink-strong); background: var(--topbar-well-hover-bg); }
+.topbar-icon-btn:focus-visible { outline: 2px solid var(--topbar-focus-ring); outline-offset: 2px; }
 /* KF-235: bell icon glyph — pixel-exact 17x17 reconstruction of the GM-007
    golden (dome / mouth slit / rim bar / clapper); true 17x17px box so the
    rendered glyph bbox matches the golden exactly. */
@@ -232,20 +261,20 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   padding: 0 6px 0 9px;
   border: 0;
   border-radius: 2px;
-  background: #515151;
-  color: #d1d5db;
+  background: var(--topbar-well-bg);
+  color: var(--topbar-ink-muted);
   font: inherit;
   font-size: 13px;
   cursor: pointer;
 }
-.topbar-search:hover { background: #5c5c5c; color: #fff; }
-.topbar-search:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+.topbar-search:hover { background: var(--topbar-well-hover-bg); color: var(--topbar-ink-strong); }
+.topbar-search:focus-visible { outline: 2px solid var(--topbar-focus-ring); outline-offset: 2px; }
 .topbar-search-icon { flex: none; }
 .topbar-search-label { flex: 1; text-align: left; white-space: nowrap; }
 .topbar-search-key {
   flex: none;
   padding: 0 6px;
-  border: 1px solid #7a7a7a;
+  border: 1px solid var(--topbar-search-key-border);
   border-radius: 3px;
   font: inherit;
   font-size: 11px;
@@ -254,11 +283,11 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   .topbar-search { width: 36px; justify-content: center; padding: 0; }
   .topbar-search-label, .topbar-search-key { display: none; }
 }
-#finder-btn { color: #494949; }
+#finder-btn { color: var(--finder-btn-ink); }
 body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
 .logout-form { margin: 0; }
-.topbar .btn-ghost { color: #d1d5db; }
-.topbar .btn-ghost:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+.topbar .btn-ghost { color: var(--topbar-ink-muted); }
+.topbar .btn-ghost:hover { color: var(--topbar-ink-strong); background: var(--topbar-ghost-hover-bg); }
 
 /* KF-022: centered brand mark in the dark top bar (KanbanFlow parity). */
 .brand-logo {
@@ -269,14 +298,14 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
   font-size: 1.15rem;
   letter-spacing: 0.02em;
   text-decoration: none;
-  color: #f9fafb;
+  color: var(--topbar-ink);
   white-space: nowrap;
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
 }
 .brand-logo:hover { text-decoration: none; opacity: 0.92; }
-.brand-logo-name { color: #f9fafb; }
+.brand-logo-name { color: var(--topbar-ink); }
 
 /* KF-324: at narrow viewports the absolutely-centered wordmark overlaps the
    topbar-right icon buttons (e.g. #notifications-btn) — the logo paints
@@ -294,7 +323,7 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
   gap: 0.45rem;
   padding: 0.45rem 0.8rem;
   border-radius: 6px 6px 0 0;
-  color: #d1d5db;
+  color: var(--topbar-ink-muted);
   text-decoration: none;
   font-size: 0.92rem;
   font-weight: 500;
@@ -302,22 +331,22 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
   border-bottom: none;
   white-space: nowrap;
 }
-.board-tab:hover { color: #fff; background: rgba(255, 255, 255, 0.06); }
+.board-tab:hover { color: var(--topbar-ink-strong); background: var(--topbar-tab-hover-bg); }
 .board-tab-active {
-  color: #f9fafb;
+  color: var(--topbar-ink);
   font-weight: 600;
-  background: #1f2937;
-  border-color: #374151;
+  background: var(--board-tab-active-bg);
+  border-color: var(--board-tab-active-border);
 }
 .board-tab-chip {
   width: 0.7rem;
   height: 0.7rem;
   border-radius: 2px;
-  background: #2dd4bf;
+  background: var(--board-tab-chip-bg);
   display: inline-block;
 }
-.board-tab-add { font-size: 1.15rem; padding: 0.3rem 0.6rem; color: #9ca3af; }
-.board-tab-add:hover { color: #fff; }
+.board-tab-add { font-size: 1.15rem; padding: 0.3rem 0.6rem; color: var(--ink-faint); }
+.board-tab-add:hover { color: var(--topbar-ink-strong); }
 
 /* KF-174: single Boards button (KanbanFlow parity).
    KF-233: golden board/02: 100x26 #515151 at (10,4), 2px corners; the
@@ -334,15 +363,15 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
   padding: 0 0 0 8px;
   border: none;
   border-radius: 2px;
-  background: #515151;
-  color: #fff;
+  background: var(--topbar-well-bg);
+  color: var(--topbar-ink-strong);
   font-family: "Open Sans", Arial, sans-serif;
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
 }
-.boards-btn:hover { background: #404040; text-decoration: none; }
+.boards-btn:hover { background: var(--boards-btn-hover-bg); text-decoration: none; }
 .boards-label { flex: none; letter-spacing: -0.3px; }
 .boards-glyph {
   width: 18px;
@@ -351,18 +380,18 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
   align-self: flex-start;
   margin-top: 6px;
   background:
-    linear-gradient(#fff, #fff) 0 0 / 100% 3px no-repeat,
-    linear-gradient(#fff, #fff) 0 5px / 100% 3px no-repeat,
-    linear-gradient(#fff, #fff) 0 10px / 100% 3px no-repeat;
+    linear-gradient(var(--topbar-ink-strong), var(--topbar-ink-strong)) 0 0 / 100% 3px no-repeat,
+    linear-gradient(var(--topbar-ink-strong), var(--topbar-ink-strong)) 0 5px / 100% 3px no-repeat,
+    linear-gradient(var(--topbar-ink-strong), var(--topbar-ink-strong)) 0 10px / 100% 3px no-repeat;
 }
-.boards-btn:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+.boards-btn:focus-visible { outline: 2px solid var(--topbar-focus-ring); outline-offset: 2px; }
 
 /* KF-032: layout-edit view ("Layout: <board>"). */
 .layout-view { padding: 2rem 2.5rem; max-width: 60rem; }
 .layout-view-head { display: flex; align-items: center; justify-content: space-between; }
 .layout-view-head h2 { margin: 0; font-size: 1.3rem; }
 .layout-view-actions { display: flex; gap: 0.75rem; margin: 1.25rem 0; }
-.layout-view-hint { color: var(--muted, #6b7280); margin: 0 0 1.25rem; }
+.layout-view-hint { color: var(--muted); margin: 0 0 1.25rem; }
 .layout-view-close { font-size: 1.5rem; line-height: 1; }
 
 /* KF-180: arrange area — columns and swimlanes lists with drag handles. */
@@ -373,16 +402,16 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
 .layout-arrange-group h3 { margin: 0 0 0.5rem; font-size: 1rem; }
 .layout-list {
   list-style: none; margin: 0; padding: 0;
-  border: 1px solid #e2e5ea; border-radius: 8px; background: #fff;
+  border: 1px solid var(--layout-list-border); border-radius: 8px; background: var(--layout-list-bg);
   max-height: 24rem; overflow-y: auto;
 }
 .layout-list-item {
   display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.5rem 0.75rem; border-bottom: 1px solid #eef0f2;
+  padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--layout-list-divider);
   cursor: grab; font-size: 0.85rem;
 }
 .layout-list-item:last-child { border-bottom: none; }
-.layout-list-handle { color: #9ca3af; letter-spacing: -2px; cursor: grab; }
+.layout-list-handle { color: var(--ink-faint); letter-spacing: -2px; cursor: grab; }
 .layout-list-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layout-list-delete {
   margin-left: auto;
@@ -394,19 +423,19 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
   font-size: 0.8rem;
   cursor: pointer;
 }
-.layout-list-delete:hover { background: #fef2f2; }
+.layout-list-delete:hover { background: var(--danger-soft-bg); }
 .layout-list-menu {
   margin-left: auto;
   padding: 0.1rem 0.5rem;
   border: none;
   border-radius: 4px;
   background: transparent;
-  color: #6b7280;
+  color: var(--ink-subtle);
   font-size: 1.1rem;
   line-height: 1;
   cursor: pointer;
 }
-.layout-list-menu:hover { background: #eef0f2; }
+.layout-list-menu:hover { background: var(--layout-list-hover-bg); }
 
 /* ---------- board toolbar ---------- */
 
