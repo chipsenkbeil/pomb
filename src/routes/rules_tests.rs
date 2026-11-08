@@ -1034,6 +1034,83 @@ mod locked {
         assert_eq!(status, StatusCode::OK, "{text}");
     }
 
+    fn question(fx: &Fixture) -> Value {
+        json!({"question": {
+            "text": "Ship it?",
+            "choices": [
+                {"label": "Ship", "column_id": fx.stages["done"]},
+                {"label": "Review", "column_id": fx.stages["review"]},
+            ],
+            "recommended": 2,
+            "why": "Because",
+        }})
+    }
+
+    #[tokio::test]
+    async fn token_should_post_a_question_when_the_newest_comment_is_the_owners() {
+        let fx = Fixture::new();
+        let task = fx.locked_task().await;
+        let uri = format!("/api/tasks/{task}/comments");
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "POST",
+                &uri,
+                json!({"body": "Partial answer"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let (status, text) = fx.json(Who::Token, "POST", &uri, question(&fx)).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn token_should_be_refused_other_comment_kinds_on_a_locked_task() {
+        let fx = Fixture::new();
+        let task = fx.locked_task().await;
+        let uri = format!("/api/tasks/{task}/comments");
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "POST",
+                &uri,
+                json!({"body": "Partial answer"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        for body in [
+            json!({"body": "Agent note"}),
+            json!({"body": "Agent note", "kind": "agent"}),
+        ] {
+            let (status, text) = fx.json(Who::Token, "POST", &uri, body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+            assert_eq!(parse(&text)["code"], "card_locked", "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn token_should_be_refused_a_question_when_the_newest_comment_is_from_a_token() {
+        let fx = Fixture::new();
+        let task = fx.task(&fx.backlog, json!({})).await;
+        let uri = format!("/api/tasks/{task}/comments");
+        let (status, text) = fx
+            .json(Who::Token, "POST", &uri, json!({"body": "Agent note"}))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "PATCH",
+                &format!("/api/tasks/{task}"),
+                json!({"labels": ["needs:human"]}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let (status, text) = fx.json(Who::Token, "POST", &uri, question(&fx)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(parse(&text)["code"], "card_locked", "{text}");
+    }
+
     #[tokio::test]
     async fn label_only_patch_that_removes_the_lock_should_be_allowed_to_a_token() {
         let fx = Fixture::new();

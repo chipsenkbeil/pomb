@@ -14076,6 +14076,7 @@ async fn list_comments(
     responses(
         (status = 200, description = "The created comment", body = TaskComment),
         (status = 400, description = "Comment body is required, too long, kind over 64 characters, or author over 80 characters or equal to your username. For a question: a missing or invalid part, named in the message, a choice whose column is not on the board, or a kind other than `question`"),
+        (status = 403, description = "`card_locked`: the task carries a locking label and the token is not the owner's. A question passes when the task's newest comment is the owner's, meaning one written from the browser session. Any other comment is refused"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`stale_fence`: a live claim holds another fence. For a question: the board has no Blocked column, `wip_limit_reached`, or `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -14090,7 +14091,13 @@ async fn create_comment(
 ) -> Result<Json<TaskComment>, AppError> {
     let input: CreateCommentInput = parse_body(&headers, body).await?;
     let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let newest_by_owner =
+        task.row().comments.last().is_some_and(|comment| {
+            comment.actor_kind == ActorKind::User && comment.token_id.is_none()
+        });
+    if input.question.is_none() || !newest_by_owner {
+        ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    }
     let fence = write_fence_header(&headers)?;
     let question = input
         .question
