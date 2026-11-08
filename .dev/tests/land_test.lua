@@ -20,6 +20,7 @@ local VERBS = { "land.lua", "__gate.lua", "__push_main.lua", "__push_tag.lua", "
 
 local STUB_DEV = [[
 case "$1" in __*) exec luajit '@main@' "$@";; esac
+if [ "$1" = board ] && [ "$2" = show ]; then [ -e '@dir@/fail-show' ] && exit 1; printf 'abc123  Ready  1 Pomodoro  %s  name\n' "$(cat '@dir@/labels' 2>/dev/null || echo -)"; exit 0; fi
 if [ "$1" = board ]; then echo "$*" >>'@dir@/notes'; exit 0; fi
 touch '@dir@/runs.jsonl'
 echo "$1" >>'@dir@/calls'
@@ -135,6 +136,7 @@ end
 local function candidate(fix, files, message)
     git(fix.work, "checkout", "-q", "-B", "card", "origin/main")
     for name, body in pairs(files) do
+        assert(fs.mkdir(fs.dirname(fix.work .. "/" .. name), { parents = true }))
         assert(fs.write(fix.work .. "/" .. name, body))
         git(fix.work, "add", "--", name)
     end
@@ -273,6 +275,57 @@ t.test("land does not push when a gate fails", function()
     eq_list(lines(fix, "calls"), { "lint", "test" })
     t.eq(remote_main(fix), before)
     t.eq(#lines(fix, "notes"), 0)
+    done(fix)
+end)
+
+t.test("land refuses a standalone script without the standalone-ok label", function()
+    local fix = fixture()
+    local cand =
+        candidate(fix, { [".dev/standalone/x.sh"] = "#!/bin/sh\n" }, "add a standalone script")
+    local before = remote_main(fix)
+    local _, code, err = land(fix, cand)
+    t.ok(code ~= 0)
+    t.ok(err:find(".dev/standalone/x.sh", 1, true), err)
+    t.ok(err:find("standalone-ok", 1, true), err)
+    t.eq(#lines(fix, "calls"), 0)
+    t.eq(remote_main(fix), before)
+    done(fix)
+end)
+
+t.test("land lets a standalone script through with the standalone-ok label", function()
+    local fix = fixture()
+    assert(fs.write(fix.dir .. "/labels", "docs,standalone-ok"))
+    local cand =
+        candidate(fix, { [".dev/standalone/x.sh"] = "#!/bin/sh\n" }, "add a standalone script")
+    local _, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.eq(show(fix, "refs/heads/main:.dev/standalone/x.sh"), "#!/bin/sh")
+    done(fix)
+end)
+
+t.test("land refuses a standalone script whose name needs quoting", function()
+    local fix = fixture()
+    local name = ".dev/standalone/caf\195\169 \"x\".sh"
+    local cand = candidate(fix, { [name] = "#!/bin/sh\n" }, "add a standalone script")
+    local before = remote_main(fix)
+    local _, code, err = land(fix, cand)
+    t.ok(code ~= 0)
+    t.ok(err:find("standalone-ok", 1, true), err)
+    t.eq(#lines(fix, "calls"), 0)
+    t.eq(remote_main(fix), before)
+    done(fix)
+end)
+
+t.test("land refuses a standalone script when the card cannot be read", function()
+    local fix = fixture()
+    local cand =
+        candidate(fix, { [".dev/standalone/x.sh"] = "#!/bin/sh\n" }, "add a standalone script")
+    local before = remote_main(fix)
+    mark(fix, "fail-show")
+    local _, code = land(fix, cand)
+    t.ok(code ~= 0)
+    t.eq(#lines(fix, "calls"), 0)
+    t.eq(remote_main(fix), before)
     done(fix)
 end)
 

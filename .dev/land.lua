@@ -4,7 +4,7 @@ flags: --card
 Apply a verified commit onto the remote's main and push it once lint and test pass on ci.
 Usage: dev land <verified-commit> --card ID
 Steps, any failure aborts before the push:
-1. Fetch the remote of record. Refuse a commit that is not exactly one commit past its merge-base with <remote>/main, or that changes the package version in Cargo.toml or the pomb entry of Cargo.lock: only dev release bumps the version.
+1. Fetch the remote of record. Refuse a commit that is not exactly one commit past its merge-base with <remote>/main, or that changes the package version in Cargo.toml or the pomb entry of Cargo.lock: only dev release bumps the version. Refuse a commit that adds a file under .dev/standalone unless the card has the standalone-ok label.
 2. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>. On gerrit the commit gets a Change-Id trailer when it has none.
 3. Refuse attribution trailers through __push_main --check, before any gate.
 4. Run dev lint --remote, then dev test --remote, through __gate, one at a time on ci, logging to a temp dir. The first failing gate aborts.
@@ -16,6 +16,7 @@ local devos = require("dev.os")
 local fs = require("dev.fs")
 local cargo = require("pomb.cargo")
 local forge = require("pomb.forge")
+local standalone = require("dev.standalone")
 local verb = require("dev.verb")
 
 local ctx = ...
@@ -98,6 +99,49 @@ local function versions(dir, rev)
     local manifest = devos.capture(git(dir, "show", rev .. ":Cargo.toml"), QUIET)
     local lock = devos.capture(git(dir, "show", rev .. ":Cargo.lock"), QUIET)
     return (cargo.manifest_version(manifest) or "") .. "\n" .. (cargo.lock_version(lock) or "")
+end
+
+local function added_files(repo, rev)
+    local out, code = devos.capture(
+        git(
+            repo,
+            "diff-tree",
+            "-z",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "--diff-filter=A",
+            rev
+        ),
+        QUIET
+    )
+    if code ~= 0 then
+        verb.die(("Could not list the files commit %s adds, so nothing landed."):format(rev))
+    end
+    local found = {}
+    for path in out:gmatch("([^%z]+)") do
+        found[#found + 1] = path
+    end
+    return found
+end
+
+local function card_labels(repo, card)
+    local out, code =
+        devos.capture({ "dev", "board", "show", card }, { cwd = repo, stderr = "null" })
+    local cells = {}
+    for cell in ((lines(out)[1] or "") .. "  "):gmatch("(.-)%s%s+") do
+        cells[#cells + 1] = cell
+    end
+    if code ~= 0 or #cells < 4 then
+        verb.die(("Could not read the labels of card %s, so nothing landed."):format(card))
+    end
+    local labels = {}
+    if cells[4] ~= "-" then
+        for label in (cells[4] .. ","):gmatch("(.-),") do
+            labels[#labels + 1] = label
+        end
+    end
+    return labels
 end
 
 local function main_repo_of(root)
@@ -296,6 +340,10 @@ if versions(repo, cand .. "^") ~= versions(repo, cand) then
             commit
         )
     )
+end
+local standalone_problem = standalone.land_problem(added_files(repo, cand), card_labels(repo, card))
+if standalone_problem then
+    verb.die(("Commit %s %s, so nothing landed."):format(commit, standalone_problem))
 end
 
 local wt = repo .. "/.dev/worktrees/land-" .. card
