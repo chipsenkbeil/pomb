@@ -2179,6 +2179,20 @@
       form.hidden = false;
       form.elements.name.focus();
     });
+    document.getElementById('board-name-form').addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      err.hidden = true;
+      api(`/api/boards/${encodeURIComponent(id)}/config`, 'PUT', { name: ev.target.elements.name.value })
+        .then((res) => {
+          if (res.ok) return res;
+          return res.text().then((t) => { throw new Error(t || `HTTP ${res.status}`); });
+        })
+        .then(() => { window.location.href = `/b/${encodeURIComponent(id)}/settings?saved=1`; })
+        .catch((ex) => {
+          err.textContent = ex.message;
+          err.hidden = false;
+        });
+    });
     var arcBtn = document.getElementById('board-archive-btn');
     arcBtn.addEventListener('click', function () {
       arcBtn.disabled = true;

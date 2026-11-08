@@ -1955,12 +1955,6 @@ const ROLE_TABLE: &[(Method, &str, BoardRole, [u16; 3])] = &[
         [200, 403, 403],
     ),
     (
-        Method::POST,
-        "/b/:board_id/settings",
-        BoardRole::Owner,
-        [303, 403, 403],
-    ),
-    (
         Method::GET,
         "/b/:board_id/settings/layout",
         BoardRole::Owner,
@@ -2184,4 +2178,27 @@ async fn a_viewer_should_reach_no_write_but_column_watch_and_leaving_the_board()
             "{method} {pattern}: {status}"
         );
     }
+}
+
+#[tokio::test]
+async fn config_put_should_need_the_same_role_as_other_config() {
+    let fx = Fixture::new();
+    let uri = fx.fill("/api/boards/{board}/config");
+    for who in [MEMBER, VIEWER] {
+        let reply = fx
+            .send(who, "PUT", &uri, Some(json!({"name": "Taken"})))
+            .await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{who}: {}", reply.body);
+    }
+    let reply = fx
+        .send(STRANGER, "PUT", &uri, Some(json!({"name": "Taken"})))
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.body);
+    let name = |db: &Db, id: &str| db.board(id).expect("read").expect("board").name;
+    assert_eq!(name(&fx.db, &fx.board), "Shared");
+    let reply = fx
+        .send(OWNER, "PUT", &uri, Some(json!({"name": "Mine"})))
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(name(&fx.db, &fx.board), "Mine");
 }

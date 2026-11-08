@@ -786,9 +786,6 @@ pub(crate) fn uri(class: RouteClass, path: &str, main: &Ids, sub: &Ids) -> Strin
 /// one, so a request reaches the row its path names. A write route with none listed sends `{}`.
 pub(crate) fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
     let json = match (method, path) {
-        (&Method::POST, "/b/:board_id/settings") => {
-            return Some(Payload::Form("name=Renamed".to_string()));
-        }
         (&Method::PUT, "/api/boards/:id/config") => json!({"legend_visible": true}),
         (&Method::PUT, "/api/boards/:id/members") => {
             json!({"username": body_ids.handle, "role": "viewer"})

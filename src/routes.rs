@@ -424,10 +424,7 @@ pub fn router(state: AppState) -> Router {
     // Board settings shell: General, Layout, Colors, Task settings, Advanced, API & Webhooks, Add
     // task from email.
     let router = router
-        .route(
-            "/b/:board_id/settings",
-            get(board_settings_page).post(board_settings_submit),
-        )
+        .route("/b/:board_id/settings", get(board_settings_page))
         .route(
             "/b/:board_id/settings/layout",
             get(board_settings_layout_page),
@@ -1400,7 +1397,6 @@ const ROUTE_ACCESS: &[(Method, &str, Rc, Wr)] = {
             Wr::No,
         ),
         (Method::GET, "/b/:board_id/settings", Rc::Board, Wr::No),
-        (Method::POST, "/b/:board_id/settings", Rc::Board, Wr::Grows),
         (
             Method::GET,
             "/b/:board_id/settings/layout",
@@ -21590,6 +21586,8 @@ struct BoardDeleteTemplate {
 
 #[derive(Deserialize, ToSchema)]
 struct BoardConfigInput {
+    /// The board's new name, 1 to 100 characters once trimmed.
+    name: Option<String>,
     /// The Menu's Color legend toggle. When present, it is merged into the board's opaque config
     /// bag.
     legend_visible: Option<bool>,
@@ -21765,6 +21763,8 @@ impl From<Numbering> for NumberingView {
     reason = "the flat JSON shape of the config API is the contract"
 )]
 struct BoardConfigView {
+    /// The board's name.
+    name: String,
     /// Whether the color legend bar is shown on this board.
     legend_visible: bool,
     /// Whether the board is archived.
@@ -21801,7 +21801,7 @@ struct BoardConfigView {
     request_body = BoardConfigInput,
     responses(
         (status = 200, description = "Current board config", body = BoardConfigView),
-        (status = 400, description = "Invalid due_time, unknown default_member, a blocked_column_id that is not a column of the board, or archiving the last unarchived board"),
+        (status = 400, description = "A blank or over-100-character name, invalid due_time, unknown default_member, a blocked_column_id that is not a column of the board, or archiving the last unarchived board"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -21817,6 +21817,10 @@ async fn update_board_config(
     let db = &account;
     let board = found(db.board(&id), "board not found")?;
     let mut updates = serde_json::Map::new();
+    let name = match input.name.as_deref() {
+        Some(raw) => Some(AccountDb::validate_board_name(raw).map_err(AppError::bad_request)?),
+        None => None,
+    };
     if let Some(legend_visible) = input.legend_visible {
         updates.insert(
             "legend_visible".to_string(),
@@ -21912,8 +21916,14 @@ async fn update_board_config(
     if let Some(change) = numbering {
         change.apply(db, &board)?;
     }
+    if let Some(name) = name
+        && !db.rename_board(&board, name).map_err(AppError::from)?
+    {
+        return Err(AppError::not_found("board not found"));
+    }
     let board = found(db.board(&id), "board not found")?;
     Ok(Json(BoardConfigView {
+        name: board.row().name.clone(),
         legend_visible: board.row().config_bool("legend_visible"),
         archived: board.row().config_bool("archived"),
         new_tasks_at_top: board.row().config_bool("new_tasks_at_top"),
@@ -22927,8 +22937,6 @@ struct BoardSettingsTemplate {
     board_position: i64,
     /// True right after the General tab's rename form saved (?saved=1).
     saved: bool,
-    /// Why the General tab's rename was rejected.
-    error: Option<String>,
     /// The board's custom fields, for the Custom fields tab.
     fields: Vec<FieldDef>,
     /// The board's "Due date time" as "HH:MM" and as "5:00 PM".
@@ -23423,7 +23431,6 @@ fn board_settings_context(
         numbering,
         board_position: board.position,
         saved,
-        error: None,
         fields: board_fields.into_iter().map(FieldDef::from).collect(),
         rules_labels: rules.locked_labels.join("\n"),
         rules_columns,
@@ -23507,43 +23514,6 @@ async fn board_settings_webhook_edit_page(
     }
     page.webhook_form = WebhookFormView::of(Some(hook.row()));
     Ok(page)
-}
-
-#[derive(Deserialize)]
-struct BoardSettingsForm {
-    name: String,
-}
-
-/// Rename the board from the Board Settings → General tab.
-async fn board_settings_submit(
-    State(state): State<AppState>,
-    account: AccountDb,
-    Extension(user): Extension<AuthUser>,
-    Path(board_id): Path<String>,
-    Form(form): Form<BoardSettingsForm>,
-) -> Result<Response, AppError> {
-    let board = found(account.board(&board_id), "board not found")?;
-
-    // A rejected name re-renders the General tab with the reason
-    if let Err(message) = AccountDb::validate_board_name(&form.name) {
-        let mut page = board_settings_context(
-            &state,
-            &account,
-            &user.username,
-            &board_id,
-            "general",
-            false,
-        )?;
-        page.error = Some(message.to_string());
-        return Ok((StatusCode::BAD_REQUEST, page).into_response());
-    }
-    match account
-        .rename_board(&board, &form.name)
-        .map_err(AppError::from)?
-    {
-        true => Ok(Redirect::to(&format!("/b/{board_id}/settings?saved=1")).into_response()),
-        false => Err(AppError::not_found("board not found")),
-    }
 }
 
 /// Board color-admin page (Board Settings → Colors).
@@ -33234,49 +33204,6 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
     }
 
-    /// A blank or over-long board name re-renders the General tab with a 400 and keeps the stored
-    /// name, and a valid one still redirects.
-    #[tokio::test]
-    async fn board_rename_should_reject_blank_and_long_names_with_400() {
-        let (_dir, fx) = kf221_fixture();
-        let post_name = |name: String| {
-            axum::http::Request::builder()
-                .method("POST")
-                .uri(format!("/b/{}/settings", fx.board_id))
-                .header("cookie", &fx.cookie)
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(axum::body::Body::from(
-                    serde_urlencoded::to_string([("name", name)]).expect("form"),
-                ))
-                .expect("request")
-        };
-        for name in ["   ".to_string(), "x".repeat(101)] {
-            let response = fx
-                .app
-                .clone()
-                .oneshot(post_name(name))
-                .await
-                .expect("oneshot");
-            assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
-            let body = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
-                .await
-                .expect("body");
-            let html = String::from_utf8_lossy(&body);
-            assert!(html.contains("Board name must be 1-100 characters."));
-            assert!(html.contains(&format!("action=\"/b/{}/settings\"", fx.board_id)));
-            assert!(html.contains("value=\"KF-221\""), "stored name kept");
-        }
-        let response = fx
-            .app
-            .clone()
-            .oneshot(post_name(format!(" {} ", "y".repeat(100))))
-            .await
-            .expect("oneshot");
-        assert_eq!(response.status(), axum::http::StatusCode::SEE_OTHER);
-        let (_, boards) = send(&fx, "GET", "/api/boards", None).await;
-        assert!(boards.contains(&format!("\"{}\"", "y".repeat(100))));
-    }
-
     /// Every accepted format normalizes to RFC3339, and garbage and out-of-range values are errors.
     #[test]
     fn normalize_due_input_should_reject_unparseable() {
@@ -36786,6 +36713,7 @@ mod tests {
                 "estimate_in_points",
                 "lane_names_folded",
                 "legend_visible",
+                "name",
                 "new_tasks_at_top",
                 "numbering",
             ]

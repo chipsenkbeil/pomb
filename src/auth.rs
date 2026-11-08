@@ -1234,11 +1234,6 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         Permission::BoardsConfigure,
     ),
     (
-        Method::POST,
-        "/b/:board_id/settings",
-        Permission::BoardsConfigure,
-    ),
-    (
         Method::GET,
         "/api/boards/:id/calendar-feeds",
         Permission::FeedsManage,
@@ -2645,7 +2640,6 @@ mod tests {
         (Method::PUT, "/api/v1/admin/settings", AuthScope::Admin),
         (Method::POST, "/logout", AuthScope::Admin),
         (Method::POST, "/settings", AuthScope::Admin),
-        (Method::POST, "/b/:board_id/settings", AuthScope::Admin),
         (Method::POST, "/device", AuthScope::Admin),
         (Method::POST, "/device/approve", AuthScope::Admin),
         (Method::POST, "/device/deny", AuthScope::Admin),

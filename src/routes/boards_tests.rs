@@ -508,3 +508,38 @@ async fn two_members_of_a_shared_board_should_watch_the_same_column_apart() {
     let column = fx.db.list_columns(&fx.board_id).expect("columns").remove(0);
     assert_eq!(column.watchers, [carol.owner.as_str()]);
 }
+
+#[tokio::test]
+async fn config_put_should_rename_the_board_and_return_the_new_name() {
+    let (_dir, fx) = fixture();
+    let uri = format!("/api/boards/{}/config", fx.board_id);
+    let (status, view) = send(&fx, "PUT", &uri, json!({"name": "  Renamed  "})).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["name"], "Renamed");
+    let stored = fx.db.board(&fx.board_id).expect("read").expect("board");
+    assert_eq!(stored.name, "Renamed");
+    let (_, again) = send(&fx, "PUT", &uri, json!({"legend_visible": true})).await;
+    assert_eq!(again["name"], "Renamed");
+}
+
+#[tokio::test]
+async fn config_put_should_refuse_a_blank_or_long_name() {
+    let (_dir, fx) = fixture();
+    let uri = format!("/api/boards/{}/config", fx.board_id);
+    for name in ["   ".to_string(), "x".repeat(101)] {
+        let (status, body) = send(&fx, "PUT", &uri, json!({"name": name, "archived": true})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.to_string().contains("name"), "{body}");
+    }
+    let stored = fx.db.board(&fx.board_id).expect("read").expect("board");
+    assert_eq!(stored.name, "Source");
+    assert!(!stored.config_bool("archived"));
+}
+
+#[tokio::test]
+async fn the_board_settings_form_post_should_answer_405() {
+    let (_dir, fx) = fixture();
+    let uri = format!("/b/{}/settings", fx.board_id);
+    let (status, _) = send(&fx, "POST", &uri, json!({"name": "Renamed"})).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+}

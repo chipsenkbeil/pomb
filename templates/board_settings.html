@@ -22,12 +22,11 @@
          the signed-in admin (single-admin model), so it has no Edit link. #}
       <section class="settings-section kf-general" data-board-id="{{ board_id }}">
         {% if saved %}<p class="settings-saved">Board settings saved.</p>{% endif %}
-        {% if let Some(error) = error %}<p class="login-error">{{ error }}</p>{% endif %}
-        <div id="board-name-view"{% if error.is_some() %} hidden{% endif %}>
+        <div id="board-name-view">
           <div class="kf-setting-head"><span class="kf-setting-label">Board name</span><button type="button" class="kf-btn kf-btn-link" id="board-name-edit">Edit</button></div>
           <p class="kf-setting-text">{{ board_name }}</p>
         </div>
-        <form method="post" action="/b/{{ board_id }}/settings" class="settings-form kf-name-form" id="board-name-form"{% if error.is_none() %} hidden{% endif %}>
+        <form class="settings-form kf-name-form" id="board-name-form" hidden>
           <input type="text" name="name" value="{{ board_name }}" maxlength="100" required aria-label="Board name">
           <button type="submit" class="kf-btn kf-btn-success">Save</button>
           <a href="/b/{{ board_id }}/settings" class="kf-btn kf-btn-link">Cancel</a>
