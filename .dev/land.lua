@@ -14,6 +14,7 @@ The remote of record is forge.remote, else gerrit when that remote exists, else 
 ]]
 local devos = require("dev.os")
 local fs = require("dev.fs")
+local cargo = require("pomb.cargo")
 local forge = require("pomb.forge")
 local verb = require("dev.verb")
 
@@ -93,36 +94,10 @@ local function read_git(dir, ...)
     return trim(out), code
 end
 
-local function manifest_version(text)
-    local section
-    for line in text:gmatch("[^\n]+") do
-        if line:sub(1, 1) == "[" then
-            section = line
-        end
-        local value = line:match('^version = "(.*)"$')
-        if section == "[package]" and value then
-            return value
-        end
-    end
-    return ""
-end
-
-local function lock_version(text)
-    local found = false
-    for line in text:gmatch("[^\n]+") do
-        local value = line:match('^version = "(.*)"$')
-        if found and value then
-            return value
-        end
-        found = found or line == 'name = "pomb"'
-    end
-    return ""
-end
-
 local function versions(dir, rev)
     local manifest = devos.capture(git(dir, "show", rev .. ":Cargo.toml"), QUIET)
     local lock = devos.capture(git(dir, "show", rev .. ":Cargo.lock"), QUIET)
-    return manifest_version(manifest) .. "\n" .. lock_version(lock)
+    return (cargo.manifest_version(manifest) or "") .. "\n" .. (cargo.lock_version(lock) or "")
 end
 
 local function main_repo_of(root)

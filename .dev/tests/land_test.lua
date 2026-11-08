@@ -16,7 +16,7 @@ devos.defaults.env = {
 
 local CARD = "abc123"
 local RELEASE = "release"
-local VERBS = { "land.lua", "__gate.lua", "__push_main.lua", "__push_tag.lua", "lua/pomb/forge.lua" }
+local VERBS = { "land.lua", "__gate.lua", "__push_main.lua", "__push_tag.lua", "lua/pomb/cargo.lua", "lua/pomb/forge.lua" }
 
 local STUB_DEV = [[
 case "$1" in __*) exec luajit '@main@' "$@";; esac
