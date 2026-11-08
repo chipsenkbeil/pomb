@@ -222,8 +222,8 @@
               if (TimerUI.updateCardLive) TimerUI.updateCardLive();
             }
             if (window.BoardChrome && BoardChrome.syncEpicFunnels) BoardChrome.syncEpicFunnels();
-            if (card.dataset.kind === 'epic' && window.BoardChrome) BoardChrome.refreshMarks();
-            if (fromCol !== toCol && card.dataset.kind !== 'epic') {
+            if (card.dataset.kind === CARD_KIND.EPIC && window.BoardChrome) BoardChrome.refreshMarks();
+            if (fromCol !== toCol && card.dataset.kind !== CARD_KIND.EPIC) {
               updateColumnCount(fromCol, -1, -estimate);
               updateColumnCount(toCol, 1, estimate);
             }
@@ -1626,10 +1626,10 @@
         if (hoveredAct !== null && hoveredAct !== 'add-to-epic') return;
         if (!choices) { toast('Could not load epics.'); return; }
         openCardSubmenu(btn, function (sub) {
-          sub.dataset.for = 'epic';
+          sub.dataset.for = CARD_SUBMENU.EPIC;
           sub.classList.add('card-sub--epics');
           appendEpicChoices(sub, choices, function (label, epicId) {
-            return cardSubmenuButton(label, 'epic', { 'data-epic-id': epicId });
+            return cardSubmenuButton(label, CARD_SUBMENU.EPIC, { 'data-epic-id': epicId });
           });
         });
       }, function () { epicSubmenuLoading = false; });
@@ -1639,15 +1639,15 @@
       var sub = document.getElementById('card-ctx-submenu');
       var act = item.getAttribute('data-card-act');
       hoveredAct = act;
-      if (act === 'move') {
-        if (sub.hidden || sub.dataset.for !== 'move') item.click();
+      if (act === CARD_SUBMENU.MOVE) {
+        if (sub.hidden || sub.dataset.for !== CARD_SUBMENU.MOVE) item.click();
       } else if (act === 'add-to-epic') {
-        if (epicSubmenuLoading || (!sub.hidden && sub.dataset.for === 'epic')) return;
+        if (epicSubmenuLoading || (!sub.hidden && sub.dataset.for === CARD_SUBMENU.EPIC)) return;
         if (BoardChrome.epicsLoaded || !epicHoverTried) {
           epicHoverTried = true;
           item.click();
         }
-      } else if (sub.dataset.for === 'move' || sub.dataset.for === 'epic') {
+      } else if (sub.dataset.for === CARD_SUBMENU.MOVE || sub.dataset.for === CARD_SUBMENU.EPIC) {
         hideCardSubmenu();
       }
     }
@@ -1672,7 +1672,7 @@
         } else {
           toast('Timer is not available on this page.');
         }
-      } else if (act === 'move') {
+      } else if (act === CARD_SUBMENU.MOVE) {
         openCardSubmenu(btn, function (sub) {
           // KF-334: KanbanFlow-style relative-move submenu.
           var card = cardMenuCard;
@@ -1680,7 +1680,7 @@
           var currentColumnId = cardColumnId(card);
           var headers = Array.prototype.slice.call(document.querySelectorAll('#column-headers-row .columnHeader'));
           var currentIndex = headers.findIndex(function (h) { return h.dataset.columnId === currentColumnId; });
-          sub.dataset.for = 'move';
+          sub.dataset.for = CARD_SUBMENU.MOVE;
           if (!card.closest('[data-done-column="true"]')) {
             // "Move right" only when a column exists to the right.
             if (currentIndex >= 0 && currentIndex < headers.length - 1) {
@@ -1695,7 +1695,7 @@
         });
       } else if (act === 'add-to-epic') {
         openEpicSubmenu(btn, task);
-      } else if (act === 'color') {
+      } else if (act === CARD_SUBMENU.COLOR) {
         openCardSubmenu(btn, function (sub) {
           // KF-333: each row is tinted with its colour; the card's own colour
           // is bold.
@@ -1704,7 +1704,7 @@
           var src = document.getElementById('board-colors');
           if (src) {
             Array.prototype.forEach.call(src.querySelectorAll('span[data-id]'), function (s) {
-              var b = cardSubmenuButton(s.dataset.label || s.dataset.value, 'color',
+              var b = cardSubmenuButton(s.dataset.label || s.dataset.value, CARD_SUBMENU.COLOR,
                 { 'data-color-id': s.dataset.id, 'data-color-value': s.dataset.value,
                   // KF-142: carry the human label so the card's title can be re-synced.
                   'data-color-label': s.dataset.label || '' });
@@ -1828,7 +1828,7 @@
       var task = cardMenuTask();
       hideCardSubmenu();
       hideFloatingMenus();
-      if (sub === 'epic') {
+      if (sub === CARD_SUBMENU.EPIC) {
         addCardToEpic(cardMenuCard, btn.getAttribute('data-epic-id'));
       } else if (sub === 'move-right') {
         // KF-334: move to the column to the right, placed per the board's setting.
@@ -1866,7 +1866,7 @@
       } else if (sub === 'move-advanced') {
         // KF-334/KF-141: the "Move task" popover, anchored at the card.
         openMoveDialog(task.id, cardMenuCard);
-      } else if (sub === 'color') {
+      } else if (sub === CARD_SUBMENU.COLOR) {
         api('/api/tasks/' + encodeURIComponent(task.id), 'PATCH',
             { color_id: btn.getAttribute('data-color-id') })
           .then(function (res) {
@@ -1931,7 +1931,7 @@
             var list = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
             var colId = list ? list.dataset.columnId : null;
             var estimate = cardEstimateMinutes(cardMenuCard);
-            const wasEpic = !!cardMenuCard && cardMenuCard.dataset.kind === 'epic';
+            const wasEpic = !!cardMenuCard && cardMenuCard.dataset.kind === CARD_KIND.EPIC;
             if (cardMenuCard && cardMenuCard.parentNode) cardMenuCard.remove();
             cardMenuCard = null;
             if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
@@ -8019,7 +8019,7 @@
               var list = card ? card.closest('.task-list') : null;
               var colId = list ? list.dataset.columnId : null;
               var estimate = cardEstimateMinutes(card);
-              const wasEpic = !!card && card.dataset.kind === 'epic';
+              const wasEpic = !!card && card.dataset.kind === CARD_KIND.EPIC;
               if (card && card.parentNode) card.parentNode.removeChild(card);
               if (wasEpic) BoardChrome.refreshMarks();
               else if (colId) updateColumnCount(colId, -1, -estimate);
@@ -18653,7 +18653,7 @@
           try { cardFields = JSON.parse(card.dataset.filterFields || '{}'); } catch (e) { cardFields = {}; }
           if (!fieldKeys.every(function (k) { return cardFields[k] === fields[k]; })) show = false;
         }
-        if (hideEpics && card.dataset.kind === 'epic') show = false;
+        if (hideEpics && card.dataset.kind === CARD_KIND.EPIC) show = false;
         if (show && epic && card.dataset.taskId !== epic && !self.isEpicChild(card, epic)) show = false;
         var list = card.closest('.task-list');
         var only = list ? self.columnLabels[list.dataset.columnId] : null;
@@ -18831,7 +18831,7 @@
           overdue = 0;
           var sel = '.task-list[data-column-id="' + cssEscape(colId) + '"] .task-card';
           document.querySelectorAll(sel).forEach(function (card) {
-            if (card.style.display === 'none' || card.dataset.kind === 'epic') return;
+            if (card.style.display === 'none' || card.dataset.kind === CARD_KIND.EPIC) return;
             count++;
             minutes += cardEstimateMinutes(card);
             if (card.dataset.overdue === '1') overdue++;

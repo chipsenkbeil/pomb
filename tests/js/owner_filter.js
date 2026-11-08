@@ -1,3 +1,4 @@
+const { CARD_KIND } = require('../../static/pure.js');
 let src = require('fs').readFileSync(process.argv[2], 'utf8');
 let start = src.indexOf('  var BoardChrome = {');
 let end = src.indexOf('\n  };', start) + '\n  };'.length;

@@ -1,3 +1,4 @@
+const { CARD_KIND } = require('../../static/pure.js');
 const src = require('fs').readFileSync(process.argv[2], 'utf8');
 const slice = (from, to) => {
   const start = src.indexOf(from);

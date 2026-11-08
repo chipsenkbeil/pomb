@@ -1,4 +1,5 @@
 var src = require('fs').readFileSync(process.argv[2], 'utf8');
+const { CARD_KIND, CARD_SUBMENU } = require('../../static/pure.js');
 function fn(start, indent) {
   var pad = indent || '  ';
   var from = src.indexOf(start);

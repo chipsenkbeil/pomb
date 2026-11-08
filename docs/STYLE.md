@@ -1958,6 +1958,25 @@ Review
 /// 1. Adds `subtasks.check` to the lead standard role.
 ```
 
+### P18. Name a closed set of string markers
+
+A closed set of string markers in `static/` JavaScript, such as the submenu
+names a menu opens or the kind a card carries, gets one frozen constant object,
+and every comparison and assignment uses its members. A typo in a member then
+fails loudly instead of silently never matching. Strings sent to or read from
+the API keep their literal form.
+
+Review
+
+```javascript
+// Good
+const CARD_KIND = Object.freeze({ EPIC: 'epic' });
+if (card.dataset.kind === CARD_KIND.EPIC) refreshMarks();
+
+// Bad
+if (card.dataset.kind === 'epic') refreshMarks();
+```
+
 ### P19. End every multi-line JavaScript literal with a trailing comma
 
 Every multi-line object and array literal in JavaScript takes a trailing comma,
