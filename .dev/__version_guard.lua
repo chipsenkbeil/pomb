@@ -45,20 +45,20 @@ local new = manifest_version(cand_toml)
 local old = manifest_version(base_toml)
 local locked = lock_version(cand_lock)
 if not new then
-    io.stderr:write("no package version in the candidate Cargo.toml\n")
+    io.stderr:write("The candidate Cargo.toml has no package version.\n")
     return 1
 end
 if not old then
-    io.stderr:write("no package version in the base Cargo.toml\n")
+    io.stderr:write("The base Cargo.toml has no package version.\n")
     return 1
 end
 if new == old then
-    io.stderr:write(("Cargo.toml version %s equals the base version %s; bump and commit it\n"):format(new, old))
+    io.stderr:write(("Cargo.toml version %s equals the base version %s, so bump and commit it.\n"):format(new, old))
     return 1
 end
 if locked ~= new then
     io.stderr:write(
-        ("Cargo.lock pomb version %s differs from Cargo.toml version %s; commit the lock update\n"):format(
+        ("Cargo.lock pomb version %s differs from Cargo.toml version %s, so commit the lock update.\n"):format(
             locked or "none",
             new
         )

@@ -15,11 +15,11 @@ allowed=(
 )
 
 type -P ip >/dev/null || {
-    printf 'nixcheck: needs ip (iproute2) to bring up the loopback interface\n' >&2
+    printf 'The sandbox needs ip (iproute2) to bring up the loopback interface.\n' >&2
     exit 1
 }
 [ -e /usr/bin/env ] || {
-    printf 'nixcheck: /usr/bin/env does not exist on this host\n' >&2
+    printf 'The file /usr/bin/env does not exist on this host.\n' >&2
     exit 1
 }
 
@@ -27,7 +27,7 @@ mount -t tmpfs tmpfs /var/tmp
 bin="$(mktemp -d /var/tmp/tools.XXXXXX)"
 for tool in "${allowed[@]}"; do
     path="$(type -P "$tool")" || {
-        printf 'nixcheck: allowed tool %s is not installed\n' "$tool" >&2
+        printf 'The allowed tool %s is not installed.\n' "$tool" >&2
         exit 1
     }
     cp -L "$path" "$bin/$tool"

@@ -63,19 +63,19 @@ local manifest_lines, manifest_newline = lines_of(manifest)
 local lock_lines, lock_newline = lines_of(lock)
 local manifest_ln = manifest_line(manifest_lines)
 if not manifest_ln then
-    io.stderr:write(("no package version in %s\n"):format(manifest))
+    io.stderr:write(("No package version in %s.\n"):format(manifest))
     return 1
 end
 local lock_ln = lock_line(lock_lines)
 if not lock_ln then
-    io.stderr:write(("no pomb entry in %s\n"):format(lock))
+    io.stderr:write(("No pomb entry in %s.\n"):format(lock))
     return 1
 end
 
 local old = manifest_lines[manifest_ln]:match('^version = "([^"]*)"')
 local major, minor, patch = old:match("^(%d+)%.(%d+)%.(%d+)$")
 if not major then
-    io.stderr:write(("version %s in %s is not MAJOR.MINOR.PATCH\n"):format(old, manifest))
+    io.stderr:write(("Version %s in %s is not MAJOR.MINOR.PATCH.\n"):format(old, manifest))
     return 1
 end
 local new = ("%s.%s.%d"):format(major, minor, tonumber(patch) + 1)

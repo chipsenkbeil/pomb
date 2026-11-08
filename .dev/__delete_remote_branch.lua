@@ -26,7 +26,7 @@ if code ~= 0 then
 end
 for _, branch in ipairs(ctx.args) do
     if branch == "main" or branch == "HEAD" or branch == "" then
-        io.stderr:write("refuse  ", branch, "\n")
+        io.stderr:write("Refused to delete ", branch, ".\n")
         return 1
     end
     local tip
@@ -35,10 +35,10 @@ for _, branch in ipairs(ctx.args) do
         { cwd = ctx.root, stderr = "null" }
     )
     if code ~= 0 then
-        io.stderr:write("missing ", remote, "/", branch, "\n")
+        io.stderr:write("No branch ", branch, " exists on ", remote, ".\n")
         return 1
     end
-    io.stdout:write("delete  ", remote, "/", branch, " at ", (tip:gsub("%s+$", "")), "\n")
+    io.stdout:write("Deleting ", remote, "/", branch, " at ", (tip:gsub("%s+$", "")), ".\n")
     io.stdout:flush()
     code = devos.run(
         { "jj-git-guard", "push", "--", remote, ":refs/heads/" .. branch },

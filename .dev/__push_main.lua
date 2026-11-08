@@ -98,7 +98,7 @@ end
 local hits = attribution(wt, remote .. "/main..HEAD")
 if #hits > 0 then
     io.stderr:write(
-        "attribution or trailers found in commit messages:\n",
+        "The commit messages hold attribution or trailers, listed below.\n",
         table.concat(hits, "\n"),
         "\n"
     )

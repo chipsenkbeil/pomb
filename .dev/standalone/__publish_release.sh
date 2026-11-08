@@ -16,7 +16,7 @@ mkdir -p dist
 cp "target/$target/release/pomb" "dist/$name"
 file "dist/$name"
 file "dist/$name" | grep -Eq 'statically linked|static-pie linked' || {
-	echo "dist/$name is not statically linked (static or static-pie)" >&2
+	echo "The file dist/$name is not statically linked." >&2
 	exit 1
 }
 (cd dist && sha256sum "$name" >"$name.sha256")
@@ -33,7 +33,7 @@ if [[ $ref_type == tag ]]; then
 fi
 
 if [[ $(git ls-remote origin refs/heads/main | cut -f1) != "$sha" ]]; then
-	echo "main moved past $sha; not publishing nightly"
+	echo "Main moved past $sha, so the nightly is not published."
 	exit 0
 fi
 

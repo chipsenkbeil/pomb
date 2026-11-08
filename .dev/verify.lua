@@ -25,7 +25,7 @@ local USAGE_CODE = 2
 local QUIET = { stderr = "null" }
 
 local function abort(message)
-    stderr:write("verify: ABORT: ", message, "\n")
+    stderr:write(message, "\n")
     os.exit(1)
 end
 
@@ -154,7 +154,7 @@ local function cleanup_worktree(worktree, opts)
     local under = worktree:sub(1, #WORKTREES) == WORKTREES
         or worktree:sub(1, #repo + 1 + #WORKTREES) == repo .. "/" .. WORKTREES
     if not under then
-        print(("skip    %s (not under .dev/worktrees)"):format(worktree))
+        print(("Skipped %s, which is not under .dev/worktrees."):format(worktree))
         return
     end
     local path = worktree:sub(1, 1) == "/" and worktree or repo .. "/" .. worktree
@@ -162,24 +162,24 @@ local function cleanup_worktree(worktree, opts)
     local branch = trim(head)
     local removal = git(repo, { "worktree", "remove", "--force", worktree })
     if devos.run(removal) ~= 0 then
-        print(("skip    %s (not removable)"):format(worktree))
+        print(("Skipped %s, which could not be removed."):format(worktree))
         return
     end
-    print("removed " .. worktree)
+    print(("Removed %s."):format(worktree))
     if branch == "" then
         return
     end
     local ancestor = git(repo, { "merge-base", "--is-ancestor", branch, remote_name .. "/main" })
     if devos.run(ancestor) == 0 then
         if devos.run(git(repo, { "branch", "-q", "-d", branch })) == 0 then
-            print(("deleted %s (merged)"):format(branch))
+            print(("Deleted branch %s, which was merged."):format(branch))
         end
     elseif forced[branch] then
         if devos.run(git(repo, { "branch", "-q", "-D", branch })) == 0 then
-            print(("deleted %s (forced)"):format(branch))
+            print(("Deleted branch %s by force."):format(branch))
         end
     else
-        print(("kept    %s (not merged; pass --delete-branch %s)"):format(branch, branch))
+        print(("Kept branch %s, which is not merged, so pass --delete-branch %s to delete it."):format(branch, branch))
     end
 end
 
@@ -198,7 +198,7 @@ local resolved, code = devos.capture(
     QUIET
 )
 if code ~= 0 then
-    abort("no such commit: " .. parsed.sha)
+    abort(("No commit %s exists."):format(parsed.sha))
 end
 local sha = trim(resolved)
 
@@ -270,10 +270,10 @@ if parsed.backup and parsed.backup ~= "" then
 end
 
 if failures > 0 then
-    stderr:write(("\nverify: %d check(s) FAILED; worktrees untouched\n"):format(failures))
+    stderr:write(("\n%d check(s) failed, so the worktrees are untouched.\n"):format(failures))
     return 1
 end
-print("\nverify: all checks passed")
+print("\nAll checks passed.")
 
 for _, worktree in ipairs(parsed.cleanup) do
     cleanup_worktree(worktree, { repo = repo, remote_name = remote_name, forced = parsed.forced })

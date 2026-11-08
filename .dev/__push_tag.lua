@@ -31,7 +31,7 @@ out, code = devos.capture(
     { cwd = ctx.root, stderr = "null" }
 )
 if code ~= 0 then
-    io.stderr:write("unknown commit ", rev, "\n")
+    io.stderr:write("No commit named ", rev, " exists.\n")
     return 1
 end
 local sha = out:gsub("%s+$", "")
@@ -39,7 +39,7 @@ if
     devos.run({ "git", "merge-base", "--is-ancestor", sha, remote .. "/main" }, { cwd = ctx.root })
     ~= 0
 then
-    io.stderr:write(sha, " is not on ", remote, "/main\n")
+    io.stderr:write("Commit ", sha, " is not on ", remote, "/main.\n")
     return 1
 end
 local ref = "refs/tags/" .. tag
@@ -52,7 +52,7 @@ local there = devos.run(
     { cwd = ctx.root, stdout = "null", stderr = "null" }
 )
 if here == 0 or there == 0 then
-    io.stderr:write("tag ", tag, " already exists\n")
+    io.stderr:write("Tag ", tag, " already exists.\n")
     return 1
 end
 
@@ -63,7 +63,7 @@ code = devos.run(
 if code ~= 0 then
     return code or 1
 end
-io.stdout:write("tag     ", tag, " at ", sha, "\n")
+io.stdout:write("Tagged ", tag, " at ", sha, ".\n")
 io.stdout:flush()
 if devos.run({ "jj-git-guard", "push", "--", remote, ref }, { cwd = ctx.root }) ~= 0 then
     devos.run({ "git", "tag", "-d", tag }, { cwd = ctx.root, stdout = "null" })

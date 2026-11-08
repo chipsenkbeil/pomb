@@ -76,7 +76,7 @@ end)
 t.test("gate refuses a run that did not pass", function()
     local _, code, err = gate({}, { row("aaaaaa", "failed", "local") }, 0)
     t.ok(code ~= 0)
-    t.ok(err:find("expected passed from local", 1, true), err)
+    t.ok(err:find("only a passed run from local counts.", 1, true), err)
 end)
 
 t.test("gate refuses a dirty source", function()

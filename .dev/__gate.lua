@@ -41,7 +41,7 @@ end
 fs.remove(log)
 local status = devos.run({ "dev", verb, "--remote" }, { cwd = wt, stdout = log, stderr = "stdout" })
 if status ~= 0 then
-    return fail(wt, ": dev ", verb, " --remote failed")
+    return fail("The command dev ", verb, " --remote failed in ", wt, ".")
 end
 
 local fresh = {}
@@ -52,20 +52,20 @@ for _, row in ipairs(runs(wt)) do
 end
 if #fresh ~= 1 then
     return fail(
-        "dev ",
+        "The command dev ",
         verb,
         " --remote left ",
         #fresh,
         " new ci runs under ",
         wt,
-        ", expected 1: it did not test this worktree"
+        ", where 1 was expected, so it did not test this worktree."
     )
 end
 
 local row = fresh[1]
 if row.status ~= "passed" or row.source ~= "local" then
     return fail(
-        "ci run ",
+        "The ci run ",
         row.run,
         " of ",
         row.repo,
@@ -73,7 +73,7 @@ if row.status ~= "passed" or row.source ~= "local" then
         row.status,
         " from ",
         row.source,
-        ", expected passed from local"
+        ", and only a passed run from local counts."
     )
 end
 io.stdout:write(row.run, " ", row.repo, " ", row.source, "\n")
