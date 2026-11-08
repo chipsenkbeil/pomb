@@ -15,6 +15,7 @@ devos.defaults.env = {
 }
 
 local RELEASE = { "release", "--batch", "7", "--summary", "cut it" }
+local LOCAL, REMOTE = "local", "remote"
 local FILES = {
     "release.lua",
     "__gate.lua",
@@ -273,21 +274,6 @@ t.test("release should not tag on a dry run", function()
     done(fix)
 end)
 
-t.test("release should print the tag rerun command when tagging fails", function()
-    local fix = fixture("0.5.85", "0.5.85", 1)
-    git(fix.remote, "tag", "batch-7", "main")
-    local out, code, err = release(fix, RELEASE)
-    t.ok(code ~= 0)
-    local head = remote_ref(fix, "main")
-    t.ok(err:find("rerun: ", 1, true), err)
-    t.ok(err:find("dev __push_tag batch-7 " .. head, 1, true), err)
-    t.ok(err:find("dev release --hash-only", 1, true), err)
-    t.ok(not err:find("dev __push_tag v0.5.86", 1, true), err)
-    t.eq(remote_ref(fix, "refs/tags/v0.5.86^{commit}"), head)
-    t.ok(not out:find("homelab request", 1, true), out)
-    done(fix)
-end)
-
 t.test("release should print the tag rerun command when the tag push fails", function()
     local fix = fixture("0.5.85", "0.5.85", 1)
     local hook = fix.remote .. "/hooks/pre-receive"
@@ -301,6 +287,63 @@ t.test("release should print the tag rerun command when the tag push fails", fun
     t.eq(git(fix.remote, "tag", "-l", "batch-7"), "")
     t.eq(remote_ref(fix, "refs/tags/v0.5.86^{commit}"), head)
     done(fix)
+end)
+
+t.test("release should print the version tag rerun command when only that tag push fails", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local hook = fix.remote .. "/hooks/pre-receive"
+    assert(fs.write(hook, '#!/bin/sh\nwhile read o n r; do [ "$r" != refs/tags/v0.5.86 ] || exit 1; done\n'))
+    assert(devos.run({ "chmod", "755", hook }) == 0)
+    local out, code, err = release(fix, RELEASE)
+    t.ok(code ~= 0)
+    local head = remote_ref(fix, "main")
+    t.ok(err:find("rerun: dev __push_tag v0.5.86 " .. head, 1, true), err)
+    t.ok(not err:find("dev __push_tag batch-7", 1, true), err)
+    t.eq(remote_ref(fix, "refs/tags/batch-7^{commit}"), head)
+    t.ok(not out:find("homelab request", 1, true), out)
+    done(fix)
+end)
+
+local function refuse_existing_tag(opts)
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local before = remote_ref(fix, "main")
+    local dir = opts.on == LOCAL and fix.repo or fix.remote
+    local target = git(
+        dir,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit-tree",
+        "main^{tree}",
+        "-p",
+        "main",
+        "-m",
+        "side"
+    )
+    git(dir, "tag", opts.tag, target)
+    local _, code, err = release(fix, RELEASE)
+    t.ok(code ~= 0)
+    t.ok(err:find("Tag " .. opts.tag .. " already exists", 1, true), err)
+    t.eq(gates(fix), "")
+    t.eq(remote_ref(fix, "main"), before)
+    done(fix)
+end
+
+t.test("release should refuse a batch tag that exists locally before the push", function()
+    refuse_existing_tag({ tag = "batch-7", on = LOCAL })
+end)
+
+t.test("release should refuse a batch tag that exists on the remote before the push", function()
+    refuse_existing_tag({ tag = "batch-7", on = REMOTE })
+end)
+
+t.test("release should refuse a version tag that exists locally before the push", function()
+    refuse_existing_tag({ tag = "v0.5.86", on = LOCAL })
+end)
+
+t.test("release should refuse a version tag that exists on the remote before the push", function()
+    refuse_existing_tag({ tag = "v0.5.86", on = REMOTE })
 end)
 
 t.test("release should print the block after both tags are pushed", function()

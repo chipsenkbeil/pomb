@@ -6,7 +6,7 @@ Usage: dev release --batch N --summary "<text>" [--env KEY=VALUE]... [--dry-run]
        dev release --hash-only <sha> [--batch N] [--env KEY=VALUE]...
 Each card lands on main through dev land after its own verification, so a release adds only the version bump. Steps, any failure aborts before the push:
 1. Refuse unless <remote>/main has a commit since its last v* tag.
-2. Bump the version with dev __bump_version in .dev/worktrees/release-<N> on <remote>/main and commit "Release batch-<N>: <summary>" with only Cargo.toml and Cargo.lock. Then refuse unless the new version differs from the last v* tag's and Cargo.lock's pomb entry matches it.
+2. Bump the version with dev __bump_version in .dev/worktrees/release-<N> on <remote>/main and commit "Release batch-<N>: <summary>" with only Cargo.toml and Cargo.lock. Then refuse unless the new version differs from the last v* tag's and Cargo.lock's pomb entry matches it, and refuse when batch-<N> or v<version> already exists locally or on the remote.
 3. Run dev lint --remote, dev test --remote, dev nixcheck --remote and dev build --remote through __gate, one at a time on ci, logging to a temp dir. A failing gate aborts before the push, and so does a gate whose ci run is not a new passed run of the release worktree with source local.
 4. Refuse attribution trailers in the new commit and refuse when <remote>/main moved since step 1, then push to main on the remote of record.
 5. Tag batch-<N> and v<version> at the pushed commit with __push_tag, then compute the nix hash of the commit's tree and print the request block. A failed tag prints the __push_tag command to rerun for it.
@@ -50,6 +50,18 @@ end
 local function read_git(dir, ...)
     local out, code = devos.capture(git(dir, ...), QUIET)
     return trim(out), code
+end
+
+local function tag_taken(repo, remote, tag)
+    local _, local_code = read_git(repo, "rev-parse", "-q", "--verify", "refs/tags/" .. tag)
+    if local_code == 0 then
+        return true
+    end
+    local listed, code = read_git(repo, "ls-remote", "--tags", remote, "refs/tags/" .. tag)
+    if code ~= 0 then
+        die(("Cannot list the tags of %s."):format(remote))
+    end
+    return listed ~= ""
 end
 
 local function parse(args)
@@ -227,6 +239,12 @@ local guard = devos.run({ "dev", "__version_guard", tag_toml, "Cargo.toml", "Car
 fs.remove(tag_toml)
 if guard ~= 0 then
     die(("version %s fails the check against %s (worktree left at %s)"):format(new_version, last_tag, wt))
+end
+
+for _, tag in ipairs({ "batch-" .. opts.batch, "v" .. new_version }) do
+    if tag_taken(repo, remote, tag) then
+        die(("Tag %s already exists locally or on %s. The worktree is left at %s."):format(tag, remote, wt))
+    end
 end
 
 local logs = assert(fs.mktemp({ prefix = "release-" .. opts.batch, dir = true }))
