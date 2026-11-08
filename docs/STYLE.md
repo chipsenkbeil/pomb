@@ -2013,6 +2013,32 @@ use super::test_support::{Reply, call};
 use super::passkey_tests::{Reply, call};
 ```
 
+### P21. Take a CSS colour from a named property, with a dark rule
+
+A colour in `static/style.css` comes from a custom property such as `--bg`,
+`--ink`, `--muted`, `--card-border` or `--btn-bg`, and a literal colour appears
+only where a property is defined or in a `body.dark` rule. A new surface adds
+a `body.dark` rule for its own colours in the same change.
+
+Review
+
+```css
+/* Good */
+.note-panel {
+  background: var(--btn-bg);
+  color: var(--ink);
+  border: 1px solid var(--btn-border);
+}
+body.dark .note-panel { background: #3e3e3e; border-color: #555555; }
+
+/* Bad */
+.note-panel {
+  background: #ffffff;
+  color: #1f2937;
+  border: 1px solid #d1d5db;
+}
+```
+
 ### P22. Import at the top of the file
 
 Every `use` sits in the file's import block, or in a test module's, and never
