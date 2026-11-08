@@ -10,7 +10,8 @@ local verb = require("dev.verb")
 
 local ctx = ...
 local stderr = io.stderr
-local FILES = { "apt", "sshd", "systemd", "env.in", "pomb-update", "setup.sh" }
+local FILES = { "apt", "sshd", "systemd", "env.in" }
+local STANDALONE = { "pomb-update", "setup.sh" }
 local UNPACK = "rm -rf /root/pomb-box && mkdir -p /root/pomb-box && tar -C /root/pomb-box -xf -"
 local ROLLBACK = "rm -f /etc/ssh/sshd_config.d/10-pomb.conf && sshd -t && systemctl reload ssh"
 
@@ -29,6 +30,15 @@ local function stage_files(stage, admin_ip)
     end
     copy[#copy + 1] = stage .. "/"
     local code = devos.run(copy, { cwd = site.dir(ctx) }) or 1
+    if code ~= 0 then
+        return code
+    end
+    local standalone = { "cp" }
+    for _, name in ipairs(STANDALONE) do
+        standalone[#standalone + 1] = name
+    end
+    standalone[#standalone + 1] = stage .. "/"
+    code = devos.run(standalone, { cwd = ctx.root .. "/.dev/standalone" }) or 1
     if code ~= 0 then
         return code
     end

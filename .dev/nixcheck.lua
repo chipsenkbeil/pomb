@@ -60,7 +60,7 @@ local argv = {
     "--map-root-user",
     "--mount",
     "--net",
-    ctx.root .. "/.dev/__nixcheck_sandbox.sh",
+    ctx.root .. "/.dev/standalone/__nixcheck_sandbox.sh",
     archive,
     ctx.root,
     uid,

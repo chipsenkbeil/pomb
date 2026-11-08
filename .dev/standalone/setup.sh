@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# standalone: runs on production server, where dev is absent
 # Runs on the box as root, from /root/pomb-box. Idempotent.
 set -euo pipefail
 

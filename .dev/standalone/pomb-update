@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# standalone: runs on production server, where dev is absent
 # Pull agent: pomb-update <stable|nightly> [<tag>]
 set -euo pipefail
 

@@ -237,11 +237,11 @@ box address and the admin address that sshd exempts from its penalties are read
 from the password store (`Agents/Linode/pomb.app-host` and
 `Agents/Linode/pomb.app-admin-ip`), never from the repository.
 
-- `dev site provision` stages `.dev/site/`, copies it to the box and runs its
-  setup, which can be repeated safely. `dev site launch <stable|nightly>`
-  starts a channel and its timer.
-- The update agent `.dev/site/pomb-update` runs from the timer. For a new
-  release it downloads and checks the binary, copies the database to
+- `dev site provision` stages `.dev/site/` and the `.dev/standalone/` box
+  scripts, copies them to the box and runs `setup.sh`, which can be repeated
+  safely. `dev site launch <stable|nightly>` starts a channel and its timer.
+- The update agent `.dev/standalone/pomb-update` runs from the timer. For a
+  new release it downloads and checks the binary, copies the database to
   `backups/pomb-<UTC>-before-<id>.redb`, swaps the binary and restarts, and on
   a failed health check it restores the copy and the previous binary and does
   not retry that release. It then archives each board of the copy beside it

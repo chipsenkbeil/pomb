@@ -29,4 +29,4 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: .dev/__publish_release.sh "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+        run: .dev/standalone/__publish_release.sh "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" "$GITHUB_SHA"

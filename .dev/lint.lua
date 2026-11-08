@@ -591,7 +591,7 @@ end
 check_inline_scripts()
 check_c_build_tools()
 
-local site_scripts = lint:files({ ".dev/site/*.sh", ".dev/site/pomb-update" })
+local site_scripts = lint:files({ ".dev/standalone/setup.sh", ".dev/standalone/pomb-update" })
 if lint:have("shellcheck", "brew install shellcheck", "shellcheck") then
     lint:check("shellcheck", lintset.with_files({ "shellcheck", "-x" }, site_scripts))
 end

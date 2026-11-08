@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# standalone: runs on GitHub Actions, where dev is absent
 # Package the musl release binary and publish it to GitHub Releases.
 # Usage: __publish_release.sh <branch|tag> <ref-name> <sha>
 set -euo pipefail
