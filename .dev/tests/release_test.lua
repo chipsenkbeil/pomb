@@ -297,7 +297,7 @@ t.test("release should print the version tag rerun command when only that tag pu
     local out, code, err = release(fix, RELEASE)
     t.ok(code ~= 0)
     local head = remote_ref(fix, "main")
-    t.ok(err:find("rerun: dev __push_tag v0.5.86 " .. head, 1, true), err)
+    t.ok(err:find("Rerun: dev __push_tag v0.5.86 " .. head, 1, true), err)
     t.ok(not err:find("dev __push_tag batch-7", 1, true), err)
     t.eq(remote_ref(fix, "refs/tags/batch-7^{commit}"), head)
     t.ok(not out:find("homelab request", 1, true), out)
