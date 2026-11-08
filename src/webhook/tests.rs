@@ -78,10 +78,10 @@ impl Callback {
         let counted = written.clone();
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
+                let request = read_request(&stream);
                 let reply = {
                     let mut seen = shared.lock().expect("lock");
                     let index = seen.len();
-                    let request = read_request(&stream);
                     seen.push(request);
                     script
                         .get(index)
@@ -116,9 +116,16 @@ fn read_request(mut stream: &TcpStream) -> Seen {
         if let Some(at) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
             break at + 4;
         }
-        let read = stream.read(&mut chunk).expect("read");
-        assert!(read > 0, "closed before the head ended");
-        raw.extend_from_slice(&chunk[..read]);
+        match stream.read(&mut chunk) {
+            Ok(read) if read > 0 => raw.extend_from_slice(&chunk[..read]),
+            _ => {
+                return Seen {
+                    path: String::new(),
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                };
+            }
+        }
     };
     let head = String::from_utf8_lossy(&raw[..head_end]).to_string();
     let mut lines = head.lines();
@@ -137,15 +144,33 @@ fn read_request(mut stream: &TcpStream) -> Seen {
         .and_then(|(_, value)| value.parse().ok())
         .unwrap_or(0);
     while raw.len() < head_end + length {
-        let read = stream.read(&mut chunk).expect("read");
-        assert!(read > 0, "closed before the body ended");
-        raw.extend_from_slice(&chunk[..read]);
+        match stream.read(&mut chunk) {
+            Ok(read) if read > 0 => raw.extend_from_slice(&chunk[..read]),
+            _ => break,
+        }
     }
+    let end = raw.len().min(head_end + length);
     Seen {
         path,
         headers,
-        body: raw[head_end..head_end + length].to_vec(),
+        body: raw[head_end..end].to_vec(),
     }
+}
+
+#[test]
+fn callback_should_record_a_connection_closed_before_the_head() {
+    let callback = Callback::start(vec![Reply::Status(200)]);
+    drop(TcpStream::connect(("127.0.0.1", callback.port)).expect("connect"));
+    let mut stream = TcpStream::connect(("127.0.0.1", callback.port)).expect("connect");
+    stream
+        .write_all(b"POST /hook HTTP/1.1\r\nContent-Length: 0\r\n\r\n")
+        .expect("write");
+    let mut reply = Vec::new();
+    stream.read_to_end(&mut reply).expect("reply");
+    let seen = callback.requests();
+    assert_eq!(seen.len(), 2);
+    assert!(seen[0].path.is_empty() && seen[0].headers.is_empty() && seen[0].body.is_empty());
+    assert_eq!(seen[1].path, "/hook");
 }
 
 fn answer(mut stream: TcpStream, reply: &Reply, written: &AtomicUsize) {
