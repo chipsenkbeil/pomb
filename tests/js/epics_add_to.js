@@ -40,7 +40,7 @@ function element(tag) {
     classList: { add: function () {}, remove: function () {} },
     label: function () {
       return el.textContent + el.children.map(function (c) { return c.text || ''; }).join('');
-    }
+    },
   };
   return el;
 }
@@ -83,7 +83,7 @@ var document = {
   },
   querySelectorAll: function () { return []; },
   createElement: element,
-  createTextNode: function (text) { return { text: text }; }
+  createTextNode: function (text) { return { text: text }; },
 };
 function fetch(path, init) {
   calls.push({ path: path, method: init.method, headers: init.headers, body: init.body });
@@ -130,7 +130,7 @@ function names(choices) {
 function card(hasPill) {
   return {
     dataset: { taskId: 'c1' },
-    querySelector: function (sel) { return sel === '.card-epic-tag' && hasPill ? {} : null; }
+    querySelector: function (sel) { return sel === '.card-epic-tag' && hasPill ? {} : null; },
   };
 }
 
@@ -150,7 +150,7 @@ function trigger() {
     epic('c1', 'The card itself'),
     epic('e5', 'Under the card', { parent_id: 'c1' }),
     epic('e6', 'Below that', { parent_id: 'e5' }),
-    epic('e7', 'Under a closed epic', { parent_id: 'e2' })
+    epic('e7', 'Under a closed epic', { parent_id: 'e2' }),
   ];
   BoardChrome.epicsLoaded = true;
   var got = await BoardChrome.epicChoices('c1');
@@ -192,7 +192,7 @@ function trigger() {
   await flush();
   await flush();
   check('a card without an epic is linked as a child with the JSON Accept header', calls, [
-    { path: '/api/tasks/e1/links', method: 'POST', headers: JSON_HEADERS, body: '{"kind":"child","target_id":"c1"}' }
+    { path: '/api/tasks/e1/links', method: 'POST', headers: JSON_HEADERS, body: '{"kind":"child","target_id":"c1"}' },
   ]);
   check('success re-fetches the card, once', [refreshed, reloads, toasts], [['c1'], 0, []]);
 
@@ -202,7 +202,7 @@ function trigger() {
   await flush();
   await flush();
   check('a card already in an epic uses the umbrella route', calls, [
-    { path: '/api/tasks/c1/umbrella', method: 'PUT', headers: JSON_HEADERS, body: '{"target_id":"e9"}' }
+    { path: '/api/tasks/c1/umbrella', method: 'PUT', headers: JSON_HEADERS, body: '{"target_id":"e9"}' },
   ]);
   check('a moved card is re-fetched', refreshed, ['c1']);
 
@@ -252,7 +252,7 @@ function trigger() {
   check('picking in the modal closes the menus, links the child and refreshes the modal', [menusClosed, calls, refreshed], [
     1,
     [{ path: '/api/tasks/e1/links', method: 'POST', headers: JSON_HEADERS, body: '{"kind":"child","target_id":"c1"}' }],
-    ['modal']
+    ['modal'],
   ]);
 
   reset();
@@ -327,7 +327,7 @@ function trigger() {
   function hoverItem(act) {
     var item = {
       getAttribute: function () { return act; },
-      click: function () { openEpicSubmenu({}, { id: 'c1' }); }
+      click: function () { openEpicSubmenu({}, { id: 'c1' }); },
     };
     hoverCardMenuItem(item);
   }

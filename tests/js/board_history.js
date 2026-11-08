@@ -28,14 +28,14 @@ check('custom includes the last day', range('custom', wednesday, '2026-10-01', '
 check('custom with one end is open at the other', range('custom', wednesday, '', '2026-10-31'), [null, '2026-11-1']);
 
 var query = BoardHistoryPage.queryString({
-  event: 'changed', property: 'moved', user: 'ann b', period: 'latest', from: '', to: '', order: 'oldest'
+  event: 'changed', property: 'moved', user: 'ann b', period: 'latest', from: '', to: '', order: 'oldest',
 }, wednesday);
 check('query carries the filters', query, 'event=changed&property=moved&user=ann%20b&order=oldest');
 check('property is dropped outside the changed event', BoardHistoryPage.queryString({
-  event: 'comment', property: 'moved', user: '', period: 'latest', from: '', to: '', order: 'newest'
+  event: 'comment', property: 'moved', user: '', period: 'latest', from: '', to: '', order: 'newest',
 }, wednesday), 'event=comment&order=newest');
 var dated = BoardHistoryPage.queryString({
-  event: '', property: '', user: '', period: 'last-week', from: '', to: '', order: ''
+  event: '', property: '', user: '', period: 'last-week', from: '', to: '', order: '',
 }, wednesday);
 check('period sends both instants', /^from=[^&]+&to=[^&]+$/.test(dated), true);
 

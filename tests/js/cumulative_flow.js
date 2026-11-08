@@ -8,7 +8,7 @@ var end = src.indexOf('\n  })();', start) + '\n  })();'.length;
 if (start < 0 || end < start) throw new Error('CumulativeFlowPage not found');
 var document = {
   getElementById: function () { return null; },
-  createElement: function () { return { style: {}, offsetWidth: 100, hidden: false }; }
+  createElement: function () { return { style: {}, offsetWidth: 100, hidden: false }; },
 };
 function escapeHtml(s) { return String(s); }
 var accountPrefs = { hour12: true, weekStart: 1 };
@@ -70,8 +70,8 @@ check('renamed then deleted column keeps one band', CumulativeFlowPage.seriesByD
     { id: 'a', column_id: 'todo', created_at: at(-3, 10), history: [
       created('Temp', 'temp', at(-3, 10)), moved('Temp2', 'To-do', 'todo', at(-1, 10))] },
     { id: 'b', column_id: 'done', created_at: at(-2, 10), history: [
-      created('Temp2', 'temp', at(-2, 10)), moved('Temp2', 'Done', 'done', at(-1, 11))] }
-  ]
+      created('Temp2', 'temp', at(-2, 10)), moved('Temp2', 'Done', 'done', at(-1, 11))] },
+  ],
 }), { order: 'To-do|Done|Temp2',
   counts: [['Temp2', 3, 1], ['Temp2', 2, 2], ['Temp2', 1, 0], ['To-do', 0, 1], ['Done', 0, 1]] });
 
@@ -83,7 +83,7 @@ check('renamed then deleted column keeps one band', CumulativeFlowPage.seriesByD
       columns: [board[0], { id: 'rev', name: 'Reviewing', former_names: ['In Review'] }, board[1]],
       tasks: [{ id: 't', column_id: 'done', created_at: at(-1, 10), history: [
         created('In Review', withIds && 'rev', at(-1, 10)),
-        moved('In Review', 'Done', withIds && 'done', at(0, 0))] }]
+        moved('In Review', 'Done', withIds && 'done', at(0, 0))] }],
     }), { order: 'To-do|Reviewing|Done',
       counts: [['Reviewing', 1, 1], ['Reviewing', 0, 0], ['Done', 0, 1]] });
 });
@@ -92,7 +92,7 @@ check('renamed then deleted column keeps one band', CumulativeFlowPage.seriesByD
 check('deleted column with name-only history', CumulativeFlowPage.seriesByDay({
   columns: board,
   tasks: [{ id: 'c', column_id: 'todo', created_at: at(-2, 10), history: [
-    created('Old', null, at(-2, 10)), moved('Old', 'To-do', null, at(-1, 10))] }]
+    created('Old', null, at(-2, 10)), moved('Old', 'To-do', null, at(-1, 10))] }],
 }), { order: 'To-do|Done|Old', counts: [['Old', 2, 1], ['To-do', 0, 1]] });
 
 // Name-only history joins a deleted column's band when an id-bearing
@@ -103,15 +103,15 @@ check('name-only event joins deleted column by recorded name', CumulativeFlowPag
     { id: 'd', column_id: 'todo', created_at: at(-3, 10), history: [
       created('Temp', null, at(-3, 10)), moved('Temp', 'To-do', null, at(-1, 10))] },
     { id: 'e', column_id: 'todo', created_at: at(-2, 10), history: [
-      created('Temp', 'temp', at(-2, 10)), moved('Temp', 'To-do', 'todo', at(-1, 10))] }
-  ]
+      created('Temp', 'temp', at(-2, 10)), moved('Temp', 'To-do', 'todo', at(-1, 10))] },
+  ],
 }), { order: 'To-do|Done|Temp', counts: [['Temp', 2, 2], ['To-do', 0, 2]] });
 
 // A deleted column that held nothing in the window leaves no band.
 check('empty history-only band is dropped', CumulativeFlowPage.seriesByDay({
   columns: board,
   tasks: [{ id: 'f', column_id: 'todo', created_at: at(-60, 10), history: [
-    created('Gone', 'gone', at(-60, 10)), moved('Gone', 'To-do', 'todo', at(-59, 10))] }]
+    created('Gone', 'gone', at(-60, 10)), moved('Gone', 'To-do', 'todo', at(-59, 10))] }],
 }), { order: 'To-do|Done', counts: [['To-do', 0, 1]] });
 
 
@@ -122,7 +122,7 @@ function colors(html) {
 var flow = CumulativeFlowPage.seriesByDay({
   columns: board,
   tasks: [{ id: 'g', column_id: 'done', created_at: at(-2, 10), history: [
-    created('To-do', 'todo', at(-2, 10)), moved('To-do', 'Done', 'done', at(-1, 10))] }]
+    created('To-do', 'todo', at(-2, 10)), moved('To-do', 'Done', 'done', at(-1, 10))] }],
 });
 var GEO = { W: 720, H: 320, padL: 46, padR: 32, padT: 16, padB: 34 };
 var rect = { left: 100, top: 50, width: 360, height: 160 };
@@ -157,12 +157,12 @@ var box = null;
 var svgEl = {
   querySelector: function () { return line; },
   addEventListener: function (type, fn) { handlers[type] = fn; },
-  getBoundingClientRect: function () { return rect; }
+  getBoundingClientRect: function () { return rect; },
 };
 var host = {
   querySelector: function (sel) { return sel === 'svg' ? svgEl : box; },
   appendChild: function (el) { box = el; },
-  getBoundingClientRect: function () { return { left: 90, top: 40, width: 400, height: 200 }; }
+  getBoundingClientRect: function () { return { left: 90, top: 40, width: 400, height: 200 }; },
 };
 ReportChart.attachCrosshair(host, GEO, 30, function (i) { return CumulativeFlowPage.tipFor(flow, i); });
 var p = at2x(46 + 642 / 29 * 10.4, 100);
@@ -178,7 +178,7 @@ handlers.pointermove({ clientX: p[0], clientY: p[1] });
 checkPlain('pointer outside the plot shows nothing', box.hidden, true);
 var kept = CumulativeFlowPage.seriesByDay({
   columns: board,
-  tasks: [{ id: 'a', column_id: 'todo', created_at: at(-3, 10), history: [created('To-do', 'todo', at(-3, 10))] }]
+  tasks: [{ id: 'a', column_id: 'todo', created_at: at(-3, 10), history: [created('To-do', 'todo', at(-3, 10))] }],
 }, []);
 checkPlain('a filter that keeps no task keeps every column band', kept.order.join('|'), 'To-do|Done');
 checkPlain('a filter that keeps no task counts nothing', kept.counts[0][kept.ends.length - 1], 0);

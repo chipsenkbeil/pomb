@@ -12,13 +12,13 @@ function element(hidden) {
     style: {},
     classList: {
       toggle: function (name, on) { classes[name] = !!on; },
-      contains: function (name) { return !!classes[name]; }
+      contains: function (name) { return !!classes[name]; },
     },
     setAttribute: function (k, v) { attrs[k] = String(v); },
     getAttribute: function (k) { return k in attrs ? attrs[k] : null; },
     addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     dispatchEvent: function (ev) { (listeners[ev.type] || []).forEach(function (fn) { fn(ev); }); },
-    click: function () { (listeners.click || []).forEach(function (fn) { fn({ stopPropagation: function () {} }); }); }
+    click: function () { (listeners.click || []).forEach(function (fn) { fn({ stopPropagation: function () {} }); }); },
   };
 }
 
@@ -30,7 +30,7 @@ function load() {
     'epics-panel': element(true),
     'epics-close': element(false),
     'epics-back': element(false),
-    'filter-close': element(false)
+    'filter-close': element(false),
   };
   var row = { getBoundingClientRect: function () { return { bottom: 80 }; } };
   var docListeners = {};
@@ -38,7 +38,7 @@ function load() {
     getElementById: function (id) { return els[id] || null; },
     querySelector: function (sel) { return sel === '.board-header-row' ? row : null; },
     querySelectorAll: function () { return []; },
-    addEventListener: function (type, fn) { (docListeners[type] = docListeners[type] || []).push(fn); }
+    addEventListener: function (type, fn) { (docListeners[type] = docListeners[type] || []).push(fn); },
   };
   var window = {};
   function CustomEvent(type) { this.type = type; }
@@ -54,7 +54,7 @@ function load() {
     els: els,
     escape: function () {
       (docListeners.keydown || []).forEach(function (fn) { fn({ key: 'Escape' }); });
-    }
+    },
   };
 }
 
@@ -71,7 +71,7 @@ page.chrome.openEpics();
 check('openEpics closes the filter', [page.els['filter-panel'].hidden, page.els['epics-panel'].hidden], [true, false]);
 check('epics button lit and expanded', [
   page.els['epics-btn'].classList.contains('active'),
-  page.els['epics-btn'].getAttribute('aria-expanded')
+  page.els['epics-btn'].getAttribute('aria-expanded'),
 ], [true, 'true']);
 check('filter open and epics open each load content', page.chrome.loads, 2);
 
@@ -79,7 +79,7 @@ page.chrome.openFilter();
 check('openFilter closes Epics', [page.els['epics-panel'].hidden, page.els['filter-panel'].hidden], [true, false]);
 check('epics button unlit and collapsed', [
   page.els['epics-btn'].classList.contains('active'),
-  page.els['epics-btn'].getAttribute('aria-expanded')
+  page.els['epics-btn'].getAttribute('aria-expanded'),
 ], [false, 'false']);
 
 page.els['epics-btn'].click();

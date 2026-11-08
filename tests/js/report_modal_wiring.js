@@ -14,12 +14,12 @@ function element(id) {
     hidden: false,
     addEventListener: function (type, handler) {
       listeners[id + ':' + type] = (listeners[id + ':' + type] || []).concat(handler);
-    }
+    },
   };
 }
 var document = {
   getElementById: function (id) { return present[id] || null; },
-  querySelector: function (sel) { return sel === '.bshell-report' && reportPage ? {} : null; }
+  querySelector: function (sel) { return sel === '.bshell-report' && reportPage ? {} : null; },
 };
 function doMoveTask() {}
 function doCopyTask() {}

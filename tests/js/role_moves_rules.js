@@ -37,7 +37,7 @@ function check(cls, value, checked) { return node(cls, {}, { value: value, check
 
 function column(id, sections, min, max, fields) {
   return node(fieldsetClass('data-column-id'), { columnId: id }, {}, [
-    box(sections), input('br-min', min), input('br-max', max)
+    box(sections), input('br-min', min), input('br-max', max),
   ].concat(fields));
 }
 function move(fromId, limited, targets) {
@@ -52,9 +52,9 @@ var form = node('', {}, {}, [
   column('c2', '', '', '', []),
   role('r1', [
     move('c1', true, [check('br-target', 'c2', true), check('br-target', 'c3', false)]),
-    move('c2', false, [check('br-target', 'c1', true)])
+    move('c2', false, [check('br-target', 'c1', true)]),
   ]),
-  role('r2', [move('c1', false, [check('br-target', 'c2', true)])])
+  role('r2', [move('c1', false, [check('br-target', 'c2', true)])]),
 ]);
 
 var elements = {
@@ -62,12 +62,12 @@ var elements = {
   'br-error': node('', {}, {}),
   'br-saved': node('', {}, {}),
   'br-locked': node('', {}, { value: ' lock-a \n\nlock-b' }),
-  'br-standard': node('', {}, {})
+  'br-standard': node('', {}, {}),
 };
 var sent = [];
 var document = {
   getElementById: function (id) { return elements[id]; },
-  querySelector: function () { return node('', {}, {}); }
+  querySelector: function () { return node('', {}, {}); },
 };
 var window = { location: { reload: function () {} } };
 var fetch = function (url, options) {

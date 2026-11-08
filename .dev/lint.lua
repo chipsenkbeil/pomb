@@ -413,6 +413,18 @@ local SYNTAX_NAMES = {
 for _, script in ipairs(SCRIPTS) do
     lint:check(SYNTAX_NAMES[script], { "node", "--check", script })
 end
+if lint:have("ast-grep", "brew install ast-grep", "ast-grep scan") then
+    lint:check("js trailing commas", {
+        "ast-grep",
+        "scan",
+        "--config",
+        "sgconfig.yml",
+        "--filter",
+        "js-trailing-comma",
+        "static",
+        "tests/js",
+    })
+end
 
 local function script_hits(name, message, argv)
     local code = devos.run(argv, { cwd = root })

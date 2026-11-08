@@ -19,7 +19,7 @@ var board = {
   board: { name: 'Work <1>' },
   columns: [
     { id: 'c1', name: 'Todo', is_done: false },
-    { id: 'c2', name: 'Shipped', is_done: true }
+    { id: 'c2', name: 'Shipped', is_done: true },
   ],
   colors: [{ id: 'k1', value: 'yellow', label: 'Urgent' }, { id: 'k2', value: 'blue', label: 'Plain' }],
   users: [{ id: 'u1', username: 'ann' }, { id: 'u2', username: 'bob' }],
@@ -34,8 +34,8 @@ var board = {
     { id: 't3', name: 'Old done', column_id: 'c2', position: 1, member_ids: ['u2'], labels: ['api'],
       completed_at: '2026-01-05T10:00:00Z' },
     { id: 't4', name: 'New done', column_id: 'c2', position: 2, member_ids: [], labels: [],
-      completed_at: '2026-10-27T10:00:00Z' }
-  ]
+      completed_at: '2026-10-27T10:00:00Z' },
+  ],
 };
 var now = new Date(2026, 9, 28, 12, 0);
 function names(filters) {
@@ -55,7 +55,7 @@ check('period keeps open tasks and recent done tasks', names({ period: 'this-mon
 var sheet = PrintBoard.sheetHtml(board, {
   columns: ['c1'], props: ['description', 'color', 'members', 'estimate', 'spent', 'labels',
     'timeline', 'subtasks', 'comments', 'relations'],
-  user: '', color: '', label: '', period: 'all'
+  user: '', color: '', label: '', period: 'all',
 }, now);
 check('one block per task', (sheet.match(/<section class="print-task">/g) || []).length, 2);
 check('the board name is escaped', sheet.indexOf('Work &lt;1&gt;') >= 0, true);
@@ -66,11 +66,11 @@ check('a date-only timeline prints as stored', sheet.indexOf('2026-10-01 to 2026
 check('members and color', sheet.indexOf('ann') >= 0 && sheet.indexOf('Urgent') >= 0, true);
 
 var bare = PrintBoard.sheetHtml(board, {
-  columns: ['c1'], props: [], user: '', color: '', label: '', period: 'all'
+  columns: ['c1'], props: [], user: '', color: '', label: '', period: 'all',
 }, now);
 check('a block holds only the chosen properties', bare.indexOf('<dl>') < 0, true);
 check('an empty result says so', PrintBoard.sheetHtml(board, {
-  columns: [], props: [], user: '', color: '', label: '', period: 'all'
+  columns: [], props: [], user: '', color: '', label: '', period: 'all',
 }, now).indexOf('No tasks match the filters.') >= 0, true);
 
 console.log('failures=' + failures);

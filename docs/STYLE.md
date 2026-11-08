@@ -1958,6 +1958,27 @@ Review
 /// 1. Adds `subtasks.check` to the lead standard role.
 ```
 
+### P19. End every multi-line JavaScript literal with a trailing comma
+
+Every multi-line object and array literal in JavaScript takes a trailing comma,
+so adding an entry changes one line.
+
+Lint: ast-grep `js-trailing-comma`
+
+```js
+// Good
+var config = {
+  name: 'board',
+  size: 3,
+};
+
+// Bad
+var config = {
+  name: 'board',
+  size: 3
+};
+```
+
 ### P22. Import at the top of the file
 
 Every `use` sits in the file's import block, or in a test module's, and never

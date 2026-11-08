@@ -12,7 +12,7 @@ var document = {
   getElementById: function (id) {
     if (!page[id]) page[id] = { innerHTML: '', textContent: '', addEventListener: function () {} };
     return page[id];
-  }
+  },
 };
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -70,12 +70,12 @@ check('a range over three years is refused', span({ period: 'absolute', from: '2
 var data = {
   columns: [
     { id: 'todo', name: 'To-do', former_names: [], is_done: false },
-    { id: 'done', name: 'Done', former_names: [], is_done: true }
+    { id: 'done', name: 'Done', former_names: [], is_done: true },
   ],
   tasks: [
     { id: 'a', column_id: 'todo', created_at: at(-5, 9), estimate_hours: 2.5, points: 3 },
-    { id: 'b', column_id: 'done', created_at: at(-5, 9), estimate_hours: 4, points: 8 }
-  ]
+    { id: 'b', column_id: 'done', created_at: at(-5, 9), estimate_hours: 4, points: 8 },
+  ],
 };
 var range = { start: day(-1), end: day(0) };
 var counts = CumulativeFlowPage.seriesByDay(data, data.tasks, range, 'count');
@@ -109,7 +109,7 @@ var picker = { hidden: true, getAttribute: function (n) { return n === 'data-whe
 var host = {
   innerHTML: '',
   addEventListener: function (type, fn) { handlers[type] = fn; },
-  querySelectorAll: function (sel) { return sel === '[data-when]' ? [picker] : []; }
+  querySelectorAll: function (sel) { return sel === '[data-when]' ? [picker] : []; },
 };
 ReportFilter.mount(host, ReportFilter.create(controls, function () {}));
 check('a picker starts hidden', /data-when-value="absolute" hidden/.test(host.innerHTML), true);

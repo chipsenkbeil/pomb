@@ -18,7 +18,7 @@ var document = {
     if (sel === '#modal-root .task-modal') return modal;
     if (sel === '.board-bar-title') return pageBoard ? { textContent: ' ' + pageBoard.name + ' ' } : null;
     return null;
-  }
+  },
 };
 var linkPicker = { mode: null, onPick: null, timer: null, seq: 0, opener: null, board: null };
 function boardId() { return pageBoard ? pageBoard.id : null; }

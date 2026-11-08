@@ -1,0 +1,43 @@
+id: js-trailing-comma
+snapshots:
+  "var a = [\n  1,\n  ...rest\n];\n":
+    labels:
+    - source: |-
+        [
+          1,
+          ...rest
+        ]
+      style: primary
+      start: 8
+      end: 26
+    - source: ...rest
+      style: secondary
+      start: 17
+      end: 24
+  "var a = {\n  x: 1 // note\n};\n":
+    labels:
+    - source: |-
+        {
+          x: 1 // note
+        }
+      style: primary
+      start: 8
+      end: 26
+    - source: "x: 1"
+      style: secondary
+      start: 12
+      end: 16
+  "var a = {\n  x: 1,\n  y: 2\n};\n":
+    labels:
+    - source: |-
+        {
+          x: 1,
+          y: 2
+        }
+      style: primary
+      start: 8
+      end: 26
+    - source: "y: 2"
+      style: secondary
+      start: 20
+      end: 24

@@ -26,7 +26,7 @@ function element(tag) {
         prevented: false,
         stopped: false,
         preventDefault: function () { ev.prevented = true; },
-        stopPropagation: function () { ev.stopped = true; }
+        stopPropagation: function () { ev.stopped = true; },
       };
       (el.listeners.keydown || []).forEach(function (fn) { fn(ev); });
       return ev;
@@ -34,13 +34,13 @@ function element(tag) {
     typeText: function (text) {
       el.value = text;
       (el.listeners.input || []).forEach(function (fn) { fn({}); });
-    }
+    },
   };
   Object.defineProperty(el, 'textContent', {
     get: function () {
       return el.own + el.children.map(function (c) { return c.textContent; }).join('');
     },
-    set: function (v) { el.own = String(v); el.children = []; }
+    set: function (v) { el.own = String(v); el.children = []; },
   });
   return el;
 }
@@ -73,7 +73,7 @@ function load() {
   var document = {
     getElementById: function (id) { return els[id] || null; },
     createElement: element,
-    querySelector: function () { return null; }
+    querySelector: function () { return null; },
   };
   var state = { opened: [], toasts: [], fetches: [] };
   var boardId = function () { return 'b1'; };
@@ -190,7 +190,7 @@ var TEMPLATE = '## Problem\n\n## Goal\n\n## Approach\n\n## Out of scope';
     ok: true,
     json: function () {
       return Promise.resolve([{ id: 'e9', name: 'Retry rules', closed: false, parent_id: null, children_total: 0, children_done: 0 }]);
-    }
+    },
   });
   await flush();
   await flush();
@@ -214,13 +214,13 @@ var TEMPLATE = '## Problem\n\n## Goal\n\n## Approach\n\n## Out of scope';
   check('the editor is disabled while the post is in flight', [
     all(page.body, 'epic-new-input')[0].disabled,
     all(page.body, 'epic-new-create')[0].disabled,
-    all(page.body, 'epic-new-cancel')[0].disabled
+    all(page.body, 'epic-new-cancel')[0].disabled,
   ], [true, true, true]);
   page.posts()[0].d.resolve({ ok: false, body: 'no' });
   await flush();
   check('the editor is enabled again after a failure', [
     all(page.body, 'epic-new-input')[0].disabled,
-    all(page.body, 'epic-new-cancel')[0].disabled
+    all(page.body, 'epic-new-cancel')[0].disabled,
   ], [false, false]);
 
   page = load();

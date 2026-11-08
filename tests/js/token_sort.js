@@ -19,7 +19,7 @@ var rows = [
   row('a', 'beta', 'pomb_b…2222', 'write', '200', '', '3000'),
   row('b', 'Alpha', 'pomb_a…9999', 'read', '1000', '500', ''),
   row('c', 'gamma', 'pomb_c…1111', 'admin', '30', '90', '40'),
-  row('d', 'delta', 'pomb_d…5555', 'read', '4', '', '')
+  row('d', 'delta', 'pomb_d…5555', 'read', '4', '', ''),
 ];
 function ids(column, direction) {
   return TokenSort.order(rows, column, direction).map(function (r) { return r.id; });

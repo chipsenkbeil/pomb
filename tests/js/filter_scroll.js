@@ -12,7 +12,7 @@ const store = () => {
   return {
     getItem: (k) => (k in m ? m[k] : null),
     setItem: (k, v) => { m[k] = String(v); },
-    removeItem: (k) => { delete m[k]; }
+    removeItem: (k) => { delete m[k]; },
   };
 };
 
@@ -30,7 +30,7 @@ function load() {
   const limit = () => Math.max(0, visible().reduce((sum, el) => sum + height(el), 0) - VIEW);
   Object.defineProperty(list, 'scrollTop', {
     get: () => { raw = Math.min(raw, limit()); return raw; },
-    set: (v) => { raw = Math.max(0, Math.min(v, limit())); }
+    set: (v) => { raw = Math.max(0, Math.min(v, limit())); },
   });
   const rect = (el) => {
     const above = visible().slice(0, visible().indexOf(el)).reduce((sum, e) => sum + height(e), 0);
@@ -55,13 +55,13 @@ function load() {
           target[key] = value;
           list.scrollTop = list.scrollTop;
           return true;
-        }
+        },
       }),
       hidden: false,
       classList: { contains: (name) => name === 'task-card', toggle: () => {} },
       closest: (sel) => (sel === '.task-list' ? list : null),
       querySelector: () => null,
-      getBoundingClientRect: () => rect(el)
+      getBoundingClientRect: () => rect(el),
     };
     return el;
   };
@@ -74,7 +74,7 @@ function load() {
     'f-date': select('all'),
     'f-epic': select(''),
     'filter-btn': { classList: { toggle: () => {} }, addEventListener: () => {} },
-    'filter-remember': { checked: false }
+    'filter-remember': { checked: false },
   };
   const document = {
     getElementById: (id) => els[id] || null,
@@ -90,7 +90,7 @@ function load() {
       if (sel === '.task-list') return [list];
       if (sel === '.filter-fold') return list.children.filter(isFold);
       return [];
-    }
+    },
   };
   const window = { sessionStorage: store(), localStorage: store(), addEventListener: () => {} };
   const boardId = () => 'b1';

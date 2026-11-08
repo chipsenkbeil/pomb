@@ -28,8 +28,8 @@ var data = {
     { id: 'a', column_id: 'todo', color_id: 'red', labels: ['x', 'y'], member_ids: ['u1', 'u2'], responsible: { kind: 'member', id: 'u1' }, estimate_hours: 1.5 },
     { id: 'b', column_id: 'todo', color_id: null, labels: [], member_ids: [], responsible: null, estimate_hours: 4.5 },
     { id: 'c', column_id: 'done', color_id: 'red', labels: ['x'], member_ids: ['u2'], responsible: { kind: 'session', name: 'agent-1' }, estimate_hours: 2, completed_at: at(2026, 11, 13) },
-    { id: 'd', column_id: 'done', color_id: 'red', labels: ['x'], member_ids: ['u2'], responsible: null, estimate_hours: 3, completed_at: at(2026, 10, 1) }
-  ]
+    { id: 'd', column_id: 'done', color_id: 'red', labels: ['x'], member_ids: ['u2'], responsible: null, estimate_hours: 3, completed_at: at(2026, 10, 1) },
+  ],
 };
 function rowsOf(group, extra) {
   var opts = Object.assign({ group: group, range: ReportBreakdown.periodRange('7', '', '', now), user: '', color: '', label: '' }, extra || {});

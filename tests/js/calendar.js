@@ -112,7 +112,7 @@ check('the grid draws the repeats only when shown', [repeatGrid(true), repeatGri
 
 var merged = CalendarPage.mergeBoards([
   { data: { board: { name: 'One' }, tasks: [task('a')], columns: [{ id: 'c1' }], swimlanes: [], colors: [{ id: 'k1' }], users: [{ id: 'u1' }] } },
-  { data: { board: { name: 'Two' }, tasks: [task('b')], columns: [{ id: 'c2' }], swimlanes: [{ id: 's2' }], colors: [], users: [{ id: 'u1' }, { id: 'u2' }] } }
+  { data: { board: { name: 'Two' }, tasks: [task('b')], columns: [{ id: 'c2' }], swimlanes: [{ id: 's2' }], colors: [], users: [{ id: 'u1' }, { id: 'u2' }] } },
 ]);
 check('boards merge into one dataset naming each task\'s board',
   [merged.tasks.map(function (t) { return t.id + '@' + t.board_name; }),

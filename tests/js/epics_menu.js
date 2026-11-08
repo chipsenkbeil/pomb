@@ -38,7 +38,7 @@ function reset(dataset, name) {
 
 var document = {
   querySelector: function (sel) { return sel === '#modal-root .task-modal.tm-epic' ? modal : null; },
-  getElementById: function (id) { return id === 'modal-name' ? nameInput : null; }
+  getElementById: function (id) { return id === 'modal-name' ? nameInput : null; },
 };
 function modalTaskId() { return modal ? 'e1' : null; }
 function fetch(path, init) {
@@ -78,7 +78,7 @@ var JSON_HEADERS = { 'Content-Type': 'application/json', 'Accept': 'application/
   await flush();
   await flush();
   check('confirming posts the close route with the JSON Accept header', calls, [
-    { path: '/api/tasks/e1/close', method: 'POST', headers: JSON_HEADERS, body: undefined }
+    { path: '/api/tasks/e1/close', method: 'POST', headers: JSON_HEADERS, body: undefined },
   ]);
   check('success refreshes the modal once', refreshes, 1);
 
@@ -130,7 +130,7 @@ var JSON_HEADERS = { 'Content-Type': 'application/json', 'Accept': 'application/
   await flush();
   await flush();
   check('reopen posts the reopen route with the JSON Accept header', calls, [
-    { path: '/api/tasks/e1/reopen', method: 'POST', headers: JSON_HEADERS, body: undefined }
+    { path: '/api/tasks/e1/reopen', method: 'POST', headers: JSON_HEADERS, body: undefined },
   ]);
   check('reopen refreshes the modal once', refreshes, 1);
   replies.push(response(false, '{"message":"the epic is not closed"}'));
@@ -157,7 +157,7 @@ var JSON_HEADERS = { 'Content-Type': 'application/json', 'Accept': 'application/
   await flush();
   await flush();
   check('confirming deletes the task with the JSON Accept header', calls, [
-    { path: '/api/tasks/e1', method: 'DELETE', headers: JSON_HEADERS, body: undefined }
+    { path: '/api/tasks/e1', method: 'DELETE', headers: JSON_HEADERS, body: undefined },
   ]);
   check('success closes the modal, marks it dirty and refreshes the timer', [closes, modalDirty, timerRefreshes], [1, true, 1]);
 
@@ -194,7 +194,7 @@ var JSON_HEADERS = { 'Content-Type': 'application/json', 'Accept': 'application/
   await flush();
   await flush();
   check('confirming patches kind task with unlink_children and the JSON Accept header', calls, [
-    { path: '/api/tasks/e1', method: 'PATCH', headers: JSON_HEADERS, body: '{"kind":"task","unlink_children":true}' }
+    { path: '/api/tasks/e1', method: 'PATCH', headers: JSON_HEADERS, body: '{"kind":"task","unlink_children":true}' },
   ]);
   check('success refreshes the modal once', refreshes, 1);
 

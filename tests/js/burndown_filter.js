@@ -12,7 +12,7 @@ var document = {
   getElementById: function (id) {
     if (!page[id]) page[id] = { innerHTML: '', textContent: '', addEventListener: function () {} };
     return page[id];
-  }
+  },
 };
 function escapeHtml(s) { return String(s); }
 var accountPrefs = { hour12: true, weekStart: 1 };
@@ -52,13 +52,13 @@ var data = {
   columns: [
     { id: 'todo', name: 'To-do', former_names: [], is_done: false },
     { id: 'doing', name: 'Doing', former_names: [], is_done: false },
-    { id: 'done', name: 'Finished', former_names: [], is_done: true }
+    { id: 'done', name: 'Finished', former_names: [], is_done: true },
   ],
   tasks: [
     { id: 'a', column_id: 'todo', created_at: at(-10, 9), estimate_hours: 2, points: 3 },
     { id: 'b', column_id: 'doing', created_at: at(-10, 9), estimate_hours: 3, points: 5 },
-    { id: 'c', column_id: 'done', created_at: at(-2, 9), completed_at: at(-1, 12), estimate_hours: 5 }
-  ]
+    { id: 'c', column_id: 'done', created_at: at(-2, 9), completed_at: at(-1, 12), estimate_hours: 5 },
+  ],
 };
 function counts(extra) {
   var opts = { start: day(-3), valueType: 'count', target: 'done', targetDone: true, from: null,
@@ -121,7 +121,7 @@ for (var w = 0; w < 6; w++) routed.push({ id: 'r' + w, column_id: 'doing', creat
 for (var z = 0; z < 4; z++) {
   routed.push({ id: 'm' + z, column_id: 'done', created_at: at(-12, 9), completed_at: at(-1, 12), history: [
     { kind: 'created', detail: 'Task created in To-do', column_id: 'todo', created_at: at(-12, 9) },
-    { kind: 'moved', detail: 'Moved from To-do to Finished', column_id: 'done', created_at: at(-1, 12) }
+    { kind: 'moved', detail: 'Moved from To-do to Finished', column_id: 'done', created_at: at(-1, 12) },
   ] });
 }
 function routedProjection(from) {

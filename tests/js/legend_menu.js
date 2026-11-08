@@ -34,14 +34,14 @@ var document = {
     return sel === '.color-legend' ? footer : null;
   },
   querySelectorAll: function () { return segments; },
-  getElementById: function (id) { return id === 'f-color' ? select : null; }
+  getElementById: function (id) { return id === 'f-color' ? select : null; },
 };
 var window = { location: { reload: function () { reloads++; } } };
 var MENU_KEEPS_OPEN;
 eval(slice('  var MENU_KEEPS_OPEN =', '  var BoardChrome ='));
 var chrome = {
   setPref: function (k, on) { prefs[k] = on; },
-  filterValue: function () { return select.value; }
+  filterValue: function () { return select.value; },
 };
 eval('Object.assign(chrome, {' + slice('    toggleDark: function', '    // KF-379: the help dialog').replace(/,\s*$/, '') + '});');
 eval('Object.assign(chrome, {' + slice('    syncLegendFilter: function', '    initLegend: function').replace(/,\s*$/, '') + '});');

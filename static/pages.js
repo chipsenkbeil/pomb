@@ -50,7 +50,7 @@
       e.preventDefault();
       var start = {
         handle: document.getElementById('recover-handle').value.trim(),
-        recovery_code: document.getElementById('recover-code').value.trim()
+        recovery_code: document.getElementById('recover-code').value.trim(),
       };
       var finish = { name: document.getElementById('recover-passkey-name').value.trim() };
       window.pombPasskey.attempt(error, 'Recovery failed: ', function () {
@@ -70,7 +70,7 @@
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify({ archived: false })
+          body: JSON.stringify({ archived: false }),
         })
           .then(function (r) {
             if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
@@ -104,7 +104,7 @@
       return window.pombPasskey.fetch(url, {
         method: method,
         headers: { 'Content-Type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body)
+        body: body === undefined ? undefined : JSON.stringify(body),
       }).then(function (r) {
         if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
         return r.json();
@@ -167,20 +167,20 @@
           columns_per_board: limitValue('columns_per_board'),
           swimlanes_per_board: limitValue('swimlanes_per_board'),
           fields_per_board: limitValue('fields_per_board'),
-          time_entries_per_account: limitValue('time_entries_per_account')
+          time_entries_per_account: limitValue('time_entries_per_account'),
         },
         limits: {
           token_burst: limitValue('token_burst'),
           token_per_second: limitValue('token_per_second'),
           account_burst: limitValue('account_burst'),
           account_per_second: limitValue('account_per_second'),
-          ip_per_minute: limitValue('ip_per_minute')
+          ip_per_minute: limitValue('ip_per_minute'),
         },
         disk: {
           max_database_mib: limitValue('max_database_mib'),
           min_free_mib: limitValue('min_free_mib'),
-          max_attachment_mib: limitValue('max_attachment_mib')
-        }
+          max_attachment_mib: limitValue('max_attachment_mib'),
+        },
       };
     }
     function saveSettings(section, pane, errorElement, prefix) {
@@ -193,7 +193,7 @@
       e.preventDefault();
       saveSettings({
         registration: registrationForm.querySelector('input[name="registration"]:checked').value,
-        pending_cap: parseInt(document.getElementById('pending-cap').value, 10)
+        pending_cap: parseInt(document.getElementById('pending-cap').value, 10),
       }, 'registration', registrationError, 'Could not save registration: ');
     });
     var tipsForm = document.getElementById('tips-form');
@@ -201,7 +201,7 @@
     tipsForm.addEventListener('submit', function (e) {
       e.preventDefault();
       saveSettings({
-        disable_tips: tipsForm.elements.disable_tips.checked
+        disable_tips: tipsForm.elements.disable_tips.checked,
       }, 'tips', tipsError, 'Could not save the tips setting: ');
     });
     limitsForm.addEventListener('submit', function (e) {
@@ -214,8 +214,8 @@
         prune: {
           enabled: pruningForm.elements.prune_enabled.checked,
           inactive_days: parseInt(pruningForm.elements.inactive_days.value, 10),
-          warning_days: parseInt(pruningForm.elements.warning_days.value, 10)
-        }
+          warning_days: parseInt(pruningForm.elements.warning_days.value, 10),
+        },
       }, 'pruning', pruningError, 'Could not save the unused-board settings: ');
     });
     var inviteForm = document.getElementById('invite-create-form');
@@ -224,7 +224,7 @@
       e.preventDefault();
       inviteError.hidden = true;
       jsonRequest('POST', '/api/v1/admin/invites', {
-        expires_in_days: parseInt(document.getElementById('invite-expiry').value, 10)
+        expires_in_days: parseInt(document.getElementById('invite-expiry').value, 10),
       }).then(function (data) {
         document.getElementById('invite-created-value').textContent = data.url;
         document.getElementById('invite-created').hidden = false;
@@ -282,13 +282,13 @@
           ticked: picker.held(),
           roleId: picker.roleId(),
           boards: chosen,
-          expiryDays: expiryMenu.days()
+          expiryDays: expiryMenu.days(),
         });
         if (!fields.some(function (field) { return field[0] === 'permissions'; })) throw new Error('tick at least one permission');
         if (chosen !== null && !chosen.length) throw new Error('pick at least one board');
         return window.pombPasskey.fetch('/device/approve', {
           method: 'POST',
-          body: new URLSearchParams(fields)
+          body: new URLSearchParams(fields),
         }).then(function (r) {
           return r.text().then(function (text) {
             var page = new DOMParser().parseFromString(text, 'text/html').querySelector('main');
@@ -490,7 +490,7 @@
       webhooks: 'Manage a board\'s webhooks.',
       inbound: 'Manage a board\'s inbound addresses.',
       tokens: 'Create child tokens.',
-      roles: 'Create the standard roles and grant them on boards.'
+      roles: 'Create the standard roles and grant them on boards.',
     },
     areaName: function (group) {
       return group.charAt(0).toUpperCase() + group.slice(1);
@@ -572,7 +572,7 @@
       ['reviewer', 'Claims and moves cards'],
       ['verifier', 'Ticks outcomes'],
       ['release', 'Claims and moves cards'],
-      ['lead', 'Plans and runs the board, issues child tokens']
+      ['lead', 'Plans and runs the board, issues child tokens'],
     ],
     roleNote: function (role) {
       var known = TokenForm.standardRoles.filter(function (entry) { return entry[0] === role.name; })[0];
@@ -614,7 +614,7 @@
         role: pick,
         hint: found.length > 1 && !pick
           ? 'These rows match the roles ' + names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] + '.'
-          : ''
+          : '',
       };
     },
     body: function (catalog, form) {
@@ -624,7 +624,7 @@
           .map(function (item) { return item.name; })
           .filter(function (name) { return form.ticked.indexOf(name) >= 0; }),
         boards: form.boards === null ? TokenForm.boardsAll : form.boards,
-        expires_in_days: form.expiryDays
+        expires_in_days: form.expiryDays,
       };
       if (form.roleId) request.role_id = form.roleId;
       if (form.childLifetimeHours) request.child_lifetime_hours = form.childLifetimeHours;
@@ -682,7 +682,7 @@
           label: entry[1],
           ends: entry[0] === 0
             ? 'No end date'
-            : 'Ends ' + new Date(now + entry[0] * 86400000).toISOString().slice(0, 10) + ' UTC'
+            : 'Ends ' + new Date(now + entry[0] * 86400000).toISOString().slice(0, 10) + ' UTC',
         };
       });
     },
@@ -702,7 +702,7 @@
           return {
             days: value,
             label: TokenForm.deviceHoursLabel(value),
-            ends: 'Ends ' + new Date(now + value * 3600000).toISOString().slice(0, 10) + ' UTC'
+            ends: 'Ends ' + new Date(now + value * 3600000).toISOString().slice(0, 10) + ' UTC',
           };
         });
         if (!named) choices.push({ days: 0, label: 'Never', ends: 'No end date' });
@@ -713,9 +713,9 @@
     lifetimeChoices: () => [1, 2, 3, 4, 5, 6, 7, 8].map((hours) => ({
       days: hours,
       label: hours + (hours === 1 ? ' hour' : ' hours'),
-      ends: hours === 1 ? 'Default' : ''
+      ends: hours === 1 ? 'Default' : '',
     })),
-    lifetimeField: { label: 'Child token lifetime', key: 'lifetime' }
+    lifetimeField: { label: 'Child token lifetime', key: 'lifetime' },
   };
 
   var pickerMenu = null;
@@ -954,7 +954,7 @@
       value: function () {
         return only ? TokenForm.boardChips(boards, picked).map(function (board) { return board.id; }) : null;
       },
-      reset: function () { only = false; picked = []; render(); }
+      reset: function () { only = false; picked = []; render(); },
     };
   }
 
@@ -1000,7 +1000,7 @@
     render();
     return {
       days: function () { return days; },
-      reset: function () { days = start; render(); }
+      reset: function () { days = start; render(); },
     };
   }
 
@@ -1341,7 +1341,7 @@
       start: start,
       reset: function () {
         start([]);
-      }
+      },
     };
   }
 
@@ -1364,7 +1364,7 @@
       var to = key === 'ArrowRight' ? at + 1 : key === 'ArrowLeft' ? at - 1 :
         key === 'Home' ? 0 : key === 'End' ? count - 1 : null;
       return to === null ? null : TokenTabs.names[(to + count) % count];
-    }
+    },
   };
 
   var TokenSort = {
@@ -1392,7 +1392,7 @@
         if (numeric && (x === '' || y === '')) return TokenSort.compare(column, x, y) || a.index - b.index;
         return sign * TokenSort.compare(column, x, y) || a.index - b.index;
       }).map(function (entry) { return entry.row; });
-    }
+    },
   };
 
   pages['settings'] = function () {
@@ -1446,7 +1446,7 @@
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ full_name: document.getElementById('profile-full-name').value })
+        body: JSON.stringify({ full_name: document.getElementById('profile-full-name').value }),
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         profileSaved.hidden = false;
@@ -1470,7 +1470,7 @@
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ show_tips: showTips.checked })
+        body: JSON.stringify({ show_tips: showTips.checked }),
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
       }).catch(function (ex) {
@@ -1488,7 +1488,7 @@
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify(patch)
+          body: JSON.stringify(patch),
         }).then(function (r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
           location.reload();
@@ -1539,9 +1539,9 @@
             avatar: {
               text: document.getElementById('avatar-text').value,
               text_color: document.getElementById('avatar-text-color').value,
-              background: document.getElementById('avatar-background').value
-            }
-          })
+              background: document.getElementById('avatar-background').value,
+            },
+          }),
         }).then(avatarSaved).catch(avatarSaveFailed);
         return;
       }
@@ -1554,7 +1554,7 @@
         method: 'PUT',
         headers: { 'Content-Type': file.type },
         credentials: 'same-origin',
-        body: file
+        body: file,
       }).then(avatarSaved).catch(avatarSaveFailed);
     });
     var toggles = document.querySelectorAll('.notification-toggle');
@@ -1568,7 +1568,7 @@
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify({ muted_notifications: muted })
+          body: JSON.stringify({ muted_notifications: muted }),
         }).then(function (r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
         }).catch(function (ex) {
@@ -1622,14 +1622,14 @@
         roleId: picker ? picker.roleId() : null,
         boards: chosen,
         expiryDays: expiryMenu.days(),
-        childLifetimeHours: lifetimeMenu.days()
+        childLifetimeHours: lifetimeMenu.days(),
       });
       if (!request.permissions.length) { showError('Tick at least one permission.'); return; }
       if (only && !request.boards.length) { showError('Pick at least one board.'); return; }
       window.pombPasskey.fetch('/api/v1/auth/tokens', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request)
+        body: JSON.stringify(request),
       }).then(function (r) {
         if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
         return r.json();
@@ -1658,7 +1658,7 @@
       fetch('/api/v1/auth/tokens/inspect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ token: input.value.trim() })
+        body: JSON.stringify({ token: input.value.trim() }),
       }).then(function (r) {
         if (r.status === 404) throw new Error('no such token on this account');
         if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -1810,7 +1810,7 @@
           const held = loaded.picker.held();
           changeRole('PATCH', roleUrl(card), {
             name: card.querySelector('.role-name-input').value.trim(),
-            permissions: loaded.catalog.map((item) => item.name).filter((permission) => held.includes(permission))
+            permissions: loaded.catalog.map((item) => item.name).filter((permission) => held.includes(permission)),
           });
         });
         card.querySelector('.role-revoke-all').addEventListener('click', () => {
@@ -1895,7 +1895,7 @@
       return window.pombPasskey.fetch(url, {
         method: method,
         headers: { 'Content-Type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body)
+        body: body === undefined ? undefined : JSON.stringify(body),
       }).then(function (r) {
         if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
         return r.json();
@@ -1914,7 +1914,7 @@
         jsonRequest('PUT', '/api/v1/backups/settings', {
           enabled: document.getElementById('backup-enabled').checked,
           interval_hours: parseInt(document.getElementById('backup-interval').value, 10),
-          keep: parseInt(document.getElementById('backup-keep').value, 10)
+          keep: parseInt(document.getElementById('backup-keep').value, 10),
         }).then(reloadBackups).catch(failed(backupError, 'Could not save backup settings: '));
       });
       document.getElementById('backup-now').addEventListener('click', function () {
@@ -1962,8 +1962,8 @@
           disk: {
             max_database_mib: max === '' ? null : parseInt(max, 10),
             min_free_mib: parseInt(document.getElementById('storage-min-free').value, 10),
-            max_attachment_mib: parseInt(document.getElementById('storage-max-attachment').value, 10)
-          }
+            max_attachment_mib: parseInt(document.getElementById('storage-max-attachment').value, 10),
+          },
         }).then(function () { location.hash = 'storage'; location.reload(); })
           .catch(failed(storageError, 'Could not save storage settings: '));
       });
@@ -1987,7 +1987,7 @@
         e.preventDefault();
         deleteError.hidden = true;
         jsonRequest('POST', '/api/v1/account/delete', {
-          handle: document.getElementById('account-delete-handle').value.trim()
+          handle: document.getElementById('account-delete-handle').value.trim(),
         }).then(function (data) { location.assign(data.redirect); })
           .catch(failed(deleteError, 'Could not delete the account: '));
       });
@@ -2230,7 +2230,7 @@
         method: method,
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body)
+        body: body === undefined ? undefined : JSON.stringify(body),
       }).then(function (res) {
         if (res.ok) return res;
         return res.text().then(function (text) {
@@ -2330,7 +2330,7 @@
           key: set.elements['column-key'].value.trim(),
           label: set.elements['column-label'].value,
           kind: set.elements['column-kind'].value,
-          required: set.elements['column-required'].checked
+          required: set.elements['column-required'].checked,
         };
         if (hasOptions(column.kind)) column.options = splitOptions(set.elements['column-options'].value);
         return column;
@@ -2357,7 +2357,7 @@
         key: form.key.value.trim(),
         kind: form.kind.value,
         owner: form.owner.value,
-        required: form.required.checked
+        required: form.required.checked,
       };
       var options = splitOptions(form.options.value);
       if (body.kind === 'table') body.columns = readColumns(addColumns);
@@ -2417,7 +2417,7 @@
     document.getElementById('bf-edit-save').addEventListener('click', function () {
       var body = {
         label: document.getElementById('bf-edit-label').value,
-        required: document.getElementById('bf-edit-required').checked
+        required: document.getElementById('bf-edit-required').checked,
       };
       if (!document.getElementById('bf-edit-options-row').hidden) {
         body.options = splitOptions(document.getElementById('bf-edit-options').value);
@@ -2636,7 +2636,7 @@
             }
           });
           Promise.all(pending).then(function () { /* order persisted; no reload needed */ });
-        }
+        },
       });
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initColorSort);
@@ -2731,7 +2731,7 @@
       method: method,
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body)
+      body: body === undefined ? undefined : JSON.stringify(body),
     }).then(function (res) {
       return res.text().then(function (text) {
         var data = null;
@@ -2778,7 +2778,7 @@
       method: method,
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body)
+      body: body === undefined ? undefined : JSON.stringify(body),
     }).then(function (res) {
       return res.text().then(function (text) {
         var data = null;
@@ -2949,7 +2949,7 @@
       const body = {
         name: document.getElementById('ib-new-name').value,
         prefix: document.getElementById('ib-new-prefix').value.trim(),
-        column_id: document.getElementById('ib-new-column').value
+        column_id: document.getElementById('ib-new-column').value,
       };
       webhookRequest('POST', `/api/boards/${encodeURIComponent(form.dataset.boardId)}/inbound-addresses`, body)
         .then(showAddress)
@@ -3027,7 +3027,7 @@
         name: document.getElementById('wh-name').value,
         url: document.getElementById('wh-url').value.trim(),
         events: Array.prototype.map.call(form.querySelectorAll('input[name="event"]:checked'), function (box) { return box.value; }),
-        column_id: document.getElementById('wh-column').value || null
+        column_id: document.getElementById('wh-column').value || null,
       };
       errorBox.hidden = true;
       save.disabled = true;
@@ -3086,7 +3086,7 @@
           sections: lines(box.querySelector('.br-sections').value),
           outcomes_min: count(box.querySelector('.br-min')),
           outcomes_max: count(box.querySelector('.br-max')),
-          fields: Array.prototype.map.call(box.querySelectorAll('.br-field:checked'), function (input) { return input.value; })
+          fields: Array.prototype.map.call(box.querySelectorAll('.br-field:checked'), function (input) { return input.value; }),
         };
       });
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/rules', {
@@ -3095,7 +3095,7 @@
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify(restore
           ? { locked_labels: lines(document.getElementById('br-locked').value), columns: columns }
-          : { locked_labels: lines(document.getElementById('br-locked').value), columns: columns, role_moves: roleMoves() })
+          : { locked_labels: lines(document.getElementById('br-locked').value), columns: columns, role_moves: roleMoves() }),
       }).then(function (res) {
         if (res.ok) {
           if (restore) { window.location.reload(); return; }
@@ -3147,7 +3147,7 @@
         method: 'PUT',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ highlights: highlights, show_all: showAll.checked, added: added })
+        body: JSON.stringify({ highlights: highlights, show_all: showAll.checked, added: added }),
       }).then(function (res) {
         if (res.ok) { savedBox.hidden = false; return; }
         return res.text().then(function (text) {

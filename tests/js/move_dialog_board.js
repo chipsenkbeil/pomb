@@ -19,7 +19,7 @@ function select() {
   var html = '';
   Object.defineProperty(s, 'innerHTML', {
     get: function () { return html; },
-    set: function (v) { html = v; s.options = []; s.value = ''; }
+    set: function (v) { html = v; s.options = []; s.value = ''; },
   });
   s.appendChild = function (o) { s.options.push(o); if (!s.value) s.value = o.value; };
   return s;
@@ -33,8 +33,8 @@ var elements = {
   'move-task-dialog': {
     hidden: true,
     classList: { toggle: function () {} },
-    querySelector: function () { return { style: {} }; }
-  }
+    querySelector: function () { return { style: {} }; },
+  },
 };
 var document = {
   title: 'Cycle & lead time | Pomb',
@@ -45,7 +45,7 @@ var document = {
     return null;
   },
   querySelectorAll: function () { return []; },
-  createElement: function () { return { value: '', textContent: '' }; }
+  createElement: function () { return { value: '', textContent: '' }; },
 };
 var window = { location: {} };
 var currentBoard = 'b1';

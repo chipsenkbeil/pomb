@@ -14,7 +14,7 @@ var currentDocument = { getElementById: function () { return null; }, querySelec
 var document = {
   getElementById: function () { return null; },
   createElement: function () { return { style: {}, offsetWidth: 100, hidden: false }; },
-  querySelector: function (sel) { return currentDocument.querySelector(sel); }
+  querySelector: function (sel) { return currentDocument.querySelector(sel); },
 };
 function escapeHtml(s) { return String(s); }
 var accountPrefs = { hour12: true, weekStart: 1 };
@@ -92,7 +92,7 @@ function daysAgo(n, h) {
 var cyc = CycleLeadPage.bucketize(CycleLeadPage.computeTimes([
   { id: 't1', name: 'Fix login', created_at: daysAgo(20, 9), completed_at: daysAgo(2, 9),
     history: [{ kind: 'moved', created_at: daysAgo(10, 9) }] },
-  { id: 't2', name: 'Open task', created_at: daysAgo(5, 9), completed_at: null, history: [] }
+  { id: 't2', name: 'Open task', created_at: daysAgo(5, 9), completed_at: null, history: [] },
 ]));
 function dots(svg) { return svg.match(/<circle[^>]*class="chart-task-dot"[^>]*>/g) || []; }
 function attr(el, name) { var m = new RegExp(' ' + name + '="([^"]*)"').exec(el); return m && m[1]; }
@@ -113,7 +113,7 @@ var tipHost = {
   querySelector: function () { return tipBox; },
   appendChild: function (el) { tipBox = el; },
   addEventListener: function (type, fn) { tipHandlers[type] = fn; },
-  getBoundingClientRect: function () { return { left: 0, top: 0, width: 400, height: 200 }; }
+  getBoundingClientRect: function () { return { left: 0, top: 0, width: 400, height: 200 }; },
 };
 ReportChart.attachDots(tipHost, '.chart-task-dot', function (id) { opened.push(id); });
 var dotEl = { dataset: { taskId: 't1', name: 'Fix login', from: '1 October 9:00 AM', to: '9 October 9:00 AM', days: '8 days' } };
@@ -162,7 +162,7 @@ var times = CycleLeadPage.computeTimes([
     history: [{ kind: 'moved', created_at: '2026-01-07T09:00:00Z' }, { kind: 'moved', created_at: '2026-01-05T09:00:00Z' }, { kind: 'created', created_at: '2026-01-02T09:00:00Z' }] },
   { id: 'b', name: 'Never moved', created_at: '2026-01-01T09:00:00Z', completed_at: '2026-01-09T09:00:00Z', history: [] },
   { id: 'c', name: 'Moved before creation', created_at: '2026-01-03T09:00:00Z', completed_at: '2026-01-09T09:00:00Z',
-    history: [{ kind: 'moved', created_at: '2026-01-02T09:00:00Z' }] }
+    history: [{ kind: 'moved', created_at: '2026-01-02T09:00:00Z' }] },
 ]);
 check('cycle time starts at the first move', [times[0].cycle, times[0].lead], [4, 8]);
 check('cycle time starts at the first move, in the dot', times[0].fromAt, { cycle: Date.parse('2026-01-05T09:00:00Z'), lead: Date.parse('2026-01-01T09:00:00Z') });

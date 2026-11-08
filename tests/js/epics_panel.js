@@ -17,13 +17,13 @@ function element(tag) {
     appendChild: function (child) { el.children.push(child); return child; },
     setAttribute: function (k, v) { el.attrs[k] = String(v); },
     addEventListener: function (type, fn) { (el.listeners[type] = el.listeners[type] || []).push(fn); },
-    click: function () { (el.listeners.click || []).forEach(function (fn) { fn({}); }); }
+    click: function () { (el.listeners.click || []).forEach(function (fn) { fn({}); }); },
   };
   Object.defineProperty(el, 'textContent', {
     get: function () {
       return el.own + el.children.map(function (c) { return c.textContent; }).join('');
     },
-    set: function (v) { el.own = String(v); el.children = []; }
+    set: function (v) { el.own = String(v); el.children = []; },
   });
   return el;
 }
@@ -61,7 +61,7 @@ function load(role) {
   var document = {
     getElementById: function (id) { return els[id] || null; },
     createElement: element,
-    querySelector: function (sel) { return role === 'viewer' && sel === '.board-wrap[data-role="viewer"]' ? {} : null; }
+    querySelector: function (sel) { return role === 'viewer' && sel === '.board-wrap[data-role="viewer"]' ? {} : null; },
   };
   var state = { opened: [], toasts: [], fetches: [], posts: [] };
   var boardId = function () { return 'b1'; };
@@ -110,7 +110,7 @@ function groupNames(page) {
 
 var page = render([
   epic('p', 'P', { children_total: 4, children_done: 1 }),
-  epic('k', 'K', { parent_id: 'p', children_total: 2, children_done: 2 })
+  epic('k', 'K', { parent_id: 'p', children_total: 2, children_done: 2 }),
 ]);
 check('a parent and child share one group', groupNames(page), [['P', 'K']]);
 check('the child has the inside line', all(page.body, 'epic-inside').map(function (n) { return n.textContent; }), ['inside P']);
@@ -131,7 +131,7 @@ check('the arrow unfolds', groupNames(page), [['P', 'K']]);
 page = render([
   epic('a', 'A'),
   epic('b', 'B', { parent_id: 'a' }),
-  epic('c', 'C', { parent_id: 'b' })
+  epic('c', 'C', { parent_id: 'b' }),
 ]);
 check('three levels share a group', groupNames(page), [['A', 'B', 'C']]);
 check('the grandchild is inside its parent', all(page.body, 'epic-inside').map(function (n) { return n.textContent; }), ['inside A', 'inside B']);

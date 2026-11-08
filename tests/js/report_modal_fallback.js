@@ -8,7 +8,7 @@ function fn(start) {
 var TASK = {
   name: 'Write docs', description: 'Body', column_id: 'c2', swimlane_id: 'lane9',
   color_id: 'col3', labels: ['a'], timeline_start: '2026-10-01', timeline_end: '2026-10-05',
-  links: [{ target_id: 't9' }], attachments: [{ id: 'f1' }]
+  links: [{ target_id: 't9' }], attachments: [{ id: 'f1' }],
 };
 var calls = [];
 var toasts = [];
@@ -33,20 +33,20 @@ var elements = {
   'move-task-dialog': {
     hidden: true,
     classList: { toggle: function () {} },
-    querySelector: function () { return { style: {} }; }
+    querySelector: function () { return { style: {} }; },
   },
   'modal-name': { value: 'Write docs' },
   'cp-name': { value: '', focus: function () {}, select: function () {} },
   'cp-col': select(),
   'cp-copy-btn': { disabled: false },
-  'copy-task-dialog': { hidden: true }
+  'copy-task-dialog': { hidden: true },
 };
 var document = {
   title: 'Board — Pomb',
   getElementById: function (id) { return elements[id] || null; },
   querySelector: function () { return null; },
   querySelectorAll: function () { return []; },
-  createElement: option
+  createElement: option,
 };
 var stored = {};
 var window = {
@@ -54,8 +54,8 @@ var window = {
   sessionStorage: {
     setItem: function (k, v) { stored[k] = v; },
     getItem: function (k) { return stored[k] || null; },
-    removeItem: function (k) { delete stored[k]; }
-  }
+    removeItem: function (k) { delete stored[k]; },
+  },
 };
 function modalTaskId() { return 't1'; }
 function modalBoardId() { return 'b1'; }
@@ -106,7 +106,7 @@ tick().then(tick).then(tick).then(function () {
   check('the copy button is usable again', elements['cp-copy-btn'].disabled, false);
   check('copy goes to the chosen column with the typed name and the kept fields', calls[0] && calls[0].data, {
     column_id: 'c1', swimlane_id: 'lane9', name: 'Renamed', description: 'Body',
-    color_id: 'col3', labels: ['a'], timeline_start: '2026-10-01', timeline_end: '2026-10-05'
+    color_id: 'col3', labels: ['a'], timeline_start: '2026-10-01', timeline_end: '2026-10-05',
   });
   check('copy names the target column', toasts, ['Task was copied to column A.']);
   check('the dialog closes', elements['copy-task-dialog'].hidden, true);

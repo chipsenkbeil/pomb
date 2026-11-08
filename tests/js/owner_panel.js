@@ -36,7 +36,7 @@ const document = {
     if (fields[id]) return fields[id];
     if (!boxes[id]) boxes[id] = { textContent: '', hidden: true };
     return boxes[id];
-  }
+  },
 };
 function modalTaskId() { return 't 1'; }
 function refreshModal() { refreshes++; }

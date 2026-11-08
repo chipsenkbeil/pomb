@@ -11,7 +11,7 @@ function element(id) {
 }
 var document = {
   getElementById: function (id) { return element(id); },
-  querySelectorAll: function () { return []; }
+  querySelectorAll: function () { return []; },
 };
 var sent = [];
 var window = {
@@ -19,9 +19,9 @@ var window = {
     fetch: function (url, options) {
       sent.push({ url: url, options: options });
       return new Promise(function () {});
-    }
+    },
   },
-  location: { reload: function () {} }
+  location: { reload: function () {} },
 };
 eval(pages.slice(start, stop));
 

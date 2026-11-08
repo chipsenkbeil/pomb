@@ -20,7 +20,7 @@ var catalog = [
   { name: 'columns.create', group: 'columns', description: 'Make columns.', presets: LEAD },
   { name: 'settings.read', group: 'settings', description: 'Read settings.', presets: ALL },
   { name: 'settings.write', group: 'settings', description: 'Write settings.', presets: ['admin'] },
-  { name: 'feeds.manage', group: 'feeds', description: 'Feeds.', presets: ['admin'] }
+  { name: 'feeds.manage', group: 'feeds', description: 'Feeds.', presets: ['admin'] },
 ];
 var areas = TokenForm.areas(catalog);
 function area(name) { return areas.filter(function (a) { return a.name === name; })[0]; }
@@ -73,7 +73,7 @@ var roles = [
   { id: 'r1', name: 'planner', permissions: ['boards.read', 'tasks.read', 'tasks.create'] },
   { id: 'r2', name: 'reviewer', permissions: ['boards.read', 'tasks.read'] },
   { id: 'r3', name: 'release', permissions: ['tasks.read', 'boards.read'] },
-  { id: 'r4', name: 'solo', permissions: ['feeds.manage'] }
+  { id: 'r4', name: 'solo', permissions: ['feeds.manage'] },
 ];
 check('rows that match one role switch back to it',
   TokenForm.sync(catalog, ['tasks.create', 'tasks.read', 'boards.read'], roles).role.name, 'planner');
@@ -90,7 +90,7 @@ check('three matches are named with commas',
   TokenForm.sync(catalog, ['boards.read'], [
     { id: '1', name: 'x', permissions: ['boards.read'] },
     { id: '2', name: 'y', permissions: ['boards.read'] },
-    { id: '3', name: 'z', permissions: ['boards.read'] }
+    { id: '3', name: 'z', permissions: ['boards.read'] },
   ]).hint, 'These rows match the roles x, y and z.');
 
 check('standard roles list in their fixed order, then custom ones alphabetically',
@@ -98,7 +98,7 @@ check('standard roles list in their fixed order, then custom ones alphabetically
     { id: '1', name: 'zed', permissions: [] }, { id: '2', name: 'lead', permissions: [] },
     { id: '3', name: 'alpha', permissions: [] }, { id: '4', name: 'planner', permissions: [] },
     { id: '5', name: 'release', permissions: [] }, { id: '6', name: 'verifier', permissions: [] },
-    { id: '7', name: 'implementer', permissions: [] }, { id: '8', name: 'reviewer', permissions: [] }
+    { id: '7', name: 'implementer', permissions: [] }, { id: '8', name: 'reviewer', permissions: [] },
   ]).map(function (role) { return role.name; }),
   ['planner', 'implementer', 'reviewer', 'verifier', 'release', 'lead', 'alpha', 'zed']);
 check('a standard role has its one-line note and a custom role its count',
@@ -144,7 +144,7 @@ check('the board picker posts the chosen ids',
 
 
 var boardList = [
-  { id: 'b1', name: 'Roadmap' }, { id: 'b2', name: 'Road Trip' }, { id: 'b3', name: 'Chores' }
+  { id: 'b1', name: 'Roadmap' }, { id: 'b2', name: 'Road Trip' }, { id: 'b3', name: 'Chores' },
 ];
 check('the board search matches a name part in any case',
   TokenForm.boardMatches(boardList, ' ROAD ').map(function (board) { return board.id; }), ['b1', 'b2']);
@@ -182,7 +182,7 @@ check('the device edit panel starts hidden',
 var deviceRoleList = [
   { id: 'r1', name: 'reviewer', permissions: ['tasks.read', 'tasks.create'] },
   { id: 'r2', name: 'lead', permissions: ['tasks.read', 'tasks.bin'] },
-  { id: 'r3', name: 'tiny', permissions: ['tasks.read'] }
+  { id: 'r3', name: 'tiny', permissions: ['tasks.read'] },
 ];
 check('the device picker keeps only roles within the request',
   TokenForm.deviceRoles(catalog, deviceRoleList, asked).map(function (role) { return role.id; }), ['r1', 'r3']);
@@ -190,7 +190,7 @@ check('a request without the required permission leaves no role',
   TokenForm.deviceRoles(catalog, deviceRoleList, ['tasks.read', 'tasks.create']), []);
 check('the device fields post the permissions in catalog order, the boards, the role and the expiry',
   TokenForm.deviceFields(catalog, {
-    userCode: 'ABCD-EFGH', ticked: ['tasks.create', 'boards.read'], boards: ['b1', 'b2'], roleId: 'r1', expiryDays: 2160
+    userCode: 'ABCD-EFGH', ticked: ['tasks.create', 'boards.read'], boards: ['b1', 'b2'], roleId: 'r1', expiryDays: 2160,
   }),
   [['user_code', 'ABCD-EFGH'], ['permissions_listed', '1'], ['permissions', 'boards.read'],
     ['permissions', 'tasks.create'], ['boards', 'b1'], ['boards', 'b2'], ['role_id', 'r1'], ['expires_in_hours', '2160']]);

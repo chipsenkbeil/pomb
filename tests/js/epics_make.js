@@ -32,7 +32,7 @@ function node(tag) {
   el.parentNode = { replaceChild: function (fresh, old) { els[old.id] = fresh; fresh.id = old.id; } };
   Object.defineProperty(el, 'textContent', {
     get: function () { return el.text || ''; },
-    set: function (value) { el.text = value; if (value === '') el.children = []; }
+    set: function (value) { el.text = value; if (value === '') el.children = []; },
   });
   return el;
 }
@@ -56,13 +56,13 @@ function reset() {
   stored = {};
   window = {
     sessionStorage: { setItem: function (k, v) { stored[k] = v; } },
-    location: { reload: function () { reloads++; } }
+    location: { reload: function () { reloads++; } },
   };
 }
 
 var document = {
   getElementById: function (id) { return els[id] || null; },
-  createElement: function (tag) { return node(tag); }
+  createElement: function (tag) { return node(tag); },
 };
 function fetch(path, init) {
   calls.push({ path: path, method: (init && init.method) || 'GET', headers: init && init.headers, body: init && init.body });
@@ -104,7 +104,7 @@ function dialogBoxes() {
   makeCardEpic({ id: 'c1', name: 'Column limits' });
   await settle();
   check('opening reads the card with the JSON Accept header and sends nothing else', calls, [
-    { path: '/api/tasks/c1', method: 'GET', headers: GET_HEADERS, body: undefined }
+    { path: '/api/tasks/c1', method: 'GET', headers: GET_HEADERS, body: undefined },
   ]);
   check('the dialog opens', els['make-epic-dialog'].hidden, false);
   check('the dialog names the card', els['make-epic-message'].text.indexOf('"Column limits" leaves its column and becomes an epic.') === 0, true);
@@ -118,7 +118,7 @@ function dialogBoxes() {
   els['make-epic-ok'].listeners.click();
   await settle();
   check('confirming with nothing ticked patches the kind only', calls.slice(1), [
-    { path: '/api/tasks/c1', method: 'PATCH', headers: JSON_HEADERS, body: '{"kind":"epic"}' }
+    { path: '/api/tasks/c1', method: 'PATCH', headers: JSON_HEADERS, body: '{"kind":"epic"}' },
   ]);
   check('the dialog closes on confirm', els['make-epic-dialog'].hidden, true);
   check('success reloads the board with no toast waiting', [reloads, stored], [1, {}]);
@@ -142,7 +142,7 @@ function dialogBoxes() {
     { path: '/api/tasks/c1/subtasks/s1/convert', method: 'POST', headers: JSON_HEADERS, body: '{"relation":"none"}' },
     { path: '/api/tasks/c1/links', method: 'POST', headers: JSON_HEADERS, body: '{"kind":"child","target_id":"n1"}' },
     { path: '/api/tasks/c1/subtasks/s3/convert', method: 'POST', headers: JSON_HEADERS, body: '{"relation":"none"}' },
-    { path: '/api/tasks/c1/links', method: 'POST', headers: JSON_HEADERS, body: '{"kind":"child","target_id":"n3"}' }
+    { path: '/api/tasks/c1/links', method: 'POST', headers: JSON_HEADERS, body: '{"kind":"child","target_id":"n3"}' },
   ]);
   check('a clean run reloads once and toasts nothing', [reloads, stored, toasts], [1, {}, []]);
 
@@ -194,7 +194,7 @@ function dialogBoxes() {
     'POST /api/tasks/c1/subtasks/s2/convert',
     'POST /api/tasks/c1/links',
     'POST /api/tasks/c1/subtasks/s3/convert',
-    'POST /api/tasks/c1/links'
+    'POST /api/tasks/c1/links',
   ]);
   check('the failed link of a converted card is not retried', calls.filter(function (c) { return c.path.endsWith('/links'); }).length, 2);
   check('partial failure reloads with a pending toast naming both groups', [reloads, stored['pomb.pendingToast']], [1,
@@ -228,7 +228,7 @@ function dialogBoxes() {
   check('the modal path sends the same requests', calls.slice(1).map(function (c) { return c.method + ' ' + c.path; }), [
     'PATCH /api/tasks/c1',
     'POST /api/tasks/c1/subtasks/s2/convert',
-    'POST /api/tasks/c1/links'
+    'POST /api/tasks/c1/links',
   ]);
   check('the modal path refreshes the modal and does not reload', [finishes, reloads, toasts], [['refresh'], 0, []]);
 

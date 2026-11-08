@@ -11,7 +11,7 @@ function card(column, labels) {
     style: { display: '' },
     classList: { toggle: function () {} },
     querySelector: function () { return null; },
-    closest: function () { return list; }
+    closest: function () { return list; },
   };
 }
 
@@ -27,21 +27,21 @@ function header(column, labels) {
       dataset: { markLabel: label },
       classList: { toggle: function (name, on) { classes[name] = on; } },
       setAttribute: function () {},
-      classes: classes
+      classes: classes,
     };
   });
   var clear = {
     hidden: true,
     textContent: '',
     setAttribute: function () {},
-    querySelector: function () { return clear; }
+    querySelector: function () { return clear; },
   };
   var marks = {
     hidden: false,
     closest: function () { return { dataset: { columnId: column } }; },
     querySelector: function () { return clear; },
     querySelectorAll: function () { return buttons; },
-    addEventListener: function (type, fn) { handlers[type] = fn; }
+    addEventListener: function (type, fn) { handlers[type] = fn; },
   };
   function click(target) {
     handlers.click({
@@ -49,8 +49,8 @@ function header(column, labels) {
         closest: function (sel) {
           if (sel === '.columnHeader-mark') return target === clear ? null : target;
           return target === clear ? clear : null;
-        }
-      }
+        },
+      },
     });
   }
   return { marks: marks, buttons: buttons, clear: clear, click: click };
@@ -60,13 +60,13 @@ var cards = [
   card('c1', ['needs:human']),
   card('c1', ['other']),
   card('c2', ['other']),
-  card('c2', ['needs:human'])
+  card('c2', ['needs:human']),
 ];
 var headers = [header('c1', ['needs:human']), header('c2', ['needs:human'])];
 var els = {
   'f-user': { tagName: 'SELECT', value: 'all', dataset: {} },
   'f-color': { tagName: 'SELECT', value: 'all', dataset: {} },
-  'f-date': { tagName: 'SELECT', value: 'all', dataset: {} }
+  'f-date': { tagName: 'SELECT', value: 'all', dataset: {} },
 };
 var checkedLabels = [];
 var document = {
@@ -79,7 +79,7 @@ var document = {
     var inColumn = /^\.task-list\[data-column-id="(\w+)"\] \.task-card$/.exec(sel);
     if (inColumn) return cards.filter(function (c) { return c.column === inColumn[1]; });
     return [];
-  }
+  },
 };
 var cssEscape = function (value) { return value; };
 var window = {};

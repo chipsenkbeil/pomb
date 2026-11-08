@@ -11,8 +11,8 @@ var window = {
     setItem: function (k, v) {
       if (failWrites) throw new Error('quota');
       store[k] = v;
-    }
-  }
+    },
+  },
 };
 var Finder = eval('({ RECENT_KEY: "k", RECENT_MAX_ENTRIES: 2, MATCH: { TITLE: "title" },\n' +
   src.slice(start, end).replace(/,\s*$/, '') + '\n})');

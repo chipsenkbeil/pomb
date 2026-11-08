@@ -26,17 +26,17 @@ const document = {
       setAttribute: () => {},
       focus: () => {}, select: () => {},
       addEventListener: (type, fn) => { el.listeners[type] = fn; },
-      replaceWith: (other) => { el.replacedBy = other; }
+      replaceWith: (other) => { el.replacedBy = other; },
     };
     created.push(el);
     return el;
-  }
+  },
 };
 const row = { dataset: { subtaskId: 's1' }, querySelector: () => null };
 const makeName = (text) => ({
   textContent: text,
   closest: () => row,
-  replaceWith: () => {}
+  replaceWith: () => {},
 });
 eval(slice('    function startSubtaskEdit(nameEl) {', '\n  }\n\n  // ---------- Members dialog'));
 

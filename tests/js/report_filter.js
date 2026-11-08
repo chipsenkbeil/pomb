@@ -23,8 +23,8 @@ var data = {
     { id: 'a', member_ids: ['u1'], color_id: 'c1', labels: ['x', 'y'] },
     { id: 'b', member_ids: ['u2'], color_id: 'c2', labels: ['x'] },
     { id: 'c', member_ids: [], color_id: null, labels: [] },
-    { id: 'd', member_ids: ['u1', 'u2'], labels: ['y'] }
-  ]
+    { id: 'd', member_ids: ['u1', 'u2'], labels: ['y'] },
+  ],
 };
 function ids(values) {
   return ReportFilter.filterTasks(data.tasks, values).map(function (t) { return t.id; });
@@ -68,7 +68,7 @@ var handlers = {};
 var host = {
   innerHTML: '',
   addEventListener: function (type, fn) { handlers[type] = fn; },
-  querySelectorAll: function () { return []; }
+  querySelectorAll: function () { return []; },
 };
 var seen = [];
 var wired = ReportFilter.create(controls, function (values) { seen.push(values.user); });
@@ -87,7 +87,7 @@ var boxes = ['x', 'y'].map(function (v) {
 var host2 = {
   innerHTML: '',
   addEventListener: function (type, fn) { handlers[type] = fn; },
-  querySelectorAll: function () { return boxes; }
+  querySelectorAll: function () { return boxes; },
 };
 var s2 = ReportFilter.create(controls, function () {});
 ReportFilter.mount(host2, s2);

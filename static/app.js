@@ -17,7 +17,7 @@
   var accountButton = document.getElementById('account-btn');
   var accountPrefs = {
     hour12: !accountButton || accountButton.dataset.timeFormat !== '24h',
-    weekStart: accountButton && accountButton.dataset.weekStart === 'monday' ? 1 : 0
+    weekStart: accountButton && accountButton.dataset.weekStart === 'monday' ? 1 : 0,
   };
 
   function daysIntoWeek(d) {
@@ -1171,14 +1171,14 @@
         color_id: form.elements.color_id.value,
         name: nameInput.value,
         description: descText.value,
-        labels: chosenLabels.slice()
+        labels: chosenLabels.slice(),
       };
       if (!sameMembers(picked, defaultMembers())) body.member_ids = picked.slice();
       fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        credentials: 'same-origin'
+        credentials: 'same-origin',
       })
         .then(function (resp) {
           if (!resp.ok) {
@@ -3209,7 +3209,7 @@
     fetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
     })
       .then(function (res) {
         return res.text().then(function (text) {
@@ -3508,7 +3508,7 @@
     return fetch('/api/tasks/' + encodeURIComponent(id) + spec.path, {
       method: spec.method,
       headers,
-      body: spec.data === undefined ? undefined : JSON.stringify(spec.data)
+      body: spec.data === undefined ? undefined : JSON.stringify(spec.data),
     })
       .then((res) => {
         if (res.ok) {
@@ -3535,7 +3535,7 @@
     if (act === 'release') {
       return {
         path: '/owner/release', method: 'POST', data: {}, fence: button.getAttribute('data-fence'),
-        boxId: 'tm-owner-error', failure: 'Could not release the card.'
+        boxId: 'tm-owner-error', failure: 'Could not release the card.',
       };
     }
     if (act === 'seat-take') {
@@ -3550,14 +3550,14 @@
         path: '/seats', method: 'POST', boxId: 'tm-seat-error', failure: 'Could not add the seat.',
         data: {
           name: document.getElementById('tm-seat-name').value.trim(),
-          role: document.getElementById('tm-seat-role').value
-        }
+          role: document.getElementById('tm-seat-role').value,
+        },
       };
     }
     if (act === 'seat-drop') {
       return {
         path: '/seats?name=' + encodeURIComponent(seat), method: 'DELETE',
-        boxId: 'tm-seat-error', failure: 'Could not drop the seat.'
+        boxId: 'tm-seat-error', failure: 'Could not drop the seat.',
       };
     }
     return null;
@@ -4538,7 +4538,7 @@
       method: 'PATCH',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify(patch)
+      body: JSON.stringify(patch),
     }).then(function (res) {
       if (!res.ok && field.dataset.fieldKind === 'table') {
         return res.text().then(function (text) {
@@ -4720,7 +4720,7 @@
     return fetch(path, {
       method: method,
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body)
+      body: body === undefined ? undefined : JSON.stringify(body),
     }).then(function (res) {
       return res.text().then(function (text) {
         if (!res.ok) throw text ? linkError(text) : new Error('refused');
@@ -5184,7 +5184,7 @@
     if (!id || !bid) return;
     Promise.all([
       fetchJson('/api/tasks/' + encodeURIComponent(id)),
-      fetchJson('/api/boards/' + encodeURIComponent(bid) + '/columns')
+      fetchJson('/api/boards/' + encodeURIComponent(bid) + '/columns'),
     ]).then(function (loaded) {
       copySource = loaded[0];
       var colSel = document.getElementById('cp-col');
@@ -5223,7 +5223,7 @@
       color_id: source.color_id,
       labels: source.labels,
       timeline_start: source.timeline_start,
-      timeline_end: source.timeline_end
+      timeline_end: source.timeline_end,
     }).then(function (res) {
       if (!res.ok) { return toastRefusal(res, 'Could not copy task.'); }
       return drained(res).then(function () {
@@ -5284,7 +5284,7 @@
     if (!boardCols.length && currentBid) {
       Promise.all([
         fetchJson('/api/boards/' + encodeURIComponent(currentBid) + '/columns'),
-        fetchJson('/api/tasks/' + encodeURIComponent(id))
+        fetchJson('/api/tasks/' + encodeURIComponent(id)),
       ]).then(function (loaded) {
         if (boardSel.value !== currentBid || moveTaskId !== id) return;
         boardCols = loaded[0] || [];
@@ -6762,7 +6762,7 @@
             });
             self.settings.interrupt_reasons = next;
             self.saveReasons();
-          }
+          },
         });
       }
     },
@@ -6815,7 +6815,7 @@
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ interrupt_reasons: self.settings.interrupt_reasons || [] })
+        body: JSON.stringify({ interrupt_reasons: self.settings.interrupt_reasons || [] }),
       })
         .then(function (r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -6893,7 +6893,7 @@
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ break_activities: acts })
+        body: JSON.stringify({ break_activities: acts }),
       })
         .then(function (r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -6916,7 +6916,7 @@
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ break_activities: acts })
+        body: JSON.stringify({ break_activities: acts }),
       })
         .then(function (r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -6978,13 +6978,13 @@
         alarm_volume: parseInt(document.getElementById('ts-alarm-vol').value, 10),
         points_volume: parseInt(document.getElementById('ts-points-vol').value, 10),
         sounds_enabled: this.getToggle('ts-sounds'),
-        interrupt_reasons: this.settings ? this.settings.interrupt_reasons : undefined
+        interrupt_reasons: this.settings ? this.settings.interrupt_reasons : undefined,
       };
       fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
       })
         .then(function (r) {
           if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
@@ -7000,7 +7000,7 @@
           setTimeout(function () { saved.hidden = true; }, 2000);
         })
         .catch(function (e) { toast('Could not save timer settings: ' + e.message); });
-    }
+    },
   };
 
   // Distinct Web-Audio alarm sounds (KF-079): bell, chime, beeps, blip,
@@ -9195,7 +9195,7 @@
     m: 'add-member',
     r: 'add-relation',
     s: 'add-subtask',
-    u: 'add-duedate'
+    u: 'add-duedate',
   };
 
   function modalLetter(modal, key) {
@@ -9565,7 +9565,7 @@
       if (cols.length || !bid) return;
       Promise.all([
         fetchJson('/api/boards/' + encodeURIComponent(bid) + '/columns'),
-        fetchJson('/api/tasks/' + encodeURIComponent(id))
+        fetchJson('/api/tasks/' + encodeURIComponent(id)),
       ]).then(function (loaded) {
         if (!sel.isConnected || sel.dataset.taskId !== id) return;
         sel.innerHTML = '';
@@ -9811,7 +9811,7 @@
       remove: function () {
         showConfirmDialog('Delete timeline', 'Are you sure you want to delete the timeline?', 'Delete',
           function () { write({ timeline_start: null, timeline_end: null }, 'Timeline deleted'); });
-      }
+      },
     };
   })();
 
@@ -11089,7 +11089,7 @@
           qs('log-custom-to').value = e;
           this.close();
           loadLog();
-        }
+        },
       };
     })();
 
@@ -11286,10 +11286,10 @@
           'last-7': 'last-7', 'last-14': 'last-14', 'last-30': 'last-30',
           'this-week': 'this-week', 'last-week': 'last-week',
           'this-plus-last-week': 'this-plus-last-week',
-          'this-month': 'this-month', 'last-month': 'last-month'
+          'this-month': 'this-month', 'last-month': 'last-month',
         };
         return periodToRange(map[preset] || 'this-plus-last-week');
-      }
+      },
     };
     window.TimeSpent = TimeSpent;
 
@@ -11560,7 +11560,7 @@
           if (e.key === 'Enter') { e.preventDefault(); self.save(); }
         });
         this.render();
-      }
+      },
     };
 
     function initSpentPage() {
@@ -11994,7 +11994,7 @@
         completed_at: t.completed_at || '',
         column_entered_at: t.column_entered_at || '',
         subtasks: doneSub + '/' + (t.subtasks || []).length,
-        comments: String((t.comments || []).length)
+        comments: String((t.comments || []).length),
       };
       if (lookups.tableFields.length) {
         record.fields = {};
@@ -12116,7 +12116,7 @@
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             return resp.json();
           }),
-        loadTableFields(boardId)
+        loadTableFields(boardId),
       ])
         .then(function (loaded) {
           var data = loaded[0];
@@ -12126,7 +12126,7 @@
             columns: lookupMap(data.columns),
             swimlanes: lookupMap(data.swimlanes),
             colors: lookupMap(data.colors),
-            users: lookupMap(data.users)
+            users: lookupMap(data.users),
           };
           var records = (data.tasks || []).map(function (t) { return taskRecord(t, lookups); });
           var base = sanitizeFilename(data.board && data.board.name) + '-export';
@@ -12299,7 +12299,7 @@
           range: periodRange(qs('rb-period').value, qs('rb-from').value, qs('rb-to').value, new Date()),
           user: qs('rb-user').value,
           color: qs('rb-color').value,
-          label: qs('rb-label').value
+          label: qs('rb-label').value,
         };
       }
       function refresh() {
@@ -12314,7 +12314,7 @@
         qs(id).addEventListener('change', refresh);
       });
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -12351,7 +12351,7 @@
 
     return {
       build: build, mount: mount, tableHtml: tableHtml, periodRange: periodRange, matches: matches,
-      fill: fill, fillFilters: fillFilters, parseDay: parseDay, GROUPS: GROUPS, NONE: NONE
+      fill: fill, fillFilters: fillFilters, parseDay: parseDay, GROUPS: GROUPS, NONE: NONE,
     };
   })();
 
@@ -12384,7 +12384,7 @@
       initialized = true;
       ReportBreakdown.mount(boardId, {
         render: render,
-        error: function (err) { setStatus('Could not load task data: ' + err.message); }
+        error: function (err) { setStatus('Could not load task data: ' + err.message); },
       });
     }
 
@@ -12488,8 +12488,8 @@
         rows: [
           { label: 'From', value: el.dataset.from },
           { label: 'To', value: el.dataset.to },
-          { label: 'Days', value: el.dataset.days }
-        ]
+          { label: 'Days', value: el.dataset.days },
+        ],
       };
     }
 
@@ -12526,7 +12526,7 @@
     return {
       shortDate: shortDate, longDate: longDate, dayStart: dayStart, pointX: pointX,
       pointIndex: pointIndex, crosshairLine: crosshairLine, tipHtml: tipHtml,
-      attachCrosshair: attachCrosshair, dotTip: dotTip, attachDots: attachDots
+      attachCrosshair: attachCrosshair, dotTip: dotTip, attachDots: attachDots,
     };
   })();
 
@@ -12537,7 +12537,7 @@
     var GEO = { W: 720, H: 300, padL: 46, padR: 32, padT: 16, padB: 34 };
     var PERIOD = {
       WEEKS_12: '12w', WEEKS_24: '24w', THIS_YEAR: 'this-year', LAST_YEAR: 'last-year',
-      ABSOLUTE: 'absolute', RELATIVE: 'relative'
+      ABSOLUTE: 'absolute', RELATIVE: 'relative',
     };
     var WEEKS_12 = 12;
     var WEEKS_24 = 24;
@@ -12555,7 +12555,7 @@
       '2w': { text: '2 weeks', weeks: 2 },
       '3w': { text: '3 weeks', weeks: 3 },
       '4w': { text: '4 weeks', weeks: 4 },
-      month: { text: 'Month', weeks: 0 }
+      month: { text: 'Month', weeks: 0 },
     };
     var UNASSIGNED = 'unassigned';
     var OWNER_PREFIX_HUMAN = 'u:';
@@ -12675,7 +12675,7 @@
       var buckets = bucketValues(
         arrivals(data, tasks, values.target, ReportValue[type].valueOf), range, group);
       return {
-        starts: buckets.starts, values: buckets.values, type: type, group: group, matched: tasks.length
+        starts: buckets.starts, values: buckets.values, type: type, group: group, matched: tasks.length,
       };
     }
 
@@ -12730,7 +12730,7 @@
     function tipFor(s, i) {
       return {
         title: ReportChart.longDate(s.starts[i]),
-        rows: [{ label: ReportValue[s.type].text, value: unitText(s.type, s.values[i]) }]
+        rows: [{ label: ReportValue[s.type].text, value: unitText(s.type, s.values[i]) }],
       };
     }
 
@@ -12760,7 +12760,7 @@
         id: 'user', label: 'User', value: '',
         options: [{ value: '', text: 'Show all' }, { value: UNASSIGNED, text: 'Unassigned' }]
           .concat((data.users || []).map(function (u) { return { value: OWNER_PREFIX_HUMAN + u.id, text: u.username }; }))
-          .concat(Object.keys(agents).sort().map(function (name) { return { value: OWNER_PREFIX_AGENT + name, text: name }; }))
+          .concat(Object.keys(agents).sort().map(function (name) { return { value: OWNER_PREFIX_AGENT + name, text: name }; })),
       };
     }
 
@@ -12775,10 +12775,10 @@
       var today = ReportChart.dayStart(now);
       return [{
         id: 'valueType', label: 'Value type', value: DEFAULT_VALUE_TYPE,
-        options: VALUE_TYPES.map(function (key) { return { value: key, text: ReportValue[key].text }; })
+        options: VALUE_TYPES.map(function (key) { return { value: key, text: ReportValue[key].text }; }),
       }, {
         id: 'target', label: 'Target column', value: defaultTarget(columns),
-        options: columns.map(function (c) { return { value: c.id, text: c.name }; })
+        options: columns.map(function (c) { return { value: c.id, text: c.name }; }),
       }, {
         id: 'period', label: 'Period', value: PERIOD.WEEKS_12,
         options: [
@@ -12787,22 +12787,22 @@
           { value: PERIOD.THIS_YEAR, text: 'This year' },
           { value: PERIOD.LAST_YEAR, text: 'Last year' },
           { value: PERIOD.ABSOLUTE, text: 'Custom absolute' },
-          { value: PERIOD.RELATIVE, text: 'Custom relative' }
-        ]
+          { value: PERIOD.RELATIVE, text: 'Custom relative' },
+        ],
       }, {
         id: 'from', label: 'From', type: 'date', value: isoDate(daysAfter(today, 1 - DEFAULT_DAYS_BACK)),
-        when: { id: 'period', value: PERIOD.ABSOLUTE }
+        when: { id: 'period', value: PERIOD.ABSOLUTE },
       }, {
         id: 'to', label: 'To', type: 'date', value: isoDate(today),
-        when: { id: 'period', value: PERIOD.ABSOLUTE }
+        when: { id: 'period', value: PERIOD.ABSOLUTE },
       }, {
         id: 'days', label: 'Days back', type: 'number', max: ReportRange.MAX_DAYS, value: String(DEFAULT_DAYS_BACK),
-        when: { id: 'period', value: PERIOD.RELATIVE }
+        when: { id: 'period', value: PERIOD.RELATIVE },
       }, ownerControl(data), ReportFilter.colorControl(data)]
         .concat(ReportFilter.labelControls(data))
         .concat([{
           id: 'group', label: 'Group by', value: DEFAULT_GROUP,
-          options: Object.keys(GROUPS).map(function (key) { return { value: key, text: GROUPS[key].text }; })
+          options: Object.keys(GROUPS).map(function (key) { return { value: key, text: GROUPS[key].text }; }),
         }]);
     }
 
@@ -12826,7 +12826,7 @@
       if (initialized) return;
       initialized = true;
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -12838,7 +12838,7 @@
         });
         ReportTools.mount({
           report: 'throughput', title: 'Throughput', boardId: boardId, chartId: 'throughput-chart',
-          getFilters: state.applied, applyFilters: state.apply, rows: rows
+          getFilters: state.applied, applyFilters: state.apply, rows: rows,
         });
       }).catch(function (err) {
         setStatus('Could not load task data: ' + err.message);
@@ -12847,7 +12847,7 @@
 
     return {
       init: init, chartSvg: chartSvg, tipFor: tipFor, series: series, periodRange: periodRange,
-      bucketValues: bucketValues, arrivals: arrivals, controls: controls, render: render
+      bucketValues: bucketValues, arrivals: arrivals, controls: controls, render: render,
     };
   })();
 
@@ -12872,7 +12872,7 @@
 
     return {
       DAY_MS: DAY_MS, MAX_YEARS: MAX_YEARS, MAX_DAYS: MAX_DAYS,
-      roundTenth: roundTenth, dayEnds: dayEnds
+      roundTenth: roundTenth, dayEnds: dayEnds,
     };
   })();
 
@@ -12882,7 +12882,7 @@
         text: 'Task count',
         axis: 'Task count',
         unit: 'tasks',
-        valueOf: function () { return 1; }
+        valueOf: function () { return 1; },
       },
       estimate: {
         text: 'Time estimate',
@@ -12891,7 +12891,7 @@
         valueOf: function (t) {
           var hours = Number(t.estimate_hours);
           return hours > 0 ? hours : 0;
-        }
+        },
       },
       points: {
         text: 'Points',
@@ -12900,8 +12900,8 @@
         valueOf: function (t) {
           var points = Number(t.points);
           return points > 0 ? points : 0;
-        }
-      }
+        },
+      },
     };
   })();
 
@@ -12912,12 +12912,12 @@
     var STYLE_PROPS = [
       'fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-dasharray',
       'stroke-linecap', 'stroke-linejoin', 'opacity', 'font-family', 'font-size', 'font-weight',
-      'text-anchor', 'dominant-baseline'
+      'text-anchor', 'dominant-baseline',
     ];
     var EXPORTS = [
       { kind: 'png', label: 'PNG image' },
       { kind: 'svg', label: 'SVG image' },
-      { kind: 'xlsx', label: 'Excel' }
+      { kind: 'xlsx', label: 'Excel' },
     ];
 
     function endpoint(boardId, id) {
@@ -13228,7 +13228,7 @@
 
     return {
       mount: mount, bookmarkPath: bookmarkPath, bookmarkIdOf: bookmarkIdOf,
-      endpoint: endpoint, send: send
+      endpoint: endpoint, send: send,
     };
   })();
 
@@ -13278,7 +13278,7 @@
           });
           if (state.redraw) state.redraw();
           state.reload();
-        }
+        },
       };
       return state;
     }
@@ -13287,7 +13287,7 @@
       return {
         id: 'user', label: 'User', value: '',
         options: [{ value: '', text: 'Show all' }, { value: UNASSIGNED, text: 'Unassigned' }].concat(
-          (data.users || []).map(function (u) { return { value: u.id, text: u.username }; }))
+          (data.users || []).map(function (u) { return { value: u.id, text: u.username }; })),
       };
     }
 
@@ -13295,7 +13295,7 @@
       return {
         id: 'color', label: 'Color', value: '',
         options: [{ value: '', text: 'Show all' }].concat(
-          (data.colors || []).map(function (c) { return { value: c.id, text: c.label || c.value }; }))
+          (data.colors || []).map(function (c) { return { value: c.id, text: c.label || c.value }; })),
       };
     }
 
@@ -13306,10 +13306,10 @@
       });
       return [{
         id: 'labels', label: 'Label', multi: true, value: [],
-        options: Object.keys(seen).sort().map(function (l) { return { value: l, text: l }; })
+        options: Object.keys(seen).sort().map(function (l) { return { value: l, text: l }; }),
       }, {
         id: 'labelMode', label: 'Labels match', value: MODE_ALL,
-        options: [{ value: MODE_ALL, text: 'All chosen labels' }, { value: MODE_ANY, text: 'Any chosen label' }]
+        options: [{ value: MODE_ALL, text: 'All chosen labels' }, { value: MODE_ANY, text: 'Any chosen label' }],
       }];
     }
 
@@ -13443,7 +13443,7 @@
     return {
       create: create, mount: mount, open: open, matches: matches, filterTasks: filterTasks,
       taskControls: taskControls, colorControl: colorControl, labelControls: labelControls,
-      MODE_ALL: MODE_ALL, MODE_ANY: MODE_ANY
+      MODE_ALL: MODE_ALL, MODE_ANY: MODE_ANY,
     };
   })();
 
@@ -13560,7 +13560,7 @@
         projected: Math.ceil,
         valueOf: ReportValue.count.valueOf,
         title: function (n) { return n + ' tasks remaining'; },
-        status: function (n) { return n === 1 ? '1 task remaining.' : n + ' tasks remaining.'; }
+        status: function (n) { return n === 1 ? '1 task remaining.' : n + ' tasks remaining.'; },
       },
       estimate: {
         text: ReportValue.estimate.text,
@@ -13569,7 +13569,7 @@
         projected: roundTenth,
         valueOf: ReportValue.estimate.valueOf,
         title: function (n) { return roundTenth(n) + ' hours remaining'; },
-        status: function (n) { return roundTenth(n) + ' hours remaining.'; }
+        status: function (n) { return roundTenth(n) + ' hours remaining.'; },
       },
       points: {
         text: ReportValue.points.text,
@@ -13578,8 +13578,8 @@
         projected: roundTenth,
         valueOf: ReportValue.points.valueOf,
         title: function (n) { return roundTenth(n) + ' points remaining'; },
-        status: function (n) { return roundTenth(n) + ' points remaining.'; }
-      }
+        status: function (n) { return roundTenth(n) + ' points remaining.'; },
+      },
     };
 
     function typeOf(series) { return VALUE_TYPES[series.type] || VALUE_TYPES.count; }
@@ -13726,8 +13726,8 @@
         title: ReportChart.longDate(ReportChart.dayStart(series.ends[i])),
         rows: [{
           label: actual ? type.remaining : 'Projected remaining',
-          value: actual ? roundTenth(series.counts[i]) : type.projected(series.projection[i - series.counts.length])
-        }]
+          value: actual ? roundTenth(series.counts[i]) : type.projected(series.projection[i - series.counts.length]),
+        }],
       };
     }
 
@@ -13774,17 +13774,17 @@
         id: 'valueType', label: 'Value type', value: 'count',
         options: Object.keys(VALUE_TYPES).map(function (key) {
           return { value: key, text: VALUE_TYPES[key].text };
-        })
+        }),
       }, {
-        id: 'target', label: 'Target column', value: defaultTarget(columns), options: options
+        id: 'target', label: 'Target column', value: defaultTarget(columns), options: options,
       }, {
         id: 'from', label: 'From columns', multi: true,
-        value: columns.map(function (c) { return c.id; }), options: options
+        value: columns.map(function (c) { return c.id; }), options: options,
       }, {
-        id: 'start', label: 'Start date', type: 'date', value: isoDate(start)
+        id: 'start', label: 'Start date', type: 'date', value: isoDate(start),
       }, {
         id: 'basis', label: 'Projection basis', value: String(DAYS),
-        options: BASIS_DAYS.map(function (n) { return { value: String(n), text: 'Last ' + n + ' days' }; })
+        options: BASIS_DAYS.map(function (n) { return { value: String(n), text: 'Last ' + n + ' days' }; }),
       }].concat(ReportFilter.taskControls(data));
     }
 
@@ -13811,7 +13811,7 @@
         target: values.target,
         targetDone: !!(target && target.is_done),
         from: values.from.length === columns.length ? null : values.from,
-        cols: ColumnHistory.lookup(data)
+        cols: ColumnHistory.lookup(data),
       });
       renderChart(series);
       var current = series.counts.length ? series.counts[series.counts.length - 1] : 0;
@@ -13824,7 +13824,7 @@
       if (initialized) return;
       initialized = true;
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -13836,7 +13836,7 @@
         });
         ReportTools.mount({
           report: 'burndown', title: 'Burndown', boardId: boardId, chartId: 'burndown-chart',
-          getFilters: state.applied, applyFilters: state.apply, rows: rows
+          getFilters: state.applied, applyFilters: state.apply, rows: rows,
         });
       }).catch(function (err) {
         setStatus('Could not load task data: ' + err.message);
@@ -13845,7 +13845,7 @@
 
     return {
       init: init, chartSvg: chartSvg, tipFor: tipFor, projectSeries: projectSeries,
-      remainingByDay: remainingByDay, controls: controls, render: render
+      remainingByDay: remainingByDay, controls: controls, render: render,
     };
   })();
 
@@ -13904,7 +13904,7 @@
           doneWeek: weekStart(done).getTime(),
           fromAt: { cycle: started.getTime(), lead: created.getTime() },
           cycle: daysBetween(started, done),
-          lead: daysBetween(created, done)
+          lead: daysBetween(created, done),
         });
       });
       return out;
@@ -13937,9 +13937,9 @@
           return {
             cycle: b.cycleN ? b.cycleSum / b.cycleN : 0,
             lead: b.leadN ? b.leadSum / b.leadN : 0,
-            n: b.cycleN
+            n: b.cycleN,
           };
-        })
+        }),
       };
     }
 
@@ -14074,7 +14074,7 @@
       var host = qs('cycle-lead-chart');
       if (host) ReportChart.attachDots(host, '.chart-task-dot', openModal);
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -14094,7 +14094,7 @@
               .concat(buckets.starts.map(function (start, i) {
                 return [isoDate(start), buckets.avg[i].cycle, buckets.avg[i].lead, buckets.avg[i].n];
               }));
-          }
+          },
         });
         var total = times.length;
         setStatus(total === 0
@@ -14211,7 +14211,7 @@
         order: order.filter(function (_, k) { return keep[k]; })
           .map(function (key) { return cols.label[key]; }),
         counts: counts.filter(function (_, k) { return keep[k]; }),
-        type: type
+        type: type,
       };
     }
 
@@ -14289,7 +14289,7 @@
         title: ReportChart.longDate(ReportChart.dayStart(s.ends[i])),
         rows: shownBands(s).map(function (b) {
           return { color: PALETTE[b % PALETTE.length], label: s.order[b], value: roundTenth(s.counts[b][i]) };
-        })
+        }),
       };
     }
 
@@ -14343,7 +14343,7 @@
         id: 'valueType', label: 'Value type', value: 'count',
         options: Object.keys(ReportValue).map(function (key) {
           return { value: key, text: ReportValue[key].text };
-        })
+        }),
       }, {
         id: 'period', label: 'Period', value: String(DAYS),
         options: [
@@ -14352,17 +14352,17 @@
           { value: PERIOD.THIS_MONTH, text: 'This month' },
           { value: PERIOD.LAST_MONTH, text: 'Last month' },
           { value: PERIOD.ABSOLUTE, text: 'Custom absolute' },
-          { value: PERIOD.RELATIVE, text: 'Custom relative' }
-        ]
+          { value: PERIOD.RELATIVE, text: 'Custom relative' },
+        ],
       }, {
         id: 'from', label: 'From', type: 'date', value: isoDate(from),
-        when: { id: 'period', value: PERIOD.ABSOLUTE }
+        when: { id: 'period', value: PERIOD.ABSOLUTE },
       }, {
         id: 'to', label: 'To', type: 'date', value: isoDate(now),
-        when: { id: 'period', value: PERIOD.ABSOLUTE }
+        when: { id: 'period', value: PERIOD.ABSOLUTE },
       }, {
         id: 'days', label: 'Days back', type: 'number', max: ReportRange.MAX_DAYS, value: String(DAYS),
-        when: { id: 'period', value: PERIOD.RELATIVE }
+        when: { id: 'period', value: PERIOD.RELATIVE },
       }].concat(ReportFilter.taskControls(data));
     }
 
@@ -14394,7 +14394,7 @@
       if (initialized) return;
       initialized = true;
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -14413,7 +14413,7 @@
         });
         ReportTools.mount({
           report: 'cumulative-flow', title: 'Cumulative flow', boardId: boardId,
-          chartId: 'cumulative-flow-chart', getFilters: state.applied, applyFilters: state.apply, rows: rows
+          chartId: 'cumulative-flow-chart', getFilters: state.applied, applyFilters: state.apply, rows: rows,
         });
       }).catch(function (err) {
         setStatus('Could not load task data: ' + err.message);
@@ -14423,7 +14423,7 @@
     // seriesByDay is pure; exposed for the KF-350 check.
     return {
       init: init, seriesByDay: seriesByDay, chartSvg: chartSvg, tipFor: tipFor,
-      periodRange: periodRange, controls: controls, render: render
+      periodRange: periodRange, controls: controls, render: render,
     };
   })();
 
@@ -14475,7 +14475,7 @@
           dueText: fmtDateTime(due.getTime()),
           doneText: done ? fmtDateTime(done.getTime()) : '—',
           status: status,
-          cls: cls
+          cls: cls,
         });
       });
       rows.sort(function (a, b) { return a.dueMs - b.dueMs; });
@@ -14523,7 +14523,7 @@
       if (initialized) return;
       initialized = true;
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -14990,7 +14990,7 @@
       var month = function (shift) {
         return {
           from: new Date(now.getFullYear(), now.getMonth() + shift, 1),
-          to: new Date(now.getFullYear(), now.getMonth() + shift + 1, 1)
+          to: new Date(now.getFullYear(), now.getMonth() + shift + 1, 1),
         };
       };
       if (period === 'this-week') return week(0);
@@ -15029,7 +15029,7 @@
         period: qs('history-period-filter').value,
         from: qs('history-from').value,
         to: qs('history-to').value,
-        order: qs('history-order-filter').value
+        order: qs('history-order-filter').value,
       };
     }
 
@@ -15100,7 +15100,7 @@
       var token = ++loadToken;
       return fetch('/api/boards/' + encodeURIComponent(boardId) + '/history' +
         (appliedQuery ? '?' + appliedQuery : ''), {
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -15187,7 +15187,7 @@
           if (e.key === 'Enter') { e.preventDefault(); self.save(); }
         });
         this.render();
-      }
+      },
     };
 
     function init(id) {
@@ -15214,14 +15214,14 @@
       ['description', 'Description'], ['color', 'Color'], ['members', 'Members'],
       ['estimate', 'Time estimate'], ['spent', 'Time spent'], ['labels', 'Labels'],
       ['timeline', 'Timeline'], ['due', 'Due dates'], ['subtasks', 'Subtasks'],
-      ['comments', 'Comments'], ['relations', 'Relations'], ['grouping', 'Grouping date']
+      ['comments', 'Comments'], ['relations', 'Relations'], ['grouping', 'Grouping date'],
     ];
     var PERIODS = [
       ['all', 'All time'], ['this-week', 'This week'], ['last-week', 'Last week'],
-      ['this-month', 'This month'], ['last-month', 'Last month']
+      ['this-month', 'This month'], ['last-month', 'Last month'],
     ];
     var RELATION_LABELS = {
-      blocked_by: 'Depends on', blocks: 'Required by', related: 'Relates to', parent: 'Part of'
+      blocked_by: 'Depends on', blocks: 'Required by', related: 'Relates to', parent: 'Part of',
     };
     var UNASSIGNED = '__unassigned__';
 
@@ -15358,7 +15358,7 @@
         user: qs('print-board-user').value,
         color: qs('print-board-color').value,
         label: qs('print-board-label').value,
-        period: qs('print-board-period').value
+        period: qs('print-board-period').value,
       };
     }
 
@@ -15425,7 +15425,7 @@
     function open(boardId) {
       wire();
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -15616,7 +15616,7 @@
         user: qs('calendar-user-filter').value,
         color: qs('calendar-color-filter').value,
         label: qs('calendar-label-filter').value,
-        swimlane: qs('calendar-swimlane-filter').value
+        swimlane: qs('calendar-swimlane-filter').value,
       };
     }
 
@@ -15803,7 +15803,7 @@
       'calendar-boards-toggle': 'calendar-boards-panel',
       'calendar-feed-toggle': 'calendar-feed-panel',
       'calendar-export': 'calendar-export-panel',
-      'calendar-settings': 'calendar-settings-panel'
+      'calendar-settings': 'calendar-settings-panel',
     };
 
     function closePops(except) {
@@ -15869,7 +15869,7 @@
         fetch(feedsBase(), {
           method: 'POST',
           headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label: text })
+          body: JSON.stringify({ label: text }),
         }).then(function (r) {
           if (r.ok) return r.json();
           return r.json().catch(function () { return {}; }).then(function (b) { throw new Error(b.message || 'HTTP ' + r.status); });
@@ -15904,7 +15904,7 @@
           var board = currentBoard;
           fetch(feedsBase() + '/' + encodeURIComponent(id), {
             method: 'DELETE',
-            headers: { 'Accept': 'application/json' }
+            headers: { 'Accept': 'application/json' },
           }).then(function (r) {
             if (!r.ok) throw new Error('HTTP ' + r.status);
             if (board !== currentBoard) return;
@@ -15930,7 +15930,7 @@
           format: qs('calendar-export-format').value,
           from: qs('calendar-export-from').value,
           to: qs('calendar-export-to').value,
-          type: qs('calendar-export-type').value
+          type: qs('calendar-export-type').value,
         };
         if (opts.from && opts.to && opts.to < opts.from) {
           exportStatus('To date is before From date.');
@@ -15961,7 +15961,7 @@
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify({ week_start: firstDayOfWeek === 1 ? 'monday' : 'sunday' })
+          body: JSON.stringify({ week_start: firstDayOfWeek === 1 ? 'monday' : 'sunday' }),
         });
         if (dataset) render();
       });
@@ -16009,7 +16009,7 @@
       loadSettings();
       initPops({
         'calendar-feed-toggle': loadFeeds,
-        'calendar-boards-toggle': loadBoardList
+        'calendar-boards-toggle': loadBoardList,
       });
       initFeeds();
       initExport();
@@ -16106,7 +16106,7 @@
       renderChip: renderChip,
       mergeBoards: mergeBoards,
       exportUrl: exportUrl,
-      feedRowHtml: feedRowHtml
+      feedRowHtml: feedRowHtml,
     };
   })();
 
@@ -16453,7 +16453,7 @@
         openOnly: true,
         user: qs('mc-count-user').value,
         color: qs('mc-count-color').value,
-        label: qs('mc-count-label').value
+        label: qs('mc-count-label').value,
       };
     }
 
@@ -16611,10 +16611,10 @@
       ReportTools.mount({
         report: 'monte-carlo', title: 'Forecast', boardId: boardId, chartId: 'mc-chart',
         getFilters: function () { return {}; }, applyFilters: function () {},
-        rows: function () { return lastForecast ? forecastRows(lastForecast) : []; }
+        rows: function () { return lastForecast ? forecastRows(lastForecast) : []; },
       });
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -16639,7 +16639,7 @@
       init: init, startDateMs: startDateMs, bindStartDate: bindStartDate, taskMatches: taskMatches,
       boardCount: boardCount, periodRange: periodRange, forecastRows: forecastRows,
       forecastLines: forecastLines, dailyThroughput: dailyThroughput, notEnoughMessage: notEnoughMessage,
-      PCTS: PCTS, PCT_COLORS: PCT_COLORS, SIMULATIONS: SIMULATIONS
+      PCTS: PCTS, PCT_COLORS: PCT_COLORS, SIMULATIONS: SIMULATIONS,
     };
   })();
 
@@ -16709,7 +16709,7 @@
       qs('te-export-seconds').addEventListener('click', function () { exportExcel(true); });
       ReportBreakdown.mount(boardId, {
         render: render,
-        error: function (err) { setStatus('Could not load time estimate data: ' + err.message); }
+        error: function (err) { setStatus('Could not load time estimate data: ' + err.message); },
       });
     }
 
@@ -16838,7 +16838,7 @@
         { name: 'xl/_rels/workbook.xml.rels', text: head +
           '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
           '<Relationship Id="rId1" Type="' + rel + '/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' },
-        { name: 'xl/worksheets/sheet1.xml', text: sheet }
+        { name: 'xl/worksheets/sheet1.xml', text: sheet },
       ]);
     }
 
@@ -16866,7 +16866,7 @@
         '<< /Type /Catalog /Pages 2 0 R >>',
         '<< /Type /Pages /Kids [' + pages.map(function (_, i) { return (4 + 2 * i) + ' 0 R'; }).join(' ') +
           '] /Count ' + pages.length + ' >>',
-        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
       ];
       pages.forEach(function (page, i) {
         var stream = i === 0
@@ -17165,7 +17165,7 @@
       qs('tic-filters').addEventListener('submit', function (e) { e.preventDefault(); });
       attachRows(qs('tic-table'), openModal);
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
       }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -17195,7 +17195,7 @@
             periodDays: period === 'all' ? null : parseInt(period, 10),
             user: qs('tic-user').value,
             color: qs('tic-color').value,
-            label: qs('tic-label').value
+            label: qs('tic-label').value,
           }, now);
           lastTable = table;
           lastNow = now;
@@ -17225,7 +17225,7 @@
       render: render, attachRows: attachRows,
       boardExportRows: boardExportRows, taskExportRows: taskExportRows, exportFile: exportFile,
       exportStem: exportStem, saveExport: saveExport,
-      exportKindOptions: exportKindOptions, exportFormatOptions: exportFormatOptions
+      exportKindOptions: exportKindOptions, exportFormatOptions: exportFormatOptions,
     };
   })();
 
@@ -17466,7 +17466,7 @@
       var sub = document.getElementById('reports-submenu');
       var slugs = {
         burndown: 'burndown', flow: 'cumulative-flow', cycle: 'cycle-lead',
-        throughput: 'throughput', montecarlo: 'monte-carlo'
+        throughput: 'throughput', montecarlo: 'monte-carlo',
       };
       ReportTools.send('GET', ReportTools.endpoint(boardId())).then(function (data) {
         Array.prototype.forEach.call(sub.querySelectorAll('.report-shortcut'), function (el) { el.remove(); });
@@ -17712,7 +17712,7 @@
           labels: self.filterLabels(),
           labelMode: self.filterLabelMode(),
           fields: self.filterFields(),
-          hideEpics: self.hideEpics()
+          hideEpics: self.hideEpics(),
         });
         name.value = '';
         self.writeFilterBookmarks(list);
@@ -19002,7 +19002,7 @@
         fields: this.filterFields(),
         epic: this.epicFilter,
         hideEpics: this.hideEpics(),
-        fold: this.panelFoldMode()
+        fold: this.panelFoldMode(),
       });
       try { window.sessionStorage.setItem(this.sessionFilterKey(), state); } catch (e) {}
       try {
@@ -19053,7 +19053,7 @@
         ['month:' + now.getFullYear() + '-' + now.getMonth(), 'Due in ' + months[now.getMonth()]],
         ['month:' + nm.getFullYear() + '-' + nm.getMonth(), 'Due in ' + months[nm.getMonth()]],
         ['year:' + now.getFullYear(), 'Due in ' + now.getFullYear()],
-        ['year:' + (now.getFullYear() + 1), 'Due in ' + (now.getFullYear() + 1)]
+        ['year:' + (now.getFullYear() + 1), 'Due in ' + (now.getFullYear() + 1)],
       ];
       specs.forEach(function (s) {
         var option = document.createElement('option');
@@ -19320,7 +19320,7 @@
       table.hidden = true;
       dlg.hidden = false;
       fetch('/api/boards/' + encodeURIComponent(id) + '/bin', {
-        headers: { 'Accept': 'application/json' }, credentials: 'same-origin'
+        headers: { 'Accept': 'application/json' }, credentials: 'same-origin',
       }).then(function (res) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.json();
@@ -19467,7 +19467,7 @@
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
-            body: JSON.stringify({ dismiss_hint: tip.dataset.hint })
+            body: JSON.stringify({ dismiss_hint: tip.dataset.hint }),
           }).then(function (r) {
             if (!r.ok) throw new Error('HTTP ' + r.status);
             tip.remove();
@@ -19521,7 +19521,7 @@
         var epics = document.getElementById('epics-panel');
         if (epics && !epics.hidden) self.closeEpics();
       });
-    }
+    },
   };
 
   // ---------- boot ----------
@@ -19643,7 +19643,7 @@
       task_deleted: function (n) { return 'deleted ' + n.task_name; },
       column_renamed: function (n) { return 'renamed a column on ' + n.board_name + ' to ' + n.detail; },
       column_deleted: function (n) { return 'deleted the column ' + n.detail + ' on ' + n.board_name; },
-      board_deleted: function (n) { return 'deleted the board ' + n.board_name; }
+      board_deleted: function (n) { return 'deleted the board ' + n.board_name; },
     },
 
     setUnread: function (count) {
@@ -19797,7 +19797,7 @@
       history.replaceState(null, '', url.pathname + url.hash);
       window.dispatchEvent(new HashChangeEvent('hashchange'));
       return true;
-    }
+    },
   };
 
   function initNotificationsPanel() {
@@ -21054,7 +21054,7 @@
         label: byId('mu-label').value,
         member: byId('mu-member').value,
         due: byId('mu-due').value,
-        dueDay: byId('mu-due-day').value
+        dueDay: byId('mu-due-day').value,
       };
     }
 
@@ -21102,7 +21102,7 @@
           id: card.dataset.taskId,
           name: card.dataset.taskName || '',
           color: card.dataset.colorValue || '',
-          column: list ? names[list.dataset.columnId] || '' : ''
+          column: list ? names[list.dataset.columnId] || '' : '',
         };
       });
     }
@@ -21215,7 +21215,7 @@
       blocked_by: 'Depends on',
       blocks: 'Required by',
       parent: 'Part of',
-      child: 'Umbrella of'
+      child: 'Umbrella of',
     };
 
     function cardName(id) {

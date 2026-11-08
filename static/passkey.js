@@ -22,7 +22,7 @@
     return (send || fetch)(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify(body || {})
+      body: JSON.stringify(body || {}),
     }).then(function (response) {
       return response.text().then(function (text) {
         var data = {};
@@ -82,9 +82,9 @@
       response: {
         clientDataJSON: toBase64url(response.clientDataJSON),
         attestationObject: toBase64url(response.attestationObject),
-        transports: response.getTransports ? response.getTransports() : null
+        transports: response.getTransports ? response.getTransports() : null,
       },
-      extensions: credential.getClientExtensionResults()
+      extensions: credential.getClientExtensionResults(),
     };
   }
 
@@ -98,9 +98,9 @@
         clientDataJSON: toBase64url(response.clientDataJSON),
         authenticatorData: toBase64url(response.authenticatorData),
         signature: toBase64url(response.signature),
-        userHandle: response.userHandle ? toBase64url(response.userHandle) : null
+        userHandle: response.userHandle ? toBase64url(response.userHandle) : null,
       },
-      extensions: credential.getClientExtensionResults()
+      extensions: credential.getClientExtensionResults(),
     };
   }
 
@@ -170,7 +170,7 @@
     remove: function (id) {
       return fetchFresh('/api/v1/auth/passkeys/' + encodeURIComponent(id), {
         method: 'DELETE',
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
       }).then(function (response) {
         if (response.ok) return response.json();
         return response.text().then(function (text) {
@@ -179,6 +179,6 @@
           throw new Error(message || ('HTTP ' + response.status));
         });
       });
-    }
+    },
   };
 })();

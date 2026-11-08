@@ -15,12 +15,12 @@ function check(name, got, want) {
 const roles = [
   { name: 'scribe', permissions: ['tasks.read'] },
   { name: 'planner', permissions: ['tasks.read'] },
-  { name: 'lead', permissions: ['tasks.read'] }
+  { name: 'lead', permissions: ['tasks.read'] },
 ];
 
 Promise.all([
   TokenForm.loadRoles(() => Promise.reject(new Error('HTTP 500'))),
-  TokenForm.loadRoles(() => Promise.resolve(roles))
+  TokenForm.loadRoles(() => Promise.resolve(roles)),
 ]).then((outcomes) => {
   check('token_form_shows_error_when_roles_load_fails: the error names the failure',
     outcomes[0].error, 'Could not load roles: HTTP 500');

@@ -11,8 +11,8 @@ var storageBroken = false;
 var window = {
   localStorage: {
     getItem: function (k) { if (storageBroken) throw new Error('denied'); return k in stored ? stored[k] : null; },
-    setItem: function (k, v) { if (storageBroken) throw new Error('denied'); stored[k] = v; }
-  }
+    setItem: function (k, v) { if (storageBroken) throw new Error('denied'); stored[k] = v; },
+  },
 };
 
 function node(name) { return { name: name, attrs: {}, getAttribute: function (a) { return this.attrs[a] || null; }, setAttribute: function (a, v) { this.attrs[a] = v; } }; }
@@ -39,7 +39,7 @@ var document = {
     if (sel === '#tm-panel-comments .tm-comment-composer') return composer;
     if (sel === '[data-tm-act="comment-order"]') return item;
     return null;
-  }
+  },
 };
 eval(slice("  var COMMENT_ORDER_KEY", "  function wireModalTaskRefs"));
 

@@ -17,7 +17,7 @@ var buttons = {
   '[data-tm-menu="tm-timer-menu"]': button('timer-menu'),
   '[data-tm-menu="tm-reports-menu"]': button('reports-menu'),
   '[data-tm-menu="tm-more-menu"]': button('more-menu'),
-  '[data-tm-menu="tm-add-menu"]': button('add-menu')
+  '[data-tm-menu="tm-add-menu"]': button('add-menu'),
 };
 var document = {
   addEventListener: function (type, fn) { listeners[type] = fn; },
@@ -30,13 +30,13 @@ var document = {
     if (id === 'shortcuts-dialog') return shortcuts;
     if (id === 'manual-time-overlay') return {};
     return null;
-  }
+  },
 };
 var window = { print: function () {} };
 var modal = { querySelector: function () { return null; } };
 var TimerUI = {
   togglePopup: function () { calls.push('timer-popup'); },
-  beginSelect: function () { calls.push('timer-select'); }
+  beginSelect: function () { calls.push('timer-select'); },
 };
 var ManualTime = { open: function () { calls.push('manual-time'); } };
 function reportsMenuKey() { return false; }
@@ -64,7 +64,7 @@ function press(key, shift) {
   listeners.keydown({
     key: key, shiftKey: !!shift, metaKey: false, ctrlKey: false, altKey: false,
     target: { closest: function () { return null; } },
-    preventDefault: function () {}
+    preventDefault: function () {},
   });
   return calls.slice().concat(shortcuts.hidden ? [] : ['shortcuts']);
 }

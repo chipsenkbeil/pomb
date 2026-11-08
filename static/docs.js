@@ -5,7 +5,7 @@
     summary: (shown, total, terms) => {
       if (!terms.length) return '';
       return `${shown} of ${total} ${total === 1 ? 'entry' : 'entries'}`;
-    }
+    },
   };
 
   const input = document.getElementById('api-search');

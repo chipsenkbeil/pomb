@@ -9,7 +9,7 @@ function slice(from, to) {
 var members = [
   { id: '1', username: 'ada', display_name: 'Ada Lovelace' },
   { id: '2', username: 'bob', display_name: 'Bobby' },
-  { id: '3', username: 'abe', display_name: 'abe' }
+  { id: '3', username: 'abe', display_name: 'abe' },
 ];
 var calls = [];
 function api(path, method, data) {
@@ -23,7 +23,7 @@ function makeEl(tag) {
     appendChild: function (c) { this.children.push(c); },
     addEventListener: function (t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); },
     getBoundingClientRect: function () { return { left: 1, bottom: 2 }; },
-    focus: function () {}, setSelectionRange: function (a) { this.selectionStart = a; }
+    focus: function () {}, setSelectionRange: function (a) { this.selectionStart = a; },
   };
 }
 Object.defineProperty(makeEl('x'), 'x', { value: 1 });
@@ -32,7 +32,7 @@ var input = makeEl('input');
 var document = {
   createElement: makeEl,
   body: body,
-  activeElement: input
+  activeElement: input,
 };
 var SETTLE_MS = 20;
 eval(slice('  var MENTION_LIST_MAX = 8;', '  function wireModalTaskRefs'));

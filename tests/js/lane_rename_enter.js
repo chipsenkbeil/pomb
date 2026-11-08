@@ -19,7 +19,7 @@ var document = {
     if (id === 'le-name') return { value: nameValue };
     if (id === 'le-description') return description;
     return dialog;
-  }
+  },
 };
 function toast(msg) { toasts.push(msg); }
 function patchLane(id, patch) { patches.push([id, patch.name]); }

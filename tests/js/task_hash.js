@@ -16,8 +16,8 @@ var window = {
       var at = url.indexOf('#');
       location.hash = at < 0 ? '' : url.slice(at);
     },
-    pushState: function () { pushes++; }
-  }
+    pushState: function () { pushes++; },
+  },
 };
 function boardId() { return onBoard ? 'b1' : null; }
 var TASK_HASH = '#task-';

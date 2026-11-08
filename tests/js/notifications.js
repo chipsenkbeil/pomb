@@ -37,7 +37,7 @@ check('a board deletion names the board', Notifications.describe({ kind: 'board_
 const fakeEl = (tag) => ({
   tag, children: [], attrs: {}, className: '', textContent: '', title: '',
   setAttribute(k, v) { this.attrs[k] = v; },
-  appendChild(c) { this.children.push(c); return c; }
+  appendChild(c) { this.children.push(c); return c; },
 });
 const document = { createElement: fakeEl, createTextNode: (text) => ({ text }) };
 const timeOf = (created) => {
@@ -64,7 +64,7 @@ function fakeList() {
   return {
     children: [],
     appendChild: function (row) { this.children.push(row); },
-    textContent: ''
+    textContent: '',
   };
 }
 var row = function (n) { return n.id; };

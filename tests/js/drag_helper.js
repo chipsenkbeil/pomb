@@ -14,7 +14,7 @@ var window = { setTimeout: function (fn) { timeouts.push(fn); } };
 var document = {
   body: { appendChild: function (el) { helpers.push(el); } },
   createElement: function () { return { className: '', textContent: '', remove: function () { this.removed = true; } }; },
-  querySelectorAll: function (sel) { return sel === '.done-group-label--target' ? labels.filter(function (l) { return l.marked; }) : []; }
+  querySelectorAll: function (sel) { return sel === '.done-group-label--target' ? labels.filter(function (l) { return l.marked; }) : []; },
 };
 function isSelected(card) { return selectedIds.indexOf(card.dataset.taskId) !== -1; }
 function selectedCards() { return selectedIds.map(function (id) { return { dataset: { taskId: id } }; }); }
@@ -26,8 +26,8 @@ function label(text) {
     textContent: ' ' + text + ' ',
     classList: {
       add: function () { l.marked = true; },
-      remove: function () { l.marked = false; }
-    }
+      remove: function () { l.marked = false; },
+    },
   };
   labels.push(l);
   return l;
@@ -35,7 +35,7 @@ function label(text) {
 function list(done, groups) {
   return {
     dataset: { doneColumn: done ? 'true' : 'false' },
-    querySelectorAll: function () { return groups; }
+    querySelectorAll: function () { return groups; },
   };
 }
 

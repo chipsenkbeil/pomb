@@ -24,7 +24,7 @@ function check(name, got, want) {
 var columns = [
   { id: 'todo', name: 'To-do', former_names: [] },
   { id: 'rev', name: 'Reviewing', former_names: ['In Review'] },
-  { id: 'done', name: 'Done', former_names: [] }
+  { id: 'done', name: 'Done', former_names: [] },
 ];
 function ev(kind, detail, col, ms) {
   return { kind: kind, detail: detail, column_id: col, created_at: iso(ms) };
@@ -35,12 +35,12 @@ var a = {
   history: [
     ev('created', 'Task created in To-do', 'todo', NOW - 10 * DAY),
     ev('moved', 'Moved from To-do to In Review', null, NOW - 6 * DAY),
-    ev('moved', 'Moved from In Review to Done', 'done', NOW - 4 * DAY - 3 * HOUR - 7 * MIN)
-  ]
+    ev('moved', 'Moved from In Review to Done', 'done', NOW - 4 * DAY - 3 * HOUR - 7 * MIN),
+  ],
 };
 var b = {
   id: 'b', name: 'B', column_id: 'todo', created_at: iso(NOW - 2 * DAY),
-  color_id: null, labels: [], member_ids: [], history: []
+  color_id: null, labels: [], member_ids: [], history: [],
 };
 var data = { columns: columns, tasks: [a, b] };
 var all = { columns: null, periodDays: null, user: '', color: '', label: '' };

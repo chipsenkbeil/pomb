@@ -8,7 +8,7 @@ function store() {
   return {
     getItem: function (k) { return k in m ? m[k] : null; },
     setItem: function (k, v) { m[k] = String(v); },
-    removeItem: function (k) { delete m[k]; }
+    removeItem: function (k) { delete m[k]; },
   };
 }
 
@@ -22,8 +22,8 @@ function load(sessionStorage, localStorage) {
     'filter-remember': remember,
     'filter-labels-list': {
       appendChild: function (label) { boxes.push(label.input); },
-      querySelectorAll: function () { return boxes; }
-    }
+      querySelectorAll: function () { return boxes; },
+    },
   };
   var document = {
     getElementById: function (id) { return els[id] || null; },
@@ -36,7 +36,7 @@ function load(sessionStorage, localStorage) {
       el.appendChild = function (child) { if (child.tag === 'input') el.input = child; };
       return el;
     },
-    createTextNode: function () { return {}; }
+    createTextNode: function () { return {}; },
   };
   var window = { sessionStorage: sessionStorage, localStorage: localStorage };
   var boardId = function () { return 'b1'; };

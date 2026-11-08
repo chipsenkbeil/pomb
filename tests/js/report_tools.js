@@ -34,13 +34,13 @@ global.fetch = function (url, init) {
     ok: init.method !== 'PATCH',
     json: function () { return Promise.resolve({ done: true }); },
     text: function () { return Promise.resolve('{"message":"name too long"}'); },
-    status: 400
+    status: 400,
   });
 };
 Promise.all([
   ReportTools.send('POST', '/x', { a: 1 }),
   ReportTools.send('DELETE', '/y'),
-  ReportTools.send('PATCH', '/z', {}).then(function () { return 'ok'; }, function (e) { return e.message; })
+  ReportTools.send('PATCH', '/z', {}).then(function () { return 'ok'; }, function (e) { return e.message; }),
 ]).then(function (out) {
   check('a write returns the JSON', out[0], { done: true });
   check('a delete returns nothing', out[1], null);

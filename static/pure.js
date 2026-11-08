@@ -8,14 +8,14 @@ var LocalTime = (function () {
     var found = {};
     new Intl.DateTimeFormat('en-US', {
       timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric',
-      hour: 'numeric', minute: 'numeric', weekday: 'long'
+      hour: 'numeric', minute: 'numeric', weekday: 'long',
     }).formatToParts(new Date(ms)).forEach(function (part) { found[part.type] = part.value; });
     var year = +found.year;
     var month = +found.month;
     var day = +found.day;
     return {
       year: year, month: month, day: day, hour: +found.hour % 24, minute: +found.minute,
-      weekday: found.weekday, dayNo: Math.floor(Date.UTC(year, month - 1, day) / 86400000)
+      weekday: found.weekday, dayNo: Math.floor(Date.UTC(year, month - 1, day) / 86400000),
     };
   }
 

@@ -8,7 +8,7 @@ function store() {
   return {
     getItem: function (k) { return k in m ? m[k] : null; },
     setItem: function (k, v) { m[k] = String(v); },
-    removeItem: function (k) { delete m[k]; }
+    removeItem: function (k) { delete m[k]; },
   };
 }
 
@@ -41,7 +41,7 @@ function load(sessionStorage, localStorage) {
       classList: classSet(['task-card']),
       closest: function (sel) { return sel === '.task-list' ? list : null; },
       querySelector: function () { return null; },
-      remove: function () { list.children.splice(list.children.indexOf(this), 1); }
+      remove: function () { list.children.splice(list.children.indexOf(this), 1); },
     };
   }
   var cards = [card('1', 'red'), card('2', 'blue'), card('3', 'blue'), card('4', 'red'), card('5', 'blue'), card('6', 'blue'), card('7', 'blue')];
@@ -58,7 +58,7 @@ function load(sessionStorage, localStorage) {
     'f-date': select('all'),
     'f-epic': select(''),
     'filter-btn': { classList: { toggle: function () {} }, addEventListener: function () {} },
-    'filter-remember': { checked: false }
+    'filter-remember': { checked: false },
   };
   function folds() {
     return list.children.filter(function (el) { return el.className === 'filter-fold'; });
@@ -85,7 +85,7 @@ function load(sessionStorage, localStorage) {
       row.remove = function () { list.children.splice(list.children.indexOf(row), 1); };
       row.closest = function (sel) { return sel === '.filter-fold' ? row : null; };
       return row;
-    }
+    },
   };
   var timers = [];
   var now = 0;
@@ -94,7 +94,7 @@ function load(sessionStorage, localStorage) {
     localStorage: localStorage,
     addEventListener: function () {},
     setTimeout: function (fn, ms) { timers.push({ fn: fn, at: now + ms }); return timers.length; },
-    clearTimeout: function (id) { timers[id - 1] = null; }
+    clearTimeout: function (id) { timers[id - 1] = null; },
   };
   function tick(ms) {
     var until = now + ms;
@@ -118,7 +118,7 @@ function load(sessionStorage, localStorage) {
     tick: tick,
     chrome: chrome, cards: cards, card: card, els: els, list: list, folds: folds,
     mode: function () { return mode; },
-    setMode: function (m) { mode = m; }
+    setMode: function (m) { mode = m; },
   };
 }
 
@@ -129,7 +129,7 @@ function over(page, where) {
       if (sel === '.task-card') return where.card || null;
       if (sel === '.filter-fold') return where.fold || null;
       return null;
-    }
+    },
   };
 }
 

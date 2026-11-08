@@ -22,14 +22,14 @@ var sel = {
     return this.options.filter(function (o) { return o.value === m[1]; })[0] || null;
   },
   set value(v) { this._value = v; },
-  get value() { return this._value; }
+  get value() { return this._value; },
 };
 var toasts = [];
 var document = {
   getElementById: function () { return sel; },
   querySelector: function () { return null; },
   querySelectorAll: function () { return []; },
-  createElement: option
+  createElement: option,
 };
 function cssEscape(s) { return s; }
 function toast(m) { toasts.push(m); }

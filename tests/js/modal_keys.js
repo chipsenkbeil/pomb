@@ -26,14 +26,14 @@ var document = {
     if (sel === '[data-tm-menu="tm-add-menu"]') return addButton;
     return /dlg-overlay/.test(sel) && dialogOpen ? {} : null;
   },
-  getElementById: function (id) { return id === 'modal-name' ? nameInput : id === 'shortcuts-dialog' ? dialog : null; }
+  getElementById: function (id) { return id === 'modal-name' ? nameInput : id === 'shortcuts-dialog' ? dialog : null; },
 };
 function modalAction(act, source) { actions.push([act, source]); }
 var modal = {
   querySelector: function (sel) {
     var m = /data-tm-act="([^"]*)"/.exec(sel);
     return m ? (sources[m[1]] = sources[m[1]] || { act: m[1] }) : null;
-  }
+  },
 };
 eval(slice('  var MODAL_LETTER_ACTS = {', '  document.addEventListener(\'keydown\''));
 
@@ -45,7 +45,7 @@ function check(name, got, want) {
 
 var wanted = {
   c: 'pick-color', d: 'add-description', f: 'add-attachment', k: 'add-comment', l: 'add-label',
-  m: 'add-member', r: 'add-relation', s: 'add-subtask', u: 'add-duedate'
+  m: 'add-member', r: 'add-relation', s: 'add-subtask', u: 'add-duedate',
 };
 Object.keys(wanted).forEach(function (key) {
   actions.length = 0;
@@ -57,7 +57,7 @@ var epicModal = {
   querySelector: function (sel) {
     var m = /data-tm-act="([^"]*)"/.exec(sel);
     return m && m[1] !== 'add-relation' ? { act: m[1] } : null;
-  }
+  },
 };
 actions.length = 0;
 check('r does nothing in a modal without the Relation item', [modalLetter(epicModal, 'r'), actions], [false, []]);

@@ -16,7 +16,7 @@ var document = {
   getElementById: function (id) {
     if (!page[id]) page[id] = { innerHTML: '', textContent: '', addEventListener: function () {} };
     return page[id];
-  }
+  },
 };
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -58,8 +58,8 @@ function done(id, day, owner, extra) {
     owner: owner || null,
     history: [
       { kind: 'created', detail: 'Task created in To do', column_id: 'todo', created_at: '2026-09-01T09:00:00' },
-      { kind: 'moved', detail: 'Moved from To do to Done', column_id: 'done', created_at: '2026-' + day + 'T12:00:00' }
-    ]
+      { kind: 'moved', detail: 'Moved from To do to Done', column_id: 'done', created_at: '2026-' + day + 'T12:00:00' },
+    ],
   };
   Object.keys(extra || {}).forEach(function (k) { task[k] = extra[k]; });
   return task;
@@ -72,12 +72,12 @@ var data = {
   colors: [],
   tasks: [
     done('a', '09-08', ana), done('b', '09-16', bot), done('c', '09-17', null), done('d', '09-23', ana),
-    done('e', '10-01', ana), done('f', '10-02', null), done('g', '10-03', bot), done('h', '10-12', ana)
-  ]
+    done('e', '10-01', ana), done('f', '10-02', null), done('g', '10-03', bot), done('h', '10-12', ana),
+  ],
 };
 var base = {
   valueType: 'count', target: 'done', period: 'absolute', from: '2026-09-07', to: '2026-10-18',
-  user: '', color: '', labels: [], labelMode: 'and', group: 'week'
+  user: '', color: '', labels: [], labelMode: 'and', group: 'week',
 };
 function run(over) {
   var values = {};
@@ -107,7 +107,7 @@ check('user filter keeps an agent owner', counts({ user: 'a:builder', group: '4w
 check('user filter keeps unowned tasks', counts({ user: 'unassigned', group: '4w' }), [2, 0]);
 check('user filter ignores members', ThroughputPage.series({
   columns: data.columns, users: data.users,
-  tasks: [done('m', '09-08', null, { member_ids: ['u1'] })]
+  tasks: [done('m', '09-08', null, { member_ids: ['u1'] })],
 }, { valueType: 'count', target: 'done', period: 'absolute', from: '2026-09-07', to: '2026-09-13',
   user: 'u:u1', color: '', labels: [], labelMode: 'and', group: 'week' }, now).values, [0]);
 check('color filter', counts({ color: 'red', group: '4w' }), [0, 0]);

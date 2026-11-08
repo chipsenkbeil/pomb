@@ -13,7 +13,7 @@ function card(id, owner) {
     style: {},
     classList: { toggle: function () {} },
     querySelector: function () { return null; },
-    closest: function () { return null; }
+    closest: function () { return null; },
   };
 }
 
@@ -22,14 +22,14 @@ function store() {
   return {
     getItem: function (k) { return k in m ? m[k] : null; },
     setItem: function (k, v) { m[k] = String(v); },
-    removeItem: function (k) { delete m[k]; }
+    removeItem: function (k) { delete m[k]; },
   };
 }
 
 function load(sessionStorage) {
   let cards = [card('1', 'user:me'), card('2', 'role:builder'), card('3', ''), card('4', 'user:ann'), card('5', 'agent:solo')];
   let options = [
-    ['Me', 'user:me'], ['Ann', 'user:ann'], ['builder (role)', 'role:builder'], ['No owner', 'none']
+    ['Me', 'user:me'], ['Ann', 'user:ann'], ['builder (role)', 'role:builder'], ['No owner', 'none'],
   ].map(function (pair) { return { value: pair[0], dataset: { owner: pair[1] } }; });
   let input = { value: '' };
   let els = {
@@ -41,7 +41,7 @@ function load(sessionStorage) {
     'filter-btn': { classList: { toggle: function () {} } },
     'filter-reset': { hidden: true },
     'filter-reset-panel': { hidden: true },
-    'filter-panel': { hidden: true }
+    'filter-panel': { hidden: true },
   };
   let document = {
     getElementById: function (id) { return els[id] || null; },
@@ -50,7 +50,7 @@ function load(sessionStorage) {
       if (sel === '.task-card') return cards;
       if (sel === '#f-owner-list option') return options;
       return [];
-    }
+    },
   };
   let window = { sessionStorage: sessionStorage, localStorage: store() };
   let boardId = function () { return 'b1'; };

@@ -14,7 +14,7 @@ function card(id, kind, parent) {
     style: {},
     classList: { toggle: function () {} },
     querySelector: function (sel) { return sel === '.card-epic-tag' ? tag : null; },
-    closest: function () { return null; }
+    closest: function () { return null; },
   };
 }
 
@@ -23,7 +23,7 @@ function store() {
   return {
     getItem: function (k) { return k in m ? m[k] : null; },
     setItem: function (k, v) { m[k] = String(v); },
-    removeItem: function (k) { delete m[k]; }
+    removeItem: function (k) { delete m[k]; },
   };
 }
 
@@ -40,13 +40,13 @@ function load(sessionStorage, localStorage) {
     'filter-btn': { classList: { toggle: function () {} } },
     'filter-reset': { hidden: true },
     'filter-reset-panel': { hidden: true },
-    'filter-panel': { hidden: true }
+    'filter-panel': { hidden: true },
   };
   let document = {
     getElementById: function (id) { return els[id] || null; },
     createElement: function () { return {}; },
     querySelector: function () { return null; },
-    querySelectorAll: function (sel) { return sel === '.task-card' ? cards : []; }
+    querySelectorAll: function (sel) { return sel === '.task-card' ? cards : []; },
   };
   let window = { sessionStorage: sessionStorage, localStorage: localStorage };
   let boardId = function () { return 'b1'; };

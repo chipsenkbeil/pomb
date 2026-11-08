@@ -7,7 +7,7 @@ var calls = [];
 var dialog = { hidden: true };
 var search = { value: 'ann', focus: function () { calls.push('focus'); } };
 var document = {
-  getElementById: function (id) { return id === 'members-dialog' ? dialog : search; }
+  getElementById: function (id) { return id === 'members-dialog' ? dialog : search; },
 };
 var TimerUI = { refreshTaskCard: function (id) { calls.push('card:' + id); } };
 var modal = null;

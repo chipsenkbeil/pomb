@@ -24,7 +24,7 @@ var tasks = [
   { id: 'a', column_id: 'todo', member_ids: ['u1'], color_id: 'red', labels: ['bug'] },
   { id: 'b', column_id: 'todo', member_ids: [], color_id: null, labels: [] },
   { id: 'c', column_id: 'done', member_ids: ['u1'], color_id: 'red', labels: ['bug', 'ui'], completed_at: '2026-01-01T00:00:00Z' },
-  { id: 'd', column_id: 'doing', member_ids: ['u2'], color_id: 'blue', labels: ['ui'] }
+  { id: 'd', column_id: 'doing', member_ids: ['u2'], color_id: 'blue', labels: ['ui'] },
 ];
 check('board count skips completed tasks by default', MonteCarloPage.boardCount(tasks, { openOnly: true }), 3);
 check('board count by column', MonteCarloPage.boardCount(tasks, { column: 'done', openOnly: true }), 1);

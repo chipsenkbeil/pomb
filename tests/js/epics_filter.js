@@ -8,7 +8,7 @@ function store() {
   return {
     getItem: function (k) { return k in m ? m[k] : null; },
     setItem: function (k, v) { m[k] = String(v); },
-    removeItem: function (k) { delete m[k]; }
+    removeItem: function (k) { delete m[k]; },
   };
 }
 
@@ -16,7 +16,7 @@ function classes() {
   var set = {};
   return {
     toggle: function (name, on) { set[name] = on === undefined ? !set[name] : !!on; },
-    contains: function (name) { return !!set[name]; }
+    contains: function (name) { return !!set[name]; },
   };
 }
 
@@ -27,11 +27,11 @@ function select(value) {
     options: [],
     children: [],
     dataset: {},
-    appendChild: function (child) { el.children.push(child); el.options.push(child); return child; }
+    appendChild: function (child) { el.children.push(child); el.options.push(child); return child; },
   };
   Object.defineProperty(el, 'textContent', {
     get: function () { return ''; },
-    set: function () { el.children = []; el.options = []; }
+    set: function () { el.children = []; el.options = []; },
   });
   return el;
 }
@@ -43,7 +43,7 @@ function card(id, epicId) {
     style: {},
     classList: classes(),
     closest: function () { return null; },
-    querySelector: function (sel) { return sel === '.card-epic-tag' ? tag : null; }
+    querySelector: function (sel) { return sel === '.card-epic-tag' ? tag : null; },
   };
 }
 
@@ -52,7 +52,7 @@ function node() {
     children: [], dataset: {}, style: {}, className: '', listeners: {},
     appendChild: function (child) { el.children.push(child); return child; },
     setAttribute: function () {},
-    addEventListener: function (type, fn) { el.listeners[type] = fn; }
+    addEventListener: function (type, fn) { el.listeners[type] = fn; },
   };
   return el;
 }
@@ -72,7 +72,7 @@ function funnel(id, row) {
     classList: classes(),
     attrs: {},
     setAttribute: function (k, v) { this.attrs[k] = v; },
-    closest: function () { return row; }
+    closest: function () { return row; },
   };
 }
 
@@ -91,7 +91,7 @@ function load(sessionStorage, localStorage) {
     'filter-btn': btn,
     'filter-panel': panel,
     'epics-panel': epicsPanel,
-    'filter-remember': { checked: false }
+    'filter-remember': { checked: false },
   };
   var document = {
     getElementById: function (id) { return els[id] || null; },
@@ -101,7 +101,7 @@ function load(sessionStorage, localStorage) {
       if (sel === '.epic-funnel') return funnels;
       return [];
     },
-    createElement: node
+    createElement: node,
   };
   var window = { sessionStorage: sessionStorage, localStorage: localStorage, addEventListener: function () {} };
   var boardId = function () { return 'b1'; };
@@ -114,7 +114,7 @@ function load(sessionStorage, localStorage) {
   chrome.epics = [
     { id: 'e1', name: 'One', closed: false },
     { id: 'e2', name: 'Two', closed: false },
-    { id: 'e3', name: 'Three', closed: true }
+    { id: 'e3', name: 'Three', closed: true },
   ];
   return { chrome: chrome, cards: cards, funnels: funnels, rows: rows, btn: btn, els: els, panel: panel, epicsPanel: epicsPanel };
 }

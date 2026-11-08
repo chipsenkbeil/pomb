@@ -29,7 +29,7 @@ var membersList = { innerHTML: '' };
 var membersDialog = {
   hidden: true,
   classList: { toggle: function () {} },
-  querySelector: function () { return { style: {}, offsetWidth: 260, offsetHeight: 200 }; }
+  querySelector: function () { return { style: {}, offsetWidth: 260, offsetHeight: 200 }; },
 };
 var refreshed = [];
 var rendered = [];
@@ -54,7 +54,7 @@ var document = {
   getElementById: function (id) {
     return id === 'members-search' ? searchBox : id === 'members-list' ? membersList : membersDialog;
   },
-  addEventListener: function () {}
+  addEventListener: function () {},
 };
 var window = { innerWidth: 1000, innerHeight: 800, location: { reload: function () { requests.push(['reload']); } } };
 eval(slice('  var selectedIds = [];', '  function initSelection'));
@@ -69,7 +69,7 @@ function card(id, col, lane, index) {
     scrollIntoView: function () {},
     getBoundingClientRect: function () { return { left: 10, right: 100, top: 10, bottom: 40 }; },
     focus: function () { focused.push(id); },
-    closest: function (sel) { return sel === '.task-card' ? el : null; }
+    closest: function (sel) { return sel === '.task-card' ? el : null; },
   };
   var entry = { id: id, el: el, col: col, lane: lane, index: index, classes: classes };
   cards.push(entry);

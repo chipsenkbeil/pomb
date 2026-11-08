@@ -1,0 +1,21 @@
+id: js-trailing-comma
+language: javascript
+severity: error
+message: Add a trailing comma to this multi-line object or array literal.
+note: "docs/STYLE.md, P19. Every multi-line object and array literal takes a trailing comma."
+rule:
+  any:
+    - kind: object
+    - kind: array
+  regex: '\n\s*[}\]]$'
+  has:
+    nthChild:
+      position: 1
+      reverse: true
+      ofRule:
+        not:
+          kind: comment
+    not:
+      precedes:
+        regex: "^,$"
+        stopBy: end

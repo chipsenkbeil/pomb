@@ -16,7 +16,7 @@ function card(id, labels, fields) {
     style: {},
     classList: { toggle: function () {} },
     querySelector: function () { return null; },
-    closest: function () { return null; }
+    closest: function () { return null; },
   };
 }
 
@@ -26,7 +26,7 @@ function load() {
     card('2', ['a', 'b'], { stage: 'Live' }),
     card('3', ['b'], { stage: 'Live' }),
     card('4', [], {}),
-    card('5', [], { stage: 'all' })
+    card('5', [], { stage: 'all' }),
   ];
   var boxes = ['a', 'b'].map(function (value) { return { value: value, checked: false }; });
   var stage = select('', 'stage');
@@ -36,11 +36,11 @@ function load() {
   var header = {
     dataset: { columnId: 'c1', wipLimit: '1', taskCount: '4' },
     classList: { toggle: function () {} },
-    querySelector: function (sel) { return sel === '.columnHeader-count' ? count : null; }
+    querySelector: function (sel) { return sel === '.columnHeader-count' ? count : null; },
   };
   var button = {
     classes: {},
-    classList: { toggle: function (name, on) { button.classes[name] = on; } }
+    classList: { toggle: function (name, on) { button.classes[name] = on; } },
   };
   var reset = { hidden: true };
   var panelReset = { hidden: true };
@@ -53,7 +53,7 @@ function load() {
     'filter-btn': button,
     'filter-reset': reset,
     'filter-reset-panel': panelReset,
-    'filter-panel': panel
+    'filter-panel': panel,
   };
   var document = {
     getElementById: function (id) { return els[id] || null; },
@@ -66,7 +66,7 @@ function load() {
       if (sel === '.columnHeader[data-column-id]') return [header];
       if (sel.indexOf('.task-list[data-column-id=') === 0) return cards;
       return [];
-    }
+    },
   };
   var window = { sessionStorage: null, localStorage: null };
   var boardId = function () { return 'b1'; };

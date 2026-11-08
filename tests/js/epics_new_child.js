@@ -21,11 +21,11 @@ function element(attrs) {
         prevented: false,
         stopped: false,
         preventDefault: function () { ev.prevented = true; },
-        stopPropagation: function () { ev.stopped = true; }
+        stopPropagation: function () { ev.stopped = true; },
       };
       el.listeners.keydown(ev);
       return ev;
-    }
+    },
   };
   return el;
 }
@@ -64,7 +64,7 @@ function reset(dataset) {
   var parts = {
     '[data-new-child-input]': input,
     '[data-new-child-create]': create,
-    '[data-new-child-cancel]': cancel
+    '[data-new-child-cancel]': cancel,
   };
   row.querySelector = function (sel) { return parts[sel]; };
   var overlay = {
@@ -72,14 +72,14 @@ function reset(dataset) {
       if (sel === '[data-new-child-row]') return row;
       if (sel === '[data-new-child-open]') return open;
       return null;
-    }
+    },
   };
   newChildBusy = false;
   wireNewChild(overlay);
 }
 
 var document = {
-  querySelector: function (sel) { return sel === '#modal-root .task-modal' ? modal : null; }
+  querySelector: function (sel) { return sel === '#modal-root .task-modal' ? modal : null; },
 };
 function api(path, method, data) {
   return new Promise(function (resolve) {
@@ -121,8 +121,8 @@ eval(fn('  function wireNewChild(overlay) {'));
       path: '/api/tasks',
       method: 'POST',
       data: { column_id: 'c1', name: 'Retry rules', swimlane_id: 's1' },
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
-    }
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    },
   ]);
   input.key('Enter');
   create.click();
@@ -133,7 +133,7 @@ eval(fn('  function wireNewChild(overlay) {'));
   check('the child link follows the create, epic to child', calls[1], {
     path: '/api/tasks/e1/links',
     method: 'POST',
-    data: { kind: 'child', target_id: 'n1' }
+    data: { kind: 'child', target_id: 'n1' },
   });
   check('no refresh before the link lands', refreshes, 0);
   pending[1](response(true, ''));
@@ -209,7 +209,7 @@ eval(fn('  function wireNewChild(overlay) {'));
   await flush();
   await flush();
   check('a failed link says the card exists but is not in the epic', toasts, [
-    'Created "Retry rules" but could not add it to this epic. It is in the same column.'
+    'Created "Retry rules" but could not add it to this epic. It is in the same column.',
   ]);
   check('a failed link still refreshes the epic cards', refreshes, 1);
   check('a failed link does not retry the create', calls.length, 2);

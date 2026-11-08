@@ -16,13 +16,13 @@ var BoardChrome = {
   openFilter: function () { calls.push('filter'); return true; },
   openReports: function () { calls.push('reports'); return true; },
   showAllMembers: function () { calls.push('members'); return true; },
-  openHelp: function () { calls.push('help'); return true; }
+  openHelp: function () { calls.push('help'); return true; },
 };
 var TimerUI = {
   switchModeTab: function () { calls.push('mode'); },
   togglePopup: function () { calls.push('toggle'); },
   beginSelect: function () { calls.push('select'); },
-  runKey: function () { calls.push('run'); return true; }
+  runKey: function () { calls.push('run'); return true; },
 };
 
 function makeAdd(columnId) {
@@ -31,7 +31,7 @@ function makeAdd(columnId) {
     columnId: columnId,
     header: header,
     click: function () { clicks.push(columnId); },
-    closest: function () { return header; }
+    closest: function () { return header; },
   };
 }
 for (var c = 1; c <= 11; c++) addButtons.push(makeAdd('col' + c));
@@ -43,7 +43,7 @@ var document = {
   querySelectorAll: function (sel) { return /columnHeader-add/.test(sel) ? addButtons : []; },
   querySelector: function (sel) { return /dlg-overlay/.test(sel) && floatingOpen ? {} : null; },
   getElementById: function (id) { return els[id] || null; },
-  activeElement: null
+  activeElement: null,
 };
 eval(slice('  var columnKeyHints = [];', '  var MODAL_LETTER_ACTS'));
 
@@ -126,7 +126,7 @@ check('b with the list open only focuses the search', calls, ['search']);
 var sub = {
   hidden: false,
   items: [0, 1, 2].map(function (i) { return { focus: function () { document.activeElement = this; focused.push(i); } }; }),
-  querySelectorAll: function () { return this.items; }
+  querySelectorAll: function () { return this.items; },
 };
 els['reports-submenu'] = sub;
 function arrow(k) { return reportsMenuKey({ key: k }); }
