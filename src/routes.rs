@@ -11465,13 +11465,25 @@ async fn set_checklist_item(
 }
 
 /// Carries a description to render as sanitized markdown.
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct MarkdownPreviewInput {
     /// The markdown text to render.
     description: String,
 }
 
 /// Renders a description as the sanitized HTML the task modal shows, for the add-card preview.
+#[utoipa::path(
+    post,
+    path = "/api/markdown/preview",
+    operation_id = "preview_markdown",
+    tag = "Tasks",
+    request_body = MarkdownPreviewInput,
+    responses(
+        (status = 200, description = "The description rendered as sanitized HTML"),
+        (status = 400, description = "The body is not JSON with a `description`, or the description is over the length limit"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn markdown_preview(
     _account: AccountDb,
     headers: HeaderMap,
@@ -15784,6 +15796,21 @@ fn history_csv(history: &[TaskEvent], all: bool) -> String {
 }
 
 /// Downloads the task's history as CSV, with the minor events only when asked.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/history-export",
+    operation_id = "export_task_history",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("all" = Option<String>, Query, description = "`1` or `true` includes the minor events too"),
+    ),
+    responses(
+        (status = 200, description = "The history as CSV, oldest first", content_type = "text/csv"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn history_export(
     account: AccountDb,
     Extension(_user): Extension<AuthUser>,
@@ -29288,6 +29315,8 @@ them, which the Backups section of the settings page calls after a confirmation.
         log_time,
         watch_task,
         set_checklist_item,
+        history_export,
+        markdown_preview,
         create_subtask,
         delete_all_subtasks,
         save_subtask_template,
