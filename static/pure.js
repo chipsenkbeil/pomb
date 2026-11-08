@@ -120,7 +120,9 @@ function isoDate(d) {
 
 const CARD_KIND = Object.freeze({ EPIC: 'epic' });
 const CARD_SUBMENU = Object.freeze({ MOVE: 'move', COLOR: 'color', EPIC: 'epic' });
+const BULK_ACT = Object.freeze({ MOVE: 'move', COLOR: 'color', MEMBERS: 'members', MEMBERS_MENU: 'members-menu', DELETE: 'delete' });
+const BULK_SUB = Object.freeze({ COLOR: 'color', MEMBERS: 'members', UNASSIGN: 'unassign' });
 
 if (typeof module !== 'undefined') {
-  module.exports = { LocalTime: LocalTime, isoDate: isoDate, CARD_KIND: CARD_KIND, CARD_SUBMENU: CARD_SUBMENU };
+  module.exports = { LocalTime: LocalTime, isoDate: isoDate, CARD_KIND: CARD_KIND, CARD_SUBMENU: CARD_SUBMENU, BULK_ACT: BULK_ACT, BULK_SUB: BULK_SUB };
 }

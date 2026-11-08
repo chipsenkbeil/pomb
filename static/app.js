@@ -1755,30 +1755,30 @@
       var btn = e.target.closest('[data-bulk-act]');
       if (!btn || !bulkCards.length) return;
       var act = btn.getAttribute('data-bulk-act');
-      if (act === 'color') {
+      if (act === BULK_ACT.COLOR) {
         openCardSubmenu(btn, function (sub) {
           sub.classList.add('card-sub--color');
           var src = document.getElementById('board-colors');
           if (!src) return;
           Array.prototype.forEach.call(src.querySelectorAll('span[data-id]'), function (s) {
-            var b = bulkSubmenuButton(s.dataset.label || s.dataset.value, 'color', { 'data-color-id': s.dataset.id });
+            var b = bulkSubmenuButton(s.dataset.label || s.dataset.value, BULK_SUB.COLOR, { 'data-color-id': s.dataset.id });
             b.style.backgroundColor = s.dataset.bg || '#fff';
             sub.appendChild(b);
           });
         });
-      } else if (act === 'members-menu') {
+      } else if (act === BULK_ACT.MEMBERS_MENU) {
         openCardSubmenu(btn, function (sub) {
-          sub.appendChild(bulkSubmenuButton('Assign members', 'members'));
-          sub.appendChild(bulkSubmenuButton('Unassign all members', 'unassign'));
+          sub.appendChild(bulkSubmenuButton('Assign members', BULK_SUB.MEMBERS));
+          sub.appendChild(bulkSubmenuButton('Unassign all members', BULK_SUB.UNASSIGN));
         });
       } else {
         var ids = bulkIds();
         var anchor = bulkCards[0];
         hideCardSubmenu();
         hideFloatingMenus();
-        if (act === 'move') openMoveDialog(null, anchor, ids);
-        else if (act === 'members') openBulkMembersDialog(ids);
-        else if (act === 'delete') deleteSelection();
+        if (act === BULK_ACT.MOVE) openMoveDialog(null, anchor, ids);
+        else if (act === BULK_ACT.MEMBERS) openBulkMembersDialog(ids);
+        else if (act === BULK_ACT.DELETE) deleteSelection();
       }
     });
 
@@ -1790,9 +1790,9 @@
       var colorId = btn.getAttribute('data-color-id');
       hideCardSubmenu();
       hideFloatingMenus();
-      if (kind === 'color') bulkColor(ids, colorId);
-      else if (kind === 'members') openBulkMembersDialog(ids);
-      else if (kind === 'unassign') bulkUnassign(ids);
+      if (kind === BULK_SUB.COLOR) bulkColor(ids, colorId);
+      else if (kind === BULK_SUB.MEMBERS) openBulkMembersDialog(ids);
+      else if (kind === BULK_SUB.UNASSIGN) bulkUnassign(ids);
     });
 
     function openGroupingDateDialog(card, point) {
