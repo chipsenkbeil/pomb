@@ -125,7 +125,7 @@ local function fixture()
     stub(dir, "ci", STUB_CI)
     stub(dir, "jj", STUB_JJ)
     stub(dir, "jj-git-guard", STUB_GUARD)
-    return { dir = dir, work = work, remote = dir .. "/remote.git" }
+    return { dir = dir, work = work, remote = dir .. "/remote.git", name = "origin" }
 end
 
 local function lines(fix, name)
@@ -146,7 +146,7 @@ local function mark(fix, name)
 end
 
 local function candidate(fix, files, message)
-    git(fix.work, "checkout", "-q", "-B", "card", "origin/main")
+    git(fix.work, "checkout", "-q", "-B", "card", fix.name .. "/main")
     for name, body in pairs(files) do
         assert(fs.mkdir(fs.dirname(fix.work .. "/" .. name), { parents = true }))
         assert(fs.write(fix.work .. "/" .. name, body))
@@ -227,6 +227,22 @@ end
 
 local function done(fix)
     fs.remove(fix.dir, { recursive = true })
+end
+
+local function gerrit_fixture()
+    local fix = fixture()
+    fix.name = "gerrit"
+    git(fix.work, "remote", "rename", "origin", fix.name)
+    return fix
+end
+
+local function change_ids(fix)
+    local body = git(fix.remote, "log", "-1", "--format=%B", "refs/heads/main")
+    local found = {}
+    for id in body:gmatch("Change%-Id: (I%x+)") do
+        found[#found + 1] = id
+    end
+    return found
 end
 
 local function eq_list(got, want)
@@ -633,5 +649,35 @@ git -C '@dir@/other' push -q origin HEAD:refs/heads/main
     t.eq(#lines(fix, "pushes"), 1)
     t.eq(show(fix, "refs/heads/main:released.txt"), "released")
     t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    done(fix)
+end)
+
+t.test("land should add a change id on gerrit", function()
+    local fix = gerrit_fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    local _, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.eq(#change_ids(fix), 1)
+    done(fix)
+end)
+
+t.test("land should keep an existing change id on gerrit", function()
+    local fix = gerrit_fixture()
+    local id = "I0123456789abcdef0123456789abcdef01234567"
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature\n\nChange-Id: " .. id)
+    local _, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    eq_list(change_ids(fix), { id })
+    done(fix)
+end)
+
+t.test("land should carry one change id after a moved main retry on gerrit", function()
+    local fix = gerrit_fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    refuse_pushes(fix, 1)
+    local _, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.eq(#lines(fix, "pushes"), 2)
+    t.eq(#change_ids(fix), 1)
     done(fix)
 end)
