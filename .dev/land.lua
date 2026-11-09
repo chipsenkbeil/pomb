@@ -5,12 +5,12 @@ Apply a verified commit onto the remote's main and push it once lint and test pa
 Usage: dev land <verified-commit> --card ID
 Steps, any failure aborts before the push:
 1. Fetch the remote of record. Refuse a commit that is not exactly one commit past its merge-base with <remote>/main, or that changes the package version in Cargo.toml or the pomb entry of Cargo.lock: only dev release bumps the version. Refuse a commit that adds a file under .dev/standalone unless the card has the standalone-ok label.
-2. Wait for the release lock .dev/release.lock to clear, up to POMB_LAND_WAIT_BOUND seconds (default 5400), polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) and saying who holds it. A lock whose pid is gone is removed. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>. On gerrit the commit gets a Change-Id trailer when it has none.
+2. Wait for the release lock .dev/release.lock to clear, up to POMB_LAND_WAIT_BOUND seconds (default 5400), polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) and saying who holds it. A lock whose pid is gone is removed. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>, first removing a clean land worktree left by an earlier attempt, and refusing when that worktree holds uncommitted changes. On gerrit the commit gets a Change-Id trailer when it has none.
 3. Refuse attribution trailers through __push_main --check, before any gate.
 4. Run dev lint --remote, then dev test --remote, through __gate, one at a time on ci, logging to a temp dir. The first failing gate aborts.
 5. Push to main through __push_main, remove the land worktree, print the landed sha, note it on the card with dev board note and move the card to Release with dev board move. Then remove the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch. In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the bookmark of the same name. A worktree with uncommitted changes is kept, and the verb says why.
 6. A push refused because main moved on (exit 3) removes the worktree, fetches, and repeats steps 2 to 5 on the new main, 3 attempts in all. It never forces the push.
-The remote of record is forge.remote, else gerrit when that remote exists, else origin. A failed land leaves its worktree behind; remove it before landing the card again. A push refused a third time exits 1 with the worktree left behind, and so does any other push failure, which is not retried.
+The remote of record is forge.remote, else gerrit when that remote exists, else origin. A failed land leaves its worktree behind; the next land removes it when it is clean, and a worktree with uncommitted changes is removed by hand. A push refused a third time exits 1 with the worktree left behind, and so does any other push failure, which is not retried.
 ]]
 local devos = require("dev.os")
 local fs = require("dev.fs")
@@ -390,7 +390,20 @@ end
 
 local wt = repo .. "/.dev/worktrees/land-" .. card
 if fs.exists(wt) then
-    verb.die(("Worktree .dev/worktrees/land-%s already exists, so remove it first."):format(card))
+    if read_git(wt, "status", "--porcelain") ~= "" then
+        verb.die(
+            ("Worktree .dev/worktrees/land-%s has uncommitted changes, so it is kept and nothing landed."):format(
+                card
+            )
+        )
+    end
+    if run_git(repo, "worktree", "remove", wt) ~= 0 then
+        verb.die(
+            ("Worktree .dev/worktrees/land-%s could not be removed, so remove it by hand and land the card again."):format(
+                card
+            )
+        )
+    end
 end
 local sha
 local attempt = 1
