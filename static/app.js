@@ -1641,7 +1641,7 @@
       BoardChrome.epicChoices(task.id).then(function (choices) {
         epicSubmenuLoading = false;
         if (cardMenuCard !== card || document.getElementById('card-ctx-menu').hidden) return;
-        if (hoveredAct !== null && hoveredAct !== 'add-to-epic') return;
+        if (hoveredAct !== null && hoveredAct !== CARD_ACT.ADD_TO_EPIC) return;
         if (!choices) { toast('Could not load epics.'); return; }
         openCardSubmenu(btn, function (sub) {
           sub.dataset.for = CARD_SUBMENU.EPIC;
@@ -1657,9 +1657,9 @@
       var sub = document.getElementById('card-ctx-submenu');
       var act = item.getAttribute('data-card-act');
       hoveredAct = act;
-      if (act === CARD_SUBMENU.MOVE) {
+      if (act === CARD_ACT.MOVE) {
         if (sub.hidden || sub.dataset.for !== CARD_SUBMENU.MOVE) item.click();
-      } else if (act === 'add-to-epic') {
+      } else if (act === CARD_ACT.ADD_TO_EPIC) {
         if (epicSubmenuLoading || (!sub.hidden && sub.dataset.for === CARD_SUBMENU.EPIC)) return;
         if (BoardChrome.epicsLoaded || !epicHoverTried) {
           epicHoverTried = true;
@@ -1680,7 +1680,7 @@
       if (!btn || !cardMenuCard) return;
       var act = btn.getAttribute('data-card-act');
       var task = cardMenuTask();
-      if (act === 'timer') {
+      if (act === CARD_ACT.TIMER) {
         // KF-329: KanbanFlow's "Start timer" is a direct action — no submenu,
         // no "Select in timer" entry.
         hideCardSubmenu();
@@ -1690,7 +1690,7 @@
         } else {
           toast('Timer is not available on this page.');
         }
-      } else if (act === CARD_SUBMENU.MOVE) {
+      } else if (act === CARD_ACT.MOVE) {
         openCardSubmenu(btn, function (sub) {
           // KF-334: KanbanFlow-style relative-move submenu.
           var card = cardMenuCard;
@@ -1711,9 +1711,9 @@
           // "Move advanced" (always available).
           sub.appendChild(cardSubmenuButton('Move advanced', 'move-advanced'));
         });
-      } else if (act === 'add-to-epic') {
+      } else if (act === CARD_ACT.ADD_TO_EPIC) {
         openEpicSubmenu(btn, task);
-      } else if (act === CARD_SUBMENU.COLOR) {
+      } else if (act === CARD_ACT.COLOR) {
         openCardSubmenu(btn, function (sub) {
           // KF-333: each row is tinted with its colour; the card's own colour
           // is bold.
@@ -1735,13 +1735,13 @@
       } else {
         hideCardSubmenu();
         hideFloatingMenus();
-        if (act === 'assign-members') openMembersDialog(task ? task.id : null);
-        else if (act === 'grouping-date') openGroupingDateDialog(cardMenuCard, cardMenuPoint);
-        else if (act === 'copy-here') copyCardHere(task);
-        else if (act === 'copy') openCopyDialog(task ? task.id : null);
-        else if (act === 'task-url') copyTaskUrl(task ? task.id : null);
-        else if (act === 'delete') deleteCardTask(task);
-        else if (act === 'make-epic') makeCardEpic(task);
+        if (act === CARD_ACT.ASSIGN_MEMBERS) openMembersDialog(task ? task.id : null);
+        else if (act === CARD_ACT.GROUPING_DATE) openGroupingDateDialog(cardMenuCard, cardMenuPoint);
+        else if (act === CARD_ACT.COPY_HERE) copyCardHere(task);
+        else if (act === CARD_ACT.COPY) openCopyDialog(task ? task.id : null);
+        else if (act === CARD_ACT.TASK_URL) copyTaskUrl(task ? task.id : null);
+        else if (act === CARD_ACT.DELETE) deleteCardTask(task);
+        else if (act === CARD_ACT.MAKE_EPIC) makeCardEpic(task);
       }
     });
 
