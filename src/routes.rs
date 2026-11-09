@@ -10867,8 +10867,10 @@ async fn bulk_tasks(
                     ensure_unlocked(db, &user, target.board_id(), target.row())?;
                 }
             }
-            for (_, target_id) in &remove {
-                ensure_task_id_unlocked(db, &user, target_id)?;
+            for (kind, target_id) in &remove {
+                if !matches!(kind, LinkKind::BlockedBy | LinkKind::Related) {
+                    ensure_task_id_unlocked(db, &user, target_id)?;
+                }
             }
             let edit = LinkEdit {
                 remove: &remove,
@@ -12138,7 +12140,7 @@ async fn list_task_links(
     ),
     responses(
         (status = 200, description = "Link deleted"),
-        (status = 403, description = "`permission_denied`: the token lacks `links.write`, or lacks `links.delete` and did not create the link"),
+        (status = 403, description = "`permission_denied`: the token lacks `links.write`, or lacks `links.delete` and did not create the link. `card_locked`: the task carries a locking label, or the link is not `blocked_by` or `related` and the other task carries one"),
         (status = 404, description = "Task or link not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -12150,15 +12152,16 @@ async fn delete_task_link(
 ) -> Result<StatusCode, AppError> {
     let task = found(account.task(&id), "link not found")?;
     ensure_unlocked(&account, &user, task.board_id(), task.row())?;
-    let other_end = account
+    let link = account
         .list_task_links(&id)
         .map_err(AppError::from)?
         .unwrap_or_default()
         .into_iter()
-        .find(|link| link.id == link_id)
-        .map(|link| link.target_id);
-    if let Some(other_end) = other_end {
-        ensure_task_id_unlocked(&account, &user, &other_end)?;
+        .find(|link| link.id == link_id);
+    if let Some(link) = link
+        && !matches!(link.kind, LinkKind::BlockedBy | LinkKind::Related)
+    {
+        ensure_task_id_unlocked(&account, &user, &link.target_id)?;
     }
     match account
         .delete_task_link(
