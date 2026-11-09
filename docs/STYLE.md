@@ -1833,18 +1833,19 @@ pub(crate) fn format_local(at: Timestamp) -> String {
 pub(super) fn format_local(at: Timestamp) -> String {
 ```
 
-### P12. Write a person-facing shell message as one sentence
+### P12. Write a person-facing shell message as full sentences
 
-A message a person reads from a `.dev` script is a full sentence, capitalized,
-ending in a period, with no semicolon and no program prefix: the person ran the
-verb and knows which script speaks. Output another script or a card note parses
-is exempt.
+A message a person reads from a `.dev` script is one or more short sentences,
+each capitalized and ending in a period, with no semicolon and no program
+prefix: the person ran the verb and knows which script speaks. Output another
+script or a card note parses is exempt.
 
 Review
 
 ```bash
 # Good
 printf 'Landed %s.\n' "$sha"
+printf 'No commit since batch-%s. Nothing to release.\n' "$batch"
 
 # Bad
 printf 'land: landed %s\n' "$sha"
