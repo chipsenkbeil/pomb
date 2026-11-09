@@ -220,6 +220,17 @@
   --hover-faint: #f3f3f3;
   --kf-primary-hover: #1b74b8;
   --danger-border-soft: #fecaca;
+  --kf-orange: #f5a033;
+  --kf-orange-soft: #f9c243;
+  --panel-surface: #f7f7f7;
+  --panel-head-bg: #ecebeb;
+  --switch-track: #9e9e9e;
+  --ink-hint-90: rgba(66, 66, 66, 0.9);
+  --black-05: rgba(0, 0, 0, 0.05);
+  --black-03: rgba(0, 0, 0, 0.03);
+  --ok-bg: #ecfdf5;
+  --ok-border: #a7f3d0;
+  --ok-ink: #065f46;
 }
 
 * { box-sizing: border-box; }
@@ -4779,16 +4790,16 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 }
 
 .settings-saved {
-  background: #ecfdf5;
-  border: 1px solid #a7f3d0;
-  color: #065f46;
+  background: var(--ok-bg);
+  border: 1px solid var(--ok-border);
+  color: var(--ok-ink);
   border-radius: 8px;
   padding: 0.7rem 1rem;
 }
 
 .settings-section {
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-white);
+  border: 1px solid var(--divider);
   border-radius: var(--radius);
   padding: 1rem 1.2rem;
   margin-bottom: 1rem;
@@ -4810,7 +4821,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   width: 100%;
   margin-top: 0.3rem;
   padding: 0.5rem 0.6rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--field-border);
   border-radius: 6px;
   font-size: 0.95rem;
   font-weight: 400;
@@ -4856,7 +4867,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 .boardbar-sep {
   width: 1px;
   height: 1.6rem;
-  background: #d1d5db;
+  background: var(--field-border);
   margin: 0 0.3rem;
   flex: none;
 }
@@ -4865,8 +4876,8 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   width: 1.9rem;
   height: 1.9rem;
   border-radius: 50%;
-  background: #4b5563;
-  color: #fff;
+  background: var(--text-gray);
+  color: var(--surface-white);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4876,8 +4887,8 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 }
 
 .toolbar-icon-btn {
-  border: 1px solid #d1d5db;
-  background: #fff;
+  border: 1px solid var(--field-border);
+  background: var(--surface-white);
   border-radius: 8px;
   padding: 0.4rem 0.55rem;
   cursor: pointer;
@@ -4888,28 +4899,28 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   align-items: center;
 }
 
-.toolbar-icon-btn:hover { background: #f9fafb; border-color: #9ca3af; }
+.toolbar-icon-btn:hover { background: var(--surface-faint); border-color: var(--ink-faint); }
 
 .toolbar-icon-btn.active {
-  background: #dbeafe;
-  border-color: #2563eb;
-  color: #1d4ed8;
+  background: var(--chip-blue-bg);
+  border-color: var(--link-ink);
+  color: var(--status-upcoming);
 }
 
 /* ---------- help dialog (KF-379, account/09 golden) ---------- */
 /* Centred by the flex overlay, like KanbanFlow's (y=61 at 1440x612), over
    a light 0.2 backdrop. */
-#help-dialog { background: rgba(0, 0, 0, 0.2); }
+#help-dialog { background: var(--badge-shadow-color); }
 .help-dlg {
   width: min(700px, 94vw);
   max-height: 80vh;
   margin: 0;
   display: flex;
   flex-direction: column;
-  background: #ffffff;
-  color: #222222;
+  background: var(--surface-white);
+  color: var(--kf-ink-strong);
   border-radius: 2px;
-  box-shadow: 0 2px 9px 6px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 2px 9px 6px var(--btn-shadow-color);
 }
 .help-tabs {
   position: relative;
@@ -4920,21 +4931,21 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   /* KF-555: puts the first two tabs at x 486 and 639 at 1440 px (golden account/09). */
   padding-left: 2.6px;
 
-  background: rgba(0, 0, 0, 0.024);
-  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.25);
+  background: var(--black-02);
+  box-shadow: 0 1px 2px 0 var(--btn-shadow-color);
 }
 .help-tab {
   margin: 0 29.25px;
   padding: 0;
   background: none;
   border: none;
-  border-bottom: 2px solid transparent;
+  border-bottom: 2px solid var(--clear);
   font-size: 20px;
   line-height: 30px;
-  color: #555555;
+  color: var(--kf-ink-muted);
   cursor: pointer;
 }
-.help-tab--active { color: #333333; border-bottom-color: #f5a033; }
+.help-tab--active { color: var(--text-charcoal); border-bottom-color: var(--kf-orange); }
 /* KF-475: an 18px × at x 1038-1055, y 79-94 of the golden. */
 .help-close {
   position: absolute;
@@ -4944,22 +4955,22 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   padding: 3px;
   background: none;
   border: none;
-  color: #555555;
+  color: var(--kf-ink-muted);
   cursor: pointer;
 }
 /* KF-475: KanbanFlow's 10px square scrollbar (#999999 on #dddddd) leaves
    the search 590px wide at 1440x612. */
 .help-body { overflow-y: auto; padding: 30px 50px; font-size: 15px; }
 .help-body::-webkit-scrollbar { width: 10px; }
-.help-body::-webkit-scrollbar-track { background: #dddddd; }
-.help-body::-webkit-scrollbar-thumb { background: #999999; }
+.help-body::-webkit-scrollbar-track { background: var(--kf-rule-soft); }
+.help-body::-webkit-scrollbar-thumb { background: var(--kf-ink-dimmer); }
 .help-search {
   width: 100%;
   height: 38px;
   box-sizing: border-box;
   margin: 0 0 15px;
   padding: 8px 10px;
-  border: 1px solid #bbbbbb;
+  border: 1px solid var(--kf-input-border);
   border-radius: 2px;
   font-size: 16px;
 }
@@ -4968,14 +4979,14 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 .help-group {
   margin: 0 0 3px;
   padding: 3px 10px;
-  background: rgba(0, 0, 0, 0.05);
-  color: #333333;
+  background: var(--black-05);
+  color: var(--text-charcoal);
   font-size: 22px;
   font-weight: 700;
   line-height: 33px;
 }
 /* KF-555: a 27 px summary inside a 5 px padded, 38 px row (golden account/09). */
-.help-subject { margin: 0 10px; padding: 5px 0; border-bottom: 1px solid #e6e6e6; }
+.help-subject { margin: 0 10px; padding: 5px 0; border-bottom: 1px solid var(--kf-divider); }
 /* Chevron on the right, pointing down, up when open (account/09). */
 .help-subject summary {
   display: flex;
@@ -4983,7 +4994,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   justify-content: space-between;
   font-size: 18px;
   line-height: 27px;
-  color: #555555;
+  color: var(--kf-ink-muted);
   cursor: pointer;
   list-style: none;
 }
@@ -4996,12 +5007,12 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   width: 13px;
   height: 13px;
   margin-right: 3px;
-  border-right: 2px solid #555555;
-  border-bottom: 2px solid #555555;
+  border-right: 2px solid var(--kf-ink-muted);
+  border-bottom: 2px solid var(--kf-ink-muted);
   transform: translateY(-2.5px) rotate(45deg);
 }
 .help-subject[open] summary::after { transform: translateY(6.5px) rotate(225deg); }
-.help-subject p { margin: 0 0 10px; color: #444444; }
+.help-subject p { margin: 0 0 10px; color: var(--text-strong); }
 
 /* ---------- board filter panel (KF-134, KF-096) ---------- */
 /* KF-215: right-docked sidebar (KanbanFlow parity) — ~245px wide, full
@@ -5022,9 +5033,9 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   width: 250px;
   max-width: 88vw;
   height: 100vh;
-  background: #f7f7f7;
-  color: rgba(66, 66, 66, 0.9);
-  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
+  background: var(--panel-surface);
+  color: var(--ink-hint-90);
+  box-shadow: 0 2px 9px 4px var(--popover-shadow-color);
   z-index: 46;
   display: flex;
   flex-direction: column;
@@ -5033,12 +5044,12 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 .filter-panel-head {
   position: relative;
   height: 35px;
-  background: #ecebeb;
+  background: var(--panel-head-bg);
   text-align: center;
   flex: 0 0 auto;
 }
 
-.filter-panel-title { font-weight: 700; font-size: 15px; line-height: 35px; color: #333333; }
+.filter-panel-title { font-weight: 700; font-size: 15px; line-height: 35px; color: var(--text-charcoal); }
 
 .filter-panel-back,
 .filter-panel-close {
@@ -5052,7 +5063,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   font-size: 1.15rem;
   line-height: 1;
   cursor: pointer;
-  color: #000;
+  color: var(--kf-black);
   opacity: 0.5;
   padding: 0;
 }
@@ -5070,7 +5081,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   font-size: 13px;
   font-weight: 700;
   line-height: 19.5px;
-  color: rgba(66, 66, 66, 0.8);
+  color: var(--ink-hint);
 }
 
 .filter-opt {
@@ -5091,10 +5102,10 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   height: 30px;
   padding: 3px;
   font-size: 13px;
-  border: 1px solid #666666;
+  border: 1px solid var(--kf-ink-dim);
   border-radius: 0;
-  background: #fff;
-  color: #000;
+  background: var(--surface-white);
+  color: var(--kf-black);
   cursor: pointer;
 }
 .filter-select:focus {
@@ -5106,10 +5117,10 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 .filter-labels {
   width: 100%;
   padding: 0.45rem 0.6rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--field-border);
   border-radius: 6px;
   font-size: 0.9rem;
-  background: #f9fafb;
+  background: var(--surface-faint);
   color: var(--muted);
 }
 
@@ -5118,25 +5129,25 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 #filter-labels-input {
   flex: 1 1 auto;
   min-width: 0;
-  border: 1px solid #bbbbbb;
+  border: 1px solid var(--kf-input-border);
   border-right: none;
-  background: #fff;
+  background: var(--surface-white);
   font-size: 12px;
   padding: 0 4px;
-  color: rgba(66, 66, 66, 0.9);
+  color: var(--ink-hint-90);
 }
 #filter-labels-toggle {
   flex: 0 0 23px;
-  border: 1px solid #bbbbbb;
-  background: #f5f5f5;
+  border: 1px solid var(--kf-input-border);
+  background: var(--kf-day-bg);
   cursor: pointer;
   font-size: 12px;
   padding: 0;
 }
 #filter-labels-list {
   margin-top: 4px;
-  background: #fff;
-  border: 1px solid #bbbbbb;
+  background: var(--surface-white);
+  border: 1px solid var(--kf-input-border);
   padding: 4px 8px;
   max-height: 12rem;
   overflow-y: auto;
@@ -5146,7 +5157,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
    styles: 38x15 #9e9e9e track, 19.5px #fafafa knob; on: #f9c243 track,
    #f5a033 knob). */
 /* KF-215: board/03's separator (1px #e6e6e6, 7px margins) and a 34px row. */
-.filter-separator { height: 1px; margin: 7px 0; background: #e6e6e6; }
+.filter-separator { height: 1px; margin: 7px 0; background: var(--kf-divider); }
 .filter-remember {
   display: flex;
   align-items: center;
@@ -5174,7 +5185,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   width: 38px;
   height: 15px;
   border-radius: 8px;
-  background: #9e9e9e;
+  background: var(--switch-track);
 }
 .filter-switch::after {
   content: '';
@@ -5184,17 +5195,17 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   width: 19.5px;
   height: 19.5px;
   border-radius: 50%;
-  background: #fafafa;
-  box-shadow: 0 3px 1px -2px rgba(0, 0, 0, 0.14), 0 2px 2px 0 rgba(0, 0, 0, 0.098), 0 0 5px 0 rgba(0, 0, 0, 0.082);
+  background: var(--panel-bg);
+  box-shadow: 0 3px 1px -2px var(--black-14), 0 2px 2px 0 var(--black-098), 0 0 5px 0 var(--black-082);
   transition: left 0.15s;
 }
-.filter-switch:checked::before { background: #f9c243; }
-.filter-switch:checked::after { left: 20.5px; background: #f5a033; }
+.filter-switch:checked::before { background: var(--kf-orange-soft); }
+.filter-switch:checked::after { left: 20.5px; background: var(--kf-orange); }
 
 .filter-bookmarks {
   flex: 0 0 auto;
-  background: rgba(0, 0, 0, 0.03);
-  color: #444444;
+  background: var(--black-03);
+  color: var(--text-strong);
 }
 .filter-bookmarks-head {
   display: flex;
@@ -5205,7 +5216,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   padding: 10px;
   background: none;
   border: none;
-  color: #444444;
+  color: var(--text-strong);
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
@@ -5216,19 +5227,19 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   width: 9px;
   height: 9px;
   margin-right: 6px;
-  border-left: 2px solid #666666;
-  border-top: 2px solid #666666;
+  border-left: 2px solid var(--kf-ink-dim);
+  border-top: 2px solid var(--kf-ink-dim);
   transform: translateY(2px) rotate(45deg);
 }
 .filter-bookmarks-head[aria-expanded="true"] .filter-bookmarks-chevron { transform: translateY(-3px) rotate(225deg); }
 .filter-bookmarks-body { padding: 8px 10px 0; font-size: 13px; }
 .filter-bookmarks-list { list-style: none; margin: 0 0 6px; padding: 0; }
 .filter-bookmarks-list li { display: flex; align-items: center; justify-content: space-between; }
-.filter-bookmark-apply { background: none; border: none; padding: 2px 0; color: #2185d0; cursor: pointer; text-align: left; }
-.filter-bookmark-delete { background: none; border: none; color: #666666; cursor: pointer; font-size: 15px; }
+.filter-bookmark-apply { background: none; border: none; padding: 2px 0; color: var(--kf-primary); cursor: pointer; text-align: left; }
+.filter-bookmark-delete { background: none; border: none; color: var(--kf-ink-dim); cursor: pointer; font-size: 15px; }
 .filter-bookmarks-add { display: flex; gap: 4px; }
 .filter-bookmarks-add button { flex: none; white-space: nowrap; }
-.filter-bookmarks-add input { flex: 1 1 auto; min-width: 0; border: 1px solid #bbbbbb; padding: 3px 4px; font-size: 12px; }
+.filter-bookmarks-add input { flex: 1 1 auto; min-width: 0; border: 1px solid var(--kf-input-border); padding: 3px 4px; font-size: 12px; }
 
 /* ---------- board menu + reports submenu (KF-135, KF-136, KF-099) ---------- */
 
