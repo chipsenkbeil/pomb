@@ -1959,7 +1959,7 @@ impl From<Refusal> for AppError {
     fn from(refusal: Refusal) -> Self {
         Self {
             rate_limit: Some(refusal),
-            ..Self::with_status(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded")
+            ..Self::with_status(StatusCode::TOO_MANY_REQUESTS, "")
         }
     }
 }
@@ -26457,23 +26457,39 @@ struct CreateChildTokenInput {
     child_lifetime_hours: Option<i64>,
 }
 
-/// Creates a child token that holds no more than the calling token. The caller needs
-/// `tokens.issue`, and the child gets only permissions and boards the caller holds. A token
-/// made in the browser or by device approval may give its child `tokens.issue`, so a lead can
-/// issue. A token that was itself issued may not, so the tree stops at two levels. The child
-/// expires in 1 hour by default, in at most the hours the owner set for the caller's children,
-/// which are 1 by default and 8 at most, and never after the caller. A child's name must differ
-/// from every other token's name on the account, whatever the letter case. Revoking a token
-/// revokes every token it issued, at any depth. Tokens issued by a token do not count toward the
-/// account's 50 tokens, and no limit holds how many live ones a token has, but a token that mints
-/// faster than 20 at once and then one every 2 seconds gets 429 `rate_limited` with `Retry-After`.
-/// Send one of `preset` and `permissions`, plus `boards`, which defaults to `all`. Or send
-/// `role_id` to issue the child as an agent role: it then holds the role's template and the
-/// required permissions cut to what the caller holds, without `tokens.issue`, on the caller's
-/// boards the role is granted on, and it gets the role's name and the next `agent-N` label. With a role, `preset`, `permissions` and
-/// `boards` are optional and may only narrow that grant, and a permission or board outside it is
-/// 403 `exceeds_grant` with no child made. A role child always expires, as above. The child's
-/// history entries and comments name the caller beside the child.
+/// Creates a child token that holds no more than the calling token.
+///
+/// The caller needs `tokens.issue`. A token made in the browser or by device approval may give its
+/// child `tokens.issue`, so a lead can issue. A token that was itself issued may not, so the tree
+/// stops at two levels.
+///
+/// The child gets only permissions and boards the caller holds. Send one of `preset` and
+/// `permissions`, plus `boards`, which defaults to `all`.
+///
+/// Or send `role_id` to issue the child as an agent role. The child holds the role's template and
+/// the required permissions. They are cut to what the caller holds. They never include
+/// `tokens.issue`.
+///
+/// The child reaches the caller's boards the role is granted on. It gets the role's name and the
+/// next `agent-N` label.
+///
+/// With a role, `preset`, `permissions` and `boards` are optional and may only narrow that grant.
+/// A permission or board outside it is 403 `exceeds_grant` with no child made.
+///
+/// The child expires in 1 hour by default. It may live up to the hours the owner set for the
+/// caller's children. Those hours are 1 by default. They are 8 at most.
+///
+/// It never outlives the caller. A role child always expires, as above.
+///
+/// A child's name must differ from every other token's name on the account, whatever the letter
+/// case.
+///
+/// Revoking a token revokes every token it issued, at any depth.
+///
+/// Tokens issued by a token do not count toward the account's 50 tokens. No limit holds how many
+/// live ones a token has.
+///
+/// The child's history entries and comments name the caller beside the child.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/tokens/children",
@@ -29188,27 +29204,45 @@ built-in templates, as a saved one can hold any board's structure.
 
 A scope list sent to create a token or start a device request keeps only its highest entry. An
 unknown or revoked token gets 401 `token_invalid`, and a token past its expiry 401
-`token_expired`. Creating, listing, inspecting, editing and revoking tokens needs the browser
-session (403 `session_required` for a Bearer token), so a token never mints tokens except one
-narrower child: a token with `tokens.issue`, which the `lead` and `admin` presets hold, calls
-`POST /api/v1/auth/tokens/children` for a child that holds a subset of the caller's permissions and
-boards, and expires in 1 hour unless asked for up to the hours the owner allows the caller's
-children, 8 at most, and no later than the caller. A token that was not itself issued may give its child
-`tokens.issue`, so a lead issues subagents, but an issued token never issues a token that issues:
-the tree stops at two levels. The hours are 1 by default, and a token edit cannot change them. A
-child cannot create tokens or add passkeys, and revoking a token revokes everything below
-it. Issued tokens at either level do not count toward the 50 tokens of an account and have no
-count limit, but a token that mints more than 20 children at once, then one every 2 seconds,
-gets 429 `rate_limited` with `Retry-After`. An expired issued token is deleted. A child's
-name must differ from every other token's name on the account, whatever the letter case (409). A child's `parent_id` names the token that issued it, and its
-history entries and comments carry a `parent_token` with the caller's `id` and `name`. A token issued
-as a role stamps the role's `role_id`, `role_name` and its `label` on every history entry, comment,
-attachment and time entry it makes, and a claim or time entry by it takes the role name as its
-`role` whatever the request says. The same
-caller lists its children with
-`GET /api/v1/auth/tokens/children` and revokes one or all of them with
-`DELETE /api/v1/auth/tokens/children/{id}` and `DELETE /api/v1/auth/tokens/children`, and no other
-token.
+`token_expired`.
+
+Creating, listing, inspecting, editing and revoking tokens needs the browser session (403
+`session_required` for a Bearer token). A token never mints tokens except one narrower child.
+
+A token with `tokens.issue`, which the `lead` and `admin` presets hold, calls
+`POST /api/v1/auth/tokens/children` for a child. The child holds a subset of the caller's
+permissions and boards.
+
+A token that was not itself issued may give its child `tokens.issue`, so a lead issues
+subagents. An issued token never issues a token that issues, so the tree stops at two levels.
+
+A child cannot create tokens or add passkeys.
+
+A child expires in 1 hour unless asked for more. It may live up to the hours the owner allows the
+caller's children, 8 at most. The hours are 1 by default. A token edit cannot change them.
+
+A child never lives past the caller.
+
+An expired issued token is deleted.
+
+A child's name must differ from every other token's name on the account, whatever the letter case
+(409).
+
+A child's `parent_id` names the token that issued it. Its history entries and comments carry a
+`parent_token` with the caller's `id` and `name`.
+
+A token issued as a role stamps the role's `role_id`, `role_name` and its `label` on every history
+entry, comment, attachment and time entry it makes. A claim or time entry by it takes the role name
+as its `role` whatever the request says.
+
+The same caller lists its children with `GET /api/v1/auth/tokens/children`. It revokes one
+child with `DELETE /api/v1/auth/tokens/children/{id}`. It revokes all of them with
+`DELETE /api/v1/auth/tokens/children`. No other token reaches them.
+
+Revoking a token revokes everything below it.
+
+Issued tokens at either level do not count toward the 50 tokens of an account. They have no
+count limit.
 
 Device pairing (RFC 8628) gives a client its own token without pasting one:
 

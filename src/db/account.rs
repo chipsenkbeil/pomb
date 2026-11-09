@@ -2814,7 +2814,19 @@ impl AccountDb {
     }
 
     /// Mints and stores a child API token issued by token `parent` that lives `hours`, returning
-    /// its record and the raw token, or the refusal the database gives.
+    /// its record and the raw token.
+    ///
+    /// # Errors
+    ///
+    /// The inner result holds a [`ChildTokenRefusal`] when the database refuses the child:
+    /// - [`ChildTokenRefusal::ParentGone`]: the issuing token was revoked or never existed on the
+    ///   account.
+    /// - [`ChildTokenRefusal::NameTaken`]: another token of the account has the name, whatever its
+    ///   letter case.
+    /// - [`ChildTokenRefusal::IssuerIsIssued`]: the issuing token was itself issued, so its child
+    ///   may not hold `tokens.issue`.
+    /// - [`ChildTokenRefusal::LifetimeTooLong`]: `hours` is more than the issuing token allows its
+    ///   children.
     pub fn create_child_api_token(
         &self,
         parent: &ParentToken,
@@ -2834,7 +2846,21 @@ impl AccountDb {
     }
 
     /// Mints and stores a child API token issued by token `parent` as agent role `role_id` that
-    /// lives `hours`, returning its record and the raw token, or the refusal the database gives.
+    /// lives `hours`, returning its record and the raw token.
+    ///
+    /// # Errors
+    ///
+    /// The inner result holds a [`RoleTokenRefusal`].
+    /// [`RoleTokenRefusal::UnknownRole`] means the account holds no such role.
+    /// [`RoleTokenRefusal::Child`] wraps a [`ChildTokenRefusal`]:
+    /// - [`ChildTokenRefusal::ParentGone`]: the issuing token was revoked or never existed on the
+    ///   account.
+    /// - [`ChildTokenRefusal::NameTaken`]: another token of the account has the name, whatever its
+    ///   letter case.
+    /// - [`ChildTokenRefusal::IssuerIsIssued`]: the issuing token was itself issued, so its child
+    ///   may not hold `tokens.issue`.
+    /// - [`ChildTokenRefusal::LifetimeTooLong`]: `hours` is more than the issuing token allows its
+    ///   children.
     pub fn create_child_api_token_as_role(
         &self,
         role_id: &str,
