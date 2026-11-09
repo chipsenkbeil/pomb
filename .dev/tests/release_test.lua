@@ -32,6 +32,7 @@ case "$1" in __*) exec luajit '@main@' "$@";; esac
 echo "$1" >>'@dir@/gates.log'
 [ -z "$MOVE_MAIN" ] || git -C "$MOVE_MAIN" push -q origin HEAD:main
 [ "$1" != "$FAIL_GATE" ] || exit 1
+[ "$1" != "$DRAIN_GATE" ] || [ "$(grep -c "^$1\$" '@dir@/gates.log')" -gt "${DRAIN_TIMES:-1}" ] || { echo 'dev: the hub is draining and takes no new work'; exit 1; }
 touch '@dir@/runs.jsonl'
 printf '{"run":"run%s","repo":"%s-0123","source":"local","kind":"run","status":"passed"}\n' "$(wc -l <'@dir@/runs.jsonl' | tr -d ' ')" "$(basename "$PWD")" >>'@dir@/runs.jsonl'
 echo 'Summary [1s] 1 tests run: 1 passed'
@@ -213,6 +214,52 @@ t.test("release should stop before the push when a gate fails", function()
     t.ok(code ~= 0)
     t.ok(err:find("dev test --remote", 1, true), err)
     t.eq(gates(fix), "lint,test")
+    t.eq(remote_ref(fix, "main"), before)
+    done(fix)
+end)
+
+t.test("release should retry a gate refused by a drain", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local out, code, err = release(
+        fix,
+        RELEASE,
+        { DRAIN_GATE = "test", POMB_DRAIN_INTERVAL = "1", POMB_DRAIN_BOUND = "5" }
+    )
+    t.eq(code, 0, err)
+    t.eq(gates(fix), "lint,test,test,nixcheck,build")
+    t.ok(out:find("dev test --remote waits 1 seconds because the ci hub is draining.", 1, true), out)
+    done(fix)
+end)
+
+t.test("release should abort on a plain gate failure without retry", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local _, code, err = release(
+        fix,
+        RELEASE,
+        { FAIL_GATE = "test", POMB_DRAIN_INTERVAL = "1", POMB_DRAIN_BOUND = "5" }
+    )
+    t.ok(code ~= 0)
+    t.ok(err:find("dev test --remote did not pass", 1, true), err)
+    t.eq(gates(fix), "lint,test")
+    done(fix)
+end)
+
+t.test("release should abort naming the drain when it outlasts the wait bound", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local before = remote_ref(fix, "main")
+    local _, code, err = release(
+        fix,
+        RELEASE,
+        {
+            DRAIN_GATE = "test",
+            DRAIN_TIMES = "99",
+            POMB_DRAIN_INTERVAL = "1",
+            POMB_DRAIN_BOUND = "2",
+        }
+    )
+    t.ok(code ~= 0)
+    t.ok(err:find("still draining after 2 seconds", 1, true), err)
+    t.eq(gates(fix), "lint,test,test,test")
     t.eq(remote_ref(fix, "main"), before)
     done(fix)
 end)

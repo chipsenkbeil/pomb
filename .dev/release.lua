@@ -7,7 +7,7 @@ Usage: dev release --batch N --summary "<text>" [--env KEY=VALUE]... [--dry-run]
 Each card lands on main through dev land after its own verification, so a release adds only the version bump. Steps, any failure aborts before the push:
 1. Refuse unless <remote>/main has a commit since its last v* tag.
 2. Bump the version with dev __bump_version in .dev/worktrees/release-<N> on <remote>/main and commit "Release batch-<N>: <summary>" with only Cargo.toml and Cargo.lock. Then refuse unless the new version differs from the last v* tag's and Cargo.lock's pomb entry matches it, and refuse when batch-<N> or v<version> already exists locally or on the remote.
-3. Run dev lint --remote, dev test --remote, dev nixcheck --remote and dev build --remote through __gate, one at a time on ci, logging to a temp dir. A failing gate aborts before the push, and so does a gate whose ci run is not a new passed run of the release worktree with source local.
+3. Run dev lint --remote, dev test --remote, dev nixcheck --remote and dev build --remote through __gate, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts before the push, and so does a gate whose ci run is not a new passed run of the release worktree with source local.
 4. Refuse attribution trailers in the new commit and refuse when <remote>/main moved since step 1, then push to main on the remote of record.
 5. Tag batch-<N> and v<version> at the pushed commit with __push_tag, then compute the nix hash of the commit's tree and print the request block. A failed tag prints the __push_tag command to rerun for it.
 The remote of record is forge.remote, else gerrit when that remote exists, else origin. On gerrit the release commit carries a Change-Id trailer.
@@ -249,14 +249,58 @@ end
 
 local logs = assert(fs.mktemp({ prefix = "release-" .. opts.batch, dir = true }))
 say(("release: logs in %s\n"):format(logs))
-for _, gate in ipairs({ "lint", "test", "nixcheck", "build" }) do
-    say(("release: dev %s --remote ...\n"):format(gate))
-    local ran
-    ran, code = devos.capture({ "dev", "__gate", wt, gate, logs .. "/" .. gate .. ".log" }, {
+local DRAIN = "the hub is draining"
+local DRAIN_INTERVAL_SECS = 60
+local DRAIN_BOUND_SECS = 3600
+
+local function positive_env(name, default)
+    local value = tonumber(os.getenv(name))
+    if value and value > 0 then
+        return value
+    end
+    return default
+end
+
+local drain_interval = positive_env("POMB_DRAIN_INTERVAL", DRAIN_INTERVAL_SECS)
+local drain_bound = positive_env("POMB_DRAIN_BOUND", DRAIN_BOUND_SECS)
+
+local function run_gate(gate)
+    return devos.capture({ "dev", "__gate", wt, gate, logs .. "/" .. gate .. ".log" }, {
         cwd = wt,
         env = { DEV_AGENT = "pomb/release/" .. opts.batch, CARGO_TARGET_DIR = wt .. "/target" },
         stderr = logs .. "/" .. gate .. ".err",
     })
+end
+
+local function drained(gate)
+    return (fs.read(logs .. "/" .. gate .. ".log") or ""):find(DRAIN, 1, true) ~= nil
+end
+
+for _, gate in ipairs({ "lint", "test", "nixcheck", "build" }) do
+    say(("release: dev %s --remote ...\n"):format(gate))
+    local ran
+    ran, code = run_gate(gate)
+    local waited = 0
+    while code ~= 0 and drained(gate) do
+        if waited >= drain_bound then
+            die(("The ci hub was still draining after %s seconds, so dev %s --remote did not run. See %s/%s.log. The worktree is left at %s."):format(
+                drain_bound,
+                gate,
+                logs,
+                gate,
+                wt
+            ))
+        end
+        say(
+            ("release: dev %s --remote waits %s seconds because the ci hub is draining.\n"):format(
+                gate,
+                drain_interval
+            )
+        )
+        devos.run({ "sleep", tostring(drain_interval) })
+        waited = waited + drain_interval
+        ran, code = run_gate(gate)
+    end
     if code ~= 0 then
         local err = trim(fs.read(logs .. "/" .. gate .. ".err") or "")
         die(("The command dev %s --remote did not pass on this worktree: %s. See %s/%s.log. The worktree is left at %s."):format(
