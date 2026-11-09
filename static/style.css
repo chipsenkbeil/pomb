@@ -179,6 +179,26 @@
   --pulse-yellow-0: rgba(255, 216, 77, 0);
   --shadow-heavy: rgba(0, 0, 0, 0.3);
   --scrim-light: rgba(17, 24, 39, 0.45);
+  --timer-red: #e8453c;
+  --label-chip-bg: #fff5e1;
+  --label-chip-border: #bfb7a8;
+  --label-chip-ink: #3d3d3c;
+  --chip-blue-ink: #1e40af;
+  --agent-avatar-bg: #f3f0e8;
+  --placeholder-ink: #686868;
+  --surface-near-white: #fbfbfb;
+  --ink-hint: rgba(66, 66, 66, 0.8);
+  --blue-500: #3b82f6;
+  --rule-d9: #d9d9d9;
+  --indigo-border: #c7d2fe;
+  --indigo-ink: #3730a3;
+  --white-50: rgba(255, 255, 255, 0.5);
+  --white-70: rgba(255, 255, 255, 0.7);
+  --black-02: rgba(0, 0, 0, 0.024);
+  --black-10: rgba(0, 0, 0, 0.1);
+  --black-14: rgba(0, 0, 0, 0.14);
+  --black-22: rgba(0, 0, 0, 0.22);
+  --black-50: rgba(0, 0, 0, 0.5);
 }
 
 * { box-sizing: border-box; }
@@ -5533,17 +5553,17 @@ body.large-names .card-title { font-size: 14px; }
 
 .tm-color-chip {
   width: 1rem; height: 1rem; border-radius: 50%;
-  border: 1px solid rgba(0, 0, 0, 0.25); flex: none;
+  border: 1px solid var(--btn-shadow-color); flex: none;
   padding: 0; cursor: pointer; background: none;
 }
 .tm-color-name {
   font-size: 0.9rem;
   /* KF-257: golden GM-073 text core is (51,51,51) = #333333. */
-  color: #333333;
+  color: var(--text-charcoal);
 }
 /* KF-258: the Time spent value is the plain duration ("2h 30m") — golden
    GM-073 value-text core is (51,51,51) = #333333, same as the other row values. */
-.tm-time-spent { font-size: 0.9rem; color: #333333; }
+.tm-time-spent { font-size: 0.9rem; color: var(--text-charcoal); }
 /* KF-067: the completed-pomodoro count beside Time spent ("● 2 Pomodori"). */
 .tm-pomodori {
   display: inline-flex;
@@ -5551,7 +5571,7 @@ body.large-names .card-title { font-size: 14px; }
   gap: 4px;
   margin-right: 10px;
   font-size: 0.9rem;
-  color: #333333;
+  color: var(--text-charcoal);
   white-space: nowrap;
 }
 .tm-pomodori + .tm-time-spent { white-space: nowrap; }
@@ -5559,14 +5579,14 @@ body.large-names .card-title { font-size: 14px; }
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: #e8453c;
+  background: var(--timer-red);
 }
 
 /* KF-278: Time spent hover menu with tooltip and action menu */
 .tm-time-tooltip {
   z-index: 1000;
-  background-color: #111827;
-  color: #f3f4f6;
+  background-color: var(--ink-strong);
+  color: var(--divider-soft);
   padding: 4px 8px;
   border-radius: 4px;
   font-size: 0.75rem;
@@ -5576,10 +5596,10 @@ body.large-names .card-title { font-size: 14px; }
 }
 
 .tm-time-menu {
-  background-color: #fff;
-  border: 1px solid #e5e7eb;
+  background-color: var(--surface-white);
+  border: 1px solid var(--divider);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 8px 24px var(--shadow-pop);
   min-width: 11.5rem;
   padding: 0.3rem;
   position: fixed;
@@ -5587,20 +5607,20 @@ body.large-names .card-title { font-size: 14px; }
 }
 
 .tm-time-menu button {
-  background: transparent;
+  background: var(--clear);
   border: none;
   text-align: left;
   padding: 0.45rem 0.6rem;
   border-radius: 6px;
   cursor: pointer;
   font-size: 0.85rem;
-  color: #111827;
+  color: var(--ink-strong);
   white-space: nowrap;
   width: 100%;
 }
 
 .tm-time-menu button:hover {
-  background-color: #f3f4f6;
+  background-color: var(--divider-soft);
 }
 
 .tm-link {
@@ -5623,20 +5643,20 @@ body.large-names .card-title { font-size: 14px; }
 }
 .tm-label-chip {
   display: inline-flex; align-items: center; gap: 0.25rem;
-  background: #fff5e1; border: 1px solid #bfb7a8; color: #3d3d3c;
+  background: var(--label-chip-bg); border: 1px solid var(--label-chip-border); color: var(--label-chip-ink);
   border-radius: 5px; padding: 0.3rem 0.6rem; font-size: 0.8rem;
   cursor: default;
 }
 .tm-comment-filter .tm-label-chip {
-  background: rgba(255, 255, 255, 0.5); border-color: rgba(0, 0, 0, 0.25);
+  background: var(--white-50); border-color: var(--btn-shadow-color);
 }
 /* KF-260: neutral label chips per GM-073 (fill (255,245,225), 1px (191,183,168)
    border, dark text, ~5px corners) — KanbanFlow has no blue-tinted chips. */
 button.tm-label-chip { cursor: pointer; }
-.tm-label-chip.tm-label-sug { background: #f9fafb; border-style: dashed; color: var(--ink); }
+.tm-label-chip.tm-label-sug { background: var(--surface-faint); border-style: dashed; color: var(--ink); }
 .tm-label-x {
   background: none; border: none; padding: 0 0.1rem; cursor: pointer;
-  color: #6b7280; font-size: 0.9rem; line-height: 1;
+  color: var(--ink-subtle); font-size: 0.9rem; line-height: 1;
 }
 .tm-label-x:hover { color: var(--danger); }
 
@@ -5645,12 +5665,12 @@ button.tm-label-chip { cursor: pointer; }
    is not. */
 .tm-due-chip {
   display: inline; border: none; background: none; padding: 0;
-  font: inherit; font-size: 14px; line-height: 28px; color: #333333; cursor: pointer; text-align: left;
+  font: inherit; font-size: 14px; line-height: 28px; color: var(--text-charcoal); cursor: pointer; text-align: left;
 }
 .tm-due-chip:hover { text-decoration: underline; }
 .tm-due-chip strong { font-weight: 700; }
 .tm-due-column { font-weight: 400; }
-.tm-due-overdue { color: #8b0000; }
+.tm-due-overdue { color: var(--kf-darkred); }
 
 /* Dedicated sub-views (History / time log) rendered in the modal body. */
 .tm-subview { display: flex; flex-direction: column; gap: 0.6rem; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
@@ -5668,7 +5688,7 @@ button.tm-label-chip { cursor: pointer; }
 .tm-avatar {
   display: inline-flex; align-items: center; justify-content: center;
   width: 1.6rem; height: 1.6rem; border-radius: 50%; flex: none;
-  background: #dbeafe; color: #1e40af; font-size: 0.75rem; font-weight: 700;
+  background: var(--chip-blue-bg); color: var(--chip-blue-ink); font-size: 0.75rem; font-weight: 700;
 }
 .tm-entry-member { font-weight: 600; font-size: 0.85rem; }
 .entry-range { font-size: 0.8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -5680,8 +5700,8 @@ button.tm-label-chip { cursor: pointer; }
 
 .tm-history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
 .tm-history-event {
-  border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 8px; padding: 0.5rem 0.7rem;
-  display: flex; flex-direction: column; gap: 0.15rem; background: rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--black-10); border-radius: 8px; padding: 0.5rem 0.7rem;
+  display: flex; flex-direction: column; gap: 0.15rem; background: var(--white-50);
   min-width: 0;
 }
 .tm-history-kind {
@@ -5700,7 +5720,7 @@ button.tm-label-chip { cursor: pointer; }
 .tm-history-compare summary { cursor: pointer; color: var(--muted); font-size: 0.75rem; }
 .tm-history-table { border-collapse: collapse; width: 100%; margin-top: 0.25rem; table-layout: fixed; }
 .tm-history-table th, .tm-history-table td {
-  border: 1px solid var(--tm-line, rgba(0, 0, 0, 0.1)); padding: 0.25rem 0.4rem; text-align: left;
+  border: 1px solid var(--tm-line, var(--black-10)); padding: 0.25rem 0.4rem; text-align: left;
   color: var(--ink); overflow-wrap: anywhere; vertical-align: top; white-space: pre-wrap;
 }
 .tm-history-table th { color: var(--muted); font-weight: 600; font-size: 0.75rem; }
@@ -5726,22 +5746,22 @@ button.tm-label-chip { cursor: pointer; }
 }
 .tm-comment-avatar {
   width: 30px; height: 30px; box-sizing: border-box; border-radius: 50%;
-  background: #ffffff; border: 1px solid var(--taskColorBorder); color: #222222;
+  background: var(--surface-white); border: 1px solid var(--taskColorBorder); color: var(--text-dark);
   font-size: 12px; font-weight: 700; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center; flex: none;
 }
 .tm-comment-top { display: flex; align-items: center; min-width: 0; }
 .tm-comment-idwrap { display: flex; flex-direction: column; min-width: 0; }
-.tm-comment-author { font-size: 13px; font-weight: 700; color: #222222; line-height: 1.15; }
+.tm-comment-author { font-size: 13px; font-weight: 700; color: var(--text-dark); line-height: 1.15; }
 .tm-comment-who { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .tm-comment-via { font-size: 10px; color: var(--muted); font-weight: 400; line-height: 1.15; }
-.tm-comment-agent .tm-comment-avatar { border-radius: 8px; background: #f3f0e8; }
+.tm-comment-agent .tm-comment-avatar { border-radius: 8px; background: var(--agent-avatar-bg); }
 .tm-comment-agent .tm-comment-author { font-style: italic; }
 .tm-comment-agent .tm-comment-via { padding: 0 5px; border: 1px solid var(--taskColorBorder); border-radius: 8px; }
 .tm-comment-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 14px 0 0 6px; }
-.tm-comment-filter-chip[aria-pressed="false"] { opacity: 0.55; text-decoration: line-through; background: #f9fafb; }
+.tm-comment-filter-chip[aria-pressed="false"] { opacity: 0.55; text-decoration: line-through; background: var(--surface-faint); }
 .tm-comment-hidden-count { font-size: 11px; color: var(--muted); margin-left: 4px; }
-.tm-comment-date { font-size: 11px; color: rgba(0, 0, 0, 0.5); line-height: 1.3; }
+.tm-comment-date { font-size: 11px; color: var(--black-50); line-height: 1.3; }
 /* Comment kind tag ("agent", "review", ...) under the date, sized to its
    text in the column-flex author block. */
 .tm-comment-kind {
@@ -5753,10 +5773,10 @@ button.tm-label-chip { cursor: pointer; }
   white-space: nowrap;
   margin-top: 2px;
   padding: 0 5px;
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--black-10);
   border-radius: 3px;
-  background: rgba(0, 0, 0, 0.024);
-  color: #666666;
+  background: var(--black-02);
+  color: var(--text-mid);
   font-size: 10px;
   line-height: 15px;
 }
@@ -5765,43 +5785,43 @@ button.tm-label-chip { cursor: pointer; }
   background: none; border: none; cursor: pointer; padding: 2px;
   border-radius: 4px; line-height: 0;
 }
-.tm-ctool:hover { background: rgba(0, 0, 0, 0.06); }
+.tm-ctool:hover { background: var(--hover-shade); }
 .tm-comment .tm-cmenu { left: auto; right: 0; top: 26px; }
 /* GM: body box is a flat 70% white fill, radius ~4px,
    17px side / ~11px vertical padding, 13px/1.5 #222 text, soft shadow. */
 .tm-comment-body {
-  margin: 9px 0 0; background: rgba(255, 255, 255, 0.7); border-radius: 3px;
-  padding: 12px 17px 8px; font-size: 13px; line-height: 18px; color: #222222;
+  margin: 9px 0 0; background: var(--white-70); border-radius: 3px;
+  padding: 12px 17px 8px; font-size: 13px; line-height: 18px; color: var(--text-dark);
   white-space: normal; word-break: break-word;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14);
+  box-shadow: 0 2px 6px var(--black-14);
 }
 .tm-comment-body .tm-md p { white-space: pre-line; }
 .tm-comment-composer { display: flex; align-items: center; gap: 6px; margin: 18px 0 0; }
 .tm-comment-input {
   flex: 1; min-width: 0; min-height: 38px; max-height: 200px; box-sizing: border-box;
-  border: none; border-radius: 3px; background: #ffffff;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14);
-  padding: 10px 14px; font: inherit; font-size: 13px; line-height: 18px; color: #222222;
+  border: none; border-radius: 3px; background: var(--surface-white);
+  box-shadow: 0 2px 6px var(--black-14);
+  padding: 10px 14px; font: inherit; font-size: 13px; line-height: 18px; color: var(--text-dark);
   resize: none; overflow-y: auto; display: block;
 }
-.tm-comment-input::placeholder { color: #686868; }
+.tm-comment-input::placeholder { color: var(--placeholder-ink); }
 .tm-comment-edit-input {
   width: 100%; box-sizing: border-box; resize: vertical;
-  border: 1px solid #d6d3cb; border-radius: 3px; background: #ffffff;
-  padding: 8px 10px; font: inherit; color: #222222;
+  border: 1px solid var(--reaction-border); border-radius: 3px; background: var(--surface-white);
+  padding: 8px 10px; font: inherit; color: var(--text-dark);
 }
 .tm-comment-edit-actions { display: flex; gap: 6px; margin-top: 8px; }
 .tm-emoji-pop {
-  position: fixed; z-index: 500; background: #fff;
-  border: 1px solid #e5e7eb; border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  position: fixed; z-index: 500; background: var(--surface-white);
+  border: 1px solid var(--divider); border-radius: 8px;
+  box-shadow: 0 8px 24px var(--shadow-pop);
   padding: 6px; display: grid; grid-template-columns: repeat(5, 1.8rem); gap: 2px;
 }
 .tm-emoji-pop button {
   background: none; border: none; cursor: pointer; font-size: 1.15rem;
   line-height: 1.6; border-radius: 6px; padding: 0;
 }
-.tm-emoji-pop button:hover { background: rgba(0, 0, 0, 0.06); }
+.tm-emoji-pop button:hover { background: var(--hover-shade); }
 
 .tm-attach-sect { margin: 0; }
 .tm-attachments { display: flex; flex-direction: column; gap: 10px; margin: 14px 0 0; }
@@ -5809,27 +5829,27 @@ button.tm-label-chip { cursor: pointer; }
 .tm-attachment-icon { flex: none; width: 30px; height: 30px; padding: 3px; box-sizing: border-box; }
 .tm-attachment-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .tm-attachment-name {
-  font-size: 12px; font-weight: 700; color: #333333; line-height: 18px;
+  font-size: 12px; font-weight: 700; color: var(--text-charcoal); line-height: 18px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: none;
 }
 .tm-attachment-name:hover { text-decoration: underline; }
-.tm-attachment-details { font-size: 11px; color: #222222; line-height: 17px; }
+.tm-attachment-details { font-size: 11px; color: var(--text-dark); line-height: 17px; }
 .tm-attachment-more {
   flex: none; width: 22px; height: 22px; padding: 1px 6px; box-sizing: border-box;
   border: none; border-radius: 50%; background: none; cursor: pointer; line-height: 0;
 }
-.tm-attachment-more:hover { background: rgba(0, 0, 0, 0.1); }
+.tm-attachment-more:hover { background: var(--black-10); }
 .tm-attachment .tm-cmenu { left: auto; right: 0; top: 26px; }
-.tm-attachment .tm-cmenu button { padding: 0.45rem 0.7rem; font-size: 0.87rem; color: #333333; }
-.tm-attachment .tm-cmenu button:hover { background: #f3f4f6; }
+.tm-attachment .tm-cmenu button { padding: 0.45rem 0.7rem; font-size: 0.87rem; color: var(--text-charcoal); }
+.tm-attachment .tm-cmenu button:hover { background: var(--divider-soft); }
 .tm-attach-addrow { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; }
 .tm-attach-add {
   height: 29px; padding: 7px 12px; box-sizing: border-box; cursor: pointer;
-  border: 1px solid rgba(0, 0, 0, 0.15); border-radius: 3px; background: #fbfbfb;
-  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.15);
-  color: #444444; font-size: 11px; font-weight: 700; line-height: 14px;
+  border: 1px solid var(--shadow-pop); border-radius: 3px; background: var(--surface-near-white);
+  box-shadow: 0 3px 2px -2px var(--shadow-pop);
+  color: var(--text-strong); font-size: 11px; font-weight: 700; line-height: 14px;
 }
-.tm-attach-hint { font-size: 12px; color: rgba(66, 66, 66, 0.8); }
+.tm-attach-hint { font-size: 12px; color: var(--ink-hint); }
 .task-modal.tm-drop-active { outline: 3px dashed var(--taskColorBorder); outline-offset: -8px; }
 
 .task-modal-head { padding-bottom: 6px; }
@@ -5848,13 +5868,13 @@ button.tm-label-chip { cursor: pointer; }
   display: flex; flex: none; gap: 4px; padding: 4px 14px 0;
   border-bottom: 1px solid var(--tm-line); overflow-x: auto; scrollbar-width: thin;
   background:
-    linear-gradient(to right, var(--tm-surface) 30%, transparent) left / 28px 100% no-repeat local,
-    linear-gradient(to left, var(--tm-surface) 30%, transparent) right / 28px 100% no-repeat local,
-    linear-gradient(to right, rgba(0, 0, 0, 0.22), transparent) left / 12px 100% no-repeat scroll,
-    linear-gradient(to left, rgba(0, 0, 0, 0.22), transparent) right / 12px 100% no-repeat scroll;
+    linear-gradient(to right, var(--tm-surface) 30%, var(--clear)) left / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--tm-surface) 30%, var(--clear)) right / 28px 100% no-repeat local,
+    linear-gradient(to right, var(--black-22), var(--clear)) left / 12px 100% no-repeat scroll,
+    linear-gradient(to left, var(--black-22), var(--clear)) right / 12px 100% no-repeat scroll;
 }
 .tm-tab {
-  appearance: none; background: none; border: 0; border-bottom: 3px solid transparent;
+  appearance: none; background: none; border: 0; border-bottom: 3px solid var(--clear);
   margin-bottom: -1px; padding: 10px 14px; font: inherit; font-size: 14px;
   color: var(--muted); cursor: pointer; white-space: nowrap;
 }
@@ -5865,7 +5885,7 @@ button.tm-label-chip { cursor: pointer; }
 .tm-layout { display: flex; flex: 1 1 auto; min-height: 0; min-width: 0; }
 .tm-main { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 22px 28px; }
 .task-modal-head, .tm-tabs { position: relative; z-index: 1; flex: none; }
-.task-modal.tm-scrolled .tm-tabs { box-shadow: 0 4px 6px -4px rgba(0, 0, 0, 0.25); }
+.task-modal.tm-scrolled .tm-tabs { box-shadow: 0 4px 6px -4px var(--btn-shadow-color); }
 body.dark .task-modal.tm-scrolled .tm-tabs { box-shadow: 0 4px 6px -4px rgba(0, 0, 0, 0.7); }
 .tm-time-sep { margin: 0 6px; color: var(--muted); }
 .tm-side-group.tm-side-group-folded { flex-direction: row; align-items: baseline; gap: 8px; }
@@ -5917,7 +5937,7 @@ body.dark .task-modal.tm-scrolled .tm-tabs { box-shadow: 0 4px 6px -4px rgba(0, 
 .tm-props .tm-color-name, .tm-props .tm-time-spent, .tm-props .tm-pomodori { font-size: 13px; color: var(--ink); }
 .tm-props .tm-none { color: var(--muted); }
 .tm-props .tm-due-chip { font-size: 13px; line-height: 20px; color: var(--ink); }
-.tm-props .tm-due-chip.tm-due-overdue { color: #8b0000; }
+.tm-props .tm-due-chip.tm-due-overdue { color: var(--kf-darkred); }
 .tm-props .tm-member-disc, .tm-props .tm-member-add { width: 26px; height: 26px; font-size: 12px; }
 .tm-props .tm-member-disc { background: var(--tm-surface); color: var(--ink); }
 .tm-props .tm-member-add { background: var(--tm-soft); border-color: var(--tm-line); color: var(--muted); }
@@ -6040,14 +6060,14 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   padding: 0 10px 10px;
   border: 0;
   border-radius: 2px;
-  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 2px 9px 4px var(--popover-shadow-color);
 }
 :is(#attachment-rename-dialog, #attachment-link-dialog) .dlg-title {
   position: relative;
   justify-content: center;
   height: 32px;
   margin: 0 -10px 8px;
-  background: #f4f4f4;
+  background: var(--surface-soft);
   font-size: 14px;
   line-height: 32px;
 }
@@ -6055,11 +6075,11 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 :is(#attachment-rename-dialog, #attachment-link-dialog) .ar-row { display: flex; align-items: center; gap: 5px; }
 :is(#attachment-rename-dialog, #attachment-link-dialog) .ar-input {
   box-sizing: border-box; flex: 1; min-width: 0; height: 30px; padding: 3px;
-  border: 1px solid #666666; border-radius: 0; color: #000000; font-size: 14px;
+  border: 1px solid var(--text-mid); border-radius: 0; color: var(--kf-black); font-size: 14px;
 }
 :is(#attachment-rename-dialog, #attachment-link-dialog) .ar-input:focus { outline: none; }
-:is(#attachment-rename-dialog, #attachment-link-dialog) .ar-suffix { flex: none; font-size: 12px; font-weight: 700; color: #333333; }
-:is(#attachment-rename-dialog, #attachment-link-dialog) .dlg-actions { margin: 8px -10px 0; padding: 8px 10px 0; border-top: 1px solid #dddddd; }
+:is(#attachment-rename-dialog, #attachment-link-dialog) .ar-suffix { flex: none; font-size: 12px; font-weight: 700; color: var(--text-charcoal); }
+:is(#attachment-rename-dialog, #attachment-link-dialog) .dlg-actions { margin: 8px -10px 0; padding: 8px 10px 0; border-top: 1px solid var(--rule-light); }
 :is(#attachment-rename-dialog, #attachment-link-dialog) #ar-rename, #al-add { width: 100%; height: 30px; padding: 0; }
 #attachment-link-dialog .ar-row + .ar-row { margin-top: 6px; }
 #document-dialog .dlg.doc-dlg {
@@ -6069,22 +6089,22 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 #document-dialog .doc-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 #document-dialog .doc-name {
   box-sizing: border-box; flex: 1; min-width: 160px; height: 30px; padding: 3px;
-  border: 1px solid #666666; border-radius: 0; font-size: 14px;
+  border: 1px solid var(--text-mid); border-radius: 0; font-size: 14px;
 }
-#document-dialog .doc-suffix { font-size: 12px; font-weight: 700; color: #333333; }
+#document-dialog .doc-suffix { font-size: 12px; font-weight: 700; color: var(--text-charcoal); }
 #document-dialog .doc-head .dlg-close { margin-left: auto; }
-#document-dialog .doc-meta { font-size: 12px; color: #555555; }
+#document-dialog .doc-meta { font-size: 12px; color: var(--text-medium); }
 #document-dialog .doc-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-#document-dialog .doc-tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid #dddddd; }
-#document-dialog .doc-tab { border: 0; background: none; padding: 6px 10px; font-size: 12px; font-weight: 700; cursor: pointer; color: #666666; }
-#document-dialog .doc-tab--on { color: #000000; border-bottom: 2px solid #3b82f6; }
+#document-dialog .doc-tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--rule-light); }
+#document-dialog .doc-tab { border: 0; background: none; padding: 6px 10px; font-size: 12px; font-weight: 700; cursor: pointer; color: var(--text-mid); }
+#document-dialog .doc-tab--on { color: var(--kf-black); border-bottom: 2px solid var(--blue-500); }
 #document-dialog .doc-tools { margin-left: auto; display: flex; gap: 2px; }
-#document-dialog .doc-tools button { min-width: 28px; height: 26px; border: 1px solid #cccccc; background: #ffffff; cursor: pointer; }
-#document-dialog .doc-text { flex: 1; min-height: 0; resize: none; box-sizing: border-box; padding: 8px; font: 13px/1.45 monospace; border: 1px solid #cccccc; }
-#document-dialog .doc-preview { flex: 1; min-height: 0; overflow: auto; padding: 8px; border: 1px solid #cccccc; }
-#document-dialog .doc-versions { max-height: 160px; overflow: auto; border: 1px solid #dddddd; }
+#document-dialog .doc-tools button { min-width: 28px; height: 26px; border: 1px solid var(--avatar-border); background: var(--surface-white); cursor: pointer; }
+#document-dialog .doc-text { flex: 1; min-height: 0; resize: none; box-sizing: border-box; padding: 8px; font: 13px/1.45 monospace; border: 1px solid var(--avatar-border); }
+#document-dialog .doc-preview { flex: 1; min-height: 0; overflow: auto; padding: 8px; border: 1px solid var(--avatar-border); }
+#document-dialog .doc-versions { max-height: 160px; overflow: auto; border: 1px solid var(--rule-light); }
 #document-dialog .doc-versions button { display: block; width: 100%; text-align: left; padding: 6px 8px; border: 0; background: none; cursor: pointer; font-size: 12px; }
-#document-dialog .doc-versions button:hover { background: #f3f4f6; }
+#document-dialog .doc-versions button:hover { background: var(--divider-soft); }
 #document-dialog [hidden] { display: none; }
 
 /* Labels / due-date dialogs */
@@ -6092,7 +6112,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 /* KF-437: KanbanFlow's alert box (golden modal/25): 290px wide, growing
    to 340px before the text wraps, 20px padding, 15px #444 text and 75x30
    light buttons, over a 0.25 black dim that covers the due dialog too. */
-.kf-modalbox-overlay { background: rgba(0, 0, 0, 0.25); }
+.kf-modalbox-overlay { background: var(--btn-shadow-color); }
 .dlg.kf-modalbox {
   width: auto;
   min-width: 290px;
@@ -6100,14 +6120,14 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   padding: 20px;
   border: 0;
   border-radius: 2px;
-  box-shadow: 0 11px 15px -7px rgba(0, 0, 0, 0.2), 0 24px 38px 3px rgba(0, 0, 0, 0.14),
-    0 9px 46px 8px rgba(0, 0, 0, 0.12);
-  color: #222222;
+  box-shadow: 0 11px 15px -7px var(--badge-shadow-color), 0 24px 38px 3px var(--black-14),
+    0 9px 46px 8px var(--shadow-panel);
+  color: var(--text-dark);
 }
 .kf-modalbox .dlg-text {
   margin: 0 -8px 30px 0;
   padding: 0 8px 1px 0;
-  color: #444444;
+  color: var(--text-strong);
   font-size: 15px;
   line-height: 22.5px;
 }
@@ -6116,24 +6136,24 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   min-width: 75px;
   height: 30px;
   padding: 7px 12px;
-  border: 1px solid rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--shadow-pop);
   border-radius: 3px;
-  background: #fbfbfb;
-  color: #444444;
+  background: var(--surface-near-white);
+  color: var(--text-strong);
   font-size: 14px;
   font-weight: 700;
   line-height: 14px;
 }
-.kf-modalbox .btn:focus { outline: none; box-shadow: 0 0 8px 1px rgba(0, 0, 0, 0.1); }
+.kf-modalbox .btn:focus { outline: none; box-shadow: 0 0 8px 1px var(--black-10); }
 /* KF-432: the past due date confirm's red OK (golden modal/26). */
 .kf-modalbox .btn-danger {
-  border-color: #d9534f;
-  background: #d9534f;
-  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
-  color: #ffffff;
+  border-color: var(--kf-danger);
+  background: var(--kf-danger);
+  box-shadow: 0 3px 2px -2px var(--btn-shadow-color);
+  color: var(--surface-white);
 }
 /* KF-401: KanbanFlow's red Delete in the Edit due date dialog. */
-.duedate-dlg #dd-delete { background: #d9534f; border-color: #d9534f; color: #fff; margin-right: auto; }
+.duedate-dlg #dd-delete { background: var(--kf-danger); border-color: var(--kf-danger); color: var(--surface-white); margin-right: auto; }
 /* KF-436: KanbanFlow's due dialog buttons (goldens modal/22 and /23, the
    r3 Edit due date capture): 30px tall, bold 14px, under a 1px rule 8px
    above them. Add alone is 130px at the right; Delete and Update are
@@ -6142,64 +6162,64 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   gap: 0;
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px solid #d9d9d9;
+  border-top: 1px solid var(--rule-d9);
 }
 .duedate-dlg .dlg-actions .btn {
   width: 125px;
   height: 30px;
   padding: 7px 12px;
   border-radius: 3px;
-  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
-  color: #ffffff;
+  box-shadow: 0 3px 2px -2px var(--btn-shadow-color);
+  color: var(--surface-white);
   font-size: 14px;
   font-weight: 700;
   line-height: 14px;
 }
-.duedate-dlg #dd-add { margin-left: auto; background: #49a849; border-color: #49a849; }
+.duedate-dlg #dd-add { margin-left: auto; background: var(--kf-success); border-color: var(--kf-success); }
 .duedate-dlg #dd-delete[hidden] + #dd-add { width: 130px; }
 .labels-list { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.6rem; min-height: 1.5rem; }
 .labels-suggestions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
 /* KF-270: the "Add due date" dialog's inline calendar grid.
    KF-328: the dialog is light now, so the grid is light too. */
-.dd-cal-inline { border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.5rem; margin-bottom: 0.75rem; background: #fff; }
+.dd-cal-inline { border: 1px solid var(--divider); border-radius: 8px; padding: 0.5rem; margin-bottom: 0.75rem; background: var(--surface-white); }
 /* KF-328: calendar day/nav styling inside light dialogs. */
 .dlg-light .mt-cal-day { color: var(--ink); }
-.dlg-light .mt-cal-day:hover { background: #f3f4f6; }
-.dlg-light .mt-cal-day.other-month { color: #9ca3af; }
-.dlg-light .mt-cal-head button { background: #f3f4f6; color: var(--ink); }
-.dlg-light .mt-cal-head button:hover { background: #e5e7eb; }
+.dlg-light .mt-cal-day:hover { background: var(--divider-soft); }
+.dlg-light .mt-cal-day.other-month { color: var(--ink-faint); }
+.dlg-light .mt-cal-head button { background: var(--divider-soft); color: var(--ink); }
+.dlg-light .mt-cal-head button:hover { background: var(--divider); }
 /* KF-328: the manual-time dialog is light; its calendar popup follows.
    (The edit-entry popup stays dark — out of scope.) */
 #manual-time-overlay .mt-cal-popup {
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-white);
+  border: 1px solid var(--divider);
   color: var(--ink);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 12px 32px var(--shadow-pop);
 }
 #manual-time-overlay .mt-cal-day { color: var(--ink); }
-#manual-time-overlay .mt-cal-day:hover { background: #f3f4f6; }
-#manual-time-overlay .mt-cal-day.other-month { color: #9ca3af; }
-#manual-time-overlay .mt-cal-head button { background: #f3f4f6; color: var(--ink); }
-#manual-time-overlay .mt-cal-head button:hover { background: #e5e7eb; }
-#manual-time-overlay .mt-cal-quick { border-top-color: #e5e7eb; }
-#manual-time-overlay .mt-cal-quick button { color: #6b7280; }
-#manual-time-overlay .mt-cal-quick button:hover { background: #f3f4f6; color: var(--ink); }
-.dlg-light .mt-cal-quick { border-top-color: #e5e7eb; }
-.dlg-light .mt-cal-quick button { color: #6b7280; }
-.dlg-light .mt-cal-quick button:hover { background: #f3f4f6; color: var(--ink); }
+#manual-time-overlay .mt-cal-day:hover { background: var(--divider-soft); }
+#manual-time-overlay .mt-cal-day.other-month { color: var(--ink-faint); }
+#manual-time-overlay .mt-cal-head button { background: var(--divider-soft); color: var(--ink); }
+#manual-time-overlay .mt-cal-head button:hover { background: var(--divider); }
+#manual-time-overlay .mt-cal-quick { border-top-color: var(--divider); }
+#manual-time-overlay .mt-cal-quick button { color: var(--ink-subtle); }
+#manual-time-overlay .mt-cal-quick button:hover { background: var(--divider-soft); color: var(--ink); }
+.dlg-light .mt-cal-quick { border-top-color: var(--divider); }
+.dlg-light .mt-cal-quick button { color: var(--ink-subtle); }
+.dlg-light .mt-cal-quick button:hover { background: var(--divider-soft); color: var(--ink); }
 /* KF-328: the manual-time date-picker toggle in the light dialog. */
 .dlg-light #mt-cal-btn {
-  background: #f3f4f6;
-  border: 1px solid #d1d5db;
+  background: var(--divider-soft);
+  border: 1px solid var(--field-border);
   border-radius: 6px;
   color: var(--ink);
   cursor: pointer;
   padding: 0.4rem 0.6rem;
 }
-.dlg-light #mt-cal-btn:hover { background: #e5e7eb; }
+.dlg-light #mt-cal-btn:hover { background: var(--divider); }
 /* Card indicators: labels + due dates (column-config gated). */
 .card-label {
-  display: inline-block; background: #eef2ff; border: 1px solid #c7d2fe; color: #3730a3;
+  display: inline-block; background: var(--tlp-row-hover); border: 1px solid var(--indigo-border); color: var(--indigo-ink);
   border-radius: 999px; padding: 0 0.45rem; font-size: 0.7rem; margin-right: 0.25rem;
   cursor: pointer; /* KF-165: clicking a label chip filters the board. */
 }
@@ -6209,7 +6229,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 /* Labels editor inside the manual-time / edit-entry dialogs. */
 .dlg-labels { margin-top: 0.4rem; }
 .dlg-labels input[type="text"] {
-  width: 100%; border: 1px solid rgba(0, 0, 0, 0.18); border-radius: 6px;
+  width: 100%; border: 1px solid var(--popover-shadow-color); border-radius: 6px;
   padding: 0.4rem 0.5rem; font: inherit; font-size: 0.9rem; margin-bottom: 0.4rem;
 }
 /* ---------- board settings shell (KF-110, KF-111, KF-082, KF-083) ---------- */
