@@ -579,3 +579,30 @@ t.test("land should apply again when a release takes the lock during its gates",
     t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
     done(fix)
 end)
+
+t.test("land should apply on the main a release pushed while it waited", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    git(fix.dir, "clone", "-q", "-b", "main", "remote.git", "other")
+    assert(fs.write(fix.dir .. "/other/released.txt", "released"))
+    git(fix.dir .. "/other", "add", ".")
+    git(fix.dir .. "/other", "commit", "-q", "-m", "release batch 9")
+    stub(
+        fix.dir,
+        "sleep",
+        [=[
+echo "$*" >>'@dir@/sleeps'
+rm -f '@dir@/work/.dev/release.lock'
+git -C '@dir@/other' push -q origin HEAD:refs/heads/main
+]=]
+    )
+    assert(fs.write(lock_path(fix), ("batch=9 pid=%d\n"):format(devos.getpid())))
+    local out, code, err = land(fix, cand, { POMB_LAND_WAIT_INTERVAL = "1" })
+    t.ok(code == 0, err)
+    t.ok(out:find("Waiting for the release of batch 9", 1, true), out)
+    eq_list(lines(fix, "calls"), { "lint", "test" })
+    t.eq(#lines(fix, "pushes"), 1)
+    t.eq(show(fix, "refs/heads/main:released.txt"), "released")
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    done(fix)
+end)

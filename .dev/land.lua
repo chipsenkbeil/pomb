@@ -396,6 +396,10 @@ local sha
 local attempt = 1
 while true do
     wait_for_release(repo)
+    fetched = run_git(repo, "fetch", "-q", remote)
+    if fetched ~= 0 then
+        return fetched or 1
+    end
     base, code = read_git(repo, "rev-parse", remote .. "/main")
     if code ~= 0 then
         return code or 1
