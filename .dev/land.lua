@@ -7,7 +7,7 @@ Steps, any failure aborts before the push:
 1. Fetch the remote of record. Refuse a commit that is not exactly one commit past its merge-base with <remote>/main, or that changes the package version in Cargo.toml or the pomb entry of Cargo.lock: only dev release bumps the version. Refuse a commit that adds a file under .dev/standalone unless the card has the standalone-ok label.
 2. Wait for the release lock .dev/release.lock to clear, up to POMB_LAND_WAIT_BOUND seconds (default 5400), polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) and saying who holds it. A lock whose pid is gone is removed. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>, first removing a clean land worktree left by an earlier attempt, and refusing when that worktree holds uncommitted changes. On gerrit the commit gets a Change-Id trailer when it has none.
 3. Refuse attribution trailers through __push_main --check, before any gate.
-4. Run dev lint --remote, then dev test --remote, through __gate, one at a time on ci, logging to a temp dir. The first failing gate aborts.
+4. Run dev lint --remote, then dev test --remote, through __gate, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts.
 5. Push to main through __push_main, remove the land worktree, print the landed sha, note it on the card with dev board note and move the card to Release with dev board move. Then remove the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch. In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the bookmark of the same name. A worktree with uncommitted changes is kept, and the verb says why.
 6. A push refused because main moved on (exit 3) removes the worktree, fetches, and repeats steps 2 to 5 on the new main, 3 attempts in all. It never forces the push.
 The remote of record is forge.remote, else gerrit when that remote exists, else origin. A failed land leaves its worktree behind; the next land removes it when it is clean, and a worktree with uncommitted changes is removed by hand. A push refused a third time exits 1 with the worktree left behind, and so does any other push failure, which is not retried.
@@ -15,6 +15,7 @@ The remote of record is forge.remote, else gerrit when that remote exists, else 
 local devos = require("dev.os")
 local fs = require("dev.fs")
 local cargo = require("pomb.cargo")
+local drain = require("pomb.drain")
 local forge = require("pomb.forge")
 local lock = require("pomb.lock")
 local standalone = require("dev.standalone")
@@ -324,11 +325,23 @@ local function gates(wt, card, attempt)
     say(("Attempt %s of %s, with logs in %s.\n"):format(attempt, ATTEMPTS, logs))
     for _, gate in ipairs({ "lint", "test" }) do
         say(("Running dev %s --remote.\n"):format(gate))
-        local ran, code = devos.capture({ "dev", "__gate", wt, gate, logs .. "/" .. gate .. ".log" }, {
-            cwd = wt,
-            env = { DEV_AGENT = "pomb/land/" .. card },
-            stderr = logs .. "/" .. gate .. ".err",
-        })
+        local log = logs .. "/" .. gate .. ".log"
+        local ran, code = drain.run({ gate = gate, log = log, say = say, run = function()
+            return devos.capture({ "dev", "__gate", wt, gate, log }, {
+                cwd = wt,
+                env = { DEV_AGENT = "pomb/land/" .. card },
+                stderr = logs .. "/" .. gate .. ".err",
+            })
+        end })
+        if not ran then
+            verb.die(
+                ("The ci hub was still draining after %s seconds, so dev %s --remote did not run, nothing was pushed, and the worktree is left at %s."):format(
+                    code,
+                    gate,
+                    wt
+                )
+            )
+        end
         if code ~= 0 then
             local err = trim(fs.read(logs .. "/" .. gate .. ".err") or "")
             verb.die(

@@ -22,6 +22,7 @@ local VERBS = {
     "__push_main.lua",
     "__push_tag.lua",
     "lua/pomb/cargo.lua",
+    "lua/pomb/drain.lua",
     "lua/pomb/forge.lua",
     "lua/pomb/lock.lua",
 }
@@ -32,6 +33,11 @@ if [ "$1" = board ] && [ "$2" = show ]; then [ -e '@dir@/fail-show' ] && exit 1;
 if [ "$1" = board ]; then echo "$*" >>'@dir@/notes'; exit 0; fi
 touch '@dir@/runs.jsonl'
 echo "$1" >>'@dir@/calls'
+if [ -e '@dir@/drain-'"$1" ] && [ "$(cat '@dir@/drain-'"$1")" -gt 0 ]; then
+echo $(($(cat '@dir@/drain-'"$1") - 1)) >'@dir@/drain-'"$1"
+echo 'dev: the hub is draining and takes no new work'
+exit 1
+fi
 if [ "$1" = lint ] && [ -e '@dir@/lock-on-lint' ]; then
 printf 'batch=9 pid=%s\n' "$(cat '@dir@/lock-on-lint')" >'@dir@/work/.dev/release.lock'
 rm '@dir@/lock-on-lint'
@@ -679,5 +685,36 @@ t.test("land should carry one change id after a moved main retry on gerrit", fun
     t.ok(code == 0, err)
     t.eq(#lines(fix, "pushes"), 2)
     t.eq(#change_ids(fix), 1)
+    done(fix)
+end)
+
+t.test("land should retry a gate refused by a drain", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    stub(fix.dir, "sleep", STUB_SLEEP)
+    assert(fs.write(fix.dir .. "/drain-lint", "1"))
+    local env = { POMB_DRAIN_INTERVAL = "1", POMB_DRAIN_BOUND = "5" }
+    local out, code, err = land(fix, cand, env)
+    t.ok(code == 0, err)
+    t.ok(out:find("The dev lint --remote run waits 1 seconds because the ci hub is draining.", 1, true), out)
+    eq_list(lines(fix, "calls"), { "lint", "lint", "test" })
+    t.eq(#lines(fix, "pushes"), 1)
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    done(fix)
+end)
+
+t.test("land should abort naming the drain when it outlasts the bound", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    stub(fix.dir, "sleep", STUB_SLEEP)
+    assert(fs.write(fix.dir .. "/drain-lint", "99"))
+    local before = remote_main(fix)
+    local env = { POMB_DRAIN_INTERVAL = "1", POMB_DRAIN_BOUND = "2" }
+    local _, code, err = land(fix, cand, env)
+    t.ok(code ~= 0)
+    t.ok(err:find("still draining after 2 seconds", 1, true), err)
+    eq_list(lines(fix, "calls"), { "lint", "lint", "lint" })
+    t.eq(#lines(fix, "pushes"), 0)
+    t.eq(remote_main(fix), before)
     done(fix)
 end)

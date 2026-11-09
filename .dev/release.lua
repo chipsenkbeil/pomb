@@ -17,6 +17,7 @@ Repeat --env to list pomb.service environment changes in the request.
 ]]
 local devos = require("dev.os")
 local fs = require("dev.fs")
+local drain = require("pomb.drain")
 local forge = require("pomb.forge")
 local lock = require("pomb.lock")
 
@@ -265,21 +266,6 @@ if holder and lock.alive(holder) then
 end
 lock.take(repo, opts.batch)
 lock_repo = repo
-local DRAIN = "the hub is draining"
-local DRAIN_INTERVAL_SECS = 60
-local DRAIN_BOUND_SECS = 3600
-
-local function positive_env(name, default)
-    local value = tonumber(os.getenv(name))
-    if value and value > 0 then
-        return value
-    end
-    return default
-end
-
-local drain_interval = positive_env("POMB_DRAIN_INTERVAL", DRAIN_INTERVAL_SECS)
-local drain_bound = positive_env("POMB_DRAIN_BOUND", DRAIN_BOUND_SECS)
-
 local function run_gate(gate)
     return devos.capture({ "dev", "__gate", wt, gate, logs .. "/" .. gate .. ".log" }, {
         cwd = wt,
@@ -288,34 +274,20 @@ local function run_gate(gate)
     })
 end
 
-local function drained(gate)
-    return (fs.read(logs .. "/" .. gate .. ".log") or ""):find(DRAIN, 1, true) ~= nil
-end
-
 for _, gate in ipairs({ "lint", "test", "nixcheck", "build" }) do
     say(("Running dev %s --remote.\n"):format(gate))
-    local ran
-    ran, code = run_gate(gate)
-    local waited = 0
-    while code ~= 0 and drained(gate) do
-        if waited >= drain_bound then
-            die(("The ci hub was still draining after %s seconds, so dev %s --remote did not run. See %s/%s.log. The worktree is left at %s."):format(
-                drain_bound,
-                gate,
-                logs,
-                gate,
-                wt
-            ))
-        end
-        say(
-            ("The dev %s --remote run waits %s seconds because the ci hub is draining.\n"):format(
-                gate,
-                drain_interval
-            )
-        )
-        devos.run({ "sleep", tostring(drain_interval) })
-        waited = waited + drain_interval
-        ran, code = run_gate(gate)
+    local log = logs .. "/" .. gate .. ".log"
+    local ran, code = drain.run({ gate = gate, log = log, say = say, run = function()
+        return run_gate(gate)
+    end })
+    if not ran then
+        die(("The ci hub was still draining after %s seconds, so dev %s --remote did not run. See %s/%s.log. The worktree is left at %s."):format(
+            code,
+            gate,
+            logs,
+            gate,
+            wt
+        ))
     end
     if code ~= 0 then
         local err = trim(fs.read(logs .. "/" .. gate .. ".err") or "")

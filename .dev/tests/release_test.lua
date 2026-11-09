@@ -22,6 +22,7 @@ local FILES = {
     "__push_main.lua",
     "__push_tag.lua",
     "lua/pomb/cargo.lua",
+    "lua/pomb/drain.lua",
     "lua/pomb/forge.lua",
     "lua/pomb/lock.lua",
     "__bump_version.lua",
