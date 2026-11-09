@@ -199,6 +199,15 @@
   --black-14: rgba(0, 0, 0, 0.14);
   --black-22: rgba(0, 0, 0, 0.22);
   --black-50: rgba(0, 0, 0, 0.5);
+  --bshell-edge: #d6d6d6;
+  --bshell-bg: #d3e8f2;
+  --kf-info-border: #bce8f1;
+  --kf-info-bg: #d9edf7;
+  --kf-info-ink: #295f7a;
+  --bs-edge-dark: #262626;
+  --hover-faint: #f3f3f3;
+  --kf-primary-hover: #1b74b8;
+  --danger-border-soft: #fecaca;
 }
 
 * { box-sizing: border-box; }
@@ -6258,14 +6267,14 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
      at the bottom of a short page (golden settings/02 and /14). */
   padding: 40px 1rem 40px;
   min-height: calc(100vh - 64px);
-  background: #d3e8f2;
+  background: var(--bshell-bg);
 }
 
 .bshell {
   max-width: 900px;
   margin: 0 auto;
-  background: #fff;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  background: var(--surface-white);
+  box-shadow: 0 2px 10px var(--btn-shadow-color);
 }
 
 /* KF-331: header and nav text is Arial-metric like KanbanFlow's (advance
@@ -6279,8 +6288,8 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   display: flex;
   align-items: stretch;
   min-height: 41px;
-  background: #e8e8e8;
-  border-bottom: 1px solid #d6d6d6;
+  background: var(--surface-head);
+  border-bottom: 1px solid var(--bshell-edge);
 }
 
 .bshell-back {
@@ -6290,7 +6299,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   align-items: center;
   padding-left: 8px;
   font-size: 18px;
-  color: #0088cc;
+  color: var(--nav-active-blue);
   text-decoration: none;
 }
 
@@ -6316,7 +6325,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   padding-left: 15px;
   font-size: 22px;
   font-weight: 700;
-  color: #333;
+  color: var(--text-charcoal);
 }
 
 .bshell-body { display: flex; align-items: stretch; }
@@ -6324,7 +6333,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 .bshell-nav {
   display: flex; flex-direction: column;
   flex: none; width: 240px;
-  background: #f4f4f4;
+  background: var(--surface-soft);
   padding: 10px 0 1rem;
 }
 
@@ -6333,18 +6342,18 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 .bshell-nav-item {
   display: block; padding: 0 1rem 0 1.5rem;
   font-size: 18px; line-height: 38.796875px;
-  color: #444; text-decoration: none;
+  color: var(--text-strong); text-decoration: none;
 }
 
-.bshell-nav-item:hover { background: #e8e8e8; }
+.bshell-nav-item:hover { background: var(--surface-head); }
 .bshell-nav-active {
-  background: #fff; font-weight: 700;
-  box-shadow: inset 3px 0 0 #0088cc;
+  background: var(--surface-white); font-weight: 700;
+  box-shadow: inset 3px 0 0 var(--nav-active-blue);
 }
 
 .bshell-content {
   flex: 1; min-width: 0;
-  background: #fff;
+  background: var(--surface-white);
   padding: 15px 15px 1.25rem;
 }
 
@@ -6352,7 +6361,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
    flow directly on the white content face, separated by whitespace.
    Scoped to the board settings page only. */
 .board-settings-page .settings-section {
-  background: transparent;
+  background: var(--clear);
   border: none;
   border-radius: 0;
   padding: 0;
@@ -6363,7 +6372,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 
 .bshell-table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; }
 .bshell-table th, .bshell-table td {
-  text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid #e5e7eb;
+  text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--divider);
 }
 .bshell-table th { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
 .bshell-table tbody th { font-size: inherit; color: inherit; font-weight: 400; }
@@ -6381,11 +6390,11 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 .bshell-defs dt { font-weight: 600; }
 .bshell-defs dd { margin: 0; }
 
-.settings-saved { color: #15803d; font-weight: 600; }
+.settings-saved { color: var(--status-ontime); font-weight: 600; }
 
 /* KF-331: section flow spacing now comes from .settings-section's
    margin, so the danger zone no longer adds its own top margin. */
-.board-settings-page .settings-section.bshell-danger { border-top: 1px solid #fecaca; padding-top: 1rem; }
+.board-settings-page .settings-section.bshell-danger { border-top: 1px solid var(--danger-border-soft); padding-top: 1rem; }
 
 /* KF-356: KanbanFlow's Colors tab, measured on the KF-331 reference at a
    1905px layout viewport: Arial text, a #d9edf7 info box with #bce8f1
@@ -6395,20 +6404,20 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
   font-size: 14px;
   line-height: 18px;
-  color: #333333;
+  color: var(--text-charcoal);
 }
 
 .kf-alert {
   margin: 0 0 18px;
   padding: 8px 35px 8px 14px;
-  border-top: 1px solid #bce8f1;
-  border-bottom: 1px solid #bce8f1;
-  background: #d9edf7;
-  color: #295f7a;
+  border-top: 1px solid var(--kf-info-border);
+  border-bottom: 1px solid var(--kf-info-border);
+  background: var(--kf-info-bg);
+  color: var(--kf-info-ink);
   font-size: 13px;
   line-height: 1.5;
 }
-.kf-alert a { color: #2096c8; text-decoration: none; }
+.kf-alert a { color: var(--kf-link); text-decoration: none; }
 .kf-alert a:hover { text-decoration: underline; }
 
 .bshell-content h2 {
@@ -6435,7 +6444,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   font-size: 18px;
   font-weight: 700;
   line-height: 27px;
-  color: #333333;
+  color: var(--text-charcoal);
 }
 .kf-section-header-plain { height: 27px; }
 
@@ -6443,19 +6452,19 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   box-sizing: border-box;
   margin: 0 0 0 10px;
   padding: 7px 12px;
-  border: 1px solid rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--shadow-pop);
   border-radius: 3px;
-  background: #fbfbfb;
-  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.15);
-  color: #444444;
+  background: var(--surface-near-white);
+  box-shadow: 0 3px 2px -2px var(--shadow-pop);
+  color: var(--text-strong);
   font: 700 14px/14px Arial, "Helvetica Neue", Helvetica, sans-serif;
   cursor: pointer;
 }
 .kf-btn-success {
-  border-color: #49a849;
-  background: #49a849;
-  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
-  color: #ffffff;
+  border-color: var(--kf-success);
+  background: var(--kf-success);
+  box-shadow: 0 3px 2px -2px var(--btn-shadow-color);
+  color: var(--surface-white);
 }
 
 .kf-table {
@@ -6470,10 +6479,10 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   vertical-align: middle;
 }
 .kf-table th {
-  background: #f5f5f5;
+  background: var(--kf-day-bg);
   font-weight: 700;
 }
-.kf-table td { border-top: 1px solid #dddddd; }
+.kf-table td { border-top: 1px solid var(--kf-rule-soft); }
 #color-disabled-table { margin-bottom: 18px; }
 
 .color-cell-drag { width: 30px; }
@@ -6495,7 +6504,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   user-select: none;
 }
 .color-drag:active { cursor: grabbing; }
-.color-admin-row.sortable-drag { background: #f9fafb; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
+.color-admin-row.sortable-drag { background: var(--surface-faint); box-shadow: 0 4px 12px var(--shadow-panel); }
 
 /* KF-087: 100x30 swatch with the standard color name inside. */
 .color-swatch-named {
@@ -6506,7 +6515,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   padding: 5px 10px;
   border: 1px solid;
   border-radius: 3px;
-  color: #222222;
+  color: var(--text-dark);
 }
 
 .help-icon {
@@ -6518,8 +6527,8 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 .bc-default-grid { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 1rem 0; }
 .bc-default-pick {
   display: flex; align-items: center; gap: 0.5rem;
-  border: 1px solid #d1d5db; border-radius: 8px; padding: 0.5rem 0.75rem;
-  background: #fff; cursor: pointer; font-size: 0.88rem;
+  border: 1px solid var(--field-border); border-radius: 8px; padding: 0.5rem 0.75rem;
+  background: var(--surface-white); cursor: pointer; font-size: 0.88rem;
 }
 .bc-default-pick:hover { border-color: var(--accent); }
 
@@ -6528,7 +6537,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   display: flex; align-items: center; gap: 0.6rem;
   padding: 0.5rem 0.6rem; border-radius: 6px; cursor: pointer;
 }
-.bc-copy-row:hover { background: #f3f4f6; }
+.bc-copy-row:hover { background: var(--divider-soft); }
 
 /* ---------- boards sidebar (KF-088) ---------- */
 
@@ -6595,12 +6604,12 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .boards-sidebar {
   position: fixed; left: 0; top: 0; bottom: 0; z-index: 1000;
   width: 260px; flex: none;
-  border-right: 1px solid #262626;
+  border-right: 1px solid var(--bs-edge-dark);
   padding: 0.8rem 0.8rem 1.5rem;
-  background: #333333;
-  color: #e5e7eb;
+  background: var(--text-charcoal);
+  color: var(--divider);
   overflow-y: auto;
-  box-shadow: 2px 0 8px rgba(0,0,0,0.15);
+  box-shadow: 2px 0 8px var(--shadow-pop);
   transform: translateX(-100%);
   transition: transform 0.2s ease-out;
 }
@@ -6611,7 +6620,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .boards-sidebar[hidden] { display: none; }
 .boards-scrim {
   position: fixed; inset: 0; z-index: 999;
-  background: rgba(0,0,0,0.3);
+  background: var(--shadow-heavy);
 }
 .boards-scrim[hidden] { display: none; }
 
@@ -6622,35 +6631,35 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .bs-search-row { padding: 8px 10px; }
 .bs-search {
   display: block; width: 100%; height: 30px; box-sizing: border-box;
-  margin: 0; padding: 0 6px; border: 1px solid #d6d6d6; border-radius: 2px;
-  font-size: 14px; background: #ffffff; color: #222222;
+  margin: 0; padding: 0 6px; border: 1px solid var(--bshell-edge); border-radius: 2px;
+  font-size: 14px; background: var(--surface-white); color: var(--text-dark);
 }
-.bs-search::placeholder { color: #9ca3af; }
+.bs-search::placeholder { color: var(--ink-faint); }
 
-.bs-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid #d6d6d6; }
+.bs-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--bshell-edge); }
 
-.bs-item { display: block; border-bottom: 1px solid #e6e6e6; color: #222222; font-size: 12px; }
+.bs-item { display: block; border-bottom: 1px solid var(--kf-divider); color: var(--text-dark); font-size: 12px; }
 .bs-item a {
-  display: block; padding: 10px 12px; font-size: 16px; line-height: 19px; color: #555555;
+  display: block; padding: 10px 12px; font-size: 16px; line-height: 19px; color: var(--kf-ink-muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: none;
 }
-.bs-item:hover { background: #f3f3f3; }
-.bs-current { box-shadow: inset 3px 0 0 0 #0088cc; }
-.bs-current a { color: #333333; }
+.bs-item:hover { background: var(--hover-faint); }
+.bs-current { box-shadow: inset 3px 0 0 0 var(--nav-active-blue); }
+.bs-current a { color: var(--text-charcoal); }
 .bs-archived {
-  display: block; padding: 10px 12px; border-bottom: 1px solid #e6e6e6;
-  font-size: 14px; line-height: 16px; font-style: italic; color: #555555; text-decoration: none;
+  display: block; padding: 10px 12px; border-bottom: 1px solid var(--kf-divider);
+  font-size: 14px; line-height: 16px; font-style: italic; color: var(--kf-ink-muted); text-decoration: none;
 }
 .bs-archived:hover { text-decoration: underline; }
-.bs-create { padding: 8px 10px; border-top: 3px solid #d6d6d6; border-radius: 0 0 2px 2px; }
+.bs-create { padding: 8px 10px; border-top: 3px solid var(--bshell-edge); border-radius: 0 0 2px 2px; }
 .bs-create-btn {
   display: block; box-sizing: border-box; padding: 7px 12px;
-  border: 1px solid #2185d0; border-radius: 3px; background: #2185d0;
-  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
-  color: #ffffff; font-size: 14px; font-weight: 700; line-height: 14px;
+  border: 1px solid var(--kf-primary); border-radius: 3px; background: var(--kf-primary);
+  box-shadow: 0 3px 2px -2px var(--btn-shadow-color);
+  color: var(--surface-white); font-size: 14px; font-weight: 700; line-height: 14px;
   text-align: center; text-decoration: none;
 }
-.bs-create-btn:hover { background: #1b74b8; }
+.bs-create-btn:hover { background: var(--kf-primary-hover); }
 
 /* ---------- boards dropdown menu (KF-330) ---------- */
 .boards-dropdown-container {
@@ -6664,11 +6673,11 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   left: 0;
   z-index: 1000;
   width: 260px;
-  background: #ffffff;
+  background: var(--surface-white);
   border-radius: 2px;
-  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 2px 9px 4px var(--popover-shadow-color);
   padding: 0;
-  color: #222222;
+  color: var(--text-dark);
   font-size: 12px;
   overflow-y: auto;
   margin-top: 8px;
@@ -6682,29 +6691,29 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 /* ---------- timer settings extras (KF-075, KF-076) ---------- */
 
 .ts-drag {
-  cursor: grab; color: #9ca3af; font-size: 1rem; letter-spacing: -2px;
+  cursor: grab; color: var(--ink-faint); font-size: 1rem; letter-spacing: -2px;
   user-select: none; padding: 0 0.25rem;
 }
 .ts-drag:active { cursor: grabbing; }
 
 .ts-reason-label { cursor: text; padding: 0.15rem 0.3rem; border-radius: 4px; }
-.ts-reason-label:hover { background: #fef3c7; }
+.ts-reason-label:hover { background: var(--amber-bg); }
 
 .ts-reason-edit {
-  background: #fef3c7; /* yellow highlight while renaming */
-  border: 1px solid #f59e0b; border-radius: 4px;
+  background: var(--amber-bg); /* yellow highlight while renaming */
+  border: 1px solid var(--finder-flash-ring); border-radius: 4px;
   padding: 0.2rem 0.4rem; font-size: inherit; width: 100%;
 }
 
 .ts-activity-row {
   display: flex; align-items: center; gap: 0.6rem;
-  border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.55rem 0.7rem;
-  margin-bottom: 0.5rem; background: #fff;
+  border: 1px solid var(--divider); border-radius: 8px; padding: 0.55rem 0.7rem;
+  margin-bottom: 0.5rem; background: var(--surface-white);
 }
 .ts-activity-main { flex: 1; min-width: 0; }
 .ts-activity-desc { color: var(--muted); font-size: 0.85rem; }
 .ts-activity-meta { color: var(--muted); font-size: 0.8rem; }
-.ts-activity-remove { border: none; background: none; color: #9ca3af; cursor: pointer; font-size: 1.1rem; }
+.ts-activity-remove { border: none; background: none; color: var(--ink-faint); cursor: pointer; font-size: 1.1rem; }
 .ts-activity-remove:hover { color: var(--danger); }
 
 /* ---------- timer log modal (KF-286): wide white centered modal over the dimmed board ---------- */
@@ -6712,7 +6721,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .timer-log-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--shadow-heavy);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -6725,10 +6734,10 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 
 /* KF-461: golden 20 — a 660 px #fafafa dialog, 400 px tall at least. */
 .timer-log-modal {
-  background: #fafafa;
-  color: #222222;
+  background: var(--panel-bg);
+  color: var(--text-dark);
   border-radius: 2px;
-  box-shadow: 0 2px 9px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 9px 3px var(--black-10);
   width: min(660px, 100%);
   min-height: min(400px, calc(100vh - 75px));
   max-height: calc(100vh - 75px);
@@ -6743,8 +6752,8 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   position: relative;
   flex-shrink: 0;
   height: 32px;
-  background: #f4f4f4;
-  border-bottom: 1px solid #dddddd;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--kf-rule-soft);
 }
 
 .timer-log-head h2 {
@@ -6753,7 +6762,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   font-weight: 700;
   line-height: 31px;
   text-align: center;
-  color: #222222;
+  color: var(--text-dark);
 }
 
 .timer-log-head .timer-log-close { position: absolute; top: 2px; right: 6px; }
@@ -6763,29 +6772,29 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   border: none;
   font-size: 1.5rem;
   line-height: 1;
-  color: #6b7280;
+  color: var(--ink-subtle);
   cursor: pointer;
   padding: 0.2rem 0.45rem;
   border-radius: 6px;
 }
 
-.timer-log-close:hover { color: #111827; background: #f3f4f6; }
+.timer-log-close:hover { color: var(--ink-strong); background: var(--divider-soft); }
 
 .timer-log-modal .timer-log-filters {
   flex-shrink: 0;
   padding: 10px 15px;
   margin-bottom: 0;
   flex-wrap: wrap;
-  background: #fafafa;
+  background: var(--panel-bg);
 }
 
 
 .timer-log-modal .timer-log-filters select,
 .timer-log-modal .timer-log-filters input[type="date"],
 .timer-log-modal .timer-log-filters input[type="number"] {
-  background: #ffffff;
-  border: 1px solid #bbbbbb;
-  color: #000000;
+  background: var(--surface-white);
+  border: 1px solid var(--kf-input-border);
+  color: var(--kf-black);
 }
 
 .timer-log-modal .icon-btn {
@@ -6795,11 +6804,11 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   background: none;
   border: none;
   border-radius: 50%;
-  color: #000000;
+  color: var(--kf-black);
   font-size: 15px;
 }
 
-.timer-log-modal .icon-btn:hover { background: rgba(0, 0, 0, 0.08); }
+.timer-log-modal .icon-btn:hover { background: var(--icon-on-bg); }
 
 /* KF-461/KF-497: golden 20's one-row toolbar — 30 px selects with #bbb
    borders 10 px apart (board 110, period 180, entry type 180) and four 30 px
@@ -6813,7 +6822,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .timer-log-modal .timer-log-filters select {
   height: 30px;
   padding: 3px;
-  border-color: #bbbbbb;
+  border-color: var(--kf-input-border);
   border-radius: 0;
   font-size: 13px;
 }
@@ -6831,7 +6840,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .log-custom-dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(17, 24, 39, 0.55);
+  background: var(--scrim-bg);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -6843,10 +6852,10 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .log-custom-dialog-overlay[hidden] { display: none; }
 
 .log-custom-dialog {
-  background: #ffffff;
-  color: #111827;
+  background: var(--surface-white);
+  color: var(--ink-strong);
   border-radius: 10px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 24px 60px var(--modal-shadow-color);
   width: min(560px, 100%);
   padding: 0.9rem 1.25rem 1.25rem;
 }
@@ -6862,7 +6871,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   margin: 0;
   font-size: 1rem;
   font-weight: 600;
-  color: #111827;
+  color: var(--ink-strong);
 }
 
 .log-custom-nav,
@@ -6870,7 +6879,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   background: none;
   border: none;
   cursor: pointer;
-  color: #4b5563;
+  color: var(--text-gray);
   padding: 0.2rem 0.45rem;
   border-radius: 6px;
   font-size: 1.1rem;
@@ -6878,7 +6887,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 
 .log-custom-nav:hover,
-.log-custom-x:hover { background: #f3f4f6; color: #111827; }
+.log-custom-x:hover { background: var(--divider-soft); color: var(--ink-strong); }
 
 .log-custom-fields {
   display: flex;
@@ -6892,20 +6901,20 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.8rem;
-  color: #374151;
+  color: var(--text-gray-dark);
 }
 
 .log-custom-fields input {
   box-sizing: border-box;
   min-width: 0;
   width: 100%;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--field-border);
   border-radius: 6px;
   padding: 0.4rem 0.5rem;
   text-align: center;
   font-size: 0.9rem;
-  color: #111827;
-  background: #ffffff;
+  color: var(--ink-strong);
+  background: var(--surface-white);
 }
 
 .log-custom-cals {
@@ -6919,13 +6928,13 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .log-custom-cal { flex: 0 1 auto; }
 
 /* Light-dialog calendar grid (reuses the .mt-cal-* structure). */
-.log-custom-dialog .mt-cal-head { color: #111827; }
-.log-custom-dialog .mt-cal-head button { background: #f3f4f6; color: #111827; }
-.log-custom-dialog .mt-cal-head button:hover { background: #e5e7eb; }
-.log-custom-dialog .mt-cal-dow { color: #6b7280; }
-.log-custom-dialog .mt-cal-day { color: #111827; }
-.log-custom-dialog .mt-cal-day:hover { background: #f3f4f6; }
-.log-custom-dialog .mt-cal-day.other-month { color: #9ca3af; }
+.log-custom-dialog .mt-cal-head { color: var(--ink-strong); }
+.log-custom-dialog .mt-cal-head button { background: var(--divider-soft); color: var(--ink-strong); }
+.log-custom-dialog .mt-cal-head button:hover { background: var(--divider); }
+.log-custom-dialog .mt-cal-dow { color: var(--ink-subtle); }
+.log-custom-dialog .mt-cal-day { color: var(--ink-strong); }
+.log-custom-dialog .mt-cal-day:hover { background: var(--divider-soft); }
+.log-custom-dialog .mt-cal-day.other-month { color: var(--ink-faint); }
 
 .log-custom-done { width: 100%; padding: 0.55rem; font-size: 0.95rem; }
 
@@ -6940,11 +6949,11 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 /* KF-428: the day group header (goldens 20): "Today" at 20 px #111 with a
    10 px right margin, then the total and the completed-pomodoro count at
    13 px #666, 20 px apart. */
-.log-day-title { margin: 0 10px 10px 0; font-size: 20px; font-weight: 400; line-height: 30px; color: #111111; }
-.log-day-total { margin-left: 20px; font-size: 13px; font-weight: 400; line-height: 19.5px; color: #666666; }
+.log-day-title { margin: 0 10px 10px 0; font-size: 20px; font-weight: 400; line-height: 30px; color: var(--ink-print); }
+.log-day-total { margin-left: 20px; font-size: 13px; font-weight: 400; line-height: 19.5px; color: var(--text-mid); }
 
 .timer-log-modal .log-status {
-  color: #6b7280;
+  color: var(--ink-subtle);
 }
 
 /* ---------- Time spent "Print" sheet (KF-295, GM-169) ---------- */
