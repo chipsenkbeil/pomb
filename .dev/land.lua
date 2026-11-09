@@ -7,7 +7,7 @@ Steps, any failure aborts before the push:
 1. Fetch the remote of record. Refuse a commit that is not exactly one commit past its merge-base with <remote>/main, or that changes the package version in Cargo.toml or the pomb entry of Cargo.lock: only dev release bumps the version. Refuse a commit that adds a file under .dev/standalone unless the card has the standalone-ok label.
 2. Wait for the release lock .dev/release.lock to clear, up to POMB_LAND_WAIT_BOUND seconds (default 5400), polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) and saying who holds it. A lock whose pid is gone is removed. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>, first removing a clean land worktree left by an earlier attempt, and refusing when that worktree holds uncommitted changes. On gerrit the commit gets a Change-Id trailer when it has none.
 3. Refuse attribution trailers through __push_main --check, before any gate.
-4. Run dev lint --remote, then dev test --remote, through __gate, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts.
+4. Read the card's latest dev-check note from dev board show. When it has mode=run, passes the rows dev --remote lint and dev --remote test, and names the landed commit or one with the same git patch-id, skip the gates whether or not main moved since, and say so. Otherwise say why and run dev lint --remote, then dev test --remote, through __gate, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts.
 5. Push to main through __push_main, remove the land worktree, print the landed sha, note it on the card with dev board note and move the card to Release with dev board move. Then remove the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch. In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the bookmark of the same name. A worktree with uncommitted changes is kept, and the verb says why.
 6. A push refused because main moved on (exit 3) removes the worktree, fetches, and repeats steps 2 to 5 on the new main, 3 attempts in all. It never forces the push.
 The remote of record is forge.remote, else gerrit when that remote exists, else origin. A failed land leaves its worktree behind; the next land removes it when it is clean, and a worktree with uncommitted changes is removed by hand. A push refused a third time exits 1 with the worktree left behind, and so does any other push failure, which is not retried.
@@ -317,10 +317,71 @@ local function wait_for_release(repo)
     end
 end
 
-local function gates(wt, card, attempt)
+local function check_attribution(wt)
     if devos.run({ "dev", "__push_main", wt, "--check" }, { cwd = wt }) ~= 0 then
         verb.die(("The attribution check failed, and the worktree is left at %s."):format(wt))
     end
+end
+
+local function patch_id(repo, rev)
+    local diff, code = devos.capture(git(repo, "diff-tree", "-p", "--root", rev), QUIET)
+    if code ~= 0 then
+        return nil
+    end
+    local out = devos.capture_input(git(repo, "patch-id", "--stable"), diff, QUIET)
+    return out:match("^(%x+)")
+end
+
+local function latest_check(text)
+    local latest, open
+    for _, line in ipairs(lines(text)) do
+        local commit, mode = line:match("dev%-check: commit=(%x+) change=%S+ mode=(%S+)")
+        if commit then
+            latest = { commit = commit, mode = mode, rows = {} }
+            open = latest
+        elseif open then
+            local result, run = line:match("^%s+%d+ (%a+) %S+ (.+)$")
+            if result then
+                open.rows[run] = result
+            elseif not line:match("^%s") then
+                open = nil
+            end
+        end
+    end
+    return latest
+end
+
+local function skip_reason(repo, card, cand)
+    local out, code =
+        devos.capture({ "dev", "board", "show", card }, { cwd = repo, stderr = "null" })
+    if code ~= 0 then
+        return nil, "the card could not be read"
+    end
+    local record = latest_check(out)
+    if not record then
+        return nil, "the card has no dev-check note"
+    end
+    if record.mode ~= "run" then
+        return nil, ("its latest dev-check has mode %s"):format(record.mode)
+    end
+    for _, row in ipairs({ "dev --remote lint", "dev --remote test" }) do
+        if record.rows[row] ~= "pass" then
+            return nil, ("its latest dev-check has no pass for %s"):format(row)
+        end
+    end
+    if record.commit == cand then
+        return ("its latest dev-check passed lint and test on commit %s"):format(cand)
+    end
+    local want = patch_id(repo, cand)
+    if want and want == patch_id(repo, record.commit) then
+        return ("its latest dev-check passed lint and test on commit %s, which has the same patch-id"):format(
+            record.commit
+        )
+    end
+    return nil, ("its latest dev-check commit %s is not this patch"):format(record.commit)
+end
+
+local function gates(wt, card, attempt)
     local logs = assert(fs.mktemp({ prefix = "land-" .. card, dir = true }))
     say(("Attempt %s of %s, with logs in %s.\n"):format(attempt, ATTEMPTS, logs))
     for _, gate in ipairs({ "lint", "test" }) do
@@ -419,6 +480,7 @@ if fs.exists(wt) then
     end
 end
 local sha
+local verdict
 local attempt = 1
 while true do
     wait_for_release(repo)
@@ -439,7 +501,16 @@ while true do
         fork = fork,
         base = base,
     })
-    gates(wt, card, attempt)
+    check_attribution(wt)
+    if not verdict then
+        verdict = { skip_reason(repo, card, cand) }
+    end
+    if verdict[1] then
+        say(("The gates are skipped because %s.\n"):format(verdict[1]))
+    else
+        say(("The gates run because %s.\n"):format(verdict[2]))
+        gates(wt, card, attempt)
+    end
     if release_running(repo) then
         say("A release took the land lock while the gates ran, so the commit is applied again once it is done.\n")
         run_git(repo, "worktree", "remove", "--force", wt)

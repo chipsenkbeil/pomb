@@ -29,7 +29,7 @@ local VERBS = {
 
 local STUB_DEV = [[
 case "$1" in __*) exec luajit '@main@' "$@";; esac
-if [ "$1" = board ] && [ "$2" = show ]; then [ -e '@dir@/fail-show' ] && exit 1; printf 'abc123  Ready  1 Pomodoro  %s  name\n' "$(cat '@dir@/labels' 2>/dev/null || echo -)"; exit 0; fi
+if [ "$1" = board ] && [ "$2" = show ]; then [ -e '@dir@/fail-show' ] && exit 1; printf 'abc123  Ready  1 Pomodoro  %s  name\n' "$(cat '@dir@/labels' 2>/dev/null || echo -)"; cat '@dir@/check-note' 2>/dev/null; exit 0; fi
 if [ "$1" = board ]; then echo "$*" >>'@dir@/notes'; exit 0; fi
 touch '@dir@/runs.jsonl'
 echo "$1" >>'@dir@/calls'
@@ -142,6 +142,21 @@ local function lines(fix, name)
     end
     return found
 end
+
+local function check_note(fix, commit, rows, mode)
+    local text = {
+        ("2d2adabc  agents  status  -  2026-11-09 18:58  dev-check: commit=%s change=- mode=%s\n"):format(
+            commit,
+            mode or "run"
+        ),
+    }
+    for i, row in ipairs(rows) do
+        text[#text + 1] = ("%s%d %s - %s\n"):format((" "):rep(40), i, row[1], row[2])
+    end
+    assert(fs.write(fix.dir .. "/check-note", table.concat(text)))
+end
+
+local PASSED = { { "pass", "dev --remote lint" }, { "pass", "dev --remote test" } }
 
 local function refuse_pushes(fix, count)
     assert(fs.write(fix.dir .. "/refuse", tostring(count)))
@@ -332,6 +347,98 @@ t.test("land does not push when a gate fails", function()
     t.eq(#lines(fix, "notes"), 0)
     done(fix)
 end)
+
+t.test("land skips the gates when the card's check passed on the landed commit", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    check_note(fix, cand, PASSED)
+    local out, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.eq(#lines(fix, "calls"), 0)
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    t.ok(out:find("The gates are skipped because", 1, true), out)
+    t.ok(out:find("on commit " .. cand, 1, true), out)
+    done(fix)
+end)
+
+t.test("land skips the gates on a moved main when the patch-id matches", function()
+    local fix = fixture()
+    local checked = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    advance_remote_main(fix, "other.txt")
+    git(fix.work, "fetch", "-q", fix.name)
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    t.ok(cand ~= checked)
+    check_note(fix, checked, PASSED)
+    local out, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.eq(#lines(fix, "calls"), 0)
+    t.eq(show(fix, "refs/heads/main:other.txt"), "x")
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    t.ok(out:find("same patch-id", 1, true), out)
+    done(fix)
+end)
+
+t.test("land skips the gates on a race retry", function()
+    local fix, cand = candidate_with_refused_pushes(1)
+    check_note(fix, cand, PASSED)
+    local out, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.eq(#lines(fix, "calls"), 0)
+    t.eq(#lines(fix, "pushes"), 2)
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    local _, skips = out:gsub("The gates are skipped because", "")
+    t.eq(skips, 2)
+    done(fix)
+end)
+
+t.test("land still refuses attribution when the gates are skipped", function()
+    local fix = fixture()
+    local cand =
+        candidate(fix, { ["feature.txt"] = "feature" }, "add feature\n\nClaude-Session: abc123")
+    check_note(fix, cand, PASSED)
+    local before = remote_main(fix)
+    local _, code, err = land(fix, cand)
+    t.ok(code ~= 0)
+    t.ok(err:find("Claude-Session", 1, true), err)
+    t.eq(remote_main(fix), before)
+    done(fix)
+end)
+
+local function gated(name, setup, reason)
+    t.test("land gates as today " .. name, function()
+        local fix = fixture()
+        local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+        setup(fix, cand)
+        local out, code, err = land(fix, cand)
+        t.ok(code == 0, err)
+        eq_list(lines(fix, "calls"), { "lint", "test" })
+        t.ok(out:find("The gates run because " .. reason, 1, true), out)
+        done(fix)
+    end)
+end
+
+gated("without a check note", function() end, "the card has no dev-check note")
+
+gated("when a check row failed", function(fix, cand)
+    check_note(fix, cand, { { "pass", "dev --remote lint" }, { "fail", "dev --remote test" } })
+end, "its latest dev-check has no pass for dev --remote test")
+
+gated("when a check row is missing", function(fix, cand)
+    check_note(fix, cand, { { "pass", "dev --remote lint" } })
+end, "its latest dev-check has no pass for dev --remote test")
+
+gated("when the check was not a run", function(fix, cand)
+    check_note(fix, cand, PASSED, "expect-fail")
+end, "its latest dev-check has mode expect-fail")
+
+gated("when the check names a different patch", function(fix)
+    local other = candidate(fix, { ["other.txt"] = "other" }, "add other")
+    check_note(fix, other, PASSED)
+end, "its latest dev-check commit ")
+
+gated("when the check names a commit that cannot be read", function(fix)
+    check_note(fix, ("0"):rep(40), PASSED)
+end, "its latest dev-check commit ")
 
 t.test("land refuses a standalone script without the standalone-ok label", function()
     local fix = fixture()
