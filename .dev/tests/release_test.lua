@@ -16,9 +16,11 @@ devos.defaults.env = {
 
 local RELEASE = { "release", "--batch", "7", "--summary", "cut it" }
 local LOCAL, REMOTE = "local", "remote"
+local ALL_GATES = "build,lint,nixcheck,test"
 local FILES = {
     "release.lua",
     "__gate.lua",
+    "__release_gate.lua",
     "__push_main.lua",
     "__push_tag.lua",
     "lua/pomb/cargo.lua",
@@ -34,10 +36,11 @@ case "$1" in __*) exec luajit '@main@' "$@";; esac
 echo "$1" >>'@dir@/gates.log'
 [ ! -e '@dir@/repo/.dev/release.lock' ] || cat '@dir@/repo/.dev/release.lock' >>'@dir@/locked.log'
 [ -z "$MOVE_MAIN" ] || git -C "$MOVE_MAIN" push -q origin HEAD:main
+[ -z "$SLOW" ] || { echo "start $1" >>'@dir@/events.log'; sleep 1; echo "end $1" >>'@dir@/events.log'; }
 [ "$1" != "$FAIL_GATE" ] || exit 1
 [ "$1" != "$DRAIN_GATE" ] || [ "$(grep -c "^$1\$" '@dir@/gates.log')" -gt "${DRAIN_TIMES:-1}" ] || { echo 'dev: the hub is draining and takes no new work'; exit 1; }
 touch '@dir@/runs.jsonl'
-printf '{"run":"run%s","repo":"%s-0123","source":"local","kind":"run","status":"passed"}\n' "$(wc -l <'@dir@/runs.jsonl' | tr -d ' ')" "$(basename "$PWD")" >>'@dir@/runs.jsonl'
+printf '{"run":"run-%s","repo":"%s-0123","source":"local","kind":"run","status":"passed"}\n' "$1" "$(basename "$PWD")" >>'@dir@/runs.jsonl'
 echo 'Summary [1s] 1 tests run: 1 passed'
 ]]
 
@@ -141,6 +144,7 @@ local function gates(fix)
     for line in (fs.read(fix.dir .. "/gates.log") or ""):gmatch("[^\n]+") do
         found[#found + 1] = line
     end
+    table.sort(found)
     return table.concat(found, ",")
 end
 
@@ -201,7 +205,7 @@ t.test("release should commit only the version bump on the remote main", functio
     t.eq(git(fix.remote, "log", "-1", "--format=%s", "main"), "Release batch-7: cut it")
     t.eq(git(fix.remote, "diff", "--name-only", "main~1", "main"), "Cargo.lock\nCargo.toml")
     t.ok(git(fix.remote, "show", "main:Cargo.toml"):find('version = "0.5.86"', 1, true))
-    t.eq(gates(fix), "lint,test,nixcheck,build")
+    t.eq(gates(fix), ALL_GATES)
     t.ok(out:find("Pomb sha: " .. head, 1, true), out)
     t.ok(out:find("sha256-stubhash", 1, true), out)
     done(fix)
@@ -235,7 +239,7 @@ t.test("release should stop before the push when a gate fails", function()
     local _, code, err = release(fix, RELEASE, { FAIL_GATE = "test" })
     t.ok(code ~= 0)
     t.ok(err:find("dev test --remote", 1, true), err)
-    t.eq(gates(fix), "lint,test")
+    t.eq(gates(fix), ALL_GATES)
     t.eq(remote_ref(fix, "main"), before)
     done(fix)
 end)
@@ -248,7 +252,7 @@ t.test("release should retry a gate refused by a drain", function()
         { DRAIN_GATE = "test", POMB_DRAIN_INTERVAL = "1", POMB_DRAIN_BOUND = "5" }
     )
     t.eq(code, 0, err)
-    t.eq(gates(fix), "lint,test,test,nixcheck,build")
+    t.eq(gates(fix), "build,lint,nixcheck,test,test")
     t.ok(out:find("The dev test --remote run waits 1 seconds because the ci hub is draining.", 1, true), out)
     done(fix)
 end)
@@ -262,7 +266,7 @@ t.test("release should abort on a plain gate failure without retry", function()
     )
     t.ok(code ~= 0)
     t.ok(err:find("dev test --remote did not pass", 1, true), err)
-    t.eq(gates(fix), "lint,test")
+    t.eq(gates(fix), ALL_GATES)
     done(fix)
 end)
 
@@ -281,7 +285,7 @@ t.test("release should abort naming the drain when it outlasts the wait bound", 
     )
     t.ok(code ~= 0)
     t.ok(err:find("still draining after 2 seconds", 1, true), err)
-    t.eq(gates(fix), "lint,test,test,test")
+    t.eq(gates(fix), "build,lint,nixcheck,test,test,test")
     t.eq(remote_ref(fix, "main"), before)
     done(fix)
 end)
@@ -293,7 +297,7 @@ t.test("release dry run should skip the push and hash only should print the bloc
     t.eq(code, 0, err)
     t.ok(dry:find("Dry run, not pushed.", 1, true), dry)
     t.ok(not dry:find("homelab request", 1, true))
-    t.eq(gates(fix), "lint,test,nixcheck,build")
+    t.eq(gates(fix), ALL_GATES)
     t.eq(remote_ref(fix, "main"), before)
     local out
     out, code, err = release(fix, { "release", "--hash-only", before, "--env", "KEY=VALUE" })
@@ -442,7 +446,7 @@ t.test("release should clear the land lock when a gate aborts it", function()
     local fix = fixture("0.5.85", "0.5.85", 1)
     local _, code = release(fix, RELEASE, { FAIL_GATE = "test" })
     t.ok(code ~= 0)
-    t.eq(locked_gates(fix), 2)
+    t.eq(locked_gates(fix), 4)
     t.ok(not fs.exists(lock_path(fix)))
     done(fix)
 end)
@@ -472,6 +476,104 @@ t.test("release should take over a stale land lock from a dead process", functio
     local _, code, err = release(fix, RELEASE)
     t.eq(code, 0, err)
     t.eq(locked_gates(fix), 4)
+    t.ok(not fs.exists(lock_path(fix)))
+    done(fix)
+end)
+
+local function lines(path)
+    local found = {}
+    for line in (fs.read(path) or ""):gmatch("[^\n]+") do
+        found[#found + 1] = line
+    end
+    return found
+end
+
+local function events(fix)
+    return lines(fix.dir .. "/events.log")
+end
+
+local function first_end(list)
+    for i, line in ipairs(list) do
+        if line:find("^end ") then
+            return i
+        end
+    end
+    return #list + 1
+end
+
+local function count_of(list, text)
+    local found = 0
+    for _, item in ipairs(list) do
+        if item == text then
+            found = found + 1
+        end
+    end
+    return found
+end
+
+t.test("release should run the gates in parallel", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local _, code, err = release(fix, RELEASE, { SLOW = "1" })
+    t.eq(code, 0, err)
+    local list = events(fix)
+    t.eq(#list, 8)
+    t.eq(first_end(list), 5)
+    done(fix)
+end)
+
+t.test("release should run each gate on its own gate worktree", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local _, code, err = release(fix, RELEASE)
+    t.eq(code, 0, err)
+    local repos = {}
+    for i, line in ipairs(lines(fix.dir .. "/runs.jsonl")) do
+        repos[i] = line:match('"repo":"([^"]+)"')
+    end
+    table.sort(repos)
+    t.eq(
+        table.concat(repos, ","),
+        "gate-7-build-0123,gate-7-lint-0123,gate-7-nixcheck-0123,gate-7-test-0123"
+    )
+    t.ok(not fs.exists(fix.repo .. "/.dev/worktrees/gate-7-lint"))
+    done(fix)
+end)
+
+t.test("release should wait out the other gates when one fails", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local before = remote_ref(fix, "main")
+    local _, code, err = release(fix, RELEASE, { FAIL_GATE = "lint", SLOW = "1" })
+    t.ok(code ~= 0)
+    t.ok(err:find("dev lint --remote did not pass", 1, true), err)
+    t.eq(#events(fix), 8)
+    t.eq(remote_ref(fix, "main"), before)
+    done(fix)
+end)
+
+t.test("release should retry only the drained gate", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local _, code, err = release(
+        fix,
+        RELEASE,
+        { DRAIN_GATE = "nixcheck", POMB_DRAIN_INTERVAL = "1", POMB_DRAIN_BOUND = "5" }
+    )
+    t.eq(code, 0, err)
+    local list = lines(fix.dir .. "/gates.log")
+    t.eq(count_of(list, "nixcheck"), 2)
+    t.eq(count_of(list, "lint"), 1)
+    t.eq(count_of(list, "test"), 1)
+    t.eq(count_of(list, "build"), 1)
+    done(fix)
+end)
+
+t.test("release should hold the land lock until the push", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local hook = fix.remote .. "/hooks/pre-receive"
+    local note = fix.dir .. "/push-lock.log"
+    assert(fs.write(hook, ("#!/bin/sh\nwhile read o n r; do [ \"$r\" != refs/heads/main ] || [ ! -e '%s' ] || echo held >>'%s'; done\n"):format(lock_path(fix), note)))
+    assert(devos.run({ "chmod", "755", hook }) == 0)
+    local _, code, err = release(fix, RELEASE)
+    t.eq(code, 0, err)
+    t.eq(fs.read(note), "held\n")
     t.ok(not fs.exists(lock_path(fix)))
     done(fix)
 end)

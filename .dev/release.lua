@@ -7,7 +7,7 @@ Usage: dev release --batch N --summary "<text>" [--env KEY=VALUE]... [--dry-run]
 Each card lands on main through dev land after its own verification, so a release adds only the version bump. Steps, any failure aborts before the push:
 1. Refuse unless <remote>/main has a commit since its last v* tag.
 2. Bump the version with dev __bump_version in .dev/worktrees/release-<N> on <remote>/main and commit "Release batch-<N>: <summary>" with only Cargo.toml and Cargo.lock. Then refuse unless the new version differs from the last v* tag's and Cargo.lock's pomb entry matches it, and refuse when batch-<N> or v<version> already exists locally or on the remote.
-3. Take the land lock .dev/release.lock in the main checkout, which names the batch and the pid and which dev land waits on, and drop it on every exit and once the push is done. Refuse when a live release holds it. Run dev lint --remote, dev test --remote, dev nixcheck --remote and dev build --remote through __gate, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts before the push, and so does a gate whose ci run is not a new passed run of the release worktree with source local.
+3. Take the land lock .dev/release.lock in the main checkout, which names the batch and the pid and which dev land waits on, and drop it on every exit and once the push is done. Refuse when a live release holds it. Run dev lint --remote, dev test --remote, dev nixcheck --remote and dev build --remote through __release_gate at the same time on ci, each in its own gate worktree gate-<N>-<gate> of the release commit, logging to a temp dir, so the lock lasts about the slowest gate and is held until the push. A gate refused because the ci hub is draining is run again alone after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Every gate is waited out first. Any other failing gate aborts before the push, and so does a gate whose ci run is not a new passed run of the release worktree with source local.
 4. Refuse attribution trailers in the new commit and refuse when <remote>/main moved since step 1, then push to main on the remote of record.
 5. Tag batch-<N> and v<version> at the pushed commit with __push_tag, then compute the nix hash of the commit's tree and print the request block. A failed tag prints the __push_tag command to rerun for it.
 The remote of record is forge.remote, else gerrit when that remote exists, else origin. On gerrit the release commit carries a Change-Id trailer.
@@ -24,6 +24,7 @@ local lock = require("pomb.lock")
 local ctx = ...
 
 local QUIET = { stderr = "null" }
+local GATES = { "lint", "test", "nixcheck", "build" }
 
 local lock_repo
 
@@ -266,40 +267,69 @@ if holder and lock.alive(holder) then
 end
 lock.take(repo, opts.batch)
 lock_repo = repo
-local function run_gate(gate)
-    return devos.capture({ "dev", "__gate", wt, gate, logs .. "/" .. gate .. ".log" }, {
-        cwd = wt,
-        env = { DEV_AGENT = "pomb/release/" .. opts.batch, CARGO_TARGET_DIR = wt .. "/target" },
-        stderr = logs .. "/" .. gate .. ".err",
-    })
+local gate_trees = {}
+for _, gate in ipairs(GATES) do
+    gate_trees[gate] = ("%s/.dev/worktrees/gate-%s-%s"):format(repo, opts.batch, gate)
 end
 
-for _, gate in ipairs({ "lint", "test", "nixcheck", "build" }) do
+local function drop_gate_trees()
+    for _, gate in ipairs(GATES) do
+        devos.run(git(repo, "worktree", "remove", "--force", gate_trees[gate]), QUIET)
+    end
+end
+
+drop_gate_trees()
+for _, gate in ipairs(GATES) do
+    if devos.run(git(repo, "worktree", "add", "-q", "--detach", gate_trees[gate], sha), { cwd = repo }) ~= 0 then
+        drop_gate_trees()
+        die(("The git worktree add failed for %s. The worktree is left at %s."):format(gate_trees[gate], wt))
+    end
+end
+
+local jobs = {}
+for _, gate in ipairs(GATES) do
     say(("Running dev %s --remote.\n"):format(gate))
-    local log = logs .. "/" .. gate .. ".log"
-    local ran, code = drain.run({ gate = gate, log = log, say = say, run = function()
-        return run_gate(gate)
-    end })
-    if not ran then
+    jobs[#jobs + 1] = ("( dev __release_gate %s %s %s; echo $? >%s ) &"):format(
+        devos.quote(gate_trees[gate]),
+        gate,
+        devos.quote(logs),
+        devos.quote(logs .. "/" .. gate .. ".code")
+    )
+end
+devos.run({ "bash", "-c", table.concat(jobs, "\n") .. "\nwait" }, {
+    cwd = repo,
+    env = { DEV_AGENT = "pomb/release/" .. opts.batch },
+})
+drop_gate_trees()
+
+local function gate_file(gate, ext)
+    return trim(fs.read(("%s/%s.%s"):format(logs, gate, ext)) or "")
+end
+
+local ran = {}
+for _, gate in ipairs(GATES) do
+    local gate_code = gate_file(gate, "code")
+    if gate_code == "3" then
         die(("The ci hub was still draining after %s seconds, so dev %s --remote did not run. See %s/%s.log. The worktree is left at %s."):format(
-            code,
+            gate_file(gate, "ran"),
             gate,
             logs,
             gate,
             wt
         ))
-    end
-    if code ~= 0 then
-        local err = trim(fs.read(logs .. "/" .. gate .. ".err") or "")
+    elseif gate_code ~= "0" then
         die(("The command dev %s --remote did not pass on this worktree: %s. See %s/%s.log. The worktree is left at %s."):format(
             gate,
-            err,
+            gate_file(gate, "err"),
             logs,
             gate,
             wt
         ))
     end
-    say(("The %s ci run is %s.\n"):format(gate, trim(ran)))
+    ran[gate] = gate_file(gate, "ran")
+end
+for _, gate in ipairs(GATES) do
+    say(("The %s ci run is %s.\n"):format(gate, ran[gate]))
 end
 local summary = ""
 for line in (fs.read(logs .. "/test.log") or ""):gmatch("[^\n]+") do
