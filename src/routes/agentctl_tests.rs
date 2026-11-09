@@ -11661,7 +11661,7 @@ fn the_calendar_grid_should_have_fixed_rows_and_scroll_inside_the_dialog() {
     assert!(rule(".log-custom-fields input {").contains("min-width: 0"));
     assert!(rule(".cal-scroll {").contains("overflow: auto"));
     assert!(rule(".cal-day {").contains("height: 120px"));
-    assert!(rule(".cal-day.cal-today {").contains("outline: 2px solid #f97316"));
+    assert!(rule(".cal-day.cal-today {").contains("outline: 2px solid var(--today-accent)"));
     assert!(rule(".cal-dialog {").contains("height: 100%"));
 }
 

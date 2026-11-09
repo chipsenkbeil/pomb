@@ -103,6 +103,49 @@
   --shadow-pop: rgba(0, 0, 0, 0.15);
   --shadow-panel: rgba(0, 0, 0, 0.12);
   --drift-bg: rgba(255, 170, 0, 0.12);
+  --surface: #ffffff;
+  --on-color: #ffffff;
+  --ink-strong: #111827;
+  --ink-soft: #374151;
+  --surface-faint: #f9fafb;
+  --status-ontime: #15803d;
+  --status-late: #b45309;
+  --status-upcoming: #1d4ed8;
+  --today-accent: #f97316;
+  --scrim-bg: rgba(17, 24, 39, 0.55);
+  --modal-shadow-color: rgba(0, 0, 0, 0.35);
+  --popover-shadow-color: rgba(0, 0, 0, 0.18);
+  --btn-shadow-color: rgba(0, 0, 0, 0.25);
+  --badge-shadow-color: rgba(0, 0, 0, 0.2);
+  --icon-on-bg: rgba(0, 0, 0, 0.08);
+  --badge-bg: #ff0000;
+  --kf-ink: #333333;
+  --kf-alert-border: #eed3d7;
+  --kf-alert-bg: #f2dede;
+  --kf-alert-ink: #b94a48;
+  --kf-divider: #e6e6e6;
+  --kf-danger: #d9534f;
+  --kf-primary: #2185d0;
+  --kf-success: #49a849;
+  --kf-rule: #e5e5e5;
+  --kf-ink-muted: #555555;
+  --kf-warn-border: #e69500;
+  --kf-warn-ink: #b86e00;
+  --kf-title-bg: #f4f4f4;
+  --kf-day-bg: #f5f5f5;
+  --kf-darkred: #8b0000;
+  --kf-ink-dim: #666666;
+  --kf-black: #000000;
+  --kf-rule-soft: #dddddd;
+  --kf-ink-dimmer: #999999;
+  --kf-selected-bg: #33aaff;
+  --kf-link: #2096c8;
+  --kf-input-border: #bbbbbb;
+  --kf-hover-bg: #f2f2f2;
+  --kf-ink-btn: #444444;
+  --kf-bar-border: #d4d4d4;
+  --kf-icon: #888888;
+  --kf-ink-strong: #222222;
 }
 
 * { box-sizing: border-box; }
@@ -6856,7 +6899,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .spent-print-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(17, 24, 39, 0.55);
+  background: var(--scrim-bg);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -6868,10 +6911,10 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .spent-print-overlay[hidden] { display: none; }
 
 .spent-print-sheet {
-  background: #ffffff;
-  color: #111827;
+  background: var(--surface);
+  color: var(--ink-strong);
   border-radius: 10px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 24px 60px var(--modal-shadow-color);
   width: min(1080px, 100%);
   max-height: calc(100vh - 8vh);
   display: flex;
@@ -6887,14 +6930,14 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   margin: 0;
   font-size: 1.3rem;
   font-weight: 600;
-  color: #111827;
+  color: var(--ink-strong);
 }
 
 .spent-print-btns {
   display: flex;
   gap: 0.5rem;
   padding: 0 1.5rem 0.75rem;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--divider);
 }
 
 .spent-print-btns .kf-btn { margin: 0; }
@@ -6931,20 +6974,20 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   gap: 1.5rem;
   margin: 0.75rem 0 1rem;
   font-size: 14px;
-  color: #374151;
+  color: var(--ink-soft);
 }
 .report-summary strong {
   font-size: 18px;
-  color: #111827;
+  color: var(--ink-strong);
 }
 .report-summary-item {
   display: flex;
   flex-direction: column;
 }
-.report-status-ontime { color: #15803d; }
-.report-status-late { color: #b45309; }
-.report-status-overdue { color: #dc2626; }
-.report-status-upcoming { color: #1d4ed8; }
+.report-status-ontime { color: var(--status-ontime); }
+.report-status-late { color: var(--status-late); }
+.report-status-overdue { color: var(--danger); }
+.report-status-upcoming { color: var(--status-upcoming); }
 /* KF-336: Board history report — chronological change feed. */
 .history-feed {
   display: flex;
@@ -6952,7 +6995,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .history-entry {
   padding: 0.75rem 0;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--divider);
 }
 .history-entry:last-child {
   border-bottom: none;
@@ -6964,7 +7007,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   margin-bottom: 0.25rem;
 }
 .history-avatar {
-  background: #e5e7eb;
+  background: var(--divider);
   width: 1.75rem;
   height: 1.75rem;
   font-size: 0.65rem;
@@ -6972,24 +7015,24 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .history-actor {
   font-size: 13px;
-  color: #6b7280;
+  color: var(--ink-subtle);
   font-weight: 600;
 }
 .history-time {
   margin-left: auto;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--ink-subtle);
   white-space: nowrap;
 }
 .history-text {
   font-size: 14px;
-  color: #111827;
+  color: var(--ink-strong);
   overflow-wrap: anywhere;
   margin-left: 2.25rem;
 }
 .history-comment {
   font-size: 14px;
-  color: #374151;
+  color: var(--ink-soft);
   margin: 0.25rem 0 0 2.25rem;
   white-space: pre-wrap;
 }
@@ -6999,7 +7042,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .history-compare summary {
   cursor: pointer;
-  color: #6b7280;
+  color: var(--ink-subtle);
   font-size: 12px;
   margin-bottom: 0.25rem;
 }
@@ -7010,8 +7053,8 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   position: relative;
   width: 100%;
   height: 100%;
-  background: #fff;
-  color: #111827;
+  background: var(--surface);
+  color: var(--ink-strong);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -7021,8 +7064,8 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid #e5e7eb;
-  background: #f9fafb;
+  border-bottom: 1px solid var(--divider);
+  background: var(--surface-faint);
 }
 .cal-topbar-left, .cal-topbar-right, .cal-topbar-center {
   display: flex;
@@ -7033,17 +7076,17 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .cal-topbar-right { justify-content: flex-end; }
 .cal-tool {
   padding: 0.3rem 0.7rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--field-border);
   border-radius: 4px;
-  background: #fff;
-  color: #374151;
+  background: var(--surface);
+  color: var(--ink-soft);
   font-size: 13px;
   text-decoration: none;
   cursor: pointer;
 }
-.cal-tool:hover:not(:disabled) { background: #f3f4f6; }
+.cal-tool:hover:not(:disabled) { background: var(--divider-soft); }
 .cal-tool:disabled, .cal-icon:disabled { opacity: 0.5; cursor: default; }
-.cal-tool[aria-expanded="true"] { background: #e5e7eb; }
+.cal-tool[aria-expanded="true"] { background: var(--divider); }
 .cal-icon, .cal-nav {
   display: inline-flex;
   align-items: center;
@@ -7053,11 +7096,11 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   border: 0;
   border-radius: 4px;
   background: transparent;
-  color: #374151;
+  color: var(--ink-soft);
   font-size: 20px;
   cursor: pointer;
 }
-.cal-icon:hover:not(:disabled), .cal-nav:hover { background: #e5e7eb; }
+.cal-icon:hover:not(:disabled), .cal-nav:hover { background: var(--divider); }
 .cal-title {
   min-width: 9rem;
   text-align: center;
@@ -7076,24 +7119,24 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   max-height: 70vh;
   overflow-y: auto;
   padding: 0.75rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--field-border);
   border-radius: 6px;
-  background: #fff;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  background: var(--surface);
+  box-shadow: 0 6px 20px var(--popover-shadow-color);
   font-size: 13px;
 }
 .cal-pop[hidden] { display: none; }
 .cal-pop-wide { width: 520px; max-width: 94%; }
 .cal-pop-right { left: auto; right: 0.75rem; }
 .cal-pop-title { font-weight: 700; font-size: 13px; }
-.cal-pop label { display: flex; flex-direction: column; gap: 0.2rem; color: #6b7280; }
-.cal-pop .cal-check span { color: #111827; }
-.cal-pop .cal-board-row { flex-direction: row; align-items: center; gap: 0.4rem; color: #111827; }
+.cal-pop label { display: flex; flex-direction: column; gap: 0.2rem; color: var(--ink-subtle); }
+.cal-pop .cal-check span { color: var(--ink-strong); }
+.cal-pop .cal-board-row { flex-direction: row; align-items: center; gap: 0.4rem; color: var(--ink-strong); }
 .cal-feed-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
 .cal-feed-row { display: flex; align-items: center; gap: 0.35rem; }
 .cal-feed-name { flex: 0 0 5.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cal-feed-url { flex: 1 1 auto; min-width: 0; font-size: 12px; }
-.cal-hint { font-size: 12px; color: #6b7280; margin: 0; }
+.cal-hint { font-size: 12px; color: var(--ink-subtle); margin: 0; }
 .cal-body {
   display: flex;
   flex: 1 1 auto;
@@ -7105,12 +7148,12 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   flex-direction: column;
   gap: 0.75rem;
   padding: 0.75rem;
-  border-right: 1px solid #e5e7eb;
+  border-right: 1px solid var(--divider);
   overflow-y: auto;
   font-size: 13px;
 }
 .cal-filter[hidden] { display: none; }
-.cal-filter label { display: flex; flex-direction: column; gap: 0.2rem; color: #6b7280; }
+.cal-filter label { display: flex; flex-direction: column; gap: 0.2rem; color: var(--ink-subtle); }
 .cal-filter select { width: 100%; }
 .cal-scroll {
   flex: 1 1 auto;
@@ -7125,29 +7168,29 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   grid-template-rows: 28px;
   grid-auto-rows: 120px;
   min-width: 700px;
-  border-top: 1px solid #e5e7eb;
-  border-left: 1px solid #e5e7eb;
+  border-top: 1px solid var(--divider);
+  border-left: 1px solid var(--divider);
 }
 .calendar-grid > .cal-dow { height: 28px; }
 .cal-dow {
   padding: 0.4rem 0.5rem;
   font-size: 12px;
   font-weight: 600;
-  color: #6b7280;
-  border-right: 1px solid #e5e7eb;
-  border-bottom: 1px solid #e5e7eb;
-  background: #f9fafb;
+  color: var(--ink-subtle);
+  border-right: 1px solid var(--divider);
+  border-bottom: 1px solid var(--divider);
+  background: var(--surface-faint);
 }
 .cal-day {
   box-sizing: border-box;
   height: 120px;
   padding: 0.25rem;
   overflow: hidden auto;
-  border-right: 1px solid #e5e7eb;
-  border-bottom: 1px solid #e5e7eb;
-  background: #fff;
+  border-right: 1px solid var(--divider);
+  border-bottom: 1px solid var(--divider);
+  background: var(--surface);
 }
-.cal-day.cal-outside { background: #f3f4f6; color: #9ca3af; }
+.cal-day.cal-outside { background: var(--divider-soft); color: var(--ink-faint); }
 .cal-day.cal-outside .cal-chip { opacity: 0.6; }
 .cal-daynum {
   display: flex;
@@ -7155,15 +7198,15 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   align-items: baseline;
   gap: 0.4rem;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--ink-subtle);
   margin-bottom: 0.25rem;
 }
-.cal-day.cal-outside .cal-daynum { color: #9ca3af; }
-.cal-day.cal-today { outline: 2px solid #f97316; outline-offset: -2px; }
+.cal-day.cal-outside .cal-daynum { color: var(--ink-faint); }
+.cal-day.cal-today { outline: 2px solid var(--today-accent); outline-offset: -2px; }
 .cal-today-label {
   margin-right: auto;
   font-weight: 700;
-  color: #f97316;
+  color: var(--today-accent);
 }
 .cal-chip {
   border-radius: 4px;
@@ -7216,12 +7259,12 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
   font-size: 14px;
   line-height: 18px;
-  color: #333333;
+  color: var(--kf-ink);
 }
 .kf-alert-danger {
-  border-color: #eed3d7;
-  background: #f2dede;
-  color: #b94a48;
+  border-color: var(--kf-alert-border);
+  background: var(--kf-alert-bg);
+  color: var(--kf-alert-ink);
 }
 .kf-alert p { margin: 0 0 9px; }
 /* KF-473: a spaceless board name breaks inside the alert instead of
@@ -7231,7 +7274,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .kf-hr {
   margin: 0 0 8px;
   border: none;
-  border-top: 1px solid #e6e6e6;
+  border-top: 1px solid var(--kf-divider);
 }
 .kf-dialog-actions {
   display: flex;
@@ -7248,11 +7291,11 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .kf-btn-large + .kf-btn-large { margin-left: 5px; }
 .kf-btn-danger,
 .kf-btn-primary {
-  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
-  color: #ffffff;
+  box-shadow: 0 3px 2px -2px var(--btn-shadow-color);
+  color: var(--on-color);
 }
-.kf-btn-danger { border-color: #d9534f; background: #d9534f; }
-.kf-btn-primary { border-color: #2185d0; background: #2185d0; }
+.kf-btn-danger { border-color: var(--kf-danger); background: var(--kf-danger); }
+.kf-btn-primary { border-color: var(--kf-primary); background: var(--kf-primary); }
 .kf-layout-intro-list { margin: 0; padding-left: 25px; }
 .kf-layout-intro .kf-alert { margin-bottom: 18px; }
 .kf-btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0.75rem 0; }
@@ -7263,15 +7306,15 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .kf-btn-group > .kf-btn:first-child { border-radius: 3px 0 0 3px; }
 .kf-btn-group > .kf-btn:last-child { border-radius: 0 3px 3px 0; }
 .kf-btn-active {
-  border-color: #49a849;
-  background: #49a849;
-  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
-  color: #ffffff;
+  border-color: var(--kf-success);
+  background: var(--kf-success);
+  box-shadow: 0 3px 2px -2px var(--btn-shadow-color);
+  color: var(--on-color);
 }
 .site-footer {
   height: 30px;
-  background: #333333;
-  color: #ffffff;
+  background: var(--kf-ink);
+  color: var(--on-color);
   font: 13px/30px Arial, "Helvetica Neue", Helvetica, sans-serif;
   text-align: center;
 }
@@ -7324,17 +7367,17 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   z-index: 2;
   box-sizing: border-box;
   width: 250px;
-  background: #ffffff;
+  background: var(--surface);
   border-radius: 2px;
-  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
-  color: #333333;
+  box-shadow: 0 2px 9px 4px var(--popover-shadow-color);
+  color: var(--kf-ink);
   font-size: 14px;
 }
 .addMembersPop[hidden] { display: none; }
 .addMembersPop-head {
   position: relative;
   height: 32px;
-  border-bottom: 1px solid #e5e5e5;
+  border-bottom: 1px solid var(--kf-rule);
   font-weight: 700;
   line-height: 32px;
   text-align: center;
@@ -7348,7 +7391,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   padding: 0;
   border: 0;
   background: transparent;
-  color: #555555;
+  color: var(--kf-ink-muted);
   cursor: pointer;
 }
 .addMembersPop-search {
@@ -7358,7 +7401,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   height: 33px;
   padding: 0 6px;
   border: 0;
-  border-bottom: 1px solid #e5e5e5;
+  border-bottom: 1px solid var(--kf-rule);
   font: inherit;
 }
 .addMembersPop-row {
@@ -7375,9 +7418,9 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   justify-content: center;
   width: 24px;
   height: 24px;
-  border: 2px solid #e69500;
+  border: 2px solid var(--kf-warn-border);
   border-radius: 50%;
-  color: #b86e00;
+  color: var(--kf-warn-ink);
   font-size: 10px;
   font-weight: 700;
 }
@@ -7406,7 +7449,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 #duedate-dialog.dlg-overlay--popover .dlg-field > span {
   height: 20px;
   margin: 0 0 3px;
-  color: #333333;
+  color: var(--kf-ink);
   font-size: 13px;
   font-weight: 700;
   line-height: 20px;
@@ -7441,9 +7484,9 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 
 /* KF-527: the Edit due date popover's shadow, header band, calendar day
    cells and Repeat checkbox (golden dark/modal/23). */
-#duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg { box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18); }
-#duedate-dialog.dlg-overlay--popover .dlg-title { border-radius: 2px 2px 0 0; background: #f4f4f4; }
-#duedate-dialog.dlg-overlay--popover .mt-cal-day:not(.selected):not(.other-month) { background: #f5f5f5; }
+#duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg { box-shadow: 0 2px 9px 4px var(--popover-shadow-color); }
+#duedate-dialog.dlg-overlay--popover .dlg-title { border-radius: 2px 2px 0 0; background: var(--kf-title-bg); }
+#duedate-dialog.dlg-overlay--popover .mt-cal-day:not(.selected):not(.other-month) { background: var(--kf-day-bg); }
 #duedate-dialog.dlg-overlay--popover #dd-repeat { width: 15px; height: 15px; }
 
 /* KF-528: a subtask due date shows Date, Time, the calendar and Add only, in
@@ -7466,15 +7509,15 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   width: 17px;
   height: 17px;
   border-radius: 50%;
-  background: #ff0000;
-  box-shadow: 0 3px 5px -1px rgba(0, 0, 0, 0.2);
-  color: #ffffff;
+  background: var(--badge-bg);
+  box-shadow: 0 3px 5px -1px var(--badge-shadow-color);
+  color: var(--on-color);
   font-size: 10px;
   font-weight: 700;
   line-height: 10px;
 }
 .notification-badge[hidden] { display: none; }
-.card-ico-time:has(.card-live-inc) { color: #8b0000; padding-right: 12.37px; }
+.card-ico-time:has(.card-live-inc) { color: var(--kf-darkred); padding-right: 12.37px; }
 
 /* KF-547: the time estimate editor is a 184x130 popover (golden modal/27):
    32 px title, a 164x30 input, a rule, and an 82x30 Add button. */
@@ -7486,7 +7529,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   padding: 0 10px;
   border: 0;
   border-radius: 2px;
-  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 2px 9px 4px var(--popover-shadow-color);
 }
 #estimate-dialog .dlg-title {
   position: relative;
@@ -7503,16 +7546,16 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   width: 164px;
   height: 30px;
   padding: 3px;
-  border: 1px solid #666666;
+  border: 1px solid var(--kf-ink-dim);
   border-radius: 0;
-  color: #000000;
+  color: var(--kf-black);
   font-size: 14px;
   text-align: center;
 }
 #estimate-dialog .dlg-actions {
   margin: 8px -10px 0;
   padding: 8px 10px 0;
-  border-top: 1px solid #dddddd;
+  border-top: 1px solid var(--kf-rule-soft);
 }
 #estimate-dialog .est-input:focus { outline: none; }
 #estimate-dialog #est-add { width: 82px; height: 30px; padding: 0; }
@@ -7521,29 +7564,29 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 /* KF-546: the due popover's own text and calendar colours (golden modal/22
    and modal/23): 2 px corners, #333 body text, black inputs on a #666
    border, bold 14 px title, 12 px #666 days, a #33aaff selected day. */
-#duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg { border-radius: 2px; color: #333333; }
+#duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg { border-radius: 2px; color: var(--kf-ink); }
 #duedate-dialog.dlg-overlay--popover .dlg-row input {
-  border: 1px solid #666666;
-  color: #000000;
+  border: 1px solid var(--kf-ink-dim);
+  color: var(--kf-black);
   font-size: 14px;
 }
 #duedate-dialog.dlg-overlay--popover .mt-cal-head span {
-  color: #333333;
+  color: var(--kf-ink);
   font-size: 14px;
   font-weight: 700;
 }
 #duedate-dialog.dlg-overlay--popover .mt-cal-dow {
-  color: #999999;
+  color: var(--kf-ink-dimmer);
   font-size: 12px;
   font-weight: 700;
 }
 #duedate-dialog.dlg-overlay--popover .mt-cal-day { font-size: 12px; }
 #duedate-dialog.dlg-overlay--popover .mt-cal-day:not(.selected) { border-radius: 0; }
-#duedate-dialog.dlg-overlay--popover .mt-cal-day:not(.selected):not(.other-month) { color: #666666; }
+#duedate-dialog.dlg-overlay--popover .mt-cal-day:not(.selected):not(.other-month) { color: var(--kf-ink-dim); }
 #duedate-dialog.dlg-overlay--popover .mt-cal-day.selected {
   border-radius: 3px;
-  background: #33aaff;
-  color: #ffffff;
+  background: var(--kf-selected-bg);
+  color: var(--on-color);
 }
 
 /* KF-554: General tab (golden settings/02): 18 px bold labels, 16 px
@@ -7555,14 +7598,14 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   font-size: 18px;
   font-weight: 700;
   line-height: 27px;
-  color: #333333;
+  color: var(--kf-ink);
 }
 .kf-btn-link {
   margin: 0;
   border-color: transparent;
   background: none;
   box-shadow: none;
-  color: #2096c8;
+  color: var(--kf-link);
   font-weight: 400;
 }
 .kf-setting-text {
@@ -7579,7 +7622,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   font-size: 22px;
   font-weight: 700;
   line-height: 33px;
-  color: #333333;
+  color: var(--kf-ink);
 }
 .kf-general-actions { display: flex; gap: 5px; }
 .kf-general-actions .kf-btn-large { font-family: system-ui, Arial, "Helvetica Neue", Helvetica, sans-serif; }
@@ -7589,10 +7632,10 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   flex: none;
   font-size: 12px;
   line-height: 1.4rem;
-  color: #666666;
+  color: var(--kf-ink-dim);
   white-space: nowrap;
 }
-.tm-subtask-due.tm-due-overdue { color: #8b0000; }
+.tm-subtask-due.tm-due-overdue { color: var(--kf-darkred); }
 
 /* KF-481: quick-add Labels popover, inline Description and More menu. */
 .addLabelsPop { left: 129px; top: 180px; width: 300px; }
@@ -7603,7 +7646,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   height: 30px;
   box-sizing: border-box;
   padding: 0 6px;
-  border: 1px solid #bbbbbb;
+  border: 1px solid var(--kf-input-border);
   border-right: 0;
   font: inherit;
 }
@@ -7612,32 +7655,32 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   height: 30px;
   box-sizing: border-box;
   padding: 0;
-  border: 1px solid #bbbbbb;
-  background: #f2f2f2;
-  color: #444444;
+  border: 1px solid var(--kf-input-border);
+  background: var(--kf-hover-bg);
+  color: var(--kf-ink-btn);
   cursor: pointer;
 }
 .addLabelsPop-chosen, .addLabelsPop-sugg { padding: 6px 10px; }
 .addLabelsPop-chosen:empty { padding: 0; }
 .addLabelsPop-sugg[hidden] { display: none; }
 .addLabelsPop { padding-bottom: 10px; }
-.addTaskDialog-iconBtn--on { background: rgba(0, 0, 0, 0.08); }
+.addTaskDialog-iconBtn--on { background: var(--icon-on-bg); }
 .addDesc { margin-top: 12px; }
 .addDesc[hidden], .addDesc-text[hidden], .addDesc-preview[hidden] { display: none; }
-.addDesc-title { color: #555555; font-size: 12px; margin-bottom: 6px; }
-.addDesc-bar { display: flex; align-items: center; border-bottom: 1px solid #d4d4d4; }
+.addDesc-title { color: var(--kf-ink-muted); font-size: 12px; margin-bottom: 6px; }
+.addDesc-bar { display: flex; align-items: center; border-bottom: 1px solid var(--kf-bar-border); }
 .addDesc-tab {
   padding: 8px 18px;
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
-  color: #888888;
+  color: var(--kf-icon);
   font: inherit;
   font-weight: 700;
   text-transform: uppercase;
   cursor: pointer;
 }
-.addDesc-tab--on { border-bottom-color: #222222; color: #222222; }
+.addDesc-tab--on { border-bottom-color: var(--kf-ink-strong); color: var(--kf-ink-strong); }
 .addDesc-tools { margin-left: auto; display: flex; gap: 6px; }
 .addDesc-tools button {
   width: 24px;
@@ -7645,7 +7688,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   padding: 0;
   border: 0;
   background: transparent;
-  color: #555555;
+  color: var(--kf-ink-muted);
   font-size: 14px;
   cursor: pointer;
 }
@@ -7656,7 +7699,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   min-height: 50px;
   padding: 14px 16px;
   border: 0;
-  background: #ffffff;
+  background: var(--surface);
   font: inherit;
   font-size: 14px;
   white-space: pre-wrap;
@@ -7667,16 +7710,16 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   overflow-wrap: anywhere;
   font-size: 14px;
   line-height: 20px;
-  color: #333333;
+  color: var(--kf-ink);
 }
 .addDesc-preview .tm-md h3 { margin: 0.2rem 0 0.6rem; font-size: 1rem; }
 .addMoreMenu {
   position: absolute;
   z-index: 3;
   width: 198px;
-  background: #ffffff;
+  background: var(--surface);
   border-radius: 2px;
-  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 2px 9px 4px var(--popover-shadow-color);
 }
 .addMoreMenu[hidden] { display: none; }
 .addMoreMenu button {
@@ -7688,13 +7731,13 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   padding: 0 14px;
   border: 0;
   background: transparent;
-  color: #333333;
+  color: var(--kf-ink);
   font: inherit;
   font-size: 14px;
   text-align: left;
   cursor: pointer;
 }
-.addMoreMenu button:hover { background: #f2f2f2; }
+.addMoreMenu button:hover { background: var(--kf-hover-bg); }
 .addMoreMenu svg { color: #888888; flex: none; }
 
 .board-settings-page .bshell-content a:not(.kf-btn) { color: #2096c8; text-decoration: none; }
