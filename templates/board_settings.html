@@ -85,6 +85,23 @@
         </table>
         {% endif %}
       </section>
+      {% if !limit_groups.is_empty() %}
+      <section class="settings-section" id="settings-limit-groups">
+        <h2>Limit groups</h2>
+        <table class="bshell-table">
+          <thead><tr><th>Columns</th><th>Limit</th><th>Cards</th></tr></thead>
+          <tbody>
+            {% for g in limit_groups %}
+            <tr>
+              <td>{{ g.columns }}</td>
+              <td>{{ g.limit }}</td>
+              <td>{{ g.count }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+      {% endif %}
       {% if swimlanes.len() > 1 %}
       <section class="settings-section">
         <h2>Swimlanes</h2>

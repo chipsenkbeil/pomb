@@ -14,6 +14,7 @@ struct Fixture {
     app: axum::Router,
     db: Db,
     token: String,
+    cookie: String,
     board: String,
     columns: [String; 4],
 }
@@ -29,6 +30,7 @@ impl Fixture {
             .map(|name| db.create_column(&board, name, None).expect("column"));
         let (record, token) = new_api_token_record(&account, "agent", AuthScope::Admin, None);
         db.create_api_token(&record).expect("token");
+        let session = db.create_session(&account, "").expect("session");
         let app = router(
             AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()),
         );
@@ -37,6 +39,7 @@ impl Fixture {
             app,
             db,
             token,
+            cookie: format!("session={session}"),
             board,
             columns,
         }
@@ -76,6 +79,19 @@ impl Fixture {
         let uri = format!("/api/tasks/{task}/move?force={forced}");
         let body = json!({"column_id": self.columns[column]});
         self.send("POST", &uri, Some(body)).await
+    }
+
+    async fn page(&self, uri: &str) -> String {
+        let read = call(
+            &self.app,
+            "GET",
+            uri,
+            &[("cookie", self.cookie.as_str())],
+            None,
+        )
+        .await;
+        assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+        read.body.as_str().expect("html").to_string()
     }
 
     async fn board_detail(&self) -> Value {
@@ -296,4 +312,57 @@ async fn column_move_should_report_the_group_columns_in_the_new_board_order() {
         groups[0]["column_ids"],
         json!([fx.columns[1], fx.columns[0]])
     );
+}
+
+#[tokio::test]
+async fn board_page_should_show_a_limit_group_count_against_its_limit_on_its_columns() {
+    let fx = Fixture::new();
+    let made = fx.group(&[1, 2], 4).await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    let group = made.body["id"].as_str().expect("id").to_string();
+    fx.task(1).await;
+    fx.task(2).await;
+    fx.task(0).await;
+
+    let page = fx.page(&format!("/b/{}", fx.board)).await;
+    assert_eq!(page.matches("columnHeader-groupCount\"").count(), 2);
+    assert_eq!(
+        page.matches("title=\"Limit group\">2 / 4</span>").count(),
+        2
+    );
+    assert_eq!(
+        page.matches(&format!("data-group-id=\"{group}\"")).count(),
+        2
+    );
+    assert_eq!(page.matches("data-group-limit=\"4\"").count(), 2);
+}
+
+#[tokio::test]
+async fn board_page_should_mark_a_limit_group_over_its_limit() {
+    let fx = Fixture::new();
+    fx.group(&[1, 2], 2).await;
+    for column in [1, 2, 2] {
+        let task = fx.task(0).await;
+        let moved = fx.move_to(&task, column, true).await;
+        assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
+    }
+
+    let page = fx.page(&format!("/b/{}", fx.board)).await;
+    assert_eq!(page.matches("columnHeader-groupCount--over").count(), 2);
+    assert!(page.contains("columnHeader-groupCount--over\" title=\"Limit group\">3 / 2</span>"));
+}
+
+#[tokio::test]
+async fn board_settings_should_list_each_limit_group_with_its_columns_and_limit() {
+    let fx = Fixture::new();
+    let uri = format!("/b/{}/settings/layout", fx.board);
+    assert!(!fx.page(&uri).await.contains("Limit groups"));
+
+    fx.group(&[1, 2], 5).await;
+    fx.task(1).await;
+    let page = fx.page(&uri).await;
+    assert!(page.contains("<h2>Limit groups</h2>"));
+    assert!(page.contains("<td>Two, Three</td>"));
+    assert!(page.contains("<td>5</td>"));
+    assert!(page.contains("<td>1</td>"));
 }

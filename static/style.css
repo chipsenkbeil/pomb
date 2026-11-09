@@ -807,6 +807,23 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   white-space: nowrap;
 }
 
+.columnHeader-groupCount {
+  position: relative;
+  top: 1px;
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 700;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
+.columnHeader-groupCount--over {
+  color: var(--board-headerWarningTextColor);
+}
+
+body.dark .columnHeader-groupCount:not(.columnHeader-groupCount--over) { color: #cccccc; }
+
 /* KF-371: an expanded header's Column sum (Task count or Estimated hours)
    ends the title row, so the name ellipsizes before it; the KF-313 rule
    on its right separates it from the "+". */

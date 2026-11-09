@@ -464,6 +464,7 @@
             data-estimate-minutes="{{ col.estimate_minutes }}"
             data-wip-limit="{% if let Some(lim) = col.wip_limit %}{{ lim }}{% endif %}"
             data-wip-unit="{{ col.limit_unit }}"
+            {% if let Some(group) = col.group %}data-group-id="{{ group.id }}" data-group-limit="{{ group.limit }}"{% endif %}
             data-is-done="{% if col.is_done %}1{% else %}0{% endif %}"
             data-is-blocked="{% if col.is_blocked %}1{% else %}0{% endif %}"
             data-stage="{{ col.stage }}"
@@ -484,6 +485,9 @@
             <span class="columnHeader-name">{{ col.name }}</span>{% if col.watched %}<svg class="columnHeader-watch" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" role="img" aria-label="Watched"><title>Watched</title><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>{% endif %}
             {% if let Some(lim) = col.wip_limit %}
             <span class="columnHeader-count"{% if col.over_limit %} title="*LIMIT EXCEEDED*"{% endif %}>{{ col.limit_label }}</span>
+            {% endif %}
+            {% if let Some(group) = col.group %}
+            <span class="columnHeader-groupCount{% if group.over %} columnHeader-groupCount--over{% endif %}" title="Limit group">{{ group.label }}</span>
             {% endif %}
             <!-- KF-316: an expanded header shows no count cell for Column
                  sum None; only a WIP column carries the inline "n / m".

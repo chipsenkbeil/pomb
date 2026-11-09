@@ -297,6 +297,23 @@
     badge.textContent = badge.dataset.columnSum === 'hours' ? formatColumnHours(minutes) : String(count);
   }
 
+  const refreshGroupCounts = () => {
+    const headers = document.querySelectorAll('.columnHeader[data-group-id]');
+    const totals = new Map();
+    headers.forEach((th) => {
+      const id = th.dataset.groupId;
+      totals.set(id, (totals.get(id) || 0) + (parseInt(th.dataset.taskCount, 10) || 0));
+    });
+    headers.forEach((th) => {
+      const el = th.querySelector('.columnHeader-groupCount');
+      if (!el) return;
+      const count = totals.get(th.dataset.groupId);
+      const limit = parseInt(th.dataset.groupLimit, 10);
+      el.textContent = count + ' / ' + limit;
+      el.classList.toggle('columnHeader-groupCount--over', count > limit);
+    });
+  };
+
   // Shift a column header's count by `delta` tasks and its estimate total
   // by `minutes`.
   function updateColumnCount(colId, delta, minutes) {
@@ -307,6 +324,7 @@
     th.dataset.taskCount = String(count);
     var estimate = (parseInt(th.dataset.estimateMinutes, 10) || 0) + (minutes || 0);
     th.dataset.estimateMinutes = String(estimate);
+    refreshGroupCounts();
     // KF-161: if a filter is active, the header shows the visible subset —
     // recompute it rather than stamping the true total.
     if (window.BoardChrome && BoardChrome.isFiltering && BoardChrome.isFiltering()) {

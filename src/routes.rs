@@ -4819,6 +4819,8 @@ struct ColumnHead {
     limit_label: String,
     count: usize,
     over_limit: bool,
+    /// The limit group the column belongs to, if any.
+    group: Option<ColumnGroup>,
     /// Tasks in this column whose due timestamp has passed and that are not completed (overdue
     /// means the due time has passed and the task is not completed), for the collapsed-strip "N
     /// overdue task(s)" indicator.
@@ -4844,6 +4846,19 @@ struct ColumnHead {
     /// Each of the board's highlighted labels with the number of the column's tasks that carry
     /// it.
     marks: Vec<ColumnMark>,
+}
+
+/// The limit group of a column header, with the group's cards counted across all its columns.
+#[derive(Clone, Debug)]
+struct ColumnGroup {
+    /// The group's id.
+    id: String,
+    /// The most cards the group's columns hold together.
+    limit: i64,
+    /// The group's "used / limit" text.
+    label: String,
+    /// Whether the group holds more cards than its limit.
+    over: bool,
 }
 
 impl ColumnHead {
@@ -5808,6 +5823,7 @@ fn board_template(
 
     let label_settings = LabelSettings::from_config(&board.row().config_json);
     let unit = EstimateUnit::of(board.row());
+    let groups = limit_groups::LimitGroupView::all(db, &board.row().limit_groups)?;
     let column_heads: Vec<ColumnHead> = columns
         .iter()
         .map(|col| {
@@ -5866,6 +5882,15 @@ fn board_template(
                 limit_label,
                 count,
                 over_limit,
+                group: groups
+                    .iter()
+                    .find(|group| group.column_ids.contains(&col.id))
+                    .map(|group| ColumnGroup {
+                        id: group.id.clone(),
+                        limit: group.limit,
+                        label: group.label(),
+                        over: group.is_over(),
+                    }),
                 overdue_count,
                 is_done: col.is_done,
                 stage: col
@@ -22926,6 +22951,8 @@ struct BoardSettingsTemplate {
     /// Top bar data.
     chrome: ShellChrome,
     columns: Vec<SettingsColumnView>,
+    /// The board's limit groups.
+    limit_groups: Vec<SettingsGroupView>,
     swimlanes: Vec<SettingsLaneView>,
     default_color_label: String,
     done_column_name: String,
@@ -23198,6 +23225,17 @@ struct SettingsColumnView {
     collapsed: bool,
 }
 
+/// A limit group as the board settings page lists it.
+#[derive(Clone, Debug)]
+struct SettingsGroupView {
+    /// The names of the columns the group covers, in board order.
+    columns: String,
+    /// The most cards the columns hold together.
+    limit: i64,
+    /// The cards the columns hold now.
+    count: usize,
+}
+
 #[derive(Clone, Debug)]
 struct SettingsLaneView {
     name: String,
@@ -23345,6 +23383,21 @@ fn board_settings_context(
             collapsed: c.collapsed,
         })
         .collect();
+    let limit_groups: Vec<SettingsGroupView> =
+        limit_groups::LimitGroupView::all(db, &board.limit_groups)?
+            .iter()
+            .map(|group| SettingsGroupView {
+                columns: group
+                    .column_ids
+                    .iter()
+                    .filter_map(|id| columns.iter().find(|c| &c.id == id))
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                limit: group.limit,
+                count: group.count,
+            })
+            .collect();
     let swimlanes: Vec<SettingsLaneView> = db
         .list_swimlanes(board_id)
         .map_err(AppError::from)?
@@ -23425,6 +23478,7 @@ fn board_settings_context(
         copy_boards,
         chrome,
         columns,
+        limit_groups,
         swimlanes,
         default_color_label,
         done_column_name,
@@ -32268,6 +32322,7 @@ mod tests {
                 limit_label: String::new(),
                 count: 0,
                 over_limit: false,
+                group: None,
                 overdue_count: usize::from(i == 1),
                 is_done: i == 4,
                 is_blocked: false,

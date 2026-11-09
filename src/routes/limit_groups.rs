@@ -14,18 +14,28 @@ use crate::models::{LimitGroup, LimitUnit};
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub(crate) struct LimitGroupView {
     /// The group's id.
-    id: String,
+    pub(crate) id: String,
     /// The ids of the columns the group covers, in board order.
-    column_ids: Vec<String>,
+    pub(crate) column_ids: Vec<String>,
     /// The most cards the columns of the group hold together.
-    limit: i64,
+    pub(crate) limit: i64,
     /// What `limit` counts: always `count`, since a limit group counts cards only.
     limit_unit: LimitUnit,
     /// The cards the columns of the group hold now.
-    count: usize,
+    pub(crate) count: usize,
 }
 
 impl LimitGroupView {
+    /// Returns the "used / limit" text of the group.
+    pub(crate) fn label(&self) -> String {
+        format!("{} / {}", self.count, self.limit)
+    }
+
+    /// Reports whether the group holds more cards than its limit.
+    pub(crate) fn is_over(&self) -> bool {
+        i64::try_from(self.count).is_ok_and(|count| count > self.limit)
+    }
+
     /// Returns the view of `group` with the cards its columns hold now.
     fn new(db: &AccountDb, group: &LimitGroup) -> Result<Self, AppError> {
         Ok(Self {
