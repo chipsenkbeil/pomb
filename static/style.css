@@ -198,6 +198,18 @@
   --black-10: rgba(0, 0, 0, 0.1);
   --black-14: rgba(0, 0, 0, 0.14);
   --black-22: rgba(0, 0, 0, 0.22);
+  --black-098: rgba(0, 0, 0, 0.098);
+  --black-082: rgba(0, 0, 0, 0.082);
+  --menu-bg: #f7f7f7;
+  --menu-ink: rgba(66, 66, 66, 0.9);
+  --menu-head-bg: #ecebeb;
+  --switch-off-track: #9e9e9e;
+  --switch-on-track: #f9c243;
+  --switch-on-knob: #f5a033;
+  --tab-active-bg: #e0f2fe;
+  --tab-active-ink: #0369a1;
+  --toggle-on-bg: #22c55e;
+  --info-border: #bfdbfe;
   --black-50: rgba(0, 0, 0, 0.5);
   --bshell-edge: #d6d6d6;
   --bshell-bg: #d3e8f2;
@@ -5236,9 +5248,9 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   padding: 0 0 7px;
   border: none;
   border-radius: 0;
-  background: #f7f7f7;
-  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
-  color: rgba(66, 66, 66, 0.9);
+  background: var(--menu-bg);
+  box-shadow: 0 2px 9px 4px var(--popover-shadow-color);
+  color: var(--menu-ink);
   font-size: 15px;
 }
 .board-menu-head {
@@ -5246,8 +5258,8 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   flex: none;
   height: 35px;
   margin-bottom: 8px;
-  background: #ecebeb;
-  color: #333333;
+  background: var(--menu-head-bg);
+  color: var(--text-charcoal);
   font-weight: 700;
   line-height: 35px;
   text-align: center;
@@ -5265,7 +5277,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   height: 29px;
   padding: 0;
   border-radius: 50%;
-  color: #000000;
+  color: var(--kf-black);
   opacity: 0.5;
 }
 #reports-submenu .board-menu-back { right: auto; left: 4px; }
@@ -5282,7 +5294,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   font-size: 15px;
 }
 #board-menu button:hover,
-#reports-submenu button:hover { background: rgba(0, 0, 0, 0.06); }
+#reports-submenu button:hover { background: var(--hover-shade); }
 /* KanbanFlow's taller layout and settings glyphs give those rows 36px and
    37px. */
 #board-menu [data-bm="layout"] { height: 36px; }
@@ -5304,7 +5316,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   flex: none;
   height: 1px;
   margin: 7px 0;
-  background: #e6e6e6;
+  background: var(--kf-divider);
 }
 /* KanbanFlow's switch: a 38x15 track, #9e9e9e off and #f9c243 on, under a
    19.5px knob, #fafafa off and #f5a033 on. */
@@ -5315,7 +5327,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   height: 15px;
   margin-right: 3px;
   border-radius: 8px;
-  background: #9e9e9e;
+  background: var(--switch-off-track);
   transition: background 0.15s;
 }
 .menu-switch-knob {
@@ -5325,15 +5337,15 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   width: 19.5px;
   height: 19.5px;
   border-radius: 50%;
-  background: #fafafa;
-  box-shadow: 0 3px 1px -2px rgba(0, 0, 0, 0.14), 0 2px 2px 0 rgba(0, 0, 0, 0.098),
-    0 0 5px 0 rgba(0, 0, 0, 0.082);
+  background: var(--panel-bg);
+  box-shadow: 0 3px 1px -2px var(--black-14), 0 2px 2px 0 var(--black-098),
+    0 0 5px 0 var(--black-082);
   transition: left 0.15s;
 }
-#board-menu [aria-checked="true"] .menu-switch { background: #f9c243; }
+#board-menu [aria-checked="true"] .menu-switch { background: var(--switch-on-track); }
 #board-menu [aria-checked="true"] .menu-switch-knob {
   left: 18.5px;
-  background: #f5a033;
+  background: var(--switch-on-knob);
 }
 
 /* KF-353 supersedes KF-183's checkmark: the toggle switches now show the
@@ -5484,36 +5496,36 @@ body.large-names .card-title { font-size: 14px; }
 .dlg-timer-settings { width: min(640px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
 .dlg-timer-settings .dlg-title { display: flex; align-items: center; justify-content: space-between; }
 .timer-settings-body { display: flex; gap: 1rem; min-height: 320px; flex: 1; overflow: hidden; }
-.timer-settings-tabs { display: flex; flex-direction: column; gap: 0.15rem; min-width: 9.5rem; border-right: 1px solid #e5e7eb; padding-right: 0.8rem; }
-.ts-tab { text-align: left; background: none; border: none; border-radius: 6px; padding: 0.5rem 0.7rem; font-size: 0.92rem; cursor: pointer; color: #374151; }
-.ts-tab:hover { background: #f3f4f6; }
-.ts-tab.active { background: #e0f2fe; color: #0369a1; font-weight: 600; }
+.timer-settings-tabs { display: flex; flex-direction: column; gap: 0.15rem; min-width: 9.5rem; border-right: 1px solid var(--divider); padding-right: 0.8rem; }
+.ts-tab { text-align: left; background: none; border: none; border-radius: 6px; padding: 0.5rem 0.7rem; font-size: 0.92rem; cursor: pointer; color: var(--ink-soft); }
+.ts-tab:hover { background: var(--divider-soft); }
+.ts-tab.active { background: var(--tab-active-bg); color: var(--tab-active-ink); font-weight: 600; }
 .timer-settings-panes { flex: 1; overflow-y: auto; padding-right: 0.2rem; }
 .ts-pane h3 { margin: 0 0 0.9rem; font-size: 1rem; }
 .ts-field { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; font-size: 0.92rem; }
-.ts-field > span:first-child { font-weight: 600; color: #374151; }
+.ts-field > span:first-child { font-weight: 600; color: var(--ink-soft); }
 .ts-field .timer-select { min-width: 11rem; }
-.ts-toggle { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; font-size: 0.92rem; font-weight: 600; color: #374151; }
-.toggle-btn { position: relative; width: 44px; height: 24px; border-radius: 999px; border: none; background: #d1d5db; cursor: pointer; transition: background 0.15s; flex: none; }
-.toggle-btn .toggle-knob { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: left 0.15s; box-shadow: 0 1px 2px rgba(0,0,0,0.25); }
-.toggle-btn[aria-checked="true"] { background: #22c55e; }
+.ts-toggle { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; font-size: 0.92rem; font-weight: 600; color: var(--ink-soft); }
+.toggle-btn { position: relative; width: 44px; height: 24px; border-radius: 999px; border: none; background: var(--field-border); cursor: pointer; transition: background 0.15s; flex: none; }
+.toggle-btn .toggle-knob { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: var(--surface-white); transition: left 0.15s; box-shadow: 0 1px 2px var(--btn-shadow-color); }
+.toggle-btn[aria-checked="true"] { background: var(--toggle-on-bg); }
 .toggle-btn[aria-checked="true"] .toggle-knob { left: 22px; }
 .ts-reasons-list { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.8rem; max-height: 220px; overflow-y: auto; }
-.ts-reason-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.4rem 0.6rem; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 0.9rem; }
-.ts-reason-row button { background: none; border: none; color: #9ca3af; cursor: pointer; font-size: 1rem; line-height: 1; }
+.ts-reason-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.4rem 0.6rem; border: 1px solid var(--divider); border-radius: 6px; font-size: 0.9rem; }
+.ts-reason-row button { background: none; border: none; color: var(--ink-faint); cursor: pointer; font-size: 1rem; line-height: 1; }
 .ts-reason-row button:hover { color: var(--danger); }
 .ts-add-row { display: flex; gap: 0.5rem; }
-.ts-add-row input { flex: 1; padding: 0.45rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
-.ts-examples { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 0.7rem 0.9rem; margin-bottom: 0.9rem; font-size: 0.88rem; }
+.ts-add-row input { flex: 1; padding: 0.45rem 0.6rem; border: 1px solid var(--field-border); border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
+.ts-examples { background: var(--notification-unread-bg); border: 1px solid var(--info-border); border-radius: 8px; padding: 0.7rem 0.9rem; margin-bottom: 0.9rem; font-size: 0.88rem; }
 .ts-examples ul { margin: 0.4rem 0 0 1.1rem; padding: 0; }
 .ts-sound-row { display: flex; gap: 0.5rem; align-items: center; }
 .ts-slider-row { display: flex; gap: 0.6rem; align-items: center; min-width: 11rem; }
 .ts-slider-row input[type="range"] { flex: 1; }
-.ts-vol-val { min-width: 3em; text-align: right; font-variant-numeric: tabular-nums; color: #6b7280; }
-#ts-saved { margin-right: auto; color: #15803d; }
+.ts-vol-val { min-width: 3em; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+#ts-saved { margin-right: auto; color: var(--status-ontime); }
 
 .toolbar-btn-danger { color: var(--danger); }
-.toolbar-btn-danger:hover { background: #fef2f2; }
+.toolbar-btn-danger:hover { background: var(--danger-soft-bg); }
 
 /* ---- Time spent report (KF-091, KF-292) ---- */
 /* KF-515: a long board name shrinks its select instead of widening the page. */
@@ -5524,26 +5536,26 @@ body.large-names .card-title { font-size: 14px; }
 /* KF-292: KanbanFlow-style report table — date | bar+percent | tasks | breaks | duration%. */
 .spent-bar-cell { min-width: 140px; }
 .spent-bar-wrap { display: flex; align-items: center; gap: 0.5rem; }
-.spent-bar-track { flex: 1; height: 10px; background: #e5e7eb; border-radius: 5px; overflow: hidden; }
-.spent-bar-fill { height: 100%; background: #3b82f6; border-radius: 5px; }
-.spent-bar-pct { font-size: 0.85rem; color: #6b7280; min-width: 2.5em; text-align: right; }
-.spent-table tfoot .spent-footer td { font-weight: 600; background: #f9fafb; border-top: 2px solid #e5e7eb; }
+.spent-bar-track { flex: 1; height: 10px; background: var(--divider); border-radius: 5px; overflow: hidden; }
+.spent-bar-fill { height: 100%; background: var(--blue-500); border-radius: 5px; }
+.spent-bar-pct { font-size: 0.85rem; color: var(--muted); min-width: 2.5em; text-align: right; }
+.spent-table tfoot .spent-footer td { font-weight: 600; background: var(--surface-faint); border-top: 2px solid var(--divider); }
 .spent-table tfoot .spent-footer-total td { font-weight: 700; font-size: 1rem; text-align: right; padding-top: 0.7rem; }
-.spent-detail-row td { padding: 0; border-bottom: 1px solid #e5e7eb; }
-.spent-tasks-list { padding: 0.4rem 0.9rem 0.6rem; background: #fafafa; }
-.spent-task { display: flex; justify-content: space-between; padding: 0.35rem 0; border-top: 1px solid #f3f4f6; font-size: 0.92rem; }
+.spent-detail-row td { padding: 0; border-bottom: 1px solid var(--divider); }
+.spent-tasks-list { padding: 0.4rem 0.9rem 0.6rem; background: var(--panel-bg); }
+.spent-task { display: flex; justify-content: space-between; padding: 0.35rem 0; border-top: 1px solid var(--divider-soft); font-size: 0.92rem; }
 .spent-task:first-child { border-top: none; }
-.spent-task-time { font-variant-numeric: tabular-nums; color: #6b7280; }
-.spent-bookmarks { margin-top: 1rem; color: #6b7280; font-size: 0.9rem; }
+.spent-task-time { font-variant-numeric: tabular-nums; color: var(--muted); }
+.spent-bookmarks { margin-top: 1rem; color: var(--muted); font-size: 0.9rem; }
 /* KF-393: the Bookmarks header toggles the saved-filter list. */
 .spent-bookmarks-head {
   background: none; border: none; padding: 0; cursor: pointer;
-  color: #444444; font-size: 13px; font-weight: 700;
+  color: var(--text-strong); font-size: 13px; font-weight: 700;
 }
 .spent-bookmarks-list { list-style: none; margin: 0.5rem 0; padding: 0; }
 .spent-bookmarks-list li { display: flex; align-items: center; gap: 0.4rem; }
-.spent-bookmark-apply { background: none; border: none; padding: 0.15rem 0; color: #2185d0; cursor: pointer; }
-.spent-bookmark-delete { background: none; border: none; color: #6b7280; cursor: pointer; font-size: 1rem; }
+.spent-bookmark-apply { background: none; border: none; padding: 0.15rem 0; color: var(--kf-primary); cursor: pointer; }
+.spent-bookmark-delete { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1rem; }
 .spent-bookmarks-add { display: flex; gap: 0.4rem; }
 .spent-bookmarks-add input { flex: 1 1 auto; min-width: 0; padding: 0.25rem 0.4rem; }
 
