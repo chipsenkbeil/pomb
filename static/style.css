@@ -259,6 +259,10 @@
   --mc-start-border: #c8e6c9;
   --mc-start-accent: #43a047;
   --mc-start-bg: #f1f8f1;
+  --board-bar-divider: #c2c2c2;
+  --board-avatar-ink: #9f6021;
+  --invite-ink: #4d4d4d;
+  --filter-reset-ink: #1a73e8;
 }
 
 * { box-sizing: border-box; }
@@ -657,7 +661,7 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
   padding: 0 10px 0 17px;
   /* KF-237: KanbanFlow's board bar is #f2f2f2. KF-358: no divider of its
      own; the board frame's top edge (10px gutter insets) is the divider. */
-  background: #f2f2f2;
+  background: var(--kf-hover-bg);
   position: relative;
   z-index: 45;
 }
@@ -665,7 +669,7 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
 /* KF-358: the layout-edit view draws no board frame, so the bar keeps its
    own #c2c2c2 divider there. */
 body:has(> #layout-view:not([hidden])) > .board-header-row {
-  border-bottom: 1px solid #c2c2c2;
+  border-bottom: 1px solid var(--board-bar-divider);
 }
 /* KF-209: spacer pushes timer/filter/edit/menu icons to the right (KanbanFlow parity). */
 .board-header-spacer {
@@ -676,7 +680,7 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   font-weight: 700;
   margin: 0 16px 0 0;
   /* KF-483: KanbanFlow's board title is #333. */
-  color: #333333;
+  color: var(--text-charcoal);
   line-height: 34px;
 }
 /* KF-178: member avatar in the gray row (owner, single-admin model).
@@ -686,15 +690,15 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   width: 1.75rem;
   height: 1.75rem;
   font-size: 0.84375rem; /* 13.5px: KanbanFlow's "CS" cap height is 19 device px */
-  background: #fff;
-  color: #9f6021;
-  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+  background: var(--surface-white);
+  color: var(--board-avatar-ink);
+  box-shadow: 0 1px 1px var(--badge-shadow-color);
   margin-right: 6px;
 }
 /* KF-178: gray-row icon buttons for Invite / Filter / Edit layout / Menu. */
 .board-bar-btn {
-  border: 1px solid transparent;
-  background: transparent;
+  border: 1px solid var(--clear);
+  background: var(--clear);
   border-radius: 6px;
   padding: 0.35rem 0.5rem;
   color: var(--ink);
@@ -705,12 +709,12 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   align-items: center;
   justify-content: center;
 }
-.board-bar-btn:hover { background: rgba(0, 0, 0, 0.08); }
-.board-bar-btn:focus-visible { outline: 2px solid #3b82f6; outline-offset: 1px; }
+.board-bar-btn:hover { background: var(--icon-on-bg); }
+.board-bar-btn:focus-visible { outline: 2px solid var(--blue-500); outline-offset: 1px; }
 /* KF-238: board "Menu" button matches KanbanFlow (GM-020): solid 2px bars,
    #494949, bold label, wider icon-to-text gap. */
 #board-menu-btn {
-  color: #494949;
+  color: var(--finder-btn-ink);
   font-weight: 700;
   font-size: 14px;
   letter-spacing: -0.75px;
@@ -731,9 +735,9 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: #fff;
-  color: #4d4d4d;
-  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+  background: var(--surface-white);
+  color: var(--invite-ink);
+  box-shadow: 0 1px 1px var(--badge-shadow-color);
 }
 /* KF-361: 34px shortcut boxes 6px apart, an 18px gap, then the 80px Menu
    button flush with the 10px right padding. */
@@ -749,18 +753,18 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
 #edit-layout-btn,
 #epics-btn { margin-left: 6px; }
 #epics-btn.active {
-  background: #494949;
-  color: #fff;
+  background: var(--finder-btn-ink);
+  color: var(--on-color);
 }
 #filter-btn.filtering {
-  background: #4caf50;
-  color: #fff;
+  background: var(--epics-accent);
+  color: var(--on-color);
 }
-#filter-btn.filtering:hover { background: #43a047; }
+#filter-btn.filtering:hover { background: var(--mc-start-accent); }
 .filter-reset-link {
   margin-left: 8px;
   font-size: 13px;
-  color: #1a73e8;
+  color: var(--filter-reset-ink);
   text-decoration: none;
   white-space: nowrap;
 }
@@ -782,8 +786,8 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
 .board-toolbar-right { display: flex; gap: 0.5rem; align-items: center; }
 
 .toolbar-btn {
-  border: 1px solid #d1d5db;
-  background: #fff;
+  border: 1px solid var(--field-border);
+  background: var(--surface-white);
   border-radius: 4px;
   padding: 0.3rem 0.6rem;
   color: var(--ink);
@@ -793,7 +797,7 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   display: inline-block;
 }
 
-.toolbar-btn:hover { background: #f9fafb; border-color: #9ca3af; }
+.toolbar-btn:hover { background: var(--surface-faint); border-color: var(--ink-faint); }
 
 /* ---------- board table ---------- */
 
