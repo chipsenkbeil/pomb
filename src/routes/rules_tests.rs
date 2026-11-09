@@ -10,17 +10,21 @@ use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::{ColumnKind, ColumnPatch, Db, NewComment, QuestionGuard, QuestionWrite};
+use crate::db::{
+    BootstrapToken, ColumnKind, ColumnPatch, Db, NewComment, QuestionGuard, QuestionWrite,
+};
 use crate::models::{
     AccountId, Actor, ActorKind, AuthScope, ColumnStage, CommentQuestion, QuestionChoice,
 };
 
 const MAX_BODY_BYTES: usize = 1 << 22;
+const BOOTSTRAP_TOKEN: &str = "boot-secret";
 
 #[derive(Copy, Clone, Debug)]
 enum Who {
     Session,
     Token,
+    Bootstrap,
     Role(&'static str),
 }
 
@@ -108,7 +112,12 @@ impl Fixture {
             role_ids.insert(name, role.id);
         }
         let app = router(
-            AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()),
+            AppState::new(
+                db.clone(),
+                BootstrapToken::new(BOOTSTRAP_TOKEN),
+                passkey_mode(),
+            )
+            .with_limits(unthrottled_limits()),
         );
         Self {
             _dir: dir,
@@ -155,6 +164,7 @@ impl Fixture {
             .header("accept", "application/json");
         builder = match who {
             Who::Token => builder.header("authorization", format!("Bearer {}", self.token)),
+            Who::Bootstrap => builder.header("authorization", format!("Bearer {BOOTSTRAP_TOKEN}")),
             Who::Role(name) => builder.header(
                 "authorization",
                 format!("Bearer {}", self.role_tokens[name]),
@@ -1254,6 +1264,38 @@ mod locked {
             .json(Who::Token, "POST", &uri, json!({"body": "Agent note"}))
             .await;
         assert_eq!(status, StatusCode::OK, "{text}");
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "PATCH",
+                &format!("/api/tasks/{task}"),
+                json!({"labels": ["needs:human"]}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let (status, text) = fx.json(Who::Token, "POST", &uri, question(&fx)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(parse(&text)["code"], "card_locked", "{text}");
+    }
+
+    #[tokio::test]
+    async fn token_should_be_refused_a_question_when_the_newest_comment_is_from_bootstrap() {
+        let fx = Fixture::new();
+        let task = fx.task(&fx.backlog, json!({})).await;
+        let uri = format!("/api/tasks/{task}/comments");
+        let (status, text) = fx
+            .json(
+                Who::Bootstrap,
+                "POST",
+                &uri,
+                json!({"body": "Bootstrap note"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let stored = fx.db.task(&task).expect("read").expect("task");
+        let newest = stored.comments.last().expect("comment");
+        assert_eq!(newest.actor_kind, ActorKind::ApiToken);
+        assert_eq!(newest.token_id, None);
         let (status, text) = fx
             .json(
                 Who::Session,
