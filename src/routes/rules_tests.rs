@@ -234,6 +234,19 @@ impl Fixture {
         self.task(&self.backlog, json!({"labels": ["needs:human"]}))
             .await
     }
+
+    #[must_use]
+    fn question(&self) -> Value {
+        json!({"question": {
+            "text": "Ship it?",
+            "choices": [
+                {"label": "Ship", "column_id": self.stages["done"]},
+                {"label": "Review", "column_id": self.stages["review"]},
+            ],
+            "recommended": 2,
+            "why": "Because",
+        }})
+    }
 }
 
 mod role_moves {
@@ -350,18 +363,9 @@ mod role_moves {
     async fn implementer_should_not_reach_done_by_answering_a_question() {
         let fx = Fixture::new();
         let task = fx.task(&fx.stages["progress"], json!({})).await;
-        let question = json!({"question": {
-            "text": "Ship it?",
-            "choices": [
-                {"label": "Ship", "column_id": fx.stages["done"]},
-                {"label": "Review", "column_id": fx.stages["review"]},
-            ],
-            "recommended": 2,
-            "why": "Because",
-        }});
         let uri = format!("/api/tasks/{task}/comments");
         let (status, text) = fx
-            .json(Who::Role("implementer"), "POST", &uri, question)
+            .json(Who::Role("implementer"), "POST", &uri, fx.question())
             .await;
         assert_eq!(status, StatusCode::OK, "{text}");
         let comment = parse(&text)["id"].as_str().expect("id").to_string();
@@ -1201,18 +1205,6 @@ mod locked {
         assert_eq!(status, StatusCode::OK, "{text}");
     }
 
-    fn question(fx: &Fixture) -> Value {
-        json!({"question": {
-            "text": "Ship it?",
-            "choices": [
-                {"label": "Ship", "column_id": fx.stages["done"]},
-                {"label": "Review", "column_id": fx.stages["review"]},
-            ],
-            "recommended": 2,
-            "why": "Because",
-        }})
-    }
-
     #[tokio::test]
     async fn token_should_post_a_question_when_the_newest_comment_is_the_owners() {
         let fx = Fixture::new();
@@ -1227,7 +1219,7 @@ mod locked {
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{text}");
-        let (status, text) = fx.json(Who::Token, "POST", &uri, question(&fx)).await;
+        let (status, text) = fx.json(Who::Token, "POST", &uri, fx.question()).await;
         assert_eq!(status, StatusCode::OK, "{text}");
     }
 
@@ -1273,7 +1265,7 @@ mod locked {
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{text}");
-        let (status, text) = fx.json(Who::Token, "POST", &uri, question(&fx)).await;
+        let (status, text) = fx.json(Who::Token, "POST", &uri, fx.question()).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
         assert_eq!(parse(&text)["code"], "card_locked", "{text}");
     }
@@ -1305,7 +1297,7 @@ mod locked {
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{text}");
-        let (status, text) = fx.json(Who::Token, "POST", &uri, question(&fx)).await;
+        let (status, text) = fx.json(Who::Token, "POST", &uri, fx.question()).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
         assert_eq!(parse(&text)["code"], "card_locked", "{text}");
     }
