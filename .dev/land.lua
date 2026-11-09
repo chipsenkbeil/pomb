@@ -430,7 +430,6 @@ while true do
     if release_running(repo) then
         say("A release took the land lock while the gates ran, so the commit is applied again once it is done.\n")
         run_git(repo, "worktree", "remove", "--force", wt)
-        run_git(repo, "fetch", "-q", remote)
     else
         local status = devos.run({ "dev", "__push_main", wt }, { cwd = wt })
         if status == 0 then
@@ -450,7 +449,6 @@ while true do
         end
         say(("The branch %s/main moved on, so the commit is applied again.\n"):format(remote))
         run_git(repo, "worktree", "remove", "--force", wt)
-        run_git(repo, "fetch", "-q", remote)
         attempt = attempt + 1
     end
 end
