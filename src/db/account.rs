@@ -1933,18 +1933,19 @@ impl AccountDb {
         self.db.add_comment(&task.row().id, new, actor, fence)
     }
 
-    /// Appends a question comment, labels the task `needs:human` and moves it to the `blocked`
-    /// column, all in one write.
+    /// Appends a question comment, labels the task `needs:human` and, with `to`, moves it to the
+    /// `blocked` column, all in one write.
     pub fn post_question(
         &self,
         task: &OwnedTask,
         new: NewComment<'_>,
         question: CommentQuestion,
-        to: QuestionMove<'_>,
+        to: Option<QuestionMove<'_>>,
+        fence: Option<u64>,
         actor: Actor<'_>,
     ) -> DbResult<QuestionWrite> {
         self.db
-            .post_question(&task.row().id, new, question, to, actor)
+            .post_question(&task.row().id, new, question, to, fence, actor)
     }
 
     /// Appends a `blocked` comment and sets the `needs:lead` or `needs:planner` label of `tier`,

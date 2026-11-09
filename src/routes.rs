@@ -14151,9 +14151,9 @@ async fn list_comments(
     responses(
         (status = 200, description = "The created comment", body = TaskComment),
         (status = 400, description = "Comment body is required, too long, kind over 64 characters, or author over 80 characters or equal to your username. For a question: a missing or invalid part, named in the message, a choice whose column is not on the board, or a kind other than `question`"),
-        (status = 403, description = "`card_locked`: the task carries a locking label and the token is not the owner's. A question passes when the task's newest comment is the owner's, meaning one written from the browser session. Any other comment is refused"),
+        (status = 403, description = "`card_locked`: the task carries a locking label and the token is not the owner's. A question passes when the task's newest comment is the owner's, meaning one written from the browser session, and it does not move the task. Any other comment is refused"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`stale_fence`: a live claim holds another fence. For a question: the board has no Blocked column, `wip_limit_reached`, or `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column"),
+        (status = 409, description = "`stale_fence`: a live claim holds another fence. For a question on a card without a locking label: the board has no Blocked column, `wip_limit_reached`, or `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -14238,6 +14238,14 @@ async fn create_comment(
     };
     if let Some(question) = question {
         let board_id = task.board_id();
+        if user.kind != CredentialKind::Session
+            && board_rules(&account, board_id)?.locks(&task.row().labels)
+        {
+            let written = account
+                .post_question(&task, new, question, None, fence, user.actor())
+                .map_err(AppError::from)?;
+            return question_comment(written).map(Json);
+        }
         let blocked = blocked_column(&account, board_id)?;
         if task.row().column_id != blocked.row().id {
             ensure_entry_allowed(&account, blocked.row(), board_id, task.row())?;
@@ -14245,10 +14253,9 @@ async fn create_comment(
         let to = QuestionMove {
             column_id: &blocked.row().id,
             position: placement_index(new_task_placement(&account, board_id)?),
-            fence,
         };
         let written = account
-            .post_question(&task, new, question, to, user.actor())
+            .post_question(&task, new, question, Some(to), fence, user.actor())
             .map_err(AppError::from)?;
         return question_comment(written).map(Json);
     }

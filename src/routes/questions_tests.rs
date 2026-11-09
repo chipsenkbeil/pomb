@@ -7,7 +7,7 @@ use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
-use crate::models::{AccountId, AuthScope, HistoryKind, TaskRow};
+use crate::models::{AccountId, AuthScope, HistoryKind, NEEDS_HUMAN_LABEL, TaskRow};
 
 /// Edits a valid question to drop or break one part.
 type Breaker = Box<dyn Fn(&mut Value)>;
@@ -883,4 +883,108 @@ async fn question_should_name_held_and_limit_time_with_units_when_an_hours_colum
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["code"], "wip_limit_reached", "{body}");
     assert_eq!(body["message"], "column WIP limit reached (3h 50m/4h)");
+}
+
+async fn locked_card_in(fx: &Fixture, column: &str) -> String {
+    let (status, task) = send(
+        fx,
+        Caller::Browser,
+        "POST",
+        "/api/tasks",
+        Some(json!({"column_id": column, "name": "Locked"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{task}");
+    let id = task["id"].as_str().expect("id").to_string();
+    fx.db
+        .set_task_labels(&id, &[NEEDS_HUMAN_LABEL.to_string()])
+        .expect("labels");
+    let (status, comment) = send(
+        fx,
+        Caller::Browser,
+        "POST",
+        &format!("/api/tasks/{id}/comments"),
+        Some(json!({"body": "Hold on"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{comment}");
+    id
+}
+
+#[tokio::test]
+async fn a_token_question_on_a_locked_icebox_card_should_leave_it_in_icebox() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let icebox = fx
+        .db
+        .create_column(&fx.board_id, "Icebox", None)
+        .expect("column");
+    let task = locked_card_in(&fx, &icebox).await;
+    let before = row(&fx, &task);
+
+    let (status, comment) = ask(&fx, &task, question(&fx)).await;
+
+    assert_eq!(status, StatusCode::OK, "{comment}");
+    assert_eq!(comment["kind"], "question");
+    let after = row(&fx, &task);
+    assert_eq!(after.column_id, icebox);
+    assert_eq!(after.position, before.position);
+    assert_eq!(after.labels, [NEEDS_HUMAN_LABEL]);
+    assert_eq!(after.comments.len(), 2);
+    assert!(
+        after
+            .history
+            .iter()
+            .all(|event| event.kind != HistoryKind::Moved)
+    );
+}
+
+#[tokio::test]
+async fn a_token_question_on_a_locked_blocked_card_should_keep_its_position() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let task = locked_card_in(&fx, &fx.blocked).await;
+    let before = row(&fx, &task);
+
+    let (status, comment) = ask(&fx, &task, question(&fx)).await;
+
+    assert_eq!(status, StatusCode::OK, "{comment}");
+    let after = row(&fx, &task);
+    assert_eq!(after.column_id, fx.blocked);
+    assert_eq!(after.position, before.position);
+    assert_eq!(after.labels, [NEEDS_HUMAN_LABEL]);
+    assert_eq!(after.comments.len(), 2);
+}
+
+#[tokio::test]
+async fn a_token_question_on_an_unlabelled_card_should_still_move_it_to_blocked() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let task = card(&fx, json!({})).await;
+
+    let (status, comment) = ask(&fx, &task, question(&fx)).await;
+
+    assert_eq!(status, StatusCode::OK, "{comment}");
+    let after = row(&fx, &task);
+    assert_eq!(after.column_id, fx.blocked);
+    assert_eq!(after.labels, [NEEDS_HUMAN_LABEL]);
+}
+
+#[tokio::test]
+async fn a_browser_question_on_a_locked_card_should_still_move_it_to_blocked() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let task = locked_card_in(&fx, &fx.todo).await;
+
+    let (status, comment) = send(
+        &fx,
+        Caller::Browser,
+        "POST",
+        &format!("/api/tasks/{task}/comments"),
+        Some(json!({"question": question(&fx)})),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{comment}");
+    assert_eq!(row(&fx, &task).column_id, fx.blocked);
 }

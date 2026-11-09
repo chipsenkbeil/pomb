@@ -755,8 +755,6 @@ pub struct QuestionMove<'a> {
     pub column_id: &'a str,
     /// Index in the target cell.
     pub position: f64,
-    /// An `If-Claim-Fence` value, where a live claim holding another fence refuses the write.
-    pub fence: Option<u64>,
 }
 
 /// Typed outcome for [`Db::post_question`] and [`Db::answer_question`].
@@ -9398,16 +9396,18 @@ impl Db {
         Ok(FencedWrite::Written(comment))
     }
 
-    /// Appends a question comment, adds the [`NEEDS_HUMAN_LABEL`] label and moves the task to the
-    /// `blocked` column, with the comment, label and move events, in one write. The move applies
-    /// the fence, the open-children refusal for an epic and the target's WIP limit as any move
-    /// does, and a refusal writes nothing.
+    /// Appends a question comment and adds the [`NEEDS_HUMAN_LABEL`] label, and with `to` moves
+    /// the task to the `blocked` column, with the comment, label and move events, in one write.
+    /// A write with no `to` keeps the task in its column and position. The move applies the
+    /// open-children refusal for an epic and the target's WIP limit as any move does, and a
+    /// refusal writes nothing. A live claim holding another fence than `fence` refuses the write.
     pub fn post_question(
         &self,
         task_id: &str,
         new: NewComment<'_>,
         question: CommentQuestion,
-        to: QuestionMove<'_>,
+        to: Option<QuestionMove<'_>>,
+        fence: Option<u64>,
         actor: Actor<'_>,
     ) -> DbResult<QuestionWrite> {
         let comment = TaskComment {
@@ -9434,7 +9434,7 @@ impl Db {
             let Some(mut task) = task_in(&tbl, task_id)? else {
                 return Ok(QuestionWrite::NotFound);
             };
-            if !task.fence_allows(to.fence) {
+            if !task.fence_allows(fence) {
                 return Ok(QuestionWrite::StaleFence);
             }
             if let Some(owner) = &owner {
@@ -9448,6 +9448,10 @@ impl Db {
             task.updated_at = Some(Utc::now().to_rfc3339());
             txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
         }
+        let Some(to) = to else {
+            txn.commit()?;
+            return Ok(QuestionWrite::Done(Box::new(comment)));
+        };
         let moved = Self::move_for_question(&txn, task_id, to, actor)?;
         QuestionWrite::commit_if_moved(txn, moved, comment)
     }
@@ -9562,7 +9566,6 @@ impl Db {
         let to = QuestionMove {
             column_id: &column_id,
             position,
-            fence: None,
         };
         let moved = Self::move_for_question(&txn, task_id, to, actor)?;
         QuestionWrite::commit_if_moved(txn, moved, answered)
@@ -9579,7 +9582,6 @@ impl Db {
         let QuestionMove {
             column_id,
             position,
-            fence,
         } = to;
         let Some(task) = txn_read_one::<TaskRow>(txn, TASKS, task_id)? else {
             return Ok(MoveOutcome::NotFound);
@@ -9593,7 +9595,7 @@ impl Db {
         let detail = format!("Moved from {from} to {}", target.name);
         let guards = MoveGuards {
             event: (task.column_id != column_id).then_some(detail.as_str()),
-            fence,
+            fence: None,
             enforce_wip: true,
             batch: &[],
             skip_epic_guard: false,
