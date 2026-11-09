@@ -79,7 +79,7 @@ function reset() {
 var document = {
   getElementById: function (id) { return els[id] || null; },
   querySelector: function (sel) {
-    if (sel === '[data-tm-act="add-to-epic"]') return trigger0;
+    if (sel === '[data-tm-act="' + CARD_ACT.ADD_TO_EPIC + '"]') return trigger0;
     return sel === '#modal-root .tm-umbrella-line' && umbrellaLine ? {} : null;
   },
   querySelectorAll: function () { return []; },
@@ -341,11 +341,11 @@ function trigger() {
   };
   cardMenuCard = card(false);
   els['card-ctx-menu'].hidden = false;
-  hoverItem('add-to-epic');
-  hoverItem('copy');
+  hoverItem(CARD_ACT.ADD_TO_EPIC);
+  hoverItem(CARD_ACT.COPY);
   release();
   await flush();
-  check('a submenu whose list arrives after the pointer left opens nothing', [opened.length, hoveredAct], [0, 'copy']);
+  check('a submenu whose list arrives after the pointer left opens nothing', [opened.length, hoveredAct], [0, CARD_ACT.COPY]);
 
   reset();
   BoardChrome.epicsLoaded = false;
@@ -353,10 +353,10 @@ function trigger() {
   els['card-ctx-menu'].hidden = false;
   var fetches = 0;
   BoardChrome.epicChoices = function () { fetches++; return Promise.resolve(null); };
-  hoverItem('add-to-epic');
+  hoverItem(CARD_ACT.ADD_TO_EPIC);
   await flush();
-  hoverItem('add-to-epic');
-  hoverItem('add-to-epic');
+  hoverItem(CARD_ACT.ADD_TO_EPIC);
+  hoverItem(CARD_ACT.ADD_TO_EPIC);
   await flush();
   check('a failed load is tried once per menu on hover', fetches, 1);
   openEpicSubmenu({}, { id: 'c1' });
@@ -365,7 +365,7 @@ function trigger() {
   check('each failed load toasts', toasts, ['Could not load epics.', 'Could not load epics.']);
   BoardChrome.epicsLoaded = true;
   BoardChrome.epicChoices = function () { fetches++; return Promise.resolve([]); };
-  hoverItem('add-to-epic');
+  hoverItem(CARD_ACT.ADD_TO_EPIC);
   await flush();
   check('hover opens again once the list is loaded', [fetches, opened.length], [3, 1]);
 
