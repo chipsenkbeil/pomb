@@ -22,9 +22,9 @@ use super::{
     IssuedInbound, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkRefusal,
     MemberSet, MoveGuards, MoveOutcome, NewComment, NewInbound, NewTaskPlacement, NewTimeEntry,
     NewWebhook, NotificationPage, OwnerChange, OwnerOutcome, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, PurgeOutcome, QuestionMove, QuestionWrite, Reads, RestoreOutcome,
-    RoleTokenRefusal, Rows, SWIMLANES, SessionEndOutcome, SessionListing, SessionToken,
-    StandardRoles, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
+    PasskeyDeleteOutcome, PurgeOutcome, QuestionGuard, QuestionMove, QuestionWrite, Reads,
+    RestoreOutcome, RoleTokenRefusal, Rows, SWIMLANES, SessionEndOutcome, SessionListing,
+    SessionToken, StandardRoles, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
     SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, TaskContext,
     TemplateDeleteOutcome, TokenEdit, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board,
     index_in, link_event_target, links_blocked_in, no_signed_in_account, read_in, redacted_history,
@@ -1941,11 +1941,11 @@ impl AccountDb {
         new: NewComment<'_>,
         question: CommentQuestion,
         to: Option<QuestionMove<'_>>,
-        fence: Option<u64>,
+        guard: QuestionGuard,
         actor: Actor<'_>,
     ) -> DbResult<QuestionWrite> {
         self.db
-            .post_question(&task.row().id, new, question, to, fence, actor)
+            .post_question(&task.row().id, new, question, to, guard, actor)
     }
 
     /// Appends a `blocked` comment and sets the `needs:lead` or `needs:planner` label of `tier`,

@@ -10,8 +10,10 @@ use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::{ColumnKind, ColumnPatch, Db};
-use crate::models::{AccountId, AuthScope, ColumnStage};
+use crate::db::{ColumnKind, ColumnPatch, Db, NewComment, QuestionGuard, QuestionWrite};
+use crate::models::{
+    AccountId, Actor, ActorKind, AuthScope, ColumnStage, CommentQuestion, QuestionChoice,
+};
 
 const MAX_BODY_BYTES: usize = 1 << 22;
 
@@ -1264,6 +1266,91 @@ mod locked {
         let (status, text) = fx.json(Who::Token, "POST", &uri, question(&fx)).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
         assert_eq!(parse(&text)["code"], "card_locked", "{text}");
+    }
+
+    fn ship_question(fx: &Fixture) -> CommentQuestion {
+        CommentQuestion {
+            text: "Ship it?".to_string(),
+            choices: vec![
+                QuestionChoice {
+                    label: "Ship".to_string(),
+                    column_id: fx.stages["done"].clone(),
+                },
+                QuestionChoice {
+                    label: "Review".to_string(),
+                    column_id: fx.stages["review"].clone(),
+                },
+            ],
+            recommended: 2,
+            why: "Because".to_string(),
+            answer: None,
+        }
+    }
+
+    fn post_owner_last_question(fx: &Fixture, task: &str) -> QuestionWrite {
+        let new = NewComment {
+            author: "agent",
+            body: "Ship it?",
+            actor_kind: ActorKind::ApiToken,
+            token_name: Some("agent"),
+            token_id: Some("token-1"),
+            kind: Some("question"),
+        };
+        let actor = Actor {
+            name: "api-token",
+            token_name: Some("agent"),
+            kind: ActorKind::ApiToken,
+            parent_token: None,
+            role_id: None,
+            role_name: None,
+            label: None,
+        };
+        let guard = QuestionGuard {
+            fence: None,
+            owner_last: true,
+        };
+        fx.db
+            .post_question(task, new, ship_question(fx), None, guard, actor)
+            .expect("post")
+    }
+
+    #[tokio::test]
+    async fn post_question_should_refuse_a_question_when_the_newest_comment_became_a_token_comment()
+    {
+        let fx = Fixture::new();
+        let task = fx.task(&fx.backlog, json!({})).await;
+        let uri = format!("/api/tasks/{task}/comments");
+        for (who, body) in [(Who::Session, "Partial answer"), (Who::Token, "Agent note")] {
+            let (status, text) = fx.json(who, "POST", &uri, json!({"body": body})).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+        }
+        let before = fx.db.task(&task).expect("read").expect("task");
+        let written = post_owner_last_question(&fx, &task);
+        assert!(matches!(written, QuestionWrite::Locked), "{written:?}");
+        let after = fx.db.task(&task).expect("read").expect("task");
+        assert_eq!(after.comments.len(), before.comments.len());
+        assert_eq!(after.history.len(), before.history.len());
+    }
+
+    #[tokio::test]
+    async fn post_question_should_accept_a_question_when_the_newest_comment_is_the_owners() {
+        let fx = Fixture::new();
+        let task = fx.locked_task().await;
+        let uri = format!("/api/tasks/{task}/comments");
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "POST",
+                &uri,
+                json!({"body": "Partial answer"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let written = post_owner_last_question(&fx, &task);
+        assert!(matches!(written, QuestionWrite::Done(_)), "{written:?}");
+        let after = fx.db.task(&task).expect("read").expect("task");
+        assert_eq!(after.comments.len(), 2);
+        assert_eq!(after.column_id, fx.backlog);
     }
 
     #[tokio::test]

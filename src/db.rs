@@ -757,6 +757,16 @@ pub struct QuestionMove<'a> {
     pub position: f64,
 }
 
+/// What [`Db::post_question`] rechecks inside its write.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct QuestionGuard {
+    /// An `If-Claim-Fence` value, where a live claim holding another fence refuses the write.
+    pub fence: Option<u64>,
+    /// Whether the write refuses with [`QuestionWrite::Locked`] unless the task's newest comment is
+    /// the owner's.
+    pub owner_last: bool,
+}
+
 /// Typed outcome for [`Db::post_question`] and [`Db::answer_question`].
 #[derive(Clone, Debug)]
 pub enum QuestionWrite {
@@ -766,6 +776,8 @@ pub enum QuestionWrite {
     NotFound,
     /// Refused: a live claim holds another fence.
     StaleFence,
+    /// Refused: the guard asked for the owner's comment to be the newest and it is not.
+    Locked,
     /// Refused: the epic holds `count` children that are not Done, and the target column has a
     /// WIP limit or is a Done column.
     OpenChildren {
@@ -9400,14 +9412,15 @@ impl Db {
     /// the task to the `blocked` column, with the comment, label and move events, in one write.
     /// A write with no `to` keeps the task in its column and position. The move applies the
     /// open-children refusal for an epic and the target's WIP limit as any move does, and a
-    /// refusal writes nothing. A live claim holding another fence than `fence` refuses the write.
+    /// refusal writes nothing. A live claim holding another fence than `guard.fence` refuses the
+    /// write, and `guard.owner_last` refuses it unless the newest comment is the owner's.
     pub fn post_question(
         &self,
         task_id: &str,
         new: NewComment<'_>,
         question: CommentQuestion,
         to: Option<QuestionMove<'_>>,
-        fence: Option<u64>,
+        guard: QuestionGuard,
         actor: Actor<'_>,
     ) -> DbResult<QuestionWrite> {
         let comment = TaskComment {
@@ -9434,8 +9447,15 @@ impl Db {
             let Some(mut task) = task_in(&tbl, task_id)? else {
                 return Ok(QuestionWrite::NotFound);
             };
-            if !task.fence_allows(fence) {
+            if !task.fence_allows(guard.fence) {
                 return Ok(QuestionWrite::StaleFence);
+            }
+            if guard.owner_last
+                && !task.comments.last().is_some_and(|newest| {
+                    newest.actor_kind == ActorKind::User && newest.token_id.is_none()
+                })
+            {
+                return Ok(QuestionWrite::Locked);
             }
             if let Some(owner) = &owner {
                 let after = task.comments.len() + 1;

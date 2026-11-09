@@ -76,9 +76,9 @@ use crate::db::{
     MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME,
     NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted,
     OwnedBoard, OwnedColumn, OwnedTask, OwnerChange, OwnerOutcome, PaletteStrandsColor,
-    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuestionMove, QuestionWrite,
-    QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked, RoleDenied,
-    RoleTokenRefusal, SessionEndOutcome, SessionListing, SessionRefused, SessionToken,
+    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuestionGuard, QuestionMove,
+    QuestionWrite, QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked,
+    RoleDenied, RoleTokenRefusal, SessionEndOutcome, SessionListing, SessionRefused, SessionToken,
     SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext,
     TemplateDeleteOutcome, TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart, UmbrellaRef,
     WebhookColumnMissing, WebhookPatch, WipHeld, carry_fields, clean_labels, local_day,
@@ -14098,6 +14098,7 @@ fn question_comment(written: QuestionWrite) -> Result<TaskComment, AppError> {
         QuestionWrite::Done(comment) => Ok(*comment),
         QuestionWrite::NotFound => Err(AppError::not_found("task or comment not found")),
         QuestionWrite::StaleFence => Err(stale_fence()),
+        QuestionWrite::Locked => Err(card_locked()),
         QuestionWrite::OpenChildren { count } => Err(epic_has_open_children(count)),
         QuestionWrite::WipLimit { held, limit } => Err(column_wip_limit(held, limit)),
         QuestionWrite::GroupLimit { count, limit } => Err(AppError::conflict(format!(
@@ -14241,8 +14242,12 @@ async fn create_comment(
         if user.kind != CredentialKind::Session
             && board_rules(&account, board_id)?.locks(&task.row().labels)
         {
+            let guard = QuestionGuard {
+                fence,
+                owner_last: true,
+            };
             let written = account
-                .post_question(&task, new, question, None, fence, user.actor())
+                .post_question(&task, new, question, None, guard, user.actor())
                 .map_err(AppError::from)?;
             return question_comment(written).map(Json);
         }
@@ -14250,12 +14255,16 @@ async fn create_comment(
         if task.row().column_id != blocked.row().id {
             ensure_entry_allowed(&account, blocked.row(), board_id, task.row())?;
         }
+        let guard = QuestionGuard {
+            fence,
+            owner_last: false,
+        };
         let to = QuestionMove {
             column_id: &blocked.row().id,
             position: placement_index(new_task_placement(&account, board_id)?),
         };
         let written = account
-            .post_question(&task, new, question, Some(to), fence, user.actor())
+            .post_question(&task, new, question, Some(to), guard, user.actor())
             .map_err(AppError::from)?;
         return question_comment(written).map(Json);
     }
