@@ -231,6 +231,27 @@
   --ok-bg: #ecfdf5;
   --ok-border: #a7f3d0;
   --ok-ink: #065f46;
+  --white-12: rgba(255, 255, 255, 0.12);
+  --white-15: rgba(255, 255, 255, 0.15);
+  --white-20: rgba(255, 255, 255, 0.2);
+  --white-40: rgba(255, 255, 255, 0.4);
+  --black-55: rgba(0, 0, 0, 0.55);
+  --red-400: #f87171;
+  --red-500: #ef4444;
+  --green-400: #4ade80;
+  --green-800: #2e7d32;
+  --green-web: #008000;
+  --entry-badge-p-bg: #7c2d12;
+  --entry-badge-p-ink: #fdba74;
+  --entry-badge-m-bg: #1e3a5f;
+  --entry-badge-s-bg: #3f1d1d;
+  --entry-badge-b-bg: #14532d;
+  --entry-badge-b-ink: #86efac;
+  --kf-primary-darker: #1a6fb0;
+  --chart-gray: #9aa0a6;
+  --mc-start-border: #c8e6c9;
+  --mc-start-accent: #43a047;
+  --mc-start-bg: #f1f8f1;
 }
 
 * { box-sizing: border-box; }
@@ -3967,7 +3988,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   position: fixed;
   inset: 0;
   z-index: 300;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--black-55);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3989,14 +4010,14 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   flex: 1;
   text-align: left;
   background: none;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--field-border);
   border-radius: 4px;
   padding: 0.4rem 0.6rem;
   cursor: pointer;
   color: inherit;
 }
 
-.tm-template-pick:hover { background: #f3f4f6; }
+.tm-template-pick:hover { background: var(--divider-soft); }
 
 .tm-template-delete {
   padding: 0.25rem 0.5rem;
@@ -4006,7 +4027,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 /* KF-334: the card menu's "Move task" popover sits at the card, no dimming. */
 .dlg-overlay.dlg-overlay--popover {
   display: block;
-  background: transparent;
+  background: var(--clear);
   padding: 0;
 }
 .dlg-overlay.dlg-overlay--popover[hidden] { display: none; }
@@ -4024,14 +4045,14 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 #move-task-dialog #mt-move-btn { width: 100%; }
 
 .dlg {
-  background: #1f2937;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--text-slate);
+  border: 1px solid var(--white-12);
   border-radius: 10px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 16px 48px var(--black-50);
   padding: 1.25rem;
   width: 100%;
   max-width: 420px;
-  color: #f3f4f6;
+  color: var(--divider-soft);
 }
 
 /* ---------- light dialogs ----------
@@ -4039,8 +4060,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
    specificity the later rule wins, and the base previously overrode the
    light theme, rendering every dlg-light dialog dark. */
 .dlg-light {
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-white);
+  border: 1px solid var(--divider);
   color: var(--ink);
 }
 
@@ -4051,8 +4072,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .dlg.dlg-light .dlg-field input[type="time"],
 .dlg.dlg-light .dlg-field select,
 .dlg.dlg-light .dlg-field textarea {
-  background: #fff;
-  border: 1px solid #d1d5db;
+  background: var(--surface-white);
+  border: 1px solid var(--field-border);
   color: var(--ink);
   width: 100%;
   border-radius: 6px;
@@ -4075,20 +4096,20 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .dlg-close {
   background: none;
   border: 0;
-  color: #9ca3af;
+  color: var(--ink-faint);
   cursor: pointer;
   font-size: 1.4rem;
   line-height: 1;
   padding: 0.1rem 0.3rem;
 }
 
-.dlg-close:hover { color: #f3f4f6; }
+.dlg-close:hover { color: var(--divider-soft); }
 
 /* KF-328: on light dialogs the close × darkens on hover instead. */
-.dlg-light .dlg-close:hover { color: #111827; }
+.dlg-light .dlg-close:hover { color: var(--ink-strong); }
 
 .dlg-inline-error {
-  color: #f87171;
+  color: var(--red-400);
   font-size: 0.85rem;
   margin: 0 0 0.75rem;
 }
@@ -4103,7 +4124,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .dlg-field > span {
   display: block;
   font-size: 0.8rem;
-  color: #9ca3af;
+  color: var(--ink-faint);
   margin-bottom: 0.25rem;
 }
 
@@ -4123,16 +4144,16 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .dlg-comment {
   width: 100%;
   box-sizing: border-box;
-  background: #111827;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--ink-strong);
+  border: 1px solid var(--white-15);
   border-radius: 6px;
-  color: #f3f4f6;
+  color: var(--divider-soft);
   padding: 0.5rem 0.6rem;
   font-size: 0.9rem;
 }
 
 .mt-task-input {
-  color: #4ade80;
+  color: var(--green-400);
   font-weight: 500;
 }
 
@@ -4152,22 +4173,22 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .mt-date-wrap input { flex: 1; }
 
 .mt-date-wrap button {
-  background: #374151;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--ink-soft);
+  border: 1px solid var(--white-15);
   border-radius: 6px;
-  color: #f3f4f6;
+  color: var(--divider-soft);
   padding: 0.45rem 0.6rem;
   cursor: pointer;
   font-size: 1rem;
 }
 
-.mt-date-wrap button:hover { background: #4b5563; }
+.mt-date-wrap button:hover { background: var(--text-gray); }
 
 .mt-duration {
   padding: 0.5rem 0.6rem;
   font-size: 0.9rem;
   font-weight: 600;
-  color: #f3f4f6;
+  color: var(--divider-soft);
 }
 
 /* KF-271: checkbox expanders in the manual-time / edit-entry dialogs reuse
@@ -4191,7 +4212,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 }
 
 .dlg-date-ok {
-  color: #4ade80;
+  color: var(--green-400);
   font-weight: 700;
 }
 
@@ -4204,12 +4225,12 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .mt-cal-popup {
   position: absolute;
   z-index: 310;
-  background: #1f2937;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--text-slate);
+  border: 1px solid var(--white-15);
   border-radius: 8px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 32px var(--black-50);
   padding: 0.75rem;
-  color: #f3f4f6;
+  color: var(--divider-soft);
 }
 
 .mt-cal-popup[hidden] { display: none; }
@@ -4224,15 +4245,15 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 }
 
 .mt-cal-head button {
-  background: #374151;
+  background: var(--ink-soft);
   border: 0;
   border-radius: 6px;
-  color: #f3f4f6;
+  color: var(--divider-soft);
   cursor: pointer;
   padding: 0.25rem 0.5rem;
 }
 
-.mt-cal-head button:hover { background: #4b5563; }
+.mt-cal-head button:hover { background: var(--text-gray); }
 
 .mt-cal-grid {
   display: grid;
@@ -4243,7 +4264,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 
 .mt-cal-dow {
   font-size: 0.7rem;
-  color: #9ca3af;
+  color: var(--ink-faint);
   padding: 0.25rem 0;
 }
 
@@ -4251,21 +4272,21 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   background: none;
   border: 0;
   border-radius: 6px;
-  color: #f3f4f6;
+  color: var(--divider-soft);
   cursor: pointer;
   padding: 0.35rem 0;
   font-size: 0.85rem;
 }
 
-.mt-cal-day:hover { background: #374151; }
+.mt-cal-day:hover { background: var(--ink-soft); }
 
 .mt-cal-day.selected {
-  background: #2563eb;
-  color: #fff;
+  background: var(--link-ink);
+  color: var(--on-color);
   font-weight: 600;
 }
 
-.mt-cal-day.other-month { color: #4b5563; }
+.mt-cal-day.other-month { color: var(--text-gray); }
 
 .mt-cal-quick {
   display: flex;
@@ -4273,28 +4294,28 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   justify-content: center;
   margin-top: 0.5rem;
   padding-top: 0.5rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  border-top: 1px solid var(--white-12);
 }
 
 .mt-cal-quick button {
   background: none;
   border: 0;
   border-radius: 6px;
-  color: #9ca3af;
+  color: var(--ink-faint);
   cursor: pointer;
   font-size: 0.75rem;
   padding: 0.25rem 0.5rem;
 }
 
-.mt-cal-quick button:hover { background: #374151; color: #f3f4f6; }
+.mt-cal-quick button:hover { background: var(--ink-soft); color: var(--divider-soft); }
 
 /* ---------- time log entries ---------- */
 
 .entry-edit {
   background: none;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid var(--white-20);
   border-radius: 4px;
-  color: #9ca3af;
+  color: var(--ink-faint);
   cursor: pointer;
   font-size: 0.75rem;
   padding: 0.15rem 0.45rem;
@@ -4302,8 +4323,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 }
 
 .entry-edit:hover {
-  color: #f3f4f6;
-  border-color: rgba(255, 255, 255, 0.4);
+  color: var(--divider-soft);
+  border-color: var(--white-40);
 }
 
 /* P/M/S/B badges */
@@ -4319,10 +4340,10 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   margin-right: 0.4rem;
 }
 
-.entry-badge-P { background: #7c2d12; color: #fdba74; }
-.entry-badge-M { background: #1e3a5f; color: #93c5fd; }
-.entry-badge-S { background: #3f1d1d; color: #fca5a5; }
-.entry-badge-B { background: #14532d; color: #86efac; }
+.entry-badge-P { background: var(--entry-badge-p-bg); color: var(--entry-badge-p-ink); }
+.entry-badge-M { background: var(--entry-badge-m-bg); color: var(--chip-blue-border); }
+.entry-badge-S { background: var(--entry-badge-s-bg); color: var(--red-border); }
+.entry-badge-B { background: var(--entry-badge-b-bg); color: var(--entry-badge-b-ink); }
 
 /* ---------- timer pages (log, time spent, statistics) ---------- */
 
@@ -4338,16 +4359,16 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.85rem;
-  color: #6b7280;
+  color: var(--ink-subtle);
 }
 
 .timer-log-filters select,
 .timer-log-filters input[type="date"],
 .timer-log-filters input[type="number"] {
-  background: #1f2937;
-  border: 1px solid #374151;
+  background: var(--text-slate);
+  border: 1px solid var(--ink-soft);
   border-radius: 6px;
-  color: #f3f4f6;
+  color: var(--divider-soft);
   padding: 0.4rem 0.6rem;
 }
 
@@ -4365,17 +4386,17 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 }
 
 .icon-btn {
-  background: #1f2937;
-  border: 1px solid #374151;
+  background: var(--text-slate);
+  border: 1px solid var(--ink-soft);
   border-radius: 6px;
-  color: #d1d5db;
+  color: var(--topbar-ink-muted);
   cursor: pointer;
   font-size: 1rem;
   line-height: 1;
   padding: 0.4rem 0.55rem;
 }
 
-.icon-btn:hover { background: #374151; }
+.icon-btn:hover { background: var(--ink-soft); }
 
 .export-wrap { position: relative; display: inline-block; }
 
@@ -4395,7 +4416,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 /* ---------- timer log day groups (KF-090) ---------- */
 
 .log-status {
-  color: #9ca3af;
+  color: var(--ink-faint);
   font-size: 0.9rem;
   padding: 1rem 0;
   text-align: center;
@@ -4404,12 +4425,12 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 /* KF-461: golden 20's rows, scoped to the timer log list: a white bordered
    day box, rows split by dashed lines, an italic 11 px status line. */
 .timer-log-list .log-day-group {
-  background: #ffffff;
-  border: 1px solid #cccccc;
+  background: var(--surface-white);
+  border: 1px solid var(--avatar-border);
   border-radius: 5px;
   padding: 10px;
   margin-bottom: 15px;
-  color: #222222;
+  color: var(--text-dark);
   font-size: 12px;
   line-height: 18px;
 }
@@ -4419,14 +4440,14 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   align-items: baseline;
   margin: 0 -10px 5px;
   padding: 0 10px;
-  border-bottom: 1px solid #cccccc;
+  border-bottom: 1px solid var(--avatar-border);
 }
 
 .timer-log-list .log-entry {
   display: flex;
   align-items: flex-start;
   padding: 3px 0 5px;
-  border-bottom: 1px dashed #dddddd;
+  border-bottom: 1px dashed var(--rule-light);
   cursor: pointer;
 }
 
@@ -4439,7 +4460,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 }
 
 .timer-log-list .log-main { flex: 1; min-width: 0; margin-right: 16px; }
-.timer-log-list .log-task { font-weight: 700; color: #222222; }
+.timer-log-list .log-task { font-weight: 700; color: var(--text-dark); }
 
 .timer-log-list .log-success,
 .timer-log-list .log-stopped,
@@ -4450,14 +4471,14 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   line-height: 16.5px;
 }
 
-.timer-log-list .log-success { color: #008000; }
-.timer-log-list .log-stopped { color: #ff0000; }
-.timer-log-list .log-neutral { color: #666666; }
-.timer-log-list .log-note { font-size: 11px; color: #444444; }
-.timer-log-list .log-author { font-size: 11px; color: #666666; }
+.timer-log-list .log-success { color: var(--green-web); }
+.timer-log-list .log-stopped { color: var(--badge-bg); }
+.timer-log-list .log-neutral { color: var(--text-mid); }
+.timer-log-list .log-note { font-size: 11px; color: var(--text-strong); }
+.timer-log-list .log-author { font-size: 11px; color: var(--text-mid); }
 
-.timer-log-list .log-when { margin-right: 23px; color: #666666; white-space: nowrap; }
-.timer-log-list .log-dur { margin-right: 19px; color: #666666; white-space: nowrap; }
+.timer-log-list .log-when { margin-right: 23px; color: var(--text-mid); white-space: nowrap; }
+.timer-log-list .log-dur { margin-right: 19px; color: var(--text-mid); white-space: nowrap; }
 
 .timer-log-list .log-more {
   width: 22px;
@@ -4467,29 +4488,29 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   border: none;
   border-radius: 50%;
   background: none;
-  color: #000000;
+  color: var(--kf-black);
   opacity: 0.4;
   cursor: pointer;
 }
 
 .timer-log-list .log-more svg { display: block; fill: currentColor; }
-.timer-log-list .log-more:hover { opacity: 1; background: rgba(0, 0, 0, 0.08); }
+.timer-log-list .log-more:hover { opacity: 1; background: var(--icon-on-bg); }
 
 .timer-log-list .log-add-row { margin-top: 10px; }
 
 .timer-log-list .log-add-entry {
   height: 25px;
   padding: 0 10px;
-  border: 1px solid #2185d0;
+  border: 1px solid var(--kf-primary);
   border-radius: 3px;
-  background: #2185d0;
-  color: #ffffff;
+  background: var(--kf-primary);
+  color: var(--on-color);
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
 }
 
-.timer-log-list .log-add-entry:hover { background: #1a6fb0; border-color: #1a6fb0; }
+.timer-log-list .log-add-entry:hover { background: var(--kf-primary-darker); border-color: var(--kf-primary-darker); }
 
 /* ---------- statistics page (KF-092) ---------- */
 
@@ -4528,38 +4549,38 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   max-width: 720px;
   height: auto;
   margin: 1rem 0;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-white);
+  border: 1px solid var(--divider);
   border-radius: 4px;
 }
 .chart-grid {
-  stroke: #e5e7eb;
+  stroke: var(--divider);
   stroke-width: 1;
 }
 .chart-tick {
   font-size: 11px;
-  fill: #6b7280;
+  fill: var(--ink-subtle);
 }
 .chart-axis-label {
   font-size: 12px;
-  fill: #374151;
+  fill: var(--ink-soft);
 }
 .chart-line {
-  stroke: #4caf50;
+  stroke: var(--epics-accent);
   stroke-width: 2;
 }
 .chart-dot {
-  fill: #4caf50;
-  stroke: #ffffff;
+  fill: var(--epics-accent);
+  stroke: var(--surface-white);
   stroke-width: 1.5;
 }
 .chart-area {
-  fill: #4caf50;
+  fill: var(--epics-accent);
   fill-opacity: 0.3;
   stroke: none;
 }
 .chart-projection {
-  stroke: #2e7d32;
+  stroke: var(--green-800);
   stroke-width: 2;
   stroke-dasharray: 6 4;
 }
@@ -4581,7 +4602,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   align-items: center;
   gap: 0.35rem;
   font-size: 13.12px;
-  color: #374151;
+  color: var(--ink-soft);
 }
 .cfd-swatch {
   display: inline-block;
@@ -4593,7 +4614,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 /* KF-340: Cycle & lead time report — moving-average trend line (dashed gray,
    matching KanbanFlow's "Trend (moving average)" series). */
 .chart-trend {
-  stroke: #9aa0a6;
+  stroke: var(--chart-gray);
   stroke-width: 2;
   stroke-dasharray: 6 4;
 }
@@ -4605,7 +4626,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   justify-content: center;
   margin: 0.25rem 0 1rem;
   font-size: 12px;
-  color: #4b5563;
+  color: var(--text-gray);
 }
 .chart-legend-item {
   display: inline-flex;
@@ -4618,12 +4639,12 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   border-radius: 50%;
 }
 .chart-legend-green {
-  background: #4caf50;
+  background: var(--epics-accent);
 }
 .chart-legend-line {
   width: 20px;
   height: 0;
-  border-top: 2px dashed #9aa0a6;
+  border-top: 2px dashed var(--chart-gray);
 }
 
 /* KF-342: Monte Carlo forecasting report — settings sidebar + results. */
@@ -4658,10 +4679,10 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .mc-getting-started {
   margin: 8px 0 16px;
   padding: 12px 16px;
-  border: 1px solid #c8e6c9;
-  border-left: 4px solid #43a047;
+  border: 1px solid var(--mc-start-border);
+  border-left: 4px solid var(--mc-start-accent);
   border-radius: 4px;
-  background: #f1f8f1;
+  background: var(--mc-start-bg);
 }
 .mc-getting-started[hidden] { display: none; }
 .mc-getting-started h3 { margin: 0 0 6px; }
@@ -4674,10 +4695,10 @@ body.dark .mc-getting-started { background: #1f2a1f; border-color: #2e5230; bord
   left: 0;
   right: 0;
   padding: 10px 12px;
-  background: #ffffff;
-  border: 1px solid #d1d5db;
+  background: var(--surface-white);
+  border: 1px solid var(--field-border);
   border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 2px 8px var(--popover-shadow-color);
 }
 .mc-pop[hidden] { display: none; }
 body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
@@ -4685,7 +4706,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 .report-export { margin: 8px 0; display: flex; gap: 8px; }
 .report-export[hidden] { display: none; }
 .mc-bar {
-  fill: #43a047;
+  fill: var(--mc-start-accent);
 }
 .mc-pct {
   stroke-width: 1.5;
@@ -4705,8 +4726,8 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 
 .bar-chart {
   padding: 0.5rem;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-faint);
+  border: 1px solid var(--divider);
   border-radius: 8px;
   overflow-x: auto;
 }
@@ -4721,8 +4742,8 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 }
 
 .stat-card {
-  background: #f4f4f4;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-soft);
+  border: 1px solid var(--divider);
   border-radius: 8px;
   padding: 0.9rem;
   text-align: center;
@@ -4731,12 +4752,12 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 .stat-value {
   font-size: 1.5rem;
   font-weight: 700;
-  color: #1f2937;
+  color: var(--text-slate);
 }
 
 .stat-label {
   font-size: 0.82rem;
-  color: #6b7280;
+  color: var(--ink-subtle);
   margin-top: 0.2rem;
 }
 
@@ -4756,7 +4777,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   width: 180px;
   flex-shrink: 0;
   font-size: 0.9rem;
-  color: #374151;
+  color: var(--ink-soft);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4765,20 +4786,20 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 .reason-bar {
   flex: 1;
   height: 1.1rem;
-  background: #e5e7eb;
+  background: var(--divider);
   border-radius: 4px;
   overflow: hidden;
 }
 
 .reason-fill { height: 100%; }
 
-.reason-interrupted { background: #ef4444; }
+.reason-interrupted { background: var(--red-500); }
 
 .reason-count {
   width: 3rem;
   text-align: right;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--text-slate);
 }
 
 /* ---------- settings & setup pages ---------- */
