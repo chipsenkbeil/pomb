@@ -254,7 +254,7 @@ for _, tag in ipairs({ "batch-" .. opts.batch, "v" .. new_version }) do
 end
 
 local logs = assert(fs.mktemp({ prefix = "release-" .. opts.batch, dir = true }))
-say(("release: logs in %s\n"):format(logs))
+say(("Logs are in %s.\n"):format(logs))
 local holder = lock.holder(repo)
 if holder and lock.alive(holder) then
     die(("Release batch %s (pid %s) already holds the land lock. The worktree is left at %s."):format(
@@ -293,7 +293,7 @@ local function drained(gate)
 end
 
 for _, gate in ipairs({ "lint", "test", "nixcheck", "build" }) do
-    say(("release: dev %s --remote ...\n"):format(gate))
+    say(("Running dev %s --remote.\n"):format(gate))
     local ran
     ran, code = run_gate(gate)
     local waited = 0
@@ -308,7 +308,7 @@ for _, gate in ipairs({ "lint", "test", "nixcheck", "build" }) do
             ))
         end
         say(
-            ("release: dev %s --remote waits %s seconds because the ci hub is draining.\n"):format(
+            ("The dev %s --remote run waits %s seconds because the ci hub is draining.\n"):format(
                 gate,
                 drain_interval
             )
@@ -327,13 +327,17 @@ for _, gate in ipairs({ "lint", "test", "nixcheck", "build" }) do
             wt
         ))
     end
-    say(("release: %s ci run %s\n"):format(gate, trim(ran)))
+    say(("The %s ci run is %s.\n"):format(gate, trim(ran)))
 end
 local summary = ""
 for line in (fs.read(logs .. "/test.log") or ""):gmatch("[^\n]+") do
     summary = line:match("Summary.*") or summary
 end
-say(("release: gates ok: %s\n"):format(summary))
+local passed = "All gates passed."
+if summary ~= "" then
+    passed = ("All gates passed. %s."):format(summary)
+end
+say(passed .. "\n")
 
 if devos.run({ "dev", "__push_main", wt, "--check" }, { cwd = wt }) ~= 0 then
     die(("The attribution check failed. The worktree is left at %s."):format(wt))
@@ -350,7 +354,7 @@ if read_git(repo, "rev-parse", remote .. "/main") ~= base then
 end
 if opts.dry_run then
     lock.drop(repo)
-    say(("release: dry run, not pushed. Release commit %s in %s\n"):format(sha, wt))
+    say(("Dry run, not pushed. The release commit %s is in %s.\n"):format(sha, wt))
     return 0
 end
 if devos.run({ "dev", "__push_main", wt }, { cwd = wt }) ~= 0 then
