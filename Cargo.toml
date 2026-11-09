@@ -1,6 +1,6 @@
 [package]
 name = "pomb"
-version = "0.5.104"
+version = "0.5.105"
 edition = "2024"
 publish = false
 license = "AGPL-3.0-only"
