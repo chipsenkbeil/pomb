@@ -5,3 +5,5 @@
 *.db-shm
 .dev/worktrees/
 scratchpad/
+.dev/release.lock
+.dev/release.lock.*

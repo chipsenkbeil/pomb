@@ -7,7 +7,7 @@ Usage: dev release --batch N --summary "<text>" [--env KEY=VALUE]... [--dry-run]
 Each card lands on main through dev land after its own verification, so a release adds only the version bump. Steps, any failure aborts before the push:
 1. Refuse unless <remote>/main has a commit since its last v* tag.
 2. Bump the version with dev __bump_version in .dev/worktrees/release-<N> on <remote>/main and commit "Release batch-<N>: <summary>" with only Cargo.toml and Cargo.lock. Then refuse unless the new version differs from the last v* tag's and Cargo.lock's pomb entry matches it, and refuse when batch-<N> or v<version> already exists locally or on the remote.
-3. Run dev lint --remote, dev test --remote, dev nixcheck --remote and dev build --remote through __gate, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts before the push, and so does a gate whose ci run is not a new passed run of the release worktree with source local.
+3. Take the land lock .dev/release.lock in the main checkout, which names the batch and the pid and which dev land waits on, and drop it on every exit and once the push is done. Refuse when a live release holds it. Run dev lint --remote, dev test --remote, dev nixcheck --remote and dev build --remote through __gate, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts before the push, and so does a gate whose ci run is not a new passed run of the release worktree with source local.
 4. Refuse attribution trailers in the new commit and refuse when <remote>/main moved since step 1, then push to main on the remote of record.
 5. Tag batch-<N> and v<version> at the pushed commit with __push_tag, then compute the nix hash of the commit's tree and print the request block. A failed tag prints the __push_tag command to rerun for it.
 The remote of record is forge.remote, else gerrit when that remote exists, else origin. On gerrit the release commit carries a Change-Id trailer.
@@ -18,10 +18,13 @@ Repeat --env to list pomb.service environment changes in the request.
 local devos = require("dev.os")
 local fs = require("dev.fs")
 local forge = require("pomb.forge")
+local lock = require("pomb.lock")
 
 local ctx = ...
 
 local QUIET = { stderr = "null" }
+
+local lock_repo
 
 local function say(...)
     io.stdout:write(...)
@@ -29,6 +32,9 @@ local function say(...)
 end
 
 local function die(message)
+    if lock_repo then
+        lock.drop(lock_repo)
+    end
     io.stderr:write(message, "\n")
     os.exit(1)
 end
@@ -249,6 +255,16 @@ end
 
 local logs = assert(fs.mktemp({ prefix = "release-" .. opts.batch, dir = true }))
 say(("release: logs in %s\n"):format(logs))
+local holder = lock.holder(repo)
+if holder and lock.alive(holder) then
+    die(("Release batch %s (pid %s) already holds the land lock. The worktree is left at %s."):format(
+        holder.batch,
+        holder.pid,
+        wt
+    ))
+end
+lock.take(repo, opts.batch)
+lock_repo = repo
 local DRAIN = "the hub is draining"
 local DRAIN_INTERVAL_SECS = 60
 local DRAIN_BOUND_SECS = 3600
@@ -333,12 +349,14 @@ if read_git(repo, "rev-parse", remote .. "/main") ~= base then
     ))
 end
 if opts.dry_run then
+    lock.drop(repo)
     say(("release: dry run, not pushed. Release commit %s in %s\n"):format(sha, wt))
     return 0
 end
 if devos.run({ "dev", "__push_main", wt }, { cwd = wt }) ~= 0 then
     die(("The push failed. The worktree is left at %s."):format(wt))
 end
+lock.drop(repo)
 
 local reruns = {}
 for _, tag in ipairs({ "batch-" .. opts.batch, "v" .. new_version }) do

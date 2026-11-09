@@ -5,7 +5,7 @@ Apply a verified commit onto the remote's main and push it once lint and test pa
 Usage: dev land <verified-commit> --card ID
 Steps, any failure aborts before the push:
 1. Fetch the remote of record. Refuse a commit that is not exactly one commit past its merge-base with <remote>/main, or that changes the package version in Cargo.toml or the pomb entry of Cargo.lock: only dev release bumps the version. Refuse a commit that adds a file under .dev/standalone unless the card has the standalone-ok label.
-2. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>. On gerrit the commit gets a Change-Id trailer when it has none.
+2. Wait for the release lock .dev/release.lock to clear, up to POMB_LAND_WAIT_BOUND seconds (default 5400), polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) and saying who holds it. A lock whose pid is gone is removed. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>. On gerrit the commit gets a Change-Id trailer when it has none.
 3. Refuse attribution trailers through __push_main --check, before any gate.
 4. Run dev lint --remote, then dev test --remote, through __gate, one at a time on ci, logging to a temp dir. The first failing gate aborts.
 5. Push to main through __push_main, remove the land worktree, print the landed sha, note it on the card with dev board note and move the card to Release with dev board move. Then remove the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch. In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the bookmark of the same name. A worktree with uncommitted changes is kept, and the verb says why.
@@ -16,6 +16,7 @@ local devos = require("dev.os")
 local fs = require("dev.fs")
 local cargo = require("pomb.cargo")
 local forge = require("pomb.forge")
+local lock = require("pomb.lock")
 local standalone = require("dev.standalone")
 local verb = require("dev.verb")
 
@@ -23,6 +24,8 @@ local ctx = ...
 
 local ATTEMPTS = 3
 local QUIET = { stderr = "null" }
+local WAIT_INTERVAL_SECS = 30
+local WAIT_BOUND_SECS = 5400
 
 local function say(...)
     io.stdout:write(...)
@@ -97,8 +100,8 @@ end
 
 local function versions(dir, rev)
     local manifest = devos.capture(git(dir, "show", rev .. ":Cargo.toml"), QUIET)
-    local lock = devos.capture(git(dir, "show", rev .. ":Cargo.lock"), QUIET)
-    return (cargo.manifest_version(manifest) or "") .. "\n" .. (cargo.lock_version(lock) or "")
+    local lockfile = devos.capture(git(dir, "show", rev .. ":Cargo.lock"), QUIET)
+    return (cargo.manifest_version(manifest) or "") .. "\n" .. (cargo.lock_version(lockfile) or "")
 end
 
 local function added_files(repo, rev)
@@ -274,6 +277,45 @@ local function apply(land)
     return (read_git(wt, "rev-parse", "HEAD"))
 end
 
+local function positive_env(name, default)
+    local value = tonumber(os.getenv(name))
+    if value and value > 0 then
+        return value
+    end
+    return default
+end
+
+local function release_running(repo)
+    local holder = lock.holder(repo)
+    return holder ~= nil and lock.alive(holder)
+end
+
+local function wait_for_release(repo)
+    local interval = positive_env("POMB_LAND_WAIT_INTERVAL", WAIT_INTERVAL_SECS)
+    local bound = positive_env("POMB_LAND_WAIT_BOUND", WAIT_BOUND_SECS)
+    local waited = 0
+    while true do
+        local holder = lock.holder(repo)
+        if not holder then
+            return
+        end
+        if not lock.alive(holder) then
+            say(("The release lock of batch %s names a process that is gone, so it is taken over.\n"):format(holder.batch))
+            lock.clear(repo)
+            return
+        end
+        if waited >= bound then
+            verb.die(("The release of batch %s still held the land lock after %s seconds, so nothing landed."):format(
+                holder.batch,
+                bound
+            ))
+        end
+        say(("Waiting for the release of batch %s (pid %s) to finish before landing.\n"):format(holder.batch, holder.pid))
+        devos.run({ "sleep", tostring(interval) })
+        waited = waited + interval
+    end
+end
+
 local function gates(wt, card, attempt)
     if devos.run({ "dev", "__push_main", wt, "--check" }, { cwd = wt }) ~= 0 then
         verb.die(("The attribution check failed, and the worktree is left at %s."):format(wt))
@@ -353,6 +395,7 @@ end
 local sha
 local attempt = 1
 while true do
+    wait_for_release(repo)
     base, code = read_git(repo, "rev-parse", remote .. "/main")
     if code ~= 0 then
         return code or 1
@@ -367,26 +410,32 @@ while true do
         base = base,
     })
     gates(wt, card, attempt)
-    local status = devos.run({ "dev", "__push_main", wt }, { cwd = wt })
-    if status == 0 then
-        break
-    end
-    if status ~= 3 then
-        verb.die(("The push failed with status %s, and the worktree is left at %s."):format(status, wt))
-    end
-    if attempt >= ATTEMPTS then
-        verb.die(
-            ("The branch %s/main moved on %s times, so nothing was pushed, the worktree is left at %s, and you should land the card again."):format(
-                remote,
-                ATTEMPTS,
-                wt
+    if release_running(repo) then
+        say("A release took the land lock while the gates ran, so the commit is applied again once it is done.\n")
+        run_git(repo, "worktree", "remove", "--force", wt)
+        run_git(repo, "fetch", "-q", remote)
+    else
+        local status = devos.run({ "dev", "__push_main", wt }, { cwd = wt })
+        if status == 0 then
+            break
+        end
+        if status ~= 3 then
+            verb.die(("The push failed with status %s, and the worktree is left at %s."):format(status, wt))
+        end
+        if attempt >= ATTEMPTS then
+            verb.die(
+                ("The branch %s/main moved on %s times, so nothing was pushed, the worktree is left at %s, and you should land the card again."):format(
+                    remote,
+                    ATTEMPTS,
+                    wt
+                )
             )
-        )
+        end
+        say(("The branch %s/main moved on, so the commit is applied again.\n"):format(remote))
+        run_git(repo, "worktree", "remove", "--force", wt)
+        run_git(repo, "fetch", "-q", remote)
+        attempt = attempt + 1
     end
-    say(("The branch %s/main moved on, so the commit is applied again.\n"):format(remote))
-    run_git(repo, "worktree", "remove", "--force", wt)
-    run_git(repo, "fetch", "-q", remote)
-    attempt = attempt + 1
 end
 
 run_git(repo, "worktree", "remove", "--force", wt)

@@ -23,6 +23,7 @@ local FILES = {
     "__push_tag.lua",
     "lua/pomb/cargo.lua",
     "lua/pomb/forge.lua",
+    "lua/pomb/lock.lua",
     "__bump_version.lua",
     "__version_guard.lua",
 }
@@ -30,6 +31,7 @@ local FILES = {
 local STUB_DEV = [[
 case "$1" in __*) exec luajit '@main@' "$@";; esac
 echo "$1" >>'@dir@/gates.log'
+[ ! -e '@dir@/repo/.dev/release.lock' ] || cat '@dir@/repo/.dev/release.lock' >>'@dir@/locked.log'
 [ -z "$MOVE_MAIN" ] || git -C "$MOVE_MAIN" push -q origin HEAD:main
 [ "$1" != "$FAIL_GATE" ] || exit 1
 [ "$1" != "$DRAIN_GATE" ] || [ "$(grep -c "^$1\$" '@dir@/gates.log')" -gt "${DRAIN_TIMES:-1}" ] || { echo 'dev: the hub is draining and takes no new work'; exit 1; }
@@ -167,6 +169,25 @@ end
 
 local function done(fix)
     fs.remove(fix.dir, { recursive = true })
+end
+
+local function lock_path(fix)
+    return fix.repo .. "/.dev/release.lock"
+end
+
+local function locked_gates(fix)
+    local found = 0
+    for line in (fs.read(fix.dir .. "/locked.log") or ""):gmatch("[^\n]+") do
+        if line:find("^batch=7 pid=%d+$") then
+            found = found + 1
+        end
+    end
+    return found
+end
+
+local function dead_pid()
+    local out = devos.capture({ "sh", "-c", "echo $$" })
+    return tonumber(out)
 end
 
 t.test("release should commit only the version bump on the remote main", function()
@@ -404,5 +425,52 @@ t.test("release should print the block after both tags are pushed", function()
     t.ok(out:find("homelab request", 1, true), out)
     t.ok(out:find("Pomb sha: " .. head, 1, true), out)
     t.ok(out:find("batch:        7", 1, true), out)
+    done(fix)
+end)
+
+t.test("release should hold the land lock while its gates run", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local _, code, err = release(fix, RELEASE)
+    t.eq(code, 0, err)
+    t.eq(locked_gates(fix), 4)
+    t.ok(not fs.exists(lock_path(fix)))
+    done(fix)
+end)
+
+t.test("release should clear the land lock when a gate aborts it", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local _, code = release(fix, RELEASE, { FAIL_GATE = "test" })
+    t.ok(code ~= 0)
+    t.eq(locked_gates(fix), 2)
+    t.ok(not fs.exists(lock_path(fix)))
+    done(fix)
+end)
+
+t.test("release should clear the land lock after a dry run", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local _, code, err = release(fix, with(RELEASE, "--dry-run"))
+    t.eq(code, 0, err)
+    t.eq(locked_gates(fix), 4)
+    t.ok(not fs.exists(lock_path(fix)))
+    done(fix)
+end)
+
+t.test("release should refuse while a live release holds the land lock", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    assert(fs.write(lock_path(fix), ("batch=6 pid=%d\n"):format(devos.getpid())))
+    local _, code, err = release(fix, RELEASE)
+    t.ok(code ~= 0)
+    t.ok(err:find("Release batch 6", 1, true), err)
+    t.eq(gates(fix), "")
+    done(fix)
+end)
+
+t.test("release should take over a stale land lock from a dead process", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    assert(fs.write(lock_path(fix), ("batch=6 pid=%d\n"):format(dead_pid())))
+    local _, code, err = release(fix, RELEASE)
+    t.eq(code, 0, err)
+    t.eq(locked_gates(fix), 4)
+    t.ok(not fs.exists(lock_path(fix)))
     done(fix)
 end)

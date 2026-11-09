@@ -16,7 +16,15 @@ devos.defaults.env = {
 
 local CARD = "abc123"
 local RELEASE = "release"
-local VERBS = { "land.lua", "__gate.lua", "__push_main.lua", "__push_tag.lua", "lua/pomb/cargo.lua", "lua/pomb/forge.lua" }
+local VERBS = {
+    "land.lua",
+    "__gate.lua",
+    "__push_main.lua",
+    "__push_tag.lua",
+    "lua/pomb/cargo.lua",
+    "lua/pomb/forge.lua",
+    "lua/pomb/lock.lua",
+}
 
 local STUB_DEV = [[
 case "$1" in __*) exec luajit '@main@' "$@";; esac
@@ -24,6 +32,10 @@ if [ "$1" = board ] && [ "$2" = show ]; then [ -e '@dir@/fail-show' ] && exit 1;
 if [ "$1" = board ]; then echo "$*" >>'@dir@/notes'; exit 0; fi
 touch '@dir@/runs.jsonl'
 echo "$1" >>'@dir@/calls'
+if [ "$1" = lint ] && [ -e '@dir@/lock-on-lint' ]; then
+printf 'batch=9 pid=%s\n' "$(cat '@dir@/lock-on-lint')" >'@dir@/work/.dev/release.lock'
+rm '@dir@/lock-on-lint'
+fi
 status=passed
 code=0
 if [ -e '@dir@/fail-'"$1" ]; then status=failed; code=1; fi
@@ -155,10 +167,31 @@ local function advance_remote_main(fix, name)
     git(other, "push", "-q", "origin", "HEAD:refs/heads/main")
 end
 
-local function land(fix, commit)
-    return testenv.verb(fix.work, { "land", commit, "--card", CARD }, {
-        env = { TMPDIR = fix.dir, PATH = fix.dir .. "/bin:" .. os.getenv("PATH") },
-    })
+local function land(fix, commit, env)
+    local vars = { TMPDIR = fix.dir, PATH = fix.dir .. "/bin:" .. os.getenv("PATH") }
+    for name, value in pairs(env or {}) do
+        vars[name] = value
+    end
+    return testenv.verb(fix.work, { "land", commit, "--card", CARD }, { env = vars })
+end
+
+local STUB_SLEEP = [=[
+echo "$*" >>'@dir@/sleeps'
+[ -e '@dir@/keep-lock' ] || rm -f '@dir@/work/.dev/release.lock'
+]=]
+
+local function lock_path(fix)
+    return fix.work .. "/.dev/release.lock"
+end
+
+local function hold_lock(fix, pid)
+    stub(fix.dir, "sleep", STUB_SLEEP)
+    assert(fs.write(lock_path(fix), ("batch=9 pid=%d\n"):format(pid)))
+end
+
+local function dead_pid()
+    local out = devos.capture({ "sh", "-c", "echo $$" })
+    return tonumber(out)
 end
 
 local function remote_main(fix)
@@ -489,5 +522,60 @@ t.test("land does not retry on an exit one push failure", function()
     t.eq(#lines(fix, "pushes"), 1)
     t.eq(#lines(fix, "notes"), 0)
     t.eq(remote_main(fix), before)
+    done(fix)
+end)
+
+t.test("land should wait for the release lock before applying", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    hold_lock(fix, devos.getpid())
+    local out, code, err = land(fix, cand, { POMB_LAND_WAIT_INTERVAL = "1" })
+    t.ok(code == 0, err)
+    t.ok(out:find("Waiting for the release of batch 9", 1, true), out)
+    t.eq(#lines(fix, "sleeps"), 1)
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    t.ok(not fs.exists(lock_path(fix)))
+    done(fix)
+end)
+
+t.test("land should give up when the release lock outlasts the wait bound", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    hold_lock(fix, devos.getpid())
+    mark(fix, "keep-lock")
+    local before = remote_main(fix)
+    local env = { POMB_LAND_WAIT_INTERVAL = "1", POMB_LAND_WAIT_BOUND = "2" }
+    local _, code, err = land(fix, cand, env)
+    t.ok(code ~= 0)
+    t.ok(err:find("still held the land lock after 2 seconds", 1, true), err)
+    t.eq(#lines(fix, "calls"), 0)
+    t.eq(remote_main(fix), before)
+    done(fix)
+end)
+
+t.test("land should take over a stale lock from a dead process", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    hold_lock(fix, dead_pid())
+    local out, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.ok(out:find("is gone, so it is taken over", 1, true), out)
+    t.eq(#lines(fix, "sleeps"), 0)
+    t.ok(not fs.exists(lock_path(fix)))
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    done(fix)
+end)
+
+t.test("land should apply again when a release takes the lock during its gates", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    stub(fix.dir, "sleep", STUB_SLEEP)
+    assert(fs.write(fix.dir .. "/lock-on-lint", tostring(devos.getpid())))
+    local out, code, err = land(fix, cand, { POMB_LAND_WAIT_INTERVAL = "1" })
+    t.ok(code == 0, err)
+    t.ok(out:find("A release took the land lock while the gates ran", 1, true), out)
+    eq_list(lines(fix, "calls"), { "lint", "test", "lint", "test" })
+    t.eq(#lines(fix, "pushes"), 1)
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
     done(fix)
 end)
