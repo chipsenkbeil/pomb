@@ -182,15 +182,12 @@
           var crossesDone = (toList.closest('[data-done-column="true"]') != null) ||
                             (fromList.closest('[data-done-column="true"]') != null) ||
                             toList.dataset.sorted === '1';
-          fetch('/api/tasks/' + encodeURIComponent(card.dataset.taskId) + '/move?force=true', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              column_id: toCol,
-              swimlane_id: toList.dataset.swimlaneId || null,
-              position: position,
-            }),
+          moveWithWip(card.dataset.taskId, {
+            column_id: toCol,
+            swimlane_id: toList.dataset.swimlaneId || null,
+            position: position,
           }).then(function (res) {
+            if (res === null) return declineMove(card, fromList, evt.oldDraggableIndex);
             if (!res.ok) {
               if (res.status === 409) return refuseMove(res, card, fromList, evt.oldDraggableIndex);
               if (res.status === 403 || res.status === 422) {
@@ -240,11 +237,65 @@
     else list.appendChild(card);
   };
 
-  const refuseMove = (res, card, list, index) => toastRefusal(res, 'Could not move task.').then(() => {
+  const WIP_LIMIT_CODE = 'wip_limit_reached';
+  const WIP_DECLINED = new Error('declined');
+
+  const wipTitle = (columnId) => {
+    const head = columnId
+      ? document.querySelector('.columnHeader[data-column-id="' + cssEscape(columnId) + '"]')
+      : null;
+    return head && head.dataset.columnName ? '"' + head.dataset.columnName + '" is full' : 'Column is full';
+  };
+
+  const askWip = (message, verb, columnId) => new Promise((resolve) => {
+    const overlay = document.getElementById('wip-dialog');
+    const old = document.getElementById('wip-force');
+    const force = old.cloneNode(true);
+    old.parentNode.replaceChild(force, old);
+    document.getElementById('wip-title').textContent = wipTitle(columnId);
+    document.getElementById('wip-message').textContent = message;
+    force.textContent = verb;
+    let settled = false;
+    const watcher = new MutationObserver(() => { if (overlay.hidden) settle(false); });
+    const settle = (go) => {
+      if (settled) return;
+      settled = true;
+      watcher.disconnect();
+      resolve(go);
+    };
+    watcher.observe(overlay, { attributes: true, attributeFilter: ['hidden'] });
+    force.addEventListener('click', () => {
+      overlay.hidden = true;
+      settle(true);
+    });
+    overlay.hidden = false;
+    force.focus();
+  });
+
+  const wipRefusal = (res) => (res.status === 409
+    ? res.clone().json().then((body) => (body && body.code === WIP_LIMIT_CODE ? body : null), () => null)
+    : Promise.resolve(null));
+
+  const withWip = (send, verb, columnId) => send(false).then((res) => wipRefusal(res).then((body) => {
+    if (!body) return res;
+    return askWip(body.message, verb, columnId).then((go) => (go ? send(true) : null));
+  }));
+
+  const moveRequest = (taskId, body, force) =>
+    api('/api/tasks/' + encodeURIComponent(taskId) + '/move' + (force ? '?force=true' : ''), 'POST', body);
+
+  const withForce = (body, force) => (force ? Object.assign({}, body, { force: true }) : body);
+
+  const moveWithWip = (taskId, body) => withWip((force) => moveRequest(taskId, body, force), 'Move anyway', body.column_id);
+
+  const declineMove = (card, list, index) => {
     putCardBack(card, list, index);
     if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
     return null;
-  });
+  };
+
+  const refuseMove = (res, card, list, index) => toastRefusal(res, 'Could not move task.')
+    .then(() => declineMove(card, list, index));
 
   // Note: htmx inserts new cards inside the existing .task-list containers,
   // which already have Sortable attached, so no re-init is needed.
@@ -478,9 +529,9 @@
       swimlane_id: toList.dataset.swimlaneId || null,
       position: position,
     };
-    api('/api/boards/' + encodeURIComponent(boardId()) + '/tasks/bulk', 'POST', body)
-      .then(drained)
+    postBulk(body, body.column_id)
       .then(function (res) {
+        if (res === null) { reloadSelectionSoon(true); return; }
         if (!res.ok) toast('Could not move the selected tasks.');
         reloadSelectionSoon(!res.ok);
       })
@@ -511,8 +562,12 @@
     });
   }
 
-  function postBulk(body) {
-    return api('/api/boards/' + encodeURIComponent(boardId()) + '/tasks/bulk', 'POST', body).then(drained);
+  function postBulk(body, columnId) {
+    return withWip(
+      (force) => api('/api/boards/' + encodeURIComponent(boardId()) + '/tasks/bulk', 'POST', withForce(body, force)),
+      'Move anyway',
+      columnId,
+    ).then((res) => res && drained(res));
   }
 
   function refreshBulkCards(ids) {
@@ -1126,6 +1181,7 @@
     function open(colId, laneId) {
       hideFloatingMenus();
       form.reset();
+      document.getElementById('add-where').hidden = true;
       form.elements.column_id.value = colId;
       var firstList = openList(colId, laneId);
       form.elements.swimlane_id.value = firstList ? (firstList.dataset.swimlaneId || '') : '';
@@ -1175,6 +1231,39 @@
       return card;
     }
 
+    const fillSelect = (select, options, current) => {
+      select.textContent = '';
+      options.forEach((option) => {
+        const el = document.createElement('option');
+        el.value = option.id;
+        el.textContent = option.name;
+        el.selected = option.id === current;
+        select.appendChild(el);
+      });
+    };
+
+    const showWhere = () => {
+      const columns = Array.from(
+        document.querySelectorAll('#board-column-options [data-column-id]'),
+        (el) => ({ id: el.dataset.columnId, name: el.dataset.columnName }));
+      const lanes = Array.from(
+        document.querySelectorAll('#lane-order [data-lane-id]'),
+        (el) => ({ id: el.dataset.laneId, name: el.dataset.laneName }));
+      const where = document.getElementById('add-where');
+      const columnSelect = where.querySelector('[data-add-where-column]');
+      const laneSelect = where.querySelector('[data-add-where-lane]');
+      fillSelect(columnSelect, columns, form.elements.column_id.value);
+      fillSelect(laneSelect, lanes, form.elements.swimlane_id.value);
+      laneSelect.hidden = lanes.length < 2;
+      where.hidden = false;
+      columnSelect.focus();
+    };
+
+    document.getElementById('add-where').addEventListener('change', (e) => {
+      if (e.target.closest('[data-add-where-column]')) form.elements.column_id.value = e.target.value;
+      else if (e.target.closest('[data-add-where-lane]')) form.elements.swimlane_id.value = e.target.value;
+    });
+
     // mode: 'more' keeps the dialog open, 'open' opens the new task,
     // 'close' just closes.
     // follow: 'duedate' / 'estimate' open that control in the new task's details.
@@ -1192,13 +1281,14 @@
         labels: chosenLabels.slice(),
       };
       if (!sameMembers(picked, defaultMembers())) body.member_ids = picked.slice();
-      fetch('/api/tasks', {
+      withWip((force) => fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify(withForce(body, force)),
         credentials: 'same-origin',
-      })
+      }), 'Add anyway', colId)
         .then(function (resp) {
+          if (resp === null) return null;
           if (!resp.ok) {
             return resp.text().then(function (t) {
               var message = t;
@@ -1210,6 +1300,7 @@
         })
         .then(function (html) {
           busy = false;
+          if (html === null) { showWhere(); return; }
           var card = insertCard(colId, html);
           var taskId = card && card.dataset.taskId;
           if (mode === 'more') {
@@ -1857,10 +1948,10 @@
         var targetList = (curLane && document.querySelector(listSel + '[data-swimlane-id="' + cssEscape(curLane) + '"]')) ||
             document.querySelector(listSel);
         var laneId = targetList ? (targetList.dataset.swimlaneId || null) : curLane;
-        api('/api/tasks/' + encodeURIComponent(task.id) + '/move?force=true', 'POST',
-            { column_id: colId, swimlane_id: laneId })
-          .then(drained)
+        moveWithWip(task.id, { column_id: colId, swimlane_id: laneId })
+          .then((res) => res && drained(res))
           .then(function (res) {
+            if (!res) return;
             if (res.ok) window.location.reload();
             else toastRefusal(res, 'Could not move task.');
           });
@@ -1874,10 +1965,10 @@
             document.querySelector(listSel);
         var laneId = targetList ? (targetList.dataset.swimlaneId || null) : curLane;
         var position = targetList && sub === 'move-bottom' ? targetList.querySelectorAll('.task-card').length : 0;
-        api('/api/tasks/' + encodeURIComponent(task.id) + '/move?force=true', 'POST',
-            { column_id: colId, swimlane_id: laneId, position: position })
-          .then(drained)
+        moveWithWip(task.id, { column_id: colId, swimlane_id: laneId, position: position })
+          .then((res) => res && drained(res))
           .then(function (res) {
+            if (!res) return;
             if (res.ok) window.location.reload();
             else toastRefusal(res, 'Could not move task.');
           });
@@ -1923,12 +2014,15 @@
       if (!list) { toast('Could not copy task.'); return; }
       var src = document.querySelector(
         '#board-colors span[data-value="' + cssEscape(cardMenuCard.dataset.colorValue) + '"]');
-      api('/api/tasks', 'POST', {
+      const body = {
         column_id: list.dataset.columnId,
         swimlane_id: list.dataset.swimlaneId || null,
         name: task.name + ' (copy)',
         color_id: src ? src.dataset.id : null,
-      }).then(drained).then(function (res) {
+      };
+      withWip((force) => api('/api/tasks', 'POST', withForce(body, force)), 'Copy anyway', body.column_id)
+        .then((res) => res && drained(res)).then(function (res) {
+        if (!res) return;
         if (res.ok) window.location.reload();
         else toastRefusal(res, 'Could not copy task.');
       });
@@ -2388,8 +2482,8 @@
         var body = { column_id: targetId, position: nextPosition[lane]++ };
         if (lane) body.swimlane_id = lane;
         chain = chain.then(function () {
-          return api('/api/tasks/' + encodeURIComponent(card.dataset.taskId) + '/move?force=true', 'POST', body)
-            .then(function (res) { if (!res.ok) throw new Error('move failed'); });
+          return moveWithWip(card.dataset.taskId, body)
+            .then(function (res) { if (!res || !res.ok) throw new Error('move failed'); });
         });
       });
       chain.then(doDelete).catch(function () { toast('Could not move tasks.'); });
@@ -2972,13 +3066,11 @@
     var card = document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
     var fromList = card ? card.closest('.task-list') : null;
     var swimlaneId = fromList ? (fromList.dataset.swimlaneId || null) : null;
-    fetch('/api/tasks/' + encodeURIComponent(taskId) + '/move?force=true', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ column_id: doneColId, swimlane_id: swimlaneId, position: 0 }),
-    }).then(drained).then(function (res) {
-      if (res.ok) window.location.reload();
-    });
+    moveWithWip(taskId, { column_id: doneColId, swimlane_id: swimlaneId, position: 0 })
+      .then((res) => res && drained(res))
+      .then(function (res) {
+        if (res && res.ok) window.location.reload();
+      });
   }
 
   // ---------- save board as template ----------
@@ -3238,12 +3330,13 @@
     if (modal.dataset.swimlaneId) body.swimlane_id = modal.dataset.swimlaneId;
     newChildBusy = true;
     var created = null;
-    fetch('/api/tasks', {
+    withWip((force) => fetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify(body),
-    })
+      body: JSON.stringify(withForce(body, force)),
+    }), 'Add anyway', body.column_id)
       .then(function (res) {
+        if (!res) throw WIP_DECLINED;
         return res.text().then(function (text) {
           if (!res.ok) throw linkError(text || 'Could not create the card.');
           return JSON.parse(text);
@@ -3260,6 +3353,7 @@
       })
       .catch(function (err) {
         newChildBusy = false;
+        if (err === WIP_DECLINED) return;
         if (!created) {
           toast(linkFailure(err, 'Could not create the card.'));
           return;
@@ -4797,12 +4891,14 @@
     return { name: nameInput ? nameInput.value : '', done: done, total: total, open: Math.max(total - done, 0) };
   }
 
-  function epicRequest(path, method, body) {
-    return fetch(path, {
+  function epicRequest(path, method, body, verb) {
+    const send = (force) => fetch(path, {
       method: method,
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    }).then(function (res) {
+      body: body === undefined ? undefined : JSON.stringify(verb ? withForce(body, force) : body),
+    });
+    return (verb ? withWip(send, verb) : send(false)).then(function (res) {
+      if (!res) throw WIP_DECLINED;
       return res.text().then(function (text) {
         if (!res.ok) throw text ? linkError(text) : new Error('refused');
         return text;
@@ -4885,7 +4981,7 @@
 
   function turnSubtaskIntoChild(epicId, sub) {
     var base = '/api/tasks/' + encodeURIComponent(epicId);
-    return epicRequest(base + '/subtasks/' + encodeURIComponent(sub.id) + '/convert', 'POST', { relation: 'none' })
+    return epicRequest(base + '/subtasks/' + encodeURIComponent(sub.id) + '/convert', 'POST', { relation: 'none' }, 'Convert anyway')
       .then(function (text) {
         return Promise.resolve()
           .then(function () {
@@ -5296,7 +5392,7 @@
     var copyBtn = document.getElementById('cp-copy-btn');
     if (copyBtn.disabled) return;
     copyBtn.disabled = true;
-    api('/api/tasks', 'POST', {
+    const copyBody = {
       column_id: colSel.value,
       swimlane_id: source.swimlane_id || null,
       name: name,
@@ -5305,7 +5401,9 @@
       labels: source.labels,
       timeline_start: source.timeline_start,
       timeline_end: source.timeline_end,
-    }).then(function (res) {
+    };
+    withWip((force) => api('/api/tasks', 'POST', withForce(copyBody, force)), 'Copy anyway', copyBody.column_id).then(function (res) {
+      if (!res) return null;
       if (!res.ok) { return toastRefusal(res, 'Could not copy task.'); }
       return drained(res).then(function () {
         document.getElementById('copy-task-dialog').hidden = true;
@@ -5422,9 +5520,10 @@
 
   function doMoveTask() {
     if (moveBulkIds && moveTargetColumnId) {
-      postBulk({ task_ids: moveBulkIds, action: 'move', column_id: moveTargetColumnId, swimlane_id: null })
+      postBulk({ task_ids: moveBulkIds, action: 'move', column_id: moveTargetColumnId, swimlane_id: null }, moveTargetColumnId)
         .then(function (res) {
           document.getElementById('move-task-dialog').hidden = true;
+          if (!res) return;
           if (!res.ok) { toast('Could not move the selected tasks.'); return; }
           window.location.reload();
         });
@@ -5433,11 +5532,11 @@
     var id = moveTaskId;
     if (!id) return;
     if (!moveTargetColumnId) { toast('Could not move task.'); return; }
-    api('/api/tasks/' + encodeURIComponent(id) + '/move?force=true', 'POST',
-        { column_id: moveTargetColumnId, swimlane_id: moveSwimlaneId })
-      .then(drained)
+    moveWithWip(id, { column_id: moveTargetColumnId, swimlane_id: moveSwimlaneId })
+      .then((res) => res && drained(res))
       .then(function (res) {
         document.getElementById('move-task-dialog').hidden = true;
+        if (!res) return;
         if (!res.ok) { toastRefusal(res, 'Could not move task.'); return; }
         if (modalTaskId() === id) { modalDirty = true; closeModal(); }
         else window.location.reload();
@@ -6243,9 +6342,11 @@
             column_id: column.value,
             relation: relation.value,
           };
-          api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/' +
-              encodeURIComponent(row.dataset.subtaskId) + '/convert', 'POST', body)
+          withWip((force) => api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/' +
+              encodeURIComponent(row.dataset.subtaskId) + '/convert', 'POST', withForce(body, force)),
+          'Convert anyway', body.column_id)
             .then(function (res) {
+              if (!res) { convert.disabled = false; return null; }
               if (!res.ok) { convert.disabled = false; return toastRefusal(res, 'Could not convert the subtask.'); }
               row.remove();
               updateSubtaskCount();
@@ -18129,12 +18230,14 @@
       if (!name || !board || this.epicsNewBusy) return Promise.resolve();
       this.epicsNewBusy = true;
       this.renderEpics();
-      return fetch('/api/tasks', {
+      const epic = { kind: 'epic', board_id: board, name: name, description: document.getElementById('epics-panel').dataset.epicTemplate };
+      return withWip((force) => fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ kind: 'epic', board_id: board, name: name, description: document.getElementById('epics-panel').dataset.epicTemplate }),
-      })
+        body: JSON.stringify(withForce(epic, force)),
+      }), 'Add anyway')
         .then(function (res) {
+          if (!res) return null;
           return res.ok ? res.json() : toastRefusal(res, 'Could not create the epic.');
         })
         .then(function (task) {
@@ -19430,8 +19533,10 @@
           btn.textContent = 'Restore';
           btn.addEventListener('click', function () {
             showConfirmDialog('Restore task', 'Are you sure you want to restore the task ' + item.name + ' to ' + item.restores_to + '?', 'Restore', function () {
-              api('/api/bin/' + encodeURIComponent(item.id) + '/restore', 'POST')
+              withWip((force) => api('/api/bin/' + encodeURIComponent(item.id) + '/restore' + (force ? '?force=true' : ''), 'POST'),
+                'Restore anyway')
                 .then(function (res) {
+                  if (!res) return null;
                   return drained(res).then(function () {
                     if (!res.ok) { toast('Could not restore the task.'); return; }
                     window.location.reload();
@@ -21534,11 +21639,17 @@
     }
 
     function postBulkRequest(body) {
-      return api('/api/boards/' + encodeURIComponent(boardId()) + '/tasks/bulk', 'POST', body).then(function (res) {
+      let forced = false;
+      const send = (force) => {
+        forced = force;
+        return api('/api/boards/' + encodeURIComponent(boardId()) + '/tasks/bulk', 'POST', withForce(body, force));
+      };
+      return withWip(send, 'Move anyway', body.column_id).then(function (res) {
+        if (res === null) return { ok: false, declined: true, data: null, message: '', forced: false };
         return res.text().then(function (text) {
           var data = null;
           try { data = JSON.parse(text); } catch (e) { data = null; }
-          return { ok: res.ok, data: data, message: (data && data.message) || text };
+          return { ok: res.ok, data: data, message: (data && data.message) || text, forced: forced };
         });
       });
     }
@@ -21582,9 +21693,10 @@
         if (seq !== previewSeq || STEPS[step] !== 'preview') return;
         if (!res.ok) {
           show(step - 1);
-          showError(res.message || 'The update was refused, so nothing would change.');
+          if (!res.declined) showError(res.message || 'The update was refused, so nothing would change.');
           return;
         }
+        if (res.forced) request.force = true;
         renderPreview(res.data.tasks || []);
         byId('mu-apply').disabled = false;
       }).catch(function () {
@@ -21609,7 +21721,7 @@
             return;
           }
           show(2);
-          showError(res.message || 'The update was refused, so nothing changed.');
+          if (!res.declined) showError(res.message || 'The update was refused, so nothing changed.');
         }).catch(function () {
           applying = false;
           showError('Could not apply the update.');
@@ -21692,6 +21804,7 @@
   // Exposed for data-call handlers and debugging.
   window.closeModal = closeModal;
   window.TimerUI = TimerUI;
+  window.WipGuard = { run: withWip, withForce: withForce };
   // KF-158: the timer popup's footer Settings button calls
   // TimerSettings.open() from an inline onclick handler, so it must be
   // reachable as a global.

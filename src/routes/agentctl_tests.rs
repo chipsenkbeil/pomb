@@ -3796,17 +3796,11 @@ fn task_row_schema_text_should_have_no_rustdoc_links() {
 }
 
 #[test]
-fn the_board_ui_should_force_every_task_move() {
+fn the_board_ui_should_force_a_task_move_only_after_asking() {
     let app = include_str!("../../static/app.js");
-    assert_eq!(app.matches("+ '/move?force=true'").count(), 6);
-    let unforced = app
-        .lines()
-        .filter(|line| line.contains("'/api/tasks/'") && line.contains("+ '/move'"))
-        .count();
-    assert_eq!(
-        unforced, 0,
-        "a human drag into a full column must keep working"
-    );
+    assert_eq!(app.matches("'/move?force=true'").count(), 0);
+    assert_eq!(app.matches("(force ? '?force=true' : '')").count(), 2);
+    assert_eq!(app.matches("wip_limit_reached").count(), 1);
 }
 
 #[tokio::test]

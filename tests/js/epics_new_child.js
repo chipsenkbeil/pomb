@@ -87,6 +87,9 @@ function api(path, method, data) {
     pending.push(resolve);
   });
 }
+const WIP_DECLINED = new Error('declined');
+const withWip = (send) => send(false);
+const withForce = (body) => body;
 function fetch(path, init) {
   return new Promise(function (resolve) {
     calls.push({ path: path, method: init.method, data: JSON.parse(init.body), headers: init.headers });

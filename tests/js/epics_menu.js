@@ -54,7 +54,10 @@ function closeModal() { closes++; }
 eval(fn('  function linkError(message) {'));
 eval(fn('  function linkFailure(err, fallback) {'));
 eval(fn('  function epicModalFacts() {'));
-eval(fn('  function epicRequest(path, method, body) {'));
+const withWip = (send) => send(false);
+const withForce = (body) => body;
+const WIP_DECLINED = new Error('declined');
+eval(fn('  function epicRequest(path, method, body, verb) {'));
 eval(fn('  function setEpicClosed(id, closed) {'));
 eval(fn('  function closeModalEpic() {'));
 eval(fn('  function epicCardsPhrase(total) {'));

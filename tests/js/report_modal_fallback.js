@@ -76,6 +76,9 @@ function api(path, method, data) {
   calls.push({ path: path, method: method, data: data });
   return Promise.resolve({ ok: true });
 }
+const withForce = (body, force) => (force ? Object.assign({}, body, { force: true }) : body);
+const withWip = (send) => send(false);
+const moveWithWip = (id, body) => api('/api/tasks/' + id + '/move', 'POST', body);
 eval(fn('  function modalTaskBoard() {'));
 eval(fn('  function boardNameFor(id) {'));
 eval(fn('  function openCopyDialog(taskId) {'));
@@ -122,7 +125,7 @@ tick().then(tick).then(tick).then(function () {
   check('move keeps the task lane on a report page', moveSwimlaneId, 'lane9');
   check('move preselects the task column', moveTargetColumnId, 'c2');
   doMoveTask();
-  check('move posts to the force endpoint', calls[0] && calls[0].path, '/api/tasks/t1/move?force=true');
+  check('move asks first instead of forcing', calls[0] && calls[0].path, '/api/tasks/t1/move');
   check('move posts the lane', calls[0] && calls[0].data.swimlane_id, 'lane9');
   calls.length = 0;
   toasts.length = 0;

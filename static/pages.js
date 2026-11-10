@@ -372,11 +372,12 @@
           clear_members: copyClear.checked,
         };
       }
-      fetch('/api/boards', {
+      window.WipGuard.run((force) => fetch('/api/boards', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify(payload),
-      }).then(function (res) {
+        body: JSON.stringify(window.WipGuard.withForce(payload, force)),
+      }), 'Copy anyway').then(function (res) {
+        if (res === null) return null;
         if (res.ok) return res.json();
         return res.text().then(function (text) {
           var message = '';

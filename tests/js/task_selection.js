@@ -22,6 +22,8 @@ function api(path, method, data) {
   requests.push([method, path, data]);
   return Promise.resolve({ ok: apiOk });
 }
+const withWip = (send) => send(false);
+const withForce = (body) => body;
 function showConfirmDialog(title, message, ok, onConfirm) { confirms.push([title, message, onConfirm]); }
 var memberIdsOf = {};
 var searchBox = { value: 'x', focus: function () {} };

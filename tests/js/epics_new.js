@@ -81,6 +81,8 @@ function load() {
   var openModal = function (id) { state.opened.push(id); };
   var toast = function (m, d) { state.toasts.push([m, d]); };
   var toastRefusal = function (res, title) { toast(title, res.body); return Promise.resolve(null); };
+  var withWip = function (send) { return send(false); };
+  var withForce = function (body) { return body; };
   var fetch = function (url, opts) {
     var d = deferred();
     state.fetches.push({ url: url, opts: opts || {}, d: d });

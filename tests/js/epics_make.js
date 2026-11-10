@@ -80,7 +80,10 @@ function fetchJson(url) {
 }
 eval(fn('  function linkError(message) {'));
 eval(fn('  function linkFailure(err, fallback) {'));
-eval(fn('  function epicRequest(path, method, body) {'));
+const withWip = (send) => send(false);
+const withForce = (body) => body;
+const WIP_DECLINED = new Error('declined');
+eval(fn('  function epicRequest(path, method, body, verb) {'));
 eval(fn('  function showMakeEpicDialog(name, subs, onConfirm) {'));
 eval(fn('  function subtaskProblem(sub, linking, err) {'));
 eval(fn('  function turnSubtaskIntoChild(epicId, sub) {'));

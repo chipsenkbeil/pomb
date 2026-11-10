@@ -2080,6 +2080,15 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   opacity: 0.4;
   cursor: pointer;
 }
+.addTaskDialog-where {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.addTaskDialog-where select {
+  flex: 1;
+  min-width: 0;
+}
 .addTaskDialog-name {
   display: block;
   box-sizing: border-box;
@@ -4090,6 +4099,8 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
 .dlg-overlay[hidden] { display: none; }
 
 .dlg-overlay-top { z-index: 400; }
+
+.dlg-overlay-wip { z-index: 1200; }
 
 .tm-template-row {
   display: flex;
@@ -9443,7 +9454,7 @@ body:has(.board-wrap[data-role="viewer"]) #modal-root :is(.tm-color-chip, .tm-du
 }
 .help-tip { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 13px; }
 .cal-overlay:not([hidden]) ~ #modal-root .modal-overlay { z-index: 350; }
-body:has(#modal-root .task-modal) .dlg-overlay:not(.cal-overlay, .dlg-overlay-top) { z-index: 360; }
+body:has(#modal-root .task-modal) .dlg-overlay:not(.cal-overlay, .dlg-overlay-top, .dlg-overlay-wip) { z-index: 360; }
 
 .report-tools { margin: 0 0 1rem; }
 .rt-bar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }

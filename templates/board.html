@@ -667,6 +667,10 @@
     <input type="hidden" name="swimlane_id" value="">
     <input type="hidden" name="color_id" value="">
     <button type="button" class="addTaskDialog-close" data-add-close title="Close" aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2"/></svg></button>
+    <div class="addTaskDialog-where" id="add-where" hidden>
+      <select data-add-where-column aria-label="Column"></select>
+      <select data-add-where-lane aria-label="Swimlane"></select>
+    </div>
     <textarea name="name" class="addTaskDialog-name" rows="1" placeholder="Task name..." maxlength="200" aria-label="Task name"></textarea>
     <div class="addTaskDialog-colorRow">
       <span class="addTaskDialog-colorIcon" aria-hidden="true"></span>

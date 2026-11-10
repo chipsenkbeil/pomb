@@ -104,7 +104,10 @@ function hideCardSubmenu() { hideCount++; }
 
 eval(fn('  function linkError(message) {'));
 eval(fn('  function linkFailure(err, fallback) {'));
-eval(fn('  function epicRequest(path, method, body) {'));
+const withWip = (send) => send(false);
+const withForce = (body) => body;
+const WIP_DECLINED = new Error('declined');
+eval(fn('  function epicRequest(path, method, body, verb) {'));
 eval(fn('  function epicLinkCall(taskId, epicId, hasParent) {'));
 eval(fn('  function addToEpic(taskId, epicId, hasParent, refresh) {'));
 eval(fn('  function appendEpicChoices(container, choices, makeButton) {'));
