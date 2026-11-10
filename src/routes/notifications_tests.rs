@@ -366,7 +366,7 @@ async fn muting_a_kind_should_stop_new_notifications_of_that_kind() {
 }
 
 #[tokio::test]
-async fn notifications_read_needs_settings_read() {
+async fn a_token_without_settings_read_should_be_refused_notifications() {
     let fx = Fixture::new();
     let (mut record, raw) = new_api_token_record(&fx.admin, "narrow", AuthScope::Admin, None);
     record.permissions.remove(&Permission::SettingsRead);
