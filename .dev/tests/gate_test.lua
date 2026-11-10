@@ -29,7 +29,7 @@ local function stub(root, name, body)
     assert(devos.run({ "chmod", "755", path }) == 0)
 end
 
-local function gate(before, after, dev_exit, head)
+local function gate(before, after, dev_exit)
     local root = assert(fs.realpath(testenv.tempdir()))
     assert(fs.mkdir(root .. "/bin"))
     assert(fs.mkdir(root .. "/" .. WORKTREE))
@@ -45,7 +45,7 @@ local function gate(before, after, dev_exit, head)
 echo %s
 exit 0
 fi
-exec '%s' "$@"]]):format(wt, head or HEAD, real_git)
+exec '%s' "$@"]]):format(wt, HEAD, real_git)
     )
     stub(root, "ci", "cat '" .. root .. "/runs.json'")
     stub(root, "dev", ("cp '%s/next.json' '%s/runs.json'\nexit %d"):format(root, root, dev_exit))
