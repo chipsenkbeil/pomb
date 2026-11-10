@@ -10,6 +10,7 @@ use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
 use crate::models::{AccountId, AuthScope, InstanceMode, NotificationKind, NotificationRow};
+use crate::permissions::Permission;
 
 /// An instance with an admin who owns two boards and an `agent-1` token.
 struct Fixture {
@@ -362,6 +363,26 @@ async fn muting_a_kind_should_stop_new_notifications_of_that_kind() {
     )
     .await;
     assert_eq!(fx.notifications().len(), 2);
+}
+
+#[tokio::test]
+async fn notifications_read_needs_settings_read() {
+    let fx = Fixture::new();
+    let (mut record, raw) = new_api_token_record(&fx.admin, "narrow", AuthScope::Admin, None);
+    record.permissions.remove(&Permission::SettingsRead);
+    fx.db.create_api_token(&record).expect("token");
+    let auth = format!("Bearer {raw}");
+    let reply = call(
+        &fx.app,
+        "GET",
+        "/api/notifications",
+        &[("authorization", &auth)],
+        None,
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+    assert_eq!(reply.body["code"], "permission_denied", "{}", reply.body);
+    assert_eq!(reply.body["permission"], "settings.read", "{}", reply.body);
 }
 
 fn seeded_token(fx: &Fixture, scope: AuthScope) -> String {
