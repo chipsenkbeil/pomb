@@ -621,6 +621,52 @@ async fn an_answer_with_a_bad_choice_or_on_a_plain_comment_should_be_refused() {
 }
 
 #[tokio::test]
+async fn an_answer_should_log_the_same_labels_event_as_a_label_update() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let answered = card(&fx, json!({"labels": ["backend"]})).await;
+    let (_, asked) = ask(&fx, &answered, question(&fx)).await;
+    let (status, body) = answer(
+        &fx,
+        Caller::Browser,
+        &answered,
+        asked["id"].as_str().expect("id"),
+        json!({"choice": 1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let updated = card(&fx, json!({"labels": ["backend"]})).await;
+    for labels in [json!(["backend", NEEDS_HUMAN_LABEL]), json!(["backend"])] {
+        let (status, body) = send(
+            &fx,
+            Caller::Browser,
+            "PATCH",
+            &format!("/api/tasks/{updated}"),
+            Some(json!({"labels": labels})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    let last_labels_event = |task: &str| {
+        row(&fx, task)
+            .history
+            .into_iter()
+            .rev()
+            .find(|event| event.kind == HistoryKind::LabelsUpdated)
+            .expect("labels event")
+    };
+    let answer_event = last_labels_event(&answered);
+    let update_event = last_labels_event(&updated);
+    assert_eq!(answer_event.detail, "Set labels: backend");
+    assert_eq!(
+        (answer_event.detail, answer_event.from, answer_event.to),
+        (update_event.detail, update_event.from, update_event.to)
+    );
+}
+
+#[tokio::test]
 async fn an_answer_into_a_full_column_should_leave_the_question_open() {
     let fx = fixture();
     mark_blocked(&fx).await;

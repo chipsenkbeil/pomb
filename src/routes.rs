@@ -82,8 +82,8 @@ use crate::db::{
     SettingsDb, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome,
     TaskContext, TemplateDeleteOutcome, TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart,
     UmbrellaRef, WebhookColumnMissing, WebhookPatch, WipCheck, WipHeld, WipRefused, carry_fields,
-    clean_labels, local_day, merge_metadata, push_change_event, push_column_event, push_event,
-    round_estimate,
+    clean_labels, labels_event, local_day, merge_metadata, push_change_event, push_column_event,
+    push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -9649,15 +9649,7 @@ fn update_history(
         ));
     }
     if after.labels != before.labels {
-        let detail = if after.labels.is_empty() {
-            "Cleared the labels".to_string()
-        } else {
-            format!("Set labels: {}", after.labels.join(", "))
-        };
-        let change = EventChange {
-            from: event_value(&before.labels.join(", ")),
-            to: event_value(&after.labels.join(", ")),
-        };
+        let (detail, change) = labels_event(&before.labels, &after.labels);
         events.push((HistoryKind::LabelsUpdated, detail, change));
     }
     if after.due_at != before.due_at || after.due_repeat != before.due_repeat {
@@ -14611,30 +14603,30 @@ async fn answer_comment_question(
         .iter()
         .find(|comment| comment.id == comment_id)
         .ok_or_else(|| AppError::not_found("task or comment not found"))?;
-    let question = comment
+    let picked = comment
         .question
         .as_ref()
-        .ok_or_else(|| AppError::bad_request("the comment is not a question"))?;
-    if question.answer.is_some() {
-        return Err(AppError::conflict("the question is answered already"));
-    }
-    let picked = question.choice(choice).ok_or_else(|| {
-        AppError::bad_request("choice must be the number of one of the question's choices")
-    })?;
-    let destination = account
-        .column(&picked.column_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::conflict("the column of this choice is gone"))?;
-    if task.row().column_id != destination.row().id {
-        if let Some(from) = account
-            .column(&task.row().column_id)
-            .map_err(AppError::from)?
-        {
-            ensure_role_move_allowed(&account, &user, from.row(), destination.row())?;
+        .filter(|question| question.answer.is_none())
+        .and_then(|question| question.choice(choice));
+    let position = match picked {
+        Some(picked) => {
+            let destination = account
+                .column(&picked.column_id)
+                .map_err(AppError::from)?
+                .ok_or_else(|| AppError::conflict("the column of this choice is gone"))?;
+            if task.row().column_id != destination.row().id {
+                if let Some(from) = account
+                    .column(&task.row().column_id)
+                    .map_err(AppError::from)?
+                {
+                    ensure_role_move_allowed(&account, &user, from.row(), destination.row())?;
+                }
+                ensure_entry_allowed(&account, destination.row(), task.board_id(), task.row())?;
+            }
+            placement_index(new_task_placement(&account, &destination.row().board_id)?)
         }
-        ensure_entry_allowed(&account, destination.row(), task.board_id(), task.row())?;
-    }
-    let position = placement_index(new_task_placement(&account, &destination.row().board_id)?);
+        None => placement_index(new_task_placement(&account, task.board_id())?),
+    };
     let answer = QuestionAnswer {
         choice,
         answered_by: user.handle.clone(),

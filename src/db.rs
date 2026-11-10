@@ -916,18 +916,29 @@ impl QuestionWrite {
     }
 }
 
+/// Returns the detail and the change of the labels event that takes a task from labels `before`
+/// to labels `after`, the event a label update logs.
+pub(crate) fn labels_event(before: &[String], after: &[String]) -> (String, EventChange) {
+    let detail = if after.is_empty() {
+        "Cleared the labels".to_string()
+    } else {
+        format!("Set labels: {}", after.join(", "))
+    };
+    let change = EventChange {
+        from: (!before.is_empty()).then(|| before.join(", ")),
+        to: (!after.is_empty()).then(|| after.join(", ")),
+    };
+    (detail, change)
+}
+
 /// Adds the [`NEEDS_HUMAN_LABEL`] label to `task` with a labels event, unless it has it.
 fn add_needs_human(task: &mut TaskRow, actor: Actor<'_>) {
     if task.labels.iter().any(|label| label == NEEDS_HUMAN_LABEL) {
         return;
     }
-    let before = task.labels.join(", ");
+    let before = task.labels.clone();
     task.labels.push(NEEDS_HUMAN_LABEL.to_string());
-    let change = EventChange {
-        from: (!before.is_empty()).then_some(before),
-        to: Some(task.labels.join(", ")),
-    };
-    let detail = format!("Set labels: {}", task.labels.join(", "));
+    let (detail, change) = labels_event(&before, &task.labels);
     push_change_event(task, HistoryKind::LabelsUpdated, detail, actor, change);
 }
 
@@ -936,17 +947,9 @@ fn remove_needs_human(task: &mut TaskRow, actor: Actor<'_>) {
     if !task.labels.iter().any(|label| label == NEEDS_HUMAN_LABEL) {
         return;
     }
-    let before = task.labels.join(", ");
+    let before = task.labels.clone();
     task.labels.retain(|label| label != NEEDS_HUMAN_LABEL);
-    let detail = if task.labels.is_empty() {
-        "Cleared the labels".to_string()
-    } else {
-        format!("Set labels: {}", task.labels.join(", "))
-    };
-    let change = EventChange {
-        from: Some(before),
-        to: (!task.labels.is_empty()).then(|| task.labels.join(", ")),
-    };
+    let (detail, change) = labels_event(&before, &task.labels);
     push_change_event(task, HistoryKind::LabelsUpdated, detail, actor, change);
 }
 
