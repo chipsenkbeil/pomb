@@ -14235,7 +14235,9 @@ async fn list_comments(
     Ok(Json(task.into_row().comments))
 }
 
-/// Adds a comment to a task. Returns the created comment.
+/// Adds a comment to a task. Returns the created comment. A comment from the browser session also
+/// watches the task, so a later change to it notifies the owner. A token comment leaves the watch
+/// flag alone.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/comments",

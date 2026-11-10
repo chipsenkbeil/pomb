@@ -765,9 +765,13 @@ mod tests {
         let comment = fx.comment(&task, "hello");
         assert_eq!(
             fx.events(&hook),
-            [WebhookEvent::TaskCreated, WebhookEvent::CommentCreated]
+            [
+                WebhookEvent::TaskCreated,
+                WebhookEvent::TaskChanged,
+                WebhookEvent::CommentCreated
+            ]
         );
-        let body = &fx.bodies(&hook)[1];
+        let body = &fx.bodies(&hook)[2];
         assert_eq!(body["eventType"], "commentCreated");
         assert_eq!(body["task"]["id"], task);
         assert_eq!(body["comment"]["id"], comment);
@@ -787,11 +791,12 @@ mod tests {
             fx.events(&hook),
             [
                 WebhookEvent::TaskCreated,
+                WebhookEvent::TaskChanged,
                 WebhookEvent::CommentCreated,
                 WebhookEvent::CommentChanged
             ]
         );
-        let body = &fx.bodies(&hook)[2];
+        let body = &fx.bodies(&hook)[3];
         assert_eq!(body["eventType"], "commentChanged");
         assert_eq!(body["comment"]["id"], comment);
         assert_eq!(body["comment"]["body"], "hello again");
@@ -810,11 +815,12 @@ mod tests {
             fx.events(&hook),
             [
                 WebhookEvent::TaskCreated,
+                WebhookEvent::TaskChanged,
                 WebhookEvent::CommentCreated,
                 WebhookEvent::CommentDeleted
             ]
         );
-        let body = &fx.bodies(&hook)[2];
+        let body = &fx.bodies(&hook)[3];
         assert_eq!(body["eventType"], "commentDeleted");
         assert_eq!(body["comment"]["id"], comment);
         assert_eq!(body["comment"]["body"], "hello");

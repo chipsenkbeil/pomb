@@ -9593,6 +9593,9 @@ impl Db {
                 txn_refuse_over_quota(&txn, owner, Quota::CommentsPerTask, after)?;
             }
             task.comments.push(comment.clone());
+            if new.actor_kind == ActorKind::User {
+                task.watched = true;
+            }
             let detail = format!("{} added a comment", new.author);
             push_event(&mut task, HistoryKind::CommentAdded, detail, actor);
             task.updated_at = Some(Utc::now().to_rfc3339());
@@ -9656,6 +9659,9 @@ impl Db {
                 txn_refuse_over_quota(&txn, owner, Quota::CommentsPerTask, after)?;
             }
             task.comments.push(comment.clone());
+            if new.actor_kind == ActorKind::User {
+                task.watched = true;
+            }
             let detail = format!("{} asked a question", new.author);
             push_event(&mut task, HistoryKind::CommentAdded, detail, actor);
             add_needs_human(&mut task, actor);

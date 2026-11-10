@@ -446,3 +446,106 @@ async fn a_read_token_should_be_denied_writes_over_bearer_with_permission_denied
         assert_eq!(reply.body["code"], "permission_denied", "{method} {uri}");
     }
 }
+
+#[must_use]
+fn browser_cookie(fx: &Fixture) -> String {
+    format!(
+        "session={}",
+        fx.db.create_session(&fx.admin, "").expect("session")
+    )
+}
+
+#[must_use]
+fn watched(fx: &Fixture, task: &str) -> bool {
+    fx.db
+        .task(task)
+        .expect("task")
+        .expect("task exists")
+        .watched
+}
+
+#[must_use]
+fn comment_count(fx: &Fixture, task: &str) -> usize {
+    fx.db
+        .task(task)
+        .expect("task")
+        .expect("task exists")
+        .comments
+        .len()
+}
+
+async fn browser_comment(fx: &Fixture, task: &str, body: Value) {
+    let cookie = browser_cookie(fx);
+    let reply = call(
+        &fx.app,
+        "POST",
+        &format!("/api/tasks/{task}/comments"),
+        &[("cookie", &cookie)],
+        Some(body),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+}
+
+#[tokio::test]
+async fn a_browser_comment_should_watch_the_task() {
+    let fx = Fixture::new();
+    let task = fx.unfollowed("Browser talk");
+    browser_comment(&fx, &task, json!({"body": "hello"})).await;
+    assert!(watched(&fx, &task), "a browser comment watches the task");
+    assert_eq!(comment_count(&fx, &task), 1);
+}
+
+#[tokio::test]
+async fn a_browser_question_should_watch_the_task() {
+    let fx = Fixture::new();
+    let blocked = fx
+        .db
+        .create_column(&fx.board, "Blocked", None)
+        .expect("column");
+    fx.send(
+        "PUT",
+        &format!("/api/boards/{}/config", fx.board),
+        Some(json!({"blocked_column_id": blocked})),
+    )
+    .await;
+    let task = fx.unfollowed("Browser question");
+    let question = json!({
+        "text": "Which?",
+        "choices": [
+            {"label": "Done", "column_id": fx.done},
+            {"label": "Todo", "column_id": fx.todo}
+        ],
+        "recommended": 1,
+        "why": "needs the owner"
+    });
+    browser_comment(&fx, &task, json!({"body": "", "question": question})).await;
+    assert!(watched(&fx, &task), "a browser question watches the task");
+    assert_eq!(comment_count(&fx, &task), 1);
+}
+
+#[tokio::test]
+async fn an_already_watched_task_should_stay_watched_after_a_browser_comment() {
+    let fx = Fixture::new();
+    let task = fx.unfollowed("Already watched");
+    fx.db.set_task_watched(&task, true).expect("watch");
+    browser_comment(&fx, &task, json!({"body": "still here"})).await;
+    assert!(watched(&fx, &task));
+    assert_eq!(comment_count(&fx, &task), 1);
+}
+
+#[tokio::test]
+async fn a_token_comment_should_not_watch_the_task() {
+    let fx = Fixture::new();
+    let task = fx.unfollowed("Token talk");
+    fx.send(
+        "POST",
+        &format!("/api/tasks/{task}/comments"),
+        Some(json!({"body": "from a token"})),
+    )
+    .await;
+    assert!(
+        !watched(&fx, &task),
+        "a token comment leaves the flag alone"
+    );
+}
