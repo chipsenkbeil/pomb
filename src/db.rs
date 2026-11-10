@@ -11324,6 +11324,13 @@ impl Db {
         F: FnOnce(&mut TaskRow, &TaskContext) -> (R, RowWrite),
     {
         let txn = self.db.begin_write()?;
+        let before = match read_in::<TaskColumn>(&txn, TASKS, task_id)? {
+            Some(task) if task.kind == TaskKind::Epic && task.closed => Some(blocked_states(
+                &txn,
+                &blocked_dependents(&txn, &[task_id.to_string()])?,
+            )?),
+            _ => None,
+        };
         let result = {
             let mut tbl = txn.open_table(TASKS)?;
             let Some(mut task) = task_in(&tbl, task_id)? else {
@@ -11358,6 +11365,9 @@ impl Db {
                 Ok(Some(result))
             }
             (result, _) => {
+                if let Some(before) = before {
+                    bump_flipped(&txn, &before)?;
+                }
                 txn.commit()?;
                 Ok(Some(result))
             }

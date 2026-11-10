@@ -2303,6 +2303,54 @@ async fn closing_an_epic_should_free_a_card_it_blocks_and_reopening_should_block
     );
 }
 
+#[tokio::test]
+async fn patching_a_closed_epic_to_a_task_should_stamp_the_card_it_blocks() {
+    let (_dir, fx) = fixture();
+    let epic = create_epic(&fx, "Epic").await;
+    let dependent = create(&fx, json!({"column_id": fx.col_todo, "name": "Dependent"})).await;
+    link(&fx, &dependent, "blocked_by", &epic).await;
+    let (status, closed) = call(&fx, "POST", &format!("/api/tasks/{epic}/close"), None).await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    assert!(!blocked(&fx, &dependent).await, "a closed epic is met");
+
+    tick();
+    let since = chrono::Utc::now().to_rfc3339();
+    tick();
+    let (status, patched) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{epic}"),
+        Some(json!({"kind": "task"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{patched}");
+    assert!(blocked(&fx, &dependent).await, "the task blocks again");
+    assert!(updated_at(&fx, &dependent) > since);
+}
+
+#[tokio::test]
+async fn patching_a_closed_epic_title_should_not_stamp_the_card_it_blocks() {
+    let (_dir, fx) = fixture();
+    let epic = create_epic(&fx, "Epic").await;
+    let dependent = create(&fx, json!({"column_id": fx.col_todo, "name": "Dependent"})).await;
+    link(&fx, &dependent, "blocked_by", &epic).await;
+    let (status, closed) = call(&fx, "POST", &format!("/api/tasks/{epic}/close"), None).await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    let stamped = updated_at(&fx, &dependent);
+
+    tick();
+    let (status, renamed) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{epic}"),
+        Some(json!({"name": "Renamed"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert!(!blocked(&fx, &dependent).await, "a closed epic stays met");
+    assert_eq!(updated_at(&fx, &dependent), stamped);
+}
+
 /// The full task detail JSON, for before/after comparisons.
 async fn detail(fx: &Fixture, task: &str) -> Value {
     let (status, detail) = call(fx, "GET", &format!("/api/tasks/{task}"), None).await;
