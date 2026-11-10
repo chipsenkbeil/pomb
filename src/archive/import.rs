@@ -1941,6 +1941,16 @@ mod tests {
                 "is not a row of the archive",
             ),
             (
+                "history kind",
+                Box::new(|d: &mut Value| {
+                    d["tasks"][0]["history"] = json!([{
+                        "id": "e1", "kind": "brand_new_kind", "detail": "x", "actor": "chip",
+                        "created_at": "2026-10-01T10:00:00Z", "column_id": null, "token_name": null
+                    }]);
+                }),
+                "brand_new_kind",
+            ),
+            (
                 "color value",
                 Box::new(|d: &mut Value| {
                     d["colors"] = json!([{
