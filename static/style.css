@@ -300,6 +300,36 @@
   --rule-d3: #d3d3d3;
   --rule-d8: #d8d8d8;
   --rule-e0: #e0e0e0;
+  --task-yellow-border: #f5cc00;
+  --task-green: #dbffc2;
+  --task-green-border: #59d600;
+  --task-green-light: #e4ffd1;
+  --task-blue: #cce3ff;
+  --task-blue-border: #70b0ff;
+  --task-blue-light: #d6e9ff;
+  --task-red: #ffccd0;
+  --task-red-border: #ff858f;
+  --task-red-light: #ffe0e3;
+  --task-orange: #ffeac2;
+  --task-orange-border: #faa200;
+  --task-purple: #eddbff;
+  --task-purple-border: #c994ff;
+  --task-purple-light: #f2e6ff;
+  --task-magenta: #ffe0ff;
+  --task-magenta-border: #ff85ff;
+  --task-magenta-light: #ffebff;
+  --task-cyan: #dbffff;
+  --task-cyan-border: #00d6d6;
+  --task-cyan-light: #e6ffff;
+  --task-brown: #f6ddcb;
+  --task-brown-border: #e49b67;
+  --task-brown-light: #f9e8dc;
+  --card-glyph: #808080;
+  --card-time-ink: #606060;
+  --card-idle-border: #b0b0b0;
+  --card-badge-ink: #ac5d00;
+  --card-overdue-disc: #be0000;
+  --card-sub-done-ink: #777777;
 }
 
 * { box-sizing: border-box; }
@@ -1645,55 +1675,55 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 /* ---------- task color families (exact KanbanFlow hex values) ----------
    KF-429: borders follow KanbanFlow's taskBorderColor theme variables. */
 
-.taskColor-yellow { background-color: #ffffe0; }
-.taskBorderColor-yellow { border-color: #f5cc00; }
-.taskColorVars-yellow { --taskColor: #ffffe0; --taskColorBorder: #f5cc00; --taskColorLight: #ffffe0; }
-.taskBorderColorBg-yellow { background-color: #f5cc00; }
+.taskColor-yellow { background-color: var(--addtask-bg); }
+.taskBorderColor-yellow { border-color: var(--task-yellow-border); }
+.taskColorVars-yellow { --taskColor: var(--addtask-bg); --taskColorBorder: var(--task-yellow-border); --taskColorLight: var(--addtask-bg); }
+.taskBorderColorBg-yellow { background-color: var(--task-yellow-border); }
 
-.taskColor-green { background-color: #dbffc2; }
-.taskBorderColor-green { border-color: #59d600; }
-.taskColorVars-green { --taskColor: #dbffc2; --taskColorBorder: #59d600; --taskColorLight: #e4ffd1; }
-.taskBorderColorBg-green { background-color: #59d600; }
+.taskColor-green { background-color: var(--task-green); }
+.taskBorderColor-green { border-color: var(--task-green-border); }
+.taskColorVars-green { --taskColor: var(--task-green); --taskColorBorder: var(--task-green-border); --taskColorLight: var(--task-green-light); }
+.taskBorderColorBg-green { background-color: var(--task-green-border); }
 
-.taskColor-blue { background-color: #cce3ff; }
-.taskBorderColor-blue { border-color: #70b0ff; }
-.taskColorVars-blue { --taskColor: #cce3ff; --taskColorBorder: #70b0ff; --taskColorLight: #d6e9ff; }
-.taskBorderColorBg-blue { background-color: #70b0ff; }
+.taskColor-blue { background-color: var(--task-blue); }
+.taskBorderColor-blue { border-color: var(--task-blue-border); }
+.taskColorVars-blue { --taskColor: var(--task-blue); --taskColorBorder: var(--task-blue-border); --taskColorLight: var(--task-blue-light); }
+.taskBorderColorBg-blue { background-color: var(--task-blue-border); }
 
-.taskColor-red { background-color: #ffccd0; }
-.taskBorderColor-red { border-color: #ff858f; }
-.taskColorVars-red { --taskColor: #ffccd0; --taskColorBorder: #ff858f; --taskColorLight: #ffe0e3; }
-.taskBorderColorBg-red { background-color: #ff858f; }
+.taskColor-red { background-color: var(--task-red); }
+.taskBorderColor-red { border-color: var(--task-red-border); }
+.taskColorVars-red { --taskColor: var(--task-red); --taskColorBorder: var(--task-red-border); --taskColorLight: var(--task-red-light); }
+.taskBorderColorBg-red { background-color: var(--task-red-border); }
 
-.taskColor-orange { background-color: #ffeac2; }
-.taskBorderColor-orange { border-color: #faa200; }
-.taskColorVars-orange { --taskColor: #ffeac2; --taskColorBorder: #faa200; --taskColorLight: #ffeac2; }
-.taskBorderColorBg-orange { background-color: #faa200; }
+.taskColor-orange { background-color: var(--task-orange); }
+.taskBorderColor-orange { border-color: var(--task-orange-border); }
+.taskColorVars-orange { --taskColor: var(--task-orange); --taskColorBorder: var(--task-orange-border); --taskColorLight: var(--task-orange); }
+.taskBorderColorBg-orange { background-color: var(--task-orange-border); }
 
-.taskColor-purple { background-color: #eddbff; }
-.taskBorderColor-purple { border-color: #c994ff; }
-.taskColorVars-purple { --taskColor: #eddbff; --taskColorBorder: #c994ff; --taskColorLight: #f2e6ff; }
-.taskBorderColorBg-purple { background-color: #c994ff; }
+.taskColor-purple { background-color: var(--task-purple); }
+.taskBorderColor-purple { border-color: var(--task-purple-border); }
+.taskColorVars-purple { --taskColor: var(--task-purple); --taskColorBorder: var(--task-purple-border); --taskColorLight: var(--task-purple-light); }
+.taskBorderColorBg-purple { background-color: var(--task-purple-border); }
 
-.taskColor-magenta { background-color: #ffe0ff; }
-.taskBorderColor-magenta { border-color: #ff85ff; }
-.taskColorVars-magenta { --taskColor: #ffe0ff; --taskColorBorder: #ff85ff; --taskColorLight: #ffebff; }
-.taskBorderColorBg-magenta { background-color: #ff85ff; }
+.taskColor-magenta { background-color: var(--task-magenta); }
+.taskBorderColor-magenta { border-color: var(--task-magenta-border); }
+.taskColorVars-magenta { --taskColor: var(--task-magenta); --taskColorBorder: var(--task-magenta-border); --taskColorLight: var(--task-magenta-light); }
+.taskBorderColorBg-magenta { background-color: var(--task-magenta-border); }
 
-.taskColor-cyan { background-color: #dbffff; }
-.taskBorderColor-cyan { border-color: #00d6d6; }
-.taskColorVars-cyan { --taskColor: #dbffff; --taskColorBorder: #00d6d6; --taskColorLight: #e6ffff; }
-.taskBorderColorBg-cyan { background-color: #00d6d6; }
+.taskColor-cyan { background-color: var(--task-cyan); }
+.taskBorderColor-cyan { border-color: var(--task-cyan-border); }
+.taskColorVars-cyan { --taskColor: var(--task-cyan); --taskColorBorder: var(--task-cyan-border); --taskColorLight: var(--task-cyan-light); }
+.taskBorderColorBg-cyan { background-color: var(--task-cyan-border); }
 
-.taskColor-brown { background-color: #f6ddcb; }
-.taskBorderColor-brown { border-color: #e49b67; }
-.taskColorVars-brown { --taskColor: #f6ddcb; --taskColorBorder: #e49b67; --taskColorLight: #f9e8dc; }
-.taskBorderColorBg-brown { background-color: #e49b67; }
+.taskColor-brown { background-color: var(--task-brown); }
+.taskBorderColor-brown { border-color: var(--task-brown-border); }
+.taskColorVars-brown { --taskColor: var(--task-brown); --taskColorBorder: var(--task-brown-border); --taskColorLight: var(--task-brown-light); }
+.taskBorderColorBg-brown { background-color: var(--task-brown-border); }
 
-.taskColor-white { background-color: #fbfbfb; }
-.taskBorderColor-white { border-color: #d4d4d4; }
-.taskColorVars-white { --taskColor: #fbfbfb; --taskColorBorder: #d4d4d4; --taskColorLight: #fbfbfb; }
-.taskBorderColorBg-white { background-color: #d4d4d4; }
+.taskColor-white { background-color: var(--surface-near-white); }
+.taskBorderColor-white { border-color: var(--panel-line); }
+.taskColorVars-white { --taskColor: var(--surface-near-white); --taskColorBorder: var(--panel-line); --taskColorLight: var(--surface-near-white); }
+.taskBorderColorBg-white { background-color: var(--panel-line); }
 
 /* ---------- task cards ---------- */
 
@@ -1716,13 +1746,13 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   padding: 5px 7px 0;
   font-size: 12px;
   line-height: 18px;
-  color: #222222;
+  color: var(--text-dark);
   cursor: pointer;
 }
 
 /* KF-191: keep the KF-179 shadow hover — the pre-KF-179 hover referenced
    --taskColorBorder, which is no longer defined on the card. */
-.task-card:hover { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18); }
+.task-card:hover { box-shadow: 0 1px 3px var(--popover-shadow-color); }
 .task-card:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .card-title { font-weight: 400; margin-bottom: 5px; overflow-wrap: anywhere; }
@@ -1744,15 +1774,15 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   gap: 0.5rem;
   margin-top: 0.3rem;
   font-size: 0.74rem;
-  color: #4b5563;
+  color: var(--text-gray);
   align-items: center;
   flex-wrap: wrap;
 }
 
-.card-done { color: #15803d; font-weight: 600; }
+.card-done { color: var(--status-ontime); font-weight: 600; }
 
 /* KF-103: the live "+ 42m" inside the card time badge (10-05 capture: #8B0000). */
-.card-live-inc { color: #8b0000; }
+.card-live-inc { color: var(--kf-darkred); }
 
 /* KF-053: card metadata footer — the board-configured task properties. */
 .card-meta {
@@ -1762,24 +1792,24 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   gap: 0.3rem 0.45rem;
   margin-top: 0.3rem;
   font-size: 0.72rem;
-  color: #4b5563;
+  color: var(--text-gray);
 }
 .card-label {
-  background: #eef2ff;
-  border: 1px solid #c7d2fe;
+  background: var(--tlp-row-hover);
+  border: 1px solid var(--indigo-border);
   border-radius: 4px;
   padding: 0 0.3rem;
-  color: #3730a3;
+  color: var(--indigo-ink);
 }
 .card-subtasks { font-weight: 600; }
-.card-due { color: #b45309; font-weight: 600; }
-.card-date { color: #6b7280; }
+.card-due { color: var(--warn-border); font-weight: 600; }
+.card-date { color: var(--ink-subtle); }
 .card-member {
   width: 1.35rem;
   height: 1.35rem;
   border-radius: 50%;
-  background: #6b7280;
-  color: #fff;
+  background: var(--ink-subtle);
+  color: var(--on-color);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1821,14 +1851,14 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   padding-left: 0.5px;
   font-size: 10px;
   line-height: 16px;
-  color: #808080;
+  color: var(--card-glyph);
 }
 .card-ico {
   background: none;
   border: none;
   padding: 0;
   margin: 2px 8px 5px 0;
-  color: #808080;
+  color: var(--card-glyph);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -1840,7 +1870,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   align-items: center;
   gap: 1px;
   margin: 2px 8px 5px 0;
-  color: #606060;
+  color: var(--card-time-ink);
   white-space: nowrap;
 }
 /* Task links chip: link glyph + count; red-tinted while a blocker is open. */
@@ -1851,7 +1881,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   white-space: nowrap;
   line-height: 1;
 }
-.card-ico-links.card-links-blocked { color: #b91c1c; }
+.card-ico-links.card-links-blocked { color: var(--red-ink-strong); }
 /* Owner and busy reviewer circles: two letters on a disc, an agent's circle carries a
    small square mark at its bottom-right, and a lapsed owner is grey. */
 .card-circle {
@@ -1860,9 +1890,9 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   height: 22px;
   margin-left: 4px;
   border-radius: 50%;
-  background: #ffffff;
-  border: 1px solid var(--taskColorBorder, #d4d4d4);
-  color: #ac5d00;
+  background: var(--surface-white);
+  border: 1px solid var(--taskColorBorder, var(--panel-line));
+  color: var(--card-badge-ink);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1871,7 +1901,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   flex: none;
 }
 .card-circle-seat { border-style: dashed; }
-.card-circle-idle { background: #e5e5e5; border-color: #b0b0b0; color: #808080; }
+.card-circle-idle { background: var(--kf-rule); border-color: var(--card-idle-border); color: var(--card-glyph); }
 .card-circle-agent::after {
   content: '';
   position: absolute;
@@ -1880,11 +1910,11 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   width: 8px;
   height: 8px;
   border-radius: 2px;
-  background: #444444;
-  border: 1px solid #ffffff;
+  background: var(--text-strong);
+  border: 1px solid var(--surface-white);
 }
 .card-circle img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
-.card-ico-time svg { color: #808080; }
+.card-ico-time svg { color: var(--card-glyph); }
 /* KF-377: the disc's centre sits 19px in from the card's right edge, 2px
    into the padding. */
 .card-avatar {
@@ -1892,11 +1922,11 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   width: 27px;
   height: 27px;
   border-radius: 50%;
-  background: #ffffff;
+  background: var(--surface-white);
   /* KF-482: the 1px ring is the card's border colour (#59d600 on green,
      #70b0ff on blue in the 10-17 goldens). */
   border: 1px solid var(--taskColorBorder);
-  color: #ac5d00;
+  color: var(--card-badge-ink);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1933,7 +1963,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 /* KF-363: sections sit under a 1px dashed rule in the card's border
    colour; the due line is 10px on a 15px line with 4px above and below. */
 .card-duesec, .card-subsec {
-  border-top: 1px dashed var(--taskColorBorder, #d4d4d4);
+  border-top: 1px dashed var(--taskColorBorder, var(--panel-line));
 }
 .card-duesec { padding: 4px 0; }
 .card-subsec { padding: 6px 0; }
@@ -1941,14 +1971,14 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
    pixels (text core rgb(34,34,34)); .task-dueDateColumn is KanbanFlow's
    class for the parenthetical, the due date's target column (KF-259). */
 /* KF-259: KanbanFlow's due line is 10px/15px; only the date is bold. */
-.card-dueline { color: #222222; font-size: 10px; line-height: 15px; }
+.card-dueline { color: var(--text-dark); font-size: 10px; line-height: 15px; }
 .card-dueline strong { font-weight: 700; }
 /* KF-259: KanbanFlow's overdue due line: #8b0000 text after a red "!"
    disc (#be0000) in a 22px left gutter (cards/06 golden); the line is a 22px box, 4px above, 3px below (KF-539). */
-.card-dueline.card-due-overdue { color: #8b0000; font-weight: 400; position: relative; padding: 4px 0 3px 22px; }
+.card-dueline.card-due-overdue { color: var(--kf-darkred); font-weight: 400; position: relative; padding: 4px 0 3px 22px; }
 .card-dueline.card-due-overdue::before {
   content: '!'; position: absolute; left: 2px; top: 4px;
-  width: 15px; height: 15px; border-radius: 50%; background: #be0000; color: #fff;
+  width: 15px; height: 15px; border-radius: 50%; background: var(--card-overdue-disc); color: var(--on-color);
   font-size: 11px; font-weight: 700; line-height: 15px; text-align: center;
 }
 
@@ -1970,10 +2000,10 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   gap: 5px;
   font-size: 12px;
   line-height: 18px;
-  color: #222222;
+  color: var(--text-dark);
   cursor: pointer;
 }
-.card-sub-done .card-sub { color: #777777; }
+.card-sub-done .card-sub { color: var(--card-sub-done-ink); }
 .card-sub-check {
   position: absolute;
   opacity: 0;
@@ -1987,9 +2017,9 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   width: 16px;
   height: 16px;
   margin-left: 1px;
-  border: 1px solid #999999;
+  border: 1px solid var(--kf-ink-dimmer);
   border-radius: 2px;
-  background: #ffffff center / 16px 16px no-repeat;
+  background: var(--surface-white) center / 16px 16px no-repeat;
 }
 .card-sub-check:checked + .card-sub-box {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.8 8.2L6.6 11 12 4.4' fill='none' stroke='%23000' stroke-width='2.8'/%3E%3C/svg%3E");
@@ -2000,7 +2030,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   margin-top: 7px;
   font-size: 11px;
   line-height: 15px;
-  color: #606060;
+  color: var(--card-time-ink);
   cursor: pointer;
 }
 .card-labels { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.3rem; }
