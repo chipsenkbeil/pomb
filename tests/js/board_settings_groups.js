@@ -13,10 +13,17 @@ const section = {
   addEventListener: (type, handler) => { if (type === 'click') clickListener = handler; },
 };
 const errorBox = { hidden: true, textContent: '' };
-const boxes = [{ value: 'c1' }, { value: 'c2' }];
+const boxes = [
+  { value: 'c1', checked: true },
+  { value: 'c2', checked: false },
+  { value: 'c3', checked: true },
+];
 const form = {
   elements: { limit: { value: '3' } },
-  querySelectorAll: () => boxes,
+  querySelectorAll: (selector) => {
+    if (selector !== 'input[name="column"]:checked') throw new Error('unexpected selector ' + selector);
+    return boxes.filter((box) => box.checked);
+  },
   addEventListener: (type, handler) => { if (type === 'submit') submitListener = handler; },
 };
 const elementsById = {
@@ -49,8 +56,8 @@ check('the create submit stops the browser submitting the form', prevented, 1);
 check('the create submit sends one request', sent.length, 1);
 check('the create submit posts to the board limit-groups url', sent[0].url, '/api/boards/b1/limit-groups');
 check('the create submit uses POST', sent[0].options.method, 'POST');
-check('the create submit sends the checked columns and the limit',
-  JSON.parse(sent[0].options.body), { column_ids: ['c1', 'c2'], limit: 3 });
+check('skips_unchecked_columns: the create submit sends only the checked columns and the limit',
+  JSON.parse(sent[0].options.body), { column_ids: ['c1', 'c3'], limit: 3 });
 
 const row = { dataset: { groupId: 'g1' }, querySelector: () => ({ value: '5' }) };
 const saveButton = {};
