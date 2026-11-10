@@ -3498,6 +3498,11 @@ fn blocked_states(txn: &WriteTransaction, ids: &[String]) -> DbResult<HashMap<St
     Ok(states)
 }
 
+/// Returns the `blocked` value of each task that depends on one of `targets`.
+fn blocked_before(txn: &WriteTransaction, targets: &[String]) -> DbResult<HashMap<String, bool>> {
+    blocked_states(txn, &blocked_dependents(txn, targets)?)
+}
+
 /// Returns true when a `blocked_by` link among `links` names a task that is still open, read inside
 /// an open transaction. A task is open when it sits in a column that is not done, unless it is a
 /// closed epic. `open` remembers, by task id, whether a named task is open, so each is read once.
@@ -7540,7 +7545,7 @@ impl Db {
         let txn = self.db.begin_write()?;
         let before = if patch.is_done.is_some() {
             let in_column = txn_mmap_get(&txn, TASKS_BY_COLUMN, id)?;
-            blocked_states(&txn, &blocked_dependents(&txn, &in_column)?)?
+            blocked_before(&txn, &in_column)?
         } else {
             HashMap::new()
         };
@@ -11325,10 +11330,9 @@ impl Db {
     {
         let txn = self.db.begin_write()?;
         let before = match read_in::<TaskColumn>(&txn, TASKS, task_id)? {
-            Some(task) if task.kind == TaskKind::Epic && task.closed => Some(blocked_states(
-                &txn,
-                &blocked_dependents(&txn, &[task_id.to_string()])?,
-            )?),
+            Some(task) if task.kind == TaskKind::Epic && task.closed => {
+                Some(blocked_before(&txn, &[task_id.to_string()])?)
+            }
             _ => None,
         };
         let result = {
@@ -11479,7 +11483,7 @@ impl Db {
         actor: Actor<'_>,
     ) -> DbResult<EpicCloseOutcome> {
         let txn = self.db.begin_write()?;
-        let before = blocked_states(&txn, &blocked_dependents(&txn, &[task_id.to_string()])?)?;
+        let before = blocked_before(&txn, &[task_id.to_string()])?;
         let outcome = {
             let mut tasks = txn.open_table(TASKS)?;
             let Some(mut task) = task_in(&tasks, task_id)? else {
@@ -11972,7 +11976,7 @@ impl Db {
         };
         let cell_changed =
             column_id != old_column_id || new_swimlane_id.as_deref() != old_swimlane_id.as_deref();
-        let before = blocked_states(txn, &blocked_dependents(txn, &[id.to_string()])?)?;
+        let before = blocked_before(txn, &[id.to_string()])?;
 
         // Custom field values only travel to a board that defines the same
         // key and accepts the value.
