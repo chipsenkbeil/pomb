@@ -216,6 +216,12 @@ pub fn permission_denied(permission: Permission) -> Response {
     refusal(permission, permission_message(permission), None)
 }
 
+/// Returns the 403 `permission_denied` that names the missing `permission` and says `message`.
+#[must_use]
+pub fn permission_denied_with(permission: Permission, message: String) -> Response {
+    refusal(permission, message, None)
+}
+
 /// Returns the 403 `permission_denied` for a token that holds the permission but not the board.
 #[must_use]
 pub fn board_denied(denied: BoardDenied) -> Response {

@@ -118,6 +118,7 @@ catalog! {
     SubtasksEdit, "subtasks.edit", "subtasks", Work, "Create, rename, assign, reorder and set the due date of subtasks.";
     SubtasksCheck, "subtasks.check", "subtasks", Work, "Tick and untick subtasks.";
     SubtasksDelete, "subtasks.delete", "subtasks", Lead, "Delete any subtask, whoever created it, and turn a subtask into a task.";
+    OutcomesEditLocked, "outcomes.edit_locked", "outcomes", Admin, "Add, rename, reorder and delete the subtasks of a task in a column that locks its outcomes.";
     LinksWrite, "links.write", "links", Work, "Create task links, and delete the ones you created.";
     LinksDelete, "links.delete", "links", Lead, "Delete any task link, whoever created it, and change a task's umbrella.";
     CommentsRead, "comments.read", "comments", Read, "Read comments.";
@@ -322,7 +323,7 @@ mod tests {
 
     use super::*;
 
-    const NAMES: [&str; 55] = [
+    const NAMES: [&str; 56] = [
         "boards.read",
         "boards.create",
         "boards.configure",
@@ -358,6 +359,7 @@ mod tests {
         "subtasks.edit",
         "subtasks.check",
         "subtasks.delete",
+        "outcomes.edit_locked",
         "links.write",
         "links.delete",
         "comments.read",
@@ -526,6 +528,7 @@ mod tests {
             "feeds.manage",
             "webhooks.manage",
             "inbound.manage",
+            "outcomes.edit_locked",
         ] {
             assert!(held(Preset::Admin).contains(name), "{name}");
             assert!(!held(Preset::Lead).contains(name), "{name}");

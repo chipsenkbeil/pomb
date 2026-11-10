@@ -531,6 +531,9 @@
               <label>Fewest outcomes <input type="number" class="br-min" min="0" value="{{ c.outcomes_min }}"></label>
               <label>Most outcomes <input type="number" class="br-max" min="0" value="{{ c.outcomes_max }}"></label>
             </div>
+            <label class="check-label"><input type="checkbox" class="br-outcomes-locked"{% if c.outcomes_locked %} checked{% endif %}> Outcomes locked</label>
+            <p class="settings-hint">A token without outcomes.edit_locked cannot add, rename, reorder or
+              delete the outcomes of a task here. Ticking stays open.</p>
             {% if !c.fields.is_empty() %}
             <div class="br-fields">
               {% for f in c.fields %}

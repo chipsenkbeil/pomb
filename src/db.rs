@@ -1129,7 +1129,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 85;
+pub const SCHEMA_VERSION: u64 = 86;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1221,6 +1221,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "00c82eb31b386bf84813988f8daf4462e6d9ad3d8ded1250c8ea0a6b801c613b",
     "c4f0a082c10bab22b28d6094c470648980f407c4f5e66ac344589136f56b6856",
     "f3d7f7aed30f557c41f67dd66ed057aa03376248d236e76e6d9b5036812be920",
+    "24ee231d8c67c647a37a4e24a3e2e07e91c7ba5c866650736f47709fbce7187d",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1387,6 +1388,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     }
     if from.is_none_or(|version| version < 80) {
         added.push(Permission::SeatsTake);
+    }
+    if from.is_none_or(|version| version < 86) {
+        added.push(Permission::OutcomesEditLocked);
     }
     if !added.is_empty() {
         grant_added_permissions(txn, &added)?;
@@ -14951,6 +14955,44 @@ mod schema_version_tests {
             .expect("row");
         assert!(!token.permissions.contains(&Permission::InboundManage));
         assert!(!token.permissions.contains(&Permission::FeedsManage));
+    }
+
+    #[test]
+    fn version_85_file_should_grant_outcomes_edit_locked_to_a_full_admin_token_only() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let ids: Vec<(AuthScope, String)> = {
+            let db = Db::connect(&path).expect("connect");
+            [AuthScope::Admin, AuthScope::Provision, AuthScope::Work]
+                .into_iter()
+                .map(|scope| {
+                    let (record, _) = new_api_token_record(&account, scope.as_str(), scope, None);
+                    db.create_api_token(&record).expect("token");
+                    (scope, record.id)
+                })
+                .collect()
+        };
+        for (_, id) in &ids {
+            edit_raw(&path, API_TOKENS, id, |object| {
+                object["permissions"]
+                    .as_array_mut()
+                    .expect("permissions")
+                    .retain(|name| name != "outcomes.edit_locked");
+            });
+        }
+        stamp(&path, 85);
+
+        let db = Db::connect(&path).expect("open version 85");
+        for (scope, id) in &ids {
+            let token: ApiTokenRecord = read_one(&db.db, API_TOKENS, id)
+                .expect("read")
+                .expect("row");
+            assert_eq!(
+                token.permissions.contains(&Permission::OutcomesEditLocked),
+                *scope == AuthScope::Admin,
+                "{scope:?}"
+            );
+        }
     }
 
     fn upgraded_preset_token(scope: AuthScope, version: u64, newer: &[&str]) -> ApiTokenRecord {

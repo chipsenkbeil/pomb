@@ -1936,7 +1936,7 @@ impl IntoResponse for AppError {
                 board_id,
                 permission,
             }),
-            (Some(permission), None) => api_error::permission_denied(permission),
+            (Some(permission), None) => api_error::permission_denied_with(permission, self.message),
             (None, _) => coded_response(self.status, self.code, self.message),
         }
     }
@@ -10599,7 +10599,8 @@ enum BulkTasksAction {
     Members,
     /// Removes every member from the tasks.
     UnassignMembers,
-    /// Appends the subtasks named in `add_subtasks` to each task. A token needs `subtasks.edit`.
+    /// Appends the subtasks named in `add_subtasks` to each task. A token needs `subtasks.edit`,
+    /// and `outcomes.edit_locked` for a task in a column that locks its outcomes.
     Subtasks,
     /// Adds, changes or deletes the due date as `due_mode` says. A task that already has a due
     /// date is left as it is by `add` under `due_existing` `skip`, and `change` and `delete` leave
@@ -10905,6 +10906,9 @@ async fn bulk_tasks(
                     push_event(task, HistoryKind::SubtaskAdded, detail, actor);
                 }
                 if let Some(Some((column_name, rule))) = rules.get(&task.column_id) {
+                    if rule.outcomes_locked && !user.has(Permission::OutcomesEditLocked) {
+                        return Err(outcomes_locked_error(column_name));
+                    }
                     ensure_not_worse(column_name, rule, &before, task)?;
                 }
                 Ok(())
@@ -13031,6 +13035,7 @@ fn subtask_due_event(name: &str, due: Option<&str>) -> (HistoryKind, String) {
     responses(
         (status = 200, description = "The created subtask", body = SubtaskDetail),
         (status = 400, description = "Subtask name is required"),
+        (status = 403, description = "`permission_denied`: the task's column locks its outcomes and the token lacks `outcomes.edit_locked`"),
         (status = 404, description = "Task not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -13045,6 +13050,7 @@ async fn create_subtask(
     let input: CreateSubtaskInput = parse_body(&headers, body).await?;
     let owned = found(account.task(&id), "task not found")?;
     ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    ensure_outcomes_editable(&account, &user, owned.board_id(), owned.row())?;
     if input.name.trim().is_empty() {
         return Err(AppError::bad_request("subtask name is required"));
     }
@@ -13107,6 +13113,7 @@ struct ReorderSubtasksInput {
     request_body = ReorderSubtasksInput,
     responses(
         (status = 200, description = "The reordered subtask ids", body = Vec<String>),
+        (status = 403, description = "`permission_denied`: the task's column locks its outcomes and the token lacks `outcomes.edit_locked`"),
         (status = 404, description = "Task not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -13122,6 +13129,7 @@ async fn reorder_subtasks(
     let db = &account;
     let task = found(db.task(&id), "task not found")?;
     ensure_unlocked(db, &user, task.board_id(), task.row())?;
+    ensure_outcomes_editable(db, &user, task.board_id(), task.row())?;
     let ok = db
         .reorder_subtasks(&task, &input.order)
         .map_err(AppError::from)?;
@@ -13150,7 +13158,7 @@ async fn reorder_subtasks(
     responses(
         (status = 200, description = "The updated subtask", body = SubtaskDetail),
         (status = 400, description = "An unknown member id"),
-        (status = 403, description = "`permission_denied`: the token lacks `subtasks.check` for `done` or `subtasks.edit` for another field"),
+        (status = 403, description = "`permission_denied`: the token lacks `subtasks.check` for `done` or `subtasks.edit` for another field, or lacks `outcomes.edit_locked` to rename a subtask in a column that locks its outcomes"),
         (status = 404, description = "Task or subtask not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -13174,6 +13182,9 @@ async fn update_subtask(
     }
     let owned = found(account.task(&id), "task or subtask not found")?;
     ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    if input.name.is_some() {
+        ensure_outcomes_editable(&account, &user, owned.board_id(), owned.row())?;
+    }
     if let Some(name) = input.name.as_deref()
         && name.trim().is_empty()
     {
@@ -13314,7 +13325,7 @@ struct ConvertSubtaskInput {
     responses(
         (status = 201, description = "The new task", body = TaskDetail),
         (status = 400, description = "Unknown color or member, or a column on another board"),
-        (status = 403, description = "`permission_denied`: the token lacks `subtasks.edit`, `subtasks.delete` or, for a relation, `links.write`. `card_locked`: the parent carries a locking label"),
+        (status = 403, description = "`permission_denied`: the token lacks `subtasks.edit`, `subtasks.delete` or, for a relation, `links.write`. `card_locked`: the parent carries a locking label. `permission_denied` also when the parent's column locks its outcomes and the token lacks `outcomes.edit_locked`"),
         (status = 404, description = "Task, subtask or column not found"),
         (status = 409, description = "`wip_limit_reached`: the target column or its limit group is at its WIP limit and `force` is not true"),
         (status = 422, description = "`column_rule`: the target column refuses the new task, or the parent's column refuses the parent without the subtask"),
@@ -13333,6 +13344,7 @@ async fn convert_subtask(
     let missing = "task or subtask not found";
     let parent = found(db.task(&id), missing)?;
     ensure_unlocked(db, &user, parent.board_id(), parent.row())?;
+    ensure_outcomes_editable(db, &user, parent.board_id(), parent.row())?;
     let sub = parent
         .row()
         .subtasks
@@ -13509,7 +13521,7 @@ enum SubtaskDelete {
     ),
     responses(
         (status = 200, description = "Subtask removed"),
-        (status = 403, description = "`permission_denied`: the token lacks `subtasks.delete`"),
+        (status = 403, description = "`permission_denied`: the token lacks `subtasks.delete`, or lacks `outcomes.edit_locked` in a column that locks its outcomes"),
         (status = 404, description = "Task or subtask not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -13522,6 +13534,7 @@ async fn delete_subtask(
     // The removal and its history event are one write, and an unknown subtask writes nothing
     let owned = found(account.task(&id), "task or subtask not found")?;
     ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    ensure_outcomes_editable(&account, &user, owned.board_id(), owned.row())?;
     let entry_rule = entry_rule_of(&account, owned.board_id(), &owned.row().column_id)?;
     let outcome = account
         .apply_task_change(&owned, user.actor(), |task| {
@@ -13563,7 +13576,7 @@ async fn delete_subtask(
     params(("id" = String, Path, description = "Task id")),
     responses(
         (status = 200, description = "All subtasks removed, or the task had none"),
-        (status = 403, description = "`card_locked`: the task carries a locking label"),
+        (status = 403, description = "`card_locked`: the task carries a locking label. `permission_denied`: the task's column locks its outcomes and the token lacks `outcomes.edit_locked`"),
         (status = 422, description = "`column_rule`: the task's column refuses the task without its subtasks"),
         (status = 404, description = "Task not found"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -13576,6 +13589,7 @@ async fn delete_all_subtasks(
 ) -> Result<impl IntoResponse, AppError> {
     let owned = found(account.task(&id), "task not found")?;
     ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    ensure_outcomes_editable(&account, &user, owned.board_id(), owned.row())?;
     let entry_rule = entry_rule_of(&account, owned.board_id(), &owned.row().column_id)?;
     account
         .apply_task_change(&owned, user.actor(), |task| {
@@ -13694,7 +13708,7 @@ struct AddSubtasksFromTemplateInput {
     request_body = AddSubtasksFromTemplateInput,
     responses(
         (status = 200, description = "The created subtasks", body = Vec<SubtaskDetail>),
-        (status = 403, description = "`card_locked`: the task carries a locking label"),
+        (status = 403, description = "`card_locked`: the task carries a locking label. `permission_denied`: the task's column locks its outcomes and the token lacks `outcomes.edit_locked`"),
         (status = 404, description = "Task or template not found"),
         (status = 422, description = "`column_rule`: the task's column refuses that many subtasks"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -13710,6 +13724,7 @@ async fn add_subtasks_from_template(
     let input: AddSubtasksFromTemplateInput = parse_body(&headers, body).await?;
     let owned = found(account.task(&id), "task not found")?;
     ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    ensure_outcomes_editable(&account, &user, owned.board_id(), owned.row())?;
     let entry_rule = entry_rule_of(&account, owned.board_id(), &owned.row().column_id)?;
     let template = account
         .settings()
@@ -22856,6 +22871,35 @@ fn entry_rule_of(
         .map(|rule| (column.row().name.clone(), rule)))
 }
 
+/// Refuses a principal without `outcomes.edit_locked` an edit of the outcomes of a task whose
+/// column locks them, naming the column. The owner's browser session holds the permission.
+fn ensure_outcomes_editable(
+    db: &AccountDb,
+    user: &AuthUser,
+    board_id: &str,
+    task: &TaskRow,
+) -> Result<(), AppError> {
+    if user.has(Permission::OutcomesEditLocked) {
+        return Ok(());
+    }
+    match entry_rule_of(db, board_id, &task.column_id)? {
+        Some((column_name, rule)) if rule.outcomes_locked => {
+            Err(outcomes_locked_error(&column_name))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Returns the 403 that refuses an edit of the outcomes of a task in the column `column_name`.
+#[must_use]
+fn outcomes_locked_error(column_name: &str) -> AppError {
+    let mut error = AppError::permission_denied(Permission::OutcomesEditLocked);
+    error.message = format!(
+        "column \"{column_name}\" locks its outcomes, so editing them needs outcomes.edit_locked"
+    );
+    error
+}
+
 /// Refuses an edit that breaks `rule` where `before` did not, naming the column `column_name`.
 fn ensure_not_worse(
     column_name: &str,
@@ -23325,6 +23369,8 @@ struct RulesColumnView {
     outcomes_min: String,
     /// The most outcomes, empty when there is no maximum.
     outcomes_max: String,
+    /// Whether the column locks the outcomes of its tasks.
+    outcomes_locked: bool,
     /// Every field of the board, ticked when the rule requires it.
     fields: Vec<RulesFieldView>,
 }
@@ -23478,6 +23524,7 @@ fn board_settings_context(
                 sections: rule.sections.join("\n"),
                 outcomes_min: rule.outcomes_min.map(|n| n.to_string()).unwrap_or_default(),
                 outcomes_max: rule.outcomes_max.map(|n| n.to_string()).unwrap_or_default(),
+                outcomes_locked: rule.outcomes_locked,
                 fields: board_fields
                     .iter()
                     .map(|field| RulesFieldView {

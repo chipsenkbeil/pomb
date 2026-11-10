@@ -60,6 +60,10 @@ pub struct EntryRule {
     /// Keys of the board fields the task must have a value for.
     #[serde(default)]
     pub fields: Vec<String>,
+    /// Whether the outcomes (subtasks) of a task sitting here are locked: adding, renaming,
+    /// reordering and deleting them needs `outcomes.edit_locked`. Ticking stays open.
+    #[serde(default)]
+    pub outcomes_locked: bool,
 }
 
 /// Returns the locked labels of a board that stores none.
@@ -85,6 +89,7 @@ impl EntryRule {
             && self.outcomes_min.is_none()
             && self.outcomes_max.is_none()
             && self.fields.is_empty()
+            && !self.outcomes_locked
     }
 }
 
@@ -905,6 +910,39 @@ mod tests {
             let bag = serde_json::json!({ CONFIG_KEY: ColumnRules::default().to_config_value() });
             assert_eq!(config_without_field(&bag.to_string(), "owner"), None);
             assert_eq!(config_without_field("{}", "owner"), None);
+        }
+    }
+
+    mod outcomes_locked {
+        use super::*;
+
+        #[test]
+        fn outcomes_locked_should_round_trip_in_column_rules() {
+            let rules = ColumnRules {
+                columns: BTreeMap::from([(
+                    "c1".to_string(),
+                    EntryRule {
+                        outcomes_locked: true,
+                        ..EntryRule::default()
+                    },
+                )]),
+                ..ColumnRules::default()
+            };
+            let ids = BTreeSet::from(["c1"]);
+            let stored = rules
+                .validated(&ids, &BTreeSet::new(), &BTreeSet::new())
+                .expect("valid");
+            assert!(stored.columns["c1"].outcomes_locked);
+            let bag = serde_json::json!({ CONFIG_KEY: stored.to_config_value() });
+            let read = ColumnRules::from_config(&bag.to_string());
+            assert_eq!(read, stored);
+            assert!(read.rule_for("c1").is_some_and(|rule| rule.outcomes_locked));
+        }
+
+        #[test]
+        fn should_default_off_when_absent() {
+            let read: EntryRule = serde_json::from_str("{}").expect("rule");
+            assert!(!read.outcomes_locked);
         }
     }
 }

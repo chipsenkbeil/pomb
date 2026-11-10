@@ -24,6 +24,7 @@ const BOOTSTRAP_TOKEN: &str = "boot-secret";
 enum Who {
     Session,
     Token,
+    Lead,
     Bootstrap,
     Role(&'static str),
 }
@@ -45,6 +46,7 @@ struct Fixture {
     lane: String,
     cookie: String,
     token: String,
+    lead_token: String,
     stages: BTreeMap<&'static str, String>,
     role_tokens: BTreeMap<&'static str, String>,
     role_ids: BTreeMap<&'static str, String>,
@@ -62,6 +64,9 @@ impl Fixture {
         let owner = db.create_user("alice").expect("alice");
         let (record, token) = new_api_token_record(&owner, "agent", AuthScope::Admin, None);
         db.create_api_token(&record).expect("token");
+        let (lead_record, lead_token) =
+            new_api_token_record(&owner, "lead", AuthScope::Provision, None);
+        db.create_api_token(&lead_record).expect("lead token");
         let cookie = format!(
             "session={}",
             db.create_session(&owner, "").expect("session")
@@ -130,6 +135,7 @@ impl Fixture {
             lane,
             cookie,
             token,
+            lead_token,
             stages,
             role_tokens,
             role_ids,
@@ -164,6 +170,7 @@ impl Fixture {
             .header("accept", "application/json");
         builder = match who {
             Who::Token => builder.header("authorization", format!("Bearer {}", self.token)),
+            Who::Lead => builder.header("authorization", format!("Bearer {}", self.lead_token)),
             Who::Bootstrap => builder.header("authorization", format!("Bearer {BOOTSTRAP_TOKEN}")),
             Who::Role(name) => builder.header(
                 "authorization",
@@ -488,6 +495,7 @@ mod rules_api {
                 "sections": ["Done when"],
                 "outcomes_min": 1,
                 "outcomes_max": 5,
+                "outcomes_locked": false,
                 "fields": ["owner"],
             }},
         });
@@ -558,6 +566,7 @@ mod rules_api {
                     "sections": ["A"],
                     "outcomes_min": null,
                     "outcomes_max": null,
+                    "outcomes_locked": false,
                     "fields": [],
                 }},
             })
@@ -1737,6 +1746,7 @@ mod stored {
                 "sections": ["Done when"],
                 "outcomes_min": null,
                 "outcomes_max": null,
+                "outcomes_locked": false,
                 "fields": [],
             }})
         );
@@ -1883,5 +1893,160 @@ mod label_case {
             .json(Who::Token, "PATCH", &uri, json!({"labels": []}))
             .await;
         assert_eq!(status, StatusCode::OK, "{text}");
+    }
+}
+
+mod outcomes_lock {
+    use super::*;
+
+    async fn locked_card(fx: &Fixture) -> (String, String) {
+        let id = fx.task(&fx.ready, json!({})).await;
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "POST",
+                &format!("/api/tasks/{id}/subtasks"),
+                json!({"name": "One"}),
+            )
+            .await;
+        assert!(status.is_success(), "{text}");
+        let sub = parse(&text)["id"].as_str().expect("subtask id").to_string();
+        let rules = json!({"columns": {fx.ready.clone(): {"outcomes_locked": true}}});
+        assert_eq!(fx.put_rules(rules).await, StatusCode::OK);
+        (id, sub)
+    }
+
+    #[tokio::test]
+    async fn outcomes_lock_should_refuse_subtask_edits_without_the_permission() {
+        let fx = Fixture::new();
+        let (id, sub) = locked_card(&fx).await;
+        let subtasks = format!("/api/tasks/{id}/subtasks");
+        for (method, uri, body) in [
+            ("POST", subtasks.clone(), Body::Json(json!({"name": "Two"}))),
+            (
+                "PATCH",
+                format!("{subtasks}/{sub}"),
+                Body::Json(json!({"name": "Renamed"})),
+            ),
+            (
+                "PUT",
+                format!("{subtasks}/order"),
+                Body::Json(json!({"order": [sub.clone()]})),
+            ),
+            ("DELETE", format!("{subtasks}/{sub}"), Body::Empty),
+            ("DELETE", subtasks.clone(), Body::Empty),
+            (
+                "POST",
+                format!("{subtasks}/from-template"),
+                Body::Json(json!({"template_id": "none"})),
+            ),
+            (
+                "POST",
+                format!("{subtasks}/{sub}/convert"),
+                Body::Json(json!({})),
+            ),
+        ] {
+            let (status, text) = fx.call(Who::Lead, method, &uri, body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
+            let body = parse(&text);
+            assert_eq!(body["permission"], "outcomes.edit_locked", "{text}");
+            let message = body["message"].as_str().expect("message");
+            assert!(message.contains("\"Ready\""), "{message}");
+        }
+        let (status, text) = fx
+            .json(
+                Who::Lead,
+                "POST",
+                &format!("/api/boards/{}/tasks/bulk", fx.board),
+                json!({"action": "subtasks", "task_ids": [id.clone()], "add_subtasks": ["Two"]}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        let (_, text) = fx
+            .call(
+                Who::Session,
+                "GET",
+                &format!("/api/tasks/{id}"),
+                Body::Empty,
+            )
+            .await;
+        assert_eq!(parse(&text)["subtasks"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[tokio::test]
+    async fn outcomes_lock_should_let_the_owner_and_an_admin_token_edit() {
+        let fx = Fixture::new();
+        let (id, sub) = locked_card(&fx).await;
+        let subtasks = format!("/api/tasks/{id}/subtasks");
+        for who in [Who::Session, Who::Token] {
+            let (status, text) = fx
+                .json(
+                    who,
+                    "PATCH",
+                    &format!("{subtasks}/{sub}"),
+                    json!({"name": "Renamed"}),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{who:?}: {text}");
+            let (status, text) = fx
+                .json(who, "POST", &subtasks, json!({"name": "Extra"}))
+                .await;
+            assert_eq!(status, StatusCode::OK, "{who:?}: {text}");
+            let (status, text) = fx
+                .json(
+                    who,
+                    "POST",
+                    &format!("{subtasks}/from-template"),
+                    json!({"template_id": "none"}),
+                )
+                .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{who:?}: {text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn outcomes_lock_should_allow_ticks_and_default_off() {
+        let fx = Fixture::new();
+        let open = fx.task(&fx.ready, json!({})).await;
+        let uri = format!("/api/tasks/{open}/subtasks");
+        let (status, text) = fx
+            .json(Who::Lead, "POST", &uri, json!({"name": "Free"}))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+
+        let (id, sub) = locked_card(&fx).await;
+        let (status, text) = fx
+            .json(
+                Who::Lead,
+                "PATCH",
+                &format!("/api/tasks/{id}/subtasks/{sub}"),
+                json!({"done": true}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert_eq!(parse(&text)["done"], true, "{text}");
+        let other = fx.task(&fx.backlog, json!({})).await;
+        let (status, text) = fx
+            .json(
+                Who::Lead,
+                "POST",
+                &format!("/api/tasks/{other}/subtasks"),
+                json!({"name": "Elsewhere"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn outcomes_lock_should_save_per_column_and_be_served_with_the_rules() {
+        let fx = Fixture::new();
+        let _ = locked_card(&fx).await;
+        let (_, text) = fx
+            .call(Who::Lead, "GET", &fx.rules_uri(), Body::Empty)
+            .await;
+        assert_eq!(parse(&text)["columns"][&fx.ready]["outcomes_locked"], true);
+        let uri = format!("/b/{}/settings/rules", fx.board);
+        let (_, page) = fx.call(Who::Session, "GET", &uri, Body::Empty).await;
+        assert!(page.contains("br-outcomes-locked\" checked"), "{page}");
     }
 }

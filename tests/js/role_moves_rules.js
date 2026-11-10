@@ -35,9 +35,10 @@ function box(value) { return node('br-sections', {}, { value: value }); }
 function input(cls, value) { return node(cls, {}, { value: value }); }
 function check(cls, value, checked) { return node(cls, {}, { value: value, checked: checked }); }
 
-function column(id, sections, min, max, fields) {
+function column(id, sections, min, max, locked, fields) {
   return node(fieldsetClass('data-column-id'), { columnId: id }, {}, [
     box(sections), input('br-min', min), input('br-max', max),
+    check('br-outcomes-locked', 'on', locked),
   ].concat(fields));
 }
 function move(fromId, limited, targets) {
@@ -48,8 +49,8 @@ function role(id, rows) {
 }
 
 var form = node('', {}, {}, [
-  column('c1', 'Goal\nPlan', '1', '3', [check('br-field', 'due', true), check('br-field', 'owner', false)]),
-  column('c2', '', '', '', []),
+  column('c1', 'Goal\nPlan', '1', '3', true, [check('br-field', 'due', true), check('br-field', 'owner', false)]),
+  column('c2', '', '', '', false, []),
   role('r1', [
     move('c1', true, [check('br-target', 'c2', true), check('br-target', 'c3', false)]),
     move('c2', false, [check('br-target', 'c1', true)]),
@@ -101,9 +102,9 @@ if (sent.length) {
   expect('Save rules trims the locked labels', body.locked_labels, ['lock-a', 'lock-b']);
   expect('Save rules holds only the column fieldsets', Object.keys(body.columns), ['c1', 'c2']);
   expect('Save rules sends the first column rules', body.columns.c1,
-    { sections: ['Goal', 'Plan'], outcomes_min: 1, outcomes_max: 3, fields: ['due'] });
+    { sections: ['Goal', 'Plan'], outcomes_min: 1, outcomes_max: 3, outcomes_locked: true, fields: ['due'] });
   expect('Save rules sends the second column rules', body.columns.c2,
-    { sections: [], outcomes_min: null, outcomes_max: null, fields: [] });
+    { sections: [], outcomes_min: null, outcomes_max: null, outcomes_locked: false, fields: [] });
   expect('Save rules sends the limited role moves only', body.role_moves, { r1: { c1: ['c2'] } });
 }
 expect('Save rules stops the browser submitting the form', prevented, 1);

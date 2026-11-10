@@ -482,6 +482,7 @@
       epics: 'Close, reopen or turn an epic back into a task.',
       tasks: 'Create, edit, move, claim, bin and delete tasks.',
       subtasks: 'A card\'s outcomes.',
+      outcomes: 'Edit the outcomes of a column that locks them.',
       links: 'Create and delete task links.',
       comments: 'Read and write comments, edit or delete anyone\'s.',
       attachments: 'Download, upload, rename and delete files.',
@@ -3087,6 +3088,7 @@
           sections: lines(box.querySelector('.br-sections').value),
           outcomes_min: count(box.querySelector('.br-min')),
           outcomes_max: count(box.querySelector('.br-max')),
+          outcomes_locked: box.querySelector('.br-outcomes-locked').checked,
           fields: Array.prototype.map.call(box.querySelectorAll('.br-field:checked'), function (input) { return input.value; }),
         };
       });
