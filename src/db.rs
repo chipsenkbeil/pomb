@@ -956,21 +956,16 @@ fn remove_needs_human(task: &mut TaskRow, actor: Actor<'_>) {
 /// Adds the label of `tier` to `task` and removes the label of the other tier, with one labels
 /// event, unless the labels already read that way.
 fn set_tier_label(task: &mut TaskRow, tier: EscalationTier, actor: Actor<'_>) {
-    let before = task.labels.join(", ");
+    let before = task.labels.clone();
     let dropped = tier.other().label();
     task.labels.retain(|label| label != dropped);
     if !task.labels.iter().any(|label| label == tier.label()) {
         task.labels.push(tier.label().to_string());
     }
-    let after = task.labels.join(", ");
-    if after == before {
+    if task.labels == before {
         return;
     }
-    let change = EventChange {
-        from: (!before.is_empty()).then_some(before),
-        to: Some(after.clone()),
-    };
-    let detail = format!("Set labels: {after}");
+    let (detail, change) = labels_event(&before, &task.labels);
     push_change_event(task, HistoryKind::LabelsUpdated, detail, actor, change);
 }
 

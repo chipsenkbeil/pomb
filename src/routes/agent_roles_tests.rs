@@ -2166,6 +2166,42 @@ async fn escalate_should_set_the_planner_tier_and_drop_the_lead_one() {
 }
 
 #[tokio::test]
+async fn escalate_should_log_one_labels_event_with_the_old_and_new_labels() {
+    let fx = Fixture::new();
+    let task = acting_task(&fx);
+    let role = standard_role(&fx, "reviewer").await;
+    let (_, raw) = issue_holding(&fx, &role, "rev-one");
+    fx.db
+        .set_task_labels(&task, &["needs:lead".to_string()])
+        .expect("labels");
+    let uri = format!("/api/tasks/{task}/escalate");
+    let body = json!({"tier": "planner", "reason": "The outcome is wrong"});
+    let reply = act(&raw, &fx, "POST", &uri, body).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+
+    let row = fx.db.task(&task).expect("read").expect("task");
+    let labels_events: Vec<_> = row
+        .history
+        .iter()
+        .filter(|event| event.kind == HistoryKind::LabelsUpdated)
+        .collect();
+    assert_eq!(labels_events.len(), 1);
+    assert_eq!(labels_events[0].from.as_deref(), Some("needs:lead"));
+    assert_eq!(labels_events[0].to.as_deref(), Some("needs:planner"));
+
+    let again = json!({"tier": "planner", "reason": "Still wrong"});
+    let reply = act(&raw, &fx, "POST", &uri, again).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let row = fx.db.task(&task).expect("read").expect("task");
+    let labels_events = row
+        .history
+        .iter()
+        .filter(|event| event.kind == HistoryKind::LabelsUpdated)
+        .count();
+    assert_eq!(labels_events, 1);
+}
+
+#[tokio::test]
 async fn escalate_should_refuse_a_bad_tier_or_reason_and_write_nothing() {
     let fx = Fixture::new();
     let task = acting_task(&fx);
