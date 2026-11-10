@@ -29150,11 +29150,12 @@ The events:
   the one it entered. A move to another board is an event on both boards: the one the task left
   gets `from_column_id` and a null `column_id`, and the one it entered gets both. A move within one
   column is not an event.
-- `task_updated`: a task's name, size, labels or description changed. `name` and `size` carry the
-  new value of what changed, and `labels_added` and `labels_removed` the labels that came and
-  went, at most 20 each. A description change, a ticked checklist box included, carries none of
-  them unless one of those changed too. A change of anything else, such as the due date, is not an
-  event, so find those with `?since=` on `GET /api/boards/{id}/tasks`.
+- `task_updated`: a task's name, size, labels, description, colour, estimate, points, due date or
+  members changed. `name` and `size` carry the new value of what changed, and `labels_added` and
+  `labels_removed` the labels that came and went, at most 20 each. A change of any other of these,
+  a description change or a ticked checklist box included, carries none of them unless one of
+  those changed too. A change of anything else, such as a due repeat alone, is not an event, so
+  find those with `?since=` on `GET /api/boards/{id}/tasks`.
 - `comment_added`: a comment was added. `comment_id` names it.
 
 Every event has `task_id`, `column_id`, `at`, `actor_kind` and `token_name`. `actor_kind` is `user`

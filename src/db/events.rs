@@ -185,7 +185,20 @@ fn events_of(before: Option<&TaskRow>, after: &TaskRow, actor: Actor<'_>) -> Vec
     let renamed = before.name != after.name;
     let resized = before.size != after.size;
     let described = before.description != after.description;
-    if renamed || resized || described || !added.is_empty() || !removed.is_empty() {
+    let recoloured = before.color_id != after.color_id;
+    let estimated = before.estimate_hours != after.estimate_hours || before.points != after.points;
+    let dated = before.due_at != after.due_at;
+    let staffed = before.member_ids != after.member_ids;
+    let changed = renamed
+        || resized
+        || described
+        || recoloured
+        || estimated
+        || dated
+        || staffed
+        || !added.is_empty()
+        || !removed.is_empty();
+    if changed {
         events.push(BoardEventRow {
             name: renamed.then(|| cut_text(&after.name, MAX_HISTORY_TEXT_CHARS)),
             size: resized.then_some(after.size),
@@ -520,6 +533,84 @@ mod tests {
         assert_eq!(event.size, None);
         assert!(event.labels_added.is_empty() && event.labels_removed.is_empty());
         assert_eq!(event.token_name.as_deref(), Some("ci"));
+    }
+
+    #[test]
+    fn a_colour_change_should_write_task_updated() {
+        let fx = fixture();
+        let task = fx.task("Colour");
+        fx.db
+            .apply_task_change(&task, TOKEN, |row| {
+                row.color_id = Some("blue".to_string());
+                ((), true)
+            })
+            .expect("change");
+        let events = fx.events_after(1, &EventKind::ALL);
+        assert_eq!(events.len(), 1);
+        let event = &events[0].1;
+        assert_eq!(event.kind, EventKind::TaskUpdated);
+        assert_eq!(event.name, None);
+        assert_eq!(event.size, None);
+        assert_eq!(event.token_name.as_deref(), Some("ci"));
+    }
+
+    #[test]
+    fn an_estimate_or_points_change_should_write_task_updated() {
+        let fx = fixture();
+        let task = fx.task("Estimate");
+        fx.db
+            .apply_task_change(&task, TOKEN, |row| {
+                row.estimate_hours = Some(4.0);
+                ((), true)
+            })
+            .expect("estimate");
+        let events = fx.events_after(1, &EventKind::ALL);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].1.kind, EventKind::TaskUpdated);
+        fx.db
+            .apply_task_change(&task, TOKEN, |row| {
+                row.points = Some(2.0);
+                ((), true)
+            })
+            .expect("points");
+        let events = fx.events_after(2, &EventKind::ALL);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].1.kind, EventKind::TaskUpdated);
+    }
+
+    #[test]
+    fn a_due_date_change_should_write_task_updated() {
+        let fx = fixture();
+        let task = fx.task("Due");
+        fx.db
+            .apply_task_change(&task, USER, |row| {
+                row.due_at = Some("2026-12-01T09:00:00+00:00".to_string());
+                ((), true)
+            })
+            .expect("due");
+        let events = fx.events_after(1, &EventKind::ALL);
+        assert_eq!(events.len(), 1);
+        let event = &events[0].1;
+        assert_eq!(event.kind, EventKind::TaskUpdated);
+        assert_eq!(event.name, None);
+        assert_eq!(event.size, None);
+        assert_eq!(event.actor_kind, ActorKind::User);
+    }
+
+    #[test]
+    fn a_member_change_should_write_task_updated() {
+        let fx = fixture();
+        let task = fx.task("Member");
+        fx.db
+            .apply_task_change(&task, TOKEN, |row| {
+                row.member_ids = vec!["user-1".to_string()];
+                ((), true)
+            })
+            .expect("member");
+        let events = fx.events_after(1, &EventKind::ALL);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].1.kind, EventKind::TaskUpdated);
+        assert_eq!(events[0].1.token_name.as_deref(), Some("ci"));
     }
 
     #[test]
