@@ -41,7 +41,11 @@ local function parse(args)
     while i <= #args do
         local arg = args[i]
         if arg == "--backup" then
-            parsed.backup = args[i + 1] or ""
+            local value = args[i + 1]
+            if not value or value == "" or value:sub(1, 1) == "-" then
+                usage()
+            end
+            parsed.backup = value
             i = i + 1
             mode = nil
         elseif arg == "--cleanup" then
@@ -185,7 +189,7 @@ end
 
 local parsed = parse(ctx.args)
 local backup_path
-if parsed.backup and parsed.backup ~= "" then
+if parsed.backup then
     local why
     backup_path, why = backup.resolve(parsed.backup)
     if not backup_path then
