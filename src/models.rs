@@ -2991,228 +2991,99 @@ impl BinRow {
     }
 }
 
-/// What a task history event records.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum HistoryKind {
-    /// The `created` event.
-    Created,
-    /// The `moved` event.
-    Moved,
-    /// The `board_updated` event.
-    BoardUpdated,
-    /// The `swimlane_updated` event.
-    SwimlaneUpdated,
-    /// The `deleted` event.
-    Deleted,
-    /// The `restored` event.
-    Restored,
-    /// The `renamed` event.
-    Renamed,
-    /// The `description_updated` event.
-    DescriptionUpdated,
-    /// The `estimate_updated` event.
-    EstimateUpdated,
-    /// The `points_updated` event.
-    PointsUpdated,
-    /// The `color_updated` event.
-    ColorUpdated,
-    /// The `labels_updated` event.
-    LabelsUpdated,
-    /// The `due_updated` event.
-    DueUpdated,
-    /// The `due_done_updated` event.
-    DueDoneUpdated,
-    /// The `members_updated` event.
-    MembersUpdated,
-    /// The `responsible_updated` event.
-    ResponsibleUpdated,
-    /// The `grouping_date_updated` event.
-    GroupingDateUpdated,
-    /// The `timeline_updated` event.
-    TimelineUpdated,
-    /// The `subtask_added` event.
-    SubtaskAdded,
-    /// The `subtask_deleted` event.
-    SubtaskDeleted,
-    /// The `subtask_done` event.
-    SubtaskDone,
-    /// The `subtask_reopened` event.
-    SubtaskReopened,
-    /// The `subtask_renamed` event.
-    SubtaskRenamed,
-    /// The `subtask_due_set` event.
-    SubtaskDueSet,
-    /// The `subtask_due_cleared` event.
-    SubtaskDueCleared,
-    /// The `subtask_members_updated` event.
-    SubtaskMembersUpdated,
-    /// The `subtask_converted` event.
-    SubtaskConverted,
-    /// The `time_logged` event.
-    TimeLogged,
-    /// The `time_edited` event.
-    TimeEdited,
-    /// The `time_deleted` event.
-    TimeDeleted,
-    /// The `comment` event.
-    Comment,
-    /// The `comment_added` event.
-    CommentAdded,
-    /// The `comment_edited` event.
-    CommentEdited,
-    /// The `comment_deleted` event.
-    CommentDeleted,
-    /// The `attachment_added` event.
-    AttachmentAdded,
-    /// The `attachment_renamed` event.
-    AttachmentRenamed,
-    /// The `attachment_edited` event.
-    AttachmentEdited,
-    /// The `cover_set` event.
-    CoverSet,
-    /// The `cover_removed` event.
-    CoverRemoved,
-    /// The `attachment_deleted` event.
-    AttachmentDeleted,
-    /// The `link_added` event.
-    LinkAdded,
-    /// The `link_removed` event.
-    LinkRemoved,
-    /// The `claimed` event.
-    Claimed,
-    /// The `claim_released` event.
-    ClaimReleased,
-    /// The `claim_expired` event.
-    ClaimExpired,
-    /// The `swimlane_merged` event.
-    SwimlaneMerged,
-    /// The `watched` event.
-    Watched,
-    /// The `unwatched` event.
-    Unwatched,
-    /// The `kind_changed` event.
-    KindChanged,
-    /// The `closed` event.
-    Closed,
-    /// The `reopened` event.
-    Reopened,
+/// Counts the identifiers it is given.
+macro_rules! count_kinds {
+    () => {
+        0
+    };
+    ($head:ident $($tail:ident)*) => {
+        1 + count_kinds!($($tail)*)
+    };
+}
+
+/// Declares `HistoryKind` with its JSON names and docs from one table.
+macro_rules! history_kinds {
+    ($($variant:ident, $name:literal;)*) => {
+        /// What a task history event records.
+        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+        #[serde(rename_all = "snake_case")]
+        pub enum HistoryKind {
+            $(
+                #[doc = concat!("The `", $name, "` event.")]
+                $variant,
+            )*
+        }
+
+        impl HistoryKind {
+            /// Every kind, in declaration order.
+            pub const ALL: [Self; count_kinds!($($variant)*)] = [$(Self::$variant),*];
+
+            /// Returns the name the kind has in JSON.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name,)*
+                }
+            }
+        }
+    };
+}
+
+history_kinds! {
+    Created, "created";
+    Moved, "moved";
+    BoardUpdated, "board_updated";
+    SwimlaneUpdated, "swimlane_updated";
+    Deleted, "deleted";
+    Restored, "restored";
+    Renamed, "renamed";
+    DescriptionUpdated, "description_updated";
+    EstimateUpdated, "estimate_updated";
+    PointsUpdated, "points_updated";
+    ColorUpdated, "color_updated";
+    LabelsUpdated, "labels_updated";
+    DueUpdated, "due_updated";
+    DueDoneUpdated, "due_done_updated";
+    MembersUpdated, "members_updated";
+    ResponsibleUpdated, "responsible_updated";
+    GroupingDateUpdated, "grouping_date_updated";
+    TimelineUpdated, "timeline_updated";
+    SubtaskAdded, "subtask_added";
+    SubtaskDeleted, "subtask_deleted";
+    SubtaskDone, "subtask_done";
+    SubtaskReopened, "subtask_reopened";
+    SubtaskRenamed, "subtask_renamed";
+    SubtaskDueSet, "subtask_due_set";
+    SubtaskDueCleared, "subtask_due_cleared";
+    SubtaskMembersUpdated, "subtask_members_updated";
+    SubtaskConverted, "subtask_converted";
+    TimeLogged, "time_logged";
+    TimeEdited, "time_edited";
+    TimeDeleted, "time_deleted";
+    Comment, "comment";
+    CommentAdded, "comment_added";
+    CommentEdited, "comment_edited";
+    CommentDeleted, "comment_deleted";
+    AttachmentAdded, "attachment_added";
+    AttachmentRenamed, "attachment_renamed";
+    AttachmentEdited, "attachment_edited";
+    CoverSet, "cover_set";
+    CoverRemoved, "cover_removed";
+    AttachmentDeleted, "attachment_deleted";
+    LinkAdded, "link_added";
+    LinkRemoved, "link_removed";
+    Claimed, "claimed";
+    ClaimReleased, "claim_released";
+    ClaimExpired, "claim_expired";
+    SwimlaneMerged, "swimlane_merged";
+    Watched, "watched";
+    Unwatched, "unwatched";
+    KindChanged, "kind_changed";
+    Closed, "closed";
+    Reopened, "reopened";
 }
 
 impl HistoryKind {
-    /// Every kind, in declaration order.
-    pub const ALL: [Self; 51] = [
-        Self::Created,
-        Self::Moved,
-        Self::BoardUpdated,
-        Self::SwimlaneUpdated,
-        Self::Deleted,
-        Self::Restored,
-        Self::Renamed,
-        Self::DescriptionUpdated,
-        Self::EstimateUpdated,
-        Self::PointsUpdated,
-        Self::ColorUpdated,
-        Self::LabelsUpdated,
-        Self::DueUpdated,
-        Self::DueDoneUpdated,
-        Self::MembersUpdated,
-        Self::ResponsibleUpdated,
-        Self::GroupingDateUpdated,
-        Self::TimelineUpdated,
-        Self::SubtaskAdded,
-        Self::SubtaskDeleted,
-        Self::SubtaskDone,
-        Self::SubtaskReopened,
-        Self::SubtaskRenamed,
-        Self::SubtaskDueSet,
-        Self::SubtaskDueCleared,
-        Self::SubtaskMembersUpdated,
-        Self::SubtaskConverted,
-        Self::TimeLogged,
-        Self::TimeEdited,
-        Self::TimeDeleted,
-        Self::Comment,
-        Self::CommentAdded,
-        Self::CommentEdited,
-        Self::CommentDeleted,
-        Self::AttachmentAdded,
-        Self::AttachmentRenamed,
-        Self::AttachmentEdited,
-        Self::CoverSet,
-        Self::CoverRemoved,
-        Self::AttachmentDeleted,
-        Self::LinkAdded,
-        Self::LinkRemoved,
-        Self::Claimed,
-        Self::ClaimReleased,
-        Self::ClaimExpired,
-        Self::SwimlaneMerged,
-        Self::Watched,
-        Self::Unwatched,
-        Self::KindChanged,
-        Self::Closed,
-        Self::Reopened,
-    ];
-
-    /// Returns the name the kind has in JSON.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Created => "created",
-            Self::Moved => "moved",
-            Self::BoardUpdated => "board_updated",
-            Self::SwimlaneUpdated => "swimlane_updated",
-            Self::Deleted => "deleted",
-            Self::Restored => "restored",
-            Self::Renamed => "renamed",
-            Self::DescriptionUpdated => "description_updated",
-            Self::EstimateUpdated => "estimate_updated",
-            Self::PointsUpdated => "points_updated",
-            Self::ColorUpdated => "color_updated",
-            Self::LabelsUpdated => "labels_updated",
-            Self::DueUpdated => "due_updated",
-            Self::DueDoneUpdated => "due_done_updated",
-            Self::MembersUpdated => "members_updated",
-            Self::ResponsibleUpdated => "responsible_updated",
-            Self::GroupingDateUpdated => "grouping_date_updated",
-            Self::TimelineUpdated => "timeline_updated",
-            Self::SubtaskAdded => "subtask_added",
-            Self::SubtaskDeleted => "subtask_deleted",
-            Self::SubtaskDone => "subtask_done",
-            Self::SubtaskReopened => "subtask_reopened",
-            Self::SubtaskRenamed => "subtask_renamed",
-            Self::SubtaskDueSet => "subtask_due_set",
-            Self::SubtaskDueCleared => "subtask_due_cleared",
-            Self::SubtaskMembersUpdated => "subtask_members_updated",
-            Self::SubtaskConverted => "subtask_converted",
-            Self::TimeLogged => "time_logged",
-            Self::TimeEdited => "time_edited",
-            Self::TimeDeleted => "time_deleted",
-            Self::Comment => "comment",
-            Self::CommentAdded => "comment_added",
-            Self::CommentEdited => "comment_edited",
-            Self::CommentDeleted => "comment_deleted",
-            Self::AttachmentAdded => "attachment_added",
-            Self::AttachmentRenamed => "attachment_renamed",
-            Self::AttachmentEdited => "attachment_edited",
-            Self::CoverSet => "cover_set",
-            Self::CoverRemoved => "cover_removed",
-            Self::AttachmentDeleted => "attachment_deleted",
-            Self::LinkAdded => "link_added",
-            Self::LinkRemoved => "link_removed",
-            Self::Claimed => "claimed",
-            Self::ClaimReleased => "claim_released",
-            Self::ClaimExpired => "claim_expired",
-            Self::SwimlaneMerged => "swimlane_merged",
-            Self::Watched => "watched",
-            Self::Unwatched => "unwatched",
-            Self::KindChanged => "kind_changed",
-            Self::Closed => "closed",
-            Self::Reopened => "reopened",
-        }
-    }
-
     /// Returns the kind a name is, or [`None`] for a name no kind has.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
@@ -5719,6 +5590,18 @@ mod history_kind_tests {
             let json = serde_json::to_string(&kind).expect("serialise");
             assert_eq!(json, format!("\"{}\"", kind.as_str()));
             assert_eq!(HistoryKind::parse(kind.as_str()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn history_kind_json_names_should_match_as_str() {
+        for kind in HistoryKind::ALL {
+            let name = format!("\"{}\"", kind.as_str());
+            assert_eq!(serde_json::to_string(&kind).expect("serialise"), name);
+            assert_eq!(
+                serde_json::from_str::<HistoryKind>(&name).expect("deserialise"),
+                kind
+            );
         }
     }
 
