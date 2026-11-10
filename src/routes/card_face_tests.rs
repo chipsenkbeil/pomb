@@ -295,7 +295,7 @@ async fn panel_should_show_owner_and_reviewer_rows() {
     fx.agent(&reviewer, &verdict, body).await;
     let html = fx.modal(&task).await;
     assert!(html.contains("tm-seat-state\">Changes needed<"), "{html}");
-    assert!(html.contains(">abc123</code>"), "{html}");
+    assert!(html.contains(">at abc123</code>"), "{html}");
     assert!(html.contains(r#"data-owner-act="ask-again""#), "{html}");
 }
 
@@ -355,6 +355,45 @@ async fn card_face_should_keep_the_name_initials_for_a_grab_without_a_role() {
         html.contains(
             "card-circle-owner card-circle-agent\" title=\"ship-it\" style=\"\">SI</span>"
         ),
+        "{html}"
+    );
+}
+
+#[tokio::test]
+async fn panel_should_hide_empty_detail_rows_and_the_metadata_block() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let html = fx.modal(&task).await;
+    for row in ["timeline", "members", "labels", "due", "time", "estimate"] {
+        let hidden = format!(r#"data-row="{row}" hidden>"#);
+        assert!(html.contains(&hidden), "{row}: {html}");
+    }
+    assert!(
+        html.contains(r#"id="modal-metadata-wrap" hidden"#),
+        "{html}"
+    );
+    assert!(html.contains("tm-add-field-menu"), "{html}");
+    assert!(
+        html.contains(r#"<details class="tm-seat-add-menu">"#),
+        "{html}"
+    );
+    let owner = html.find(r#"id="tm-group-owner""#).expect("owner group");
+    let seats = html.find(r#"id="tm-group-seats""#).expect("seats group");
+    let details = html
+        .find(r#"id="tm-group-details""#)
+        .expect("details group");
+    assert!(owner < seats && seats < details, "{html}");
+}
+
+#[tokio::test]
+async fn panel_should_show_when_the_owner_took_the_card() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    fx.browse("POST", &format!("/api/tasks/{task}/owner"), Some(json!({})))
+        .await;
+    let html = fx.modal(&task).await;
+    assert!(
+        html.contains(r#"class="tm-row-sub tm-owner-since">Since "#),
         "{html}"
     );
 }

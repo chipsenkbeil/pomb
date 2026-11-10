@@ -3226,6 +3226,8 @@ struct PanelOwner {
     name: String,
     /// How long the lease lasts, or none while the card has no owner.
     lease: Option<String>,
+    /// The time of day the holder took the card, or none while it is unknown.
+    owner_since: Option<String>,
     /// The fence a release sends, set only while the signed-in member holds the card.
     release_fence: Option<u64>,
     /// The take button, or none to a viewer and to the live owner.
@@ -3326,6 +3328,10 @@ impl SidePanel {
                 (Some(end), true) => format!("Until {}", format_datetime(end)),
                 (None, true) => "No end".to_string(),
             });
+        let owner_since = owner
+            .as_ref()
+            .and_then(|owner| owner.since.as_deref())
+            .and_then(format_clock);
         let name = circle
             .as_ref()
             .map(|circle| circle.title.clone())
@@ -3381,6 +3387,7 @@ impl SidePanel {
                 circle,
                 name,
                 lease,
+                owner_since,
                 release_fence,
                 take,
             },
@@ -4298,6 +4305,16 @@ fn format_datetime(rfc3339: &str) -> String {
     DateTime::parse_from_rfc3339(rfc3339)
         .map(|dt| dt.with_timezone(&Local).format(&pattern).to_string())
         .unwrap_or_else(|_| rfc3339.to_string())
+}
+
+/// "1:25 PM" rendering of the time of day in a stored RFC3339 timestamp, on the account's clock, or
+/// none when it does not parse.
+fn format_clock(rfc3339: &str) -> Option<String> {
+    DateTime::parse_from_rfc3339(rfc3339).ok().map(|dt| {
+        dt.with_timezone(&Local)
+            .format(TimeFormat::current().clock())
+            .to_string()
+    })
 }
 
 /// "Sep 28" rendering of a stored RFC3339 timestamp.

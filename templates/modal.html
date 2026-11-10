@@ -243,81 +243,10 @@
         <div class="tm-fold-bar">
           <button type="button" class="tm-side-btn tm-fold-panel" data-sidebar-hide aria-expanded="true" aria-controls="tm-side" aria-label="Hide panel (fold the sidebar)">Hide panel &rsaquo;</button>
         </div>
-        <section class="tm-side-group" id="tm-group-details">
-          <h3 class="tm-side-title"><button type="button" class="tm-fold" data-fold-group="details" aria-expanded="true" aria-controls="tm-body-details">Details</button></h3>
-          <div class="tm-side-body" id="tm-body-details">
-            <dl class="tm-props">
-              {% if !is_epic %}
-              <dt>Color</dt>
-              <dd data-cell="color">
-                <button type="button" class="tm-color-chip" data-tm-act="pick-color" style="background-color: var(--taskColorBorder);"{% if task.show_color_name %} title="{{ task.color_label }} — click to change"{% else %} title="Click to change"{% endif %}></button>
-                {% if task.show_color_name %}<span class="tm-color-name">{{ task.color_label }}</span>{% endif %}
-              </dd>
-              {% endif %}
-              <dt class="tm-prop-extra">Timeline</dt>
-              <dd class="tm-prop-extra" data-cell="timeline" id="modal-timeline-row">
-                {% if let Some(timeline) = task.timeline_display %}
-                <button type="button" class="tm-due-chip" data-tm-act="edit-timeline" title="Edit timeline"><strong>{{ timeline }}</strong></button>
-                {% else %}
-                <button type="button" class="tm-add-link" data-tm-act="add-timeline">Add timeline</button>
-                {% endif %}
-              </dd>
-              <dt class="tm-prop-extra">Members</dt>
-              <dd class="tm-prop-extra" data-cell="members" id="modal-members-row">
-                <div class="tm-members-chips">
-                  {% for m in assigned_members %}<span class="tm-member-disc{% if m.responsible %} tm-member-responsible{% endif %}" title="{{ m.username }}{% if m.responsible %} (Responsible){% endif %}" style="{{ m.avatar.style }}">{% if let Some(url) = m.avatar.image %}<img src="{{ url }}" alt="">{% else %}{{ m.avatar.text }}{% endif %}</span>{% endfor %}
-                  {% if let Some(name) = responsible_session %}<span class="tm-member-session tm-member-responsible" title="Responsible session: {{ name }}">{{ name }}</span>{% endif %}
-                  <button type="button" class="tm-member-add" data-tm-act="add-member" title="Add member" aria-label="Add member"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M7 0v14M0 7h14" stroke="currentColor" stroke-width="2"/></svg></button>
-                </div>
-              </dd>
-              <dt class="tm-prop-extra">Labels</dt>
-              <dd class="tm-prop-extra" data-cell="labels" id="modal-labels-row">
-                <div class="tm-labels-chips">
-                  {% for l in task.labels %}<button type="button" class="tm-label-chip" data-tm-act="add-label" title="Edit labels">{{ l }}</button>{% endfor %}
-                  <button type="button" class="tm-member-add" data-tm-act="add-label" title="Add label" aria-label="Add label"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M7 0v14M0 7h14" stroke="currentColor" stroke-width="2"/></svg></button>
-                </div>
-              </dd>
-              <dt class="tm-prop-extra">Due</dt>
-              <dd class="tm-prop-extra" data-cell="due" id="modal-due-row">
-                {% if let Some(due) = task.due_modal %}
-                <button type="button" class="tm-due-chip{% if task.due_state.overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
-                  <strong>{{ due|safe }}</strong>{% if let Some(column) = task.due_suffix %} <span class="tm-due-column">({{ column }})</span>{% endif %}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
-                </button>
-                <button type="button" class="tm-add-link tm-due-done-toggle" data-tm-act="due-done-toggle" data-done="{{ task.due_state.done }}">{% if task.due_state.done %}Undo done{% else %}Mark done{% endif %}</button>
-                {% else %}
-                <button type="button" class="tm-add-link" data-tm-act="add-duedate">Add due date</button>
-                {% endif %}
-              </dd>
-              {% if !is_epic %}
-              <dt class="tm-prop-extra">Time</dt>
-              <dd class="tm-prop-extra tm-cell" data-cell="time-spent">
-                {% if task.total_minutes > 0 || task.pomodori_label.is_some() %}
-                {% if let Some(p) = task.pomodori_label %}<span class="tm-pomodori"><span class="tm-pomodori-dot" aria-hidden="true"></span>{{ p }}</span>{% endif %}
-                <span class="tm-time-spent">{{ task.time_spent_label }}</span>
-                {% else %}
-                <span class="tm-time-spent tm-none">none</span>
-                {% endif %}
-                <span class="tm-time-sep" aria-hidden="true">&middot;</span><button type="button" class="tm-add-link" data-tm-act="start-pomodoro">Start timer</button>
-              </dd>
-              <dt class="tm-prop-extra">Estimate</dt>
-              <dd class="tm-prop-extra" data-cell="estimate">
-                {% if let Some(e) = task.estimate_label %}<span id="modal-estimate">{{ e }}</span>{% else %}<button type="button" class="tm-add-link" data-tm-act="estimate">Add estimate</button>{% endif %}
-              </dd>
-              {% endif %}
-              {% if is_done %}{% if let Some(done) = task.completed_display %}
-              <dt>Done</dt>
-              <dd class="tm-stat tm-done">&#10003; {{ done }}</dd>
-              {% endif %}{% endif %}
-            </dl>
-            {% if !is_epic %}<div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color" hidden></div>{% endif %}
-          </div>
-        </section>
-
         <section class="tm-side-group" id="tm-group-owner">
           <h3 class="tm-side-title"><button type="button" class="tm-fold" data-fold-group="owner" aria-expanded="true" aria-controls="tm-body-owner">Owner</button></h3>
           <div class="tm-side-body" id="tm-body-owner">
-            <div class="tm-owner-row" id="modal-owner">{% if let Some(circle) = panel.owner.circle %}{% call c::circle(circle, "owner") %}{% endif %}<span class="tm-owner-name">{{ panel.owner.name }}</span></div>
-            {% if let Some(lease) = panel.owner.lease %}<p class="tm-side-note" id="modal-owner-lease">{{ lease }}</p>{% endif %}
+            <div class="tm-owner-row" id="modal-owner"><span class="tm-row-label">{% if let Some(circle) = panel.owner.circle %}{% call c::circle(circle, "owner") %}{% endif %}<span class="tm-owner-name">{{ panel.owner.name }}</span></span><span class="tm-row-values">{% if let Some(lease) = panel.owner.lease %}<span id="modal-owner-lease">{{ lease }}</span>{% endif %}{% if let Some(since) = panel.owner.owner_since %}<span class="tm-row-sub tm-owner-since">Since {{ since }}</span>{% endif %}</span></div>
             {% if let Some(fence) = panel.owner.release_fence %}<button type="button" class="tm-side-btn" data-owner-act="release" data-fence="{{ fence }}">Release</button>{% endif %}
             {% if let Some(take) = panel.owner.take %}<button type="button" class="tm-side-btn" data-owner-act="owner-take"{% if take.over %} data-over="1"{% endif %}{% if take.live_agent %} data-live-agent="1"{% endif %}>{{ take.label() }}</button>
             <details class="tm-take-menu">
@@ -332,18 +261,97 @@
           <h3 class="tm-side-title"><button type="button" class="tm-fold" data-fold-group="seats" aria-expanded="true" aria-controls="tm-body-seats">Reviewers</button></h3>
           <div class="tm-side-body" id="tm-body-seats">
             {% for seat in panel.seats %}<div class="tm-seat-row" data-seat-row="{{ seat.name }}">
-              {% if let Some(circle) = seat.circle %}{% call c::circle(circle, "seat") %}{% endif %}<span class="tm-seat-name">{{ seat.name }}</span> <span class="tm-seat-role">({{ seat.role }})</span>
-              <span class="tm-seat-state">{{ seat.state.label() }}</span>{% if let Some(revision) = seat.revision %} <code class="tm-seat-revision" title="{{ revision }}">{{ revision }}</code>{% endif %}
+              <span class="tm-row-label">{% if let Some(circle) = seat.circle %}{% call c::circle(circle, "seat") %}{% endif %}<span class="tm-seat-name">{{ seat.name }}</span> <span class="tm-seat-role">({{ seat.role }})</span></span>
+              <span class="tm-row-values"><span class="tm-seat-state">{{ seat.state.label() }}</span>{% if let Some(revision) = seat.revision %}<code class="tm-seat-revision tm-row-sub" title="{{ revision }}">at {{ revision }}</code>{% endif %}</span>
+              <span class="tm-row-actions">
               {% if let Some(take) = seat.take %}<button type="button" class="tm-side-btn" data-owner-act="seat-take" data-seat="{{ seat.name }}"{% if take.over %} data-over="1"{% endif %}{% if take.live_agent %} data-live-agent="1"{% endif %}>{{ take.label() }}</button>{% endif %}
               {% if panel.can_drop %}<button type="button" class="tm-side-btn" data-owner-act="seat-drop" data-seat="{{ seat.name }}">Drop</button>{% endif %}
-            </div>{% else %}<p class="tm-side-note">No seats</p>{% endfor %}
+              </span>
+            </div>{% endfor %}
             {% if panel.can_ask_again %}<button type="button" class="tm-side-btn" data-owner-act="ask-again">Ask again</button>{% endif %}
-            {% if role.writes() %}<div class="tm-seat-add">
-              <input type="text" id="tm-seat-name" maxlength="50" placeholder="Seat name" aria-label="Seat name" autocomplete="off">
-              <select id="tm-seat-role" aria-label="Seat role">{% for seat_role in seat_roles %}<option value="{{ seat_role }}">{{ seat_role }}</option>{% endfor %}</select>
-              <button type="button" class="tm-side-btn" data-owner-act="seat-add">Add seat</button>
-            </div>{% endif %}
+            {% if role.writes() %}<details class="tm-seat-add-menu">
+              <summary class="tm-seat-add-open" title="Add a seat" aria-label="Add a seat">+</summary>
+              <div class="tm-seat-add">
+                <input type="text" id="tm-seat-name" maxlength="50" placeholder="Seat name" aria-label="Seat name" autocomplete="off">
+                <select id="tm-seat-role" aria-label="Seat role">{% for seat_role in seat_roles %}<option value="{{ seat_role }}">{{ seat_role }}</option>{% endfor %}</select>
+                <button type="button" class="tm-side-btn" data-owner-act="seat-add">Add seat</button>
+              </div>
+            </details>{% endif %}
             <div class="tm-field-error" id="tm-seat-error" role="alert" hidden></div>
+          </div>
+        </section>
+
+        <section class="tm-side-group" id="tm-group-details">
+          <h3 class="tm-side-title"><button type="button" class="tm-fold" data-fold-group="details" aria-expanded="true" aria-controls="tm-body-details">Details</button></h3>
+          <div class="tm-side-body" id="tm-body-details">
+            <dl class="tm-props">
+              {% if !is_epic %}
+              <dt>Color</dt>
+              <dd data-cell="color">
+                <button type="button" class="tm-color-chip" data-tm-act="pick-color" style="background-color: var(--taskColorBorder);"{% if task.show_color_name %} title="{{ task.color_label }} — click to change"{% else %} title="Click to change"{% endif %}></button>
+                {% if task.show_color_name %}<span class="tm-color-name">{{ task.color_label }}</span>{% endif %}
+              </dd>
+              {% endif %}
+              <dt class="tm-prop-extra" data-row="timeline"{% if task.timeline_display.is_none() %} hidden{% endif %}>Timeline</dt>
+              <dd class="tm-prop-extra" data-row="timeline" data-cell="timeline"{% if task.timeline_display.is_none() %} hidden{% endif %} id="modal-timeline-row">
+                {% if let Some(timeline) = task.timeline_display %}
+                <button type="button" class="tm-due-chip" data-tm-act="edit-timeline" title="Edit timeline"><strong>{{ timeline }}</strong></button>
+                {% else %}
+                <button type="button" class="tm-add-link" data-tm-act="add-timeline">Add timeline</button>
+                {% endif %}
+              </dd>
+              <dt class="tm-prop-extra" data-row="members"{% if assigned_members.is_empty() && responsible_session.is_none() %} hidden{% endif %}>Members</dt>
+              <dd class="tm-prop-extra" data-row="members" data-cell="members"{% if assigned_members.is_empty() && responsible_session.is_none() %} hidden{% endif %} id="modal-members-row">
+                <div class="tm-members-chips">
+                  {% for m in assigned_members %}<span class="tm-member-disc{% if m.responsible %} tm-member-responsible{% endif %}" title="{{ m.username }}{% if m.responsible %} (Responsible){% endif %}" style="{{ m.avatar.style }}">{% if let Some(url) = m.avatar.image %}<img src="{{ url }}" alt="">{% else %}{{ m.avatar.text }}{% endif %}</span>{% endfor %}
+                  {% if let Some(name) = responsible_session %}<span class="tm-member-session tm-member-responsible" title="Responsible session: {{ name }}">{{ name }}</span>{% endif %}
+                  <button type="button" class="tm-member-add" data-tm-act="add-member" title="Add member" aria-label="Add member"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M7 0v14M0 7h14" stroke="currentColor" stroke-width="2"/></svg></button>
+                </div>
+              </dd>
+              <dt class="tm-prop-extra" data-row="labels"{% if task.labels.is_empty() %} hidden{% endif %}>Labels</dt>
+              <dd class="tm-prop-extra" data-row="labels" data-cell="labels"{% if task.labels.is_empty() %} hidden{% endif %} id="modal-labels-row">
+                <div class="tm-labels-chips">
+                  {% for l in task.labels %}<button type="button" class="tm-label-chip" data-tm-act="add-label" title="Edit labels">{{ l }}</button>{% endfor %}
+                  <button type="button" class="tm-member-add" data-tm-act="add-label" title="Add label" aria-label="Add label"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M7 0v14M0 7h14" stroke="currentColor" stroke-width="2"/></svg></button>
+                </div>
+              </dd>
+              <dt class="tm-prop-extra" data-row="due"{% if task.due_modal.is_none() %} hidden{% endif %}>Due</dt>
+              <dd class="tm-prop-extra" data-row="due" data-cell="due"{% if task.due_modal.is_none() %} hidden{% endif %} id="modal-due-row">
+                {% if let Some(due) = task.due_modal %}
+                <button type="button" class="tm-due-chip{% if task.due_state.overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
+                  <strong>{{ due|safe }}</strong>{% if let Some(column) = task.due_suffix %} <span class="tm-due-column">({{ column }})</span>{% endif %}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
+                </button>
+                <button type="button" class="tm-add-link tm-due-done-toggle" data-tm-act="due-done-toggle" data-done="{{ task.due_state.done }}">{% if task.due_state.done %}Undo done{% else %}Mark done{% endif %}</button>
+                {% else %}
+                <button type="button" class="tm-add-link" data-tm-act="add-duedate">Add due date</button>
+                {% endif %}
+              </dd>
+              {% if !is_epic %}
+              <dt class="tm-prop-extra" data-row="time"{% if task.total_minutes == 0 && task.pomodori_label.is_none() %} hidden{% endif %}>Time</dt>
+              <dd class="tm-prop-extra tm-cell" data-row="time" data-cell="time-spent"{% if task.total_minutes == 0 && task.pomodori_label.is_none() %} hidden{% endif %}>
+                {% if task.total_minutes > 0 || task.pomodori_label.is_some() %}
+                {% if let Some(p) = task.pomodori_label %}<span class="tm-pomodori"><span class="tm-pomodori-dot" aria-hidden="true"></span>{{ p }}</span>{% endif %}
+                <span class="tm-time-spent">{{ task.time_spent_label }}</span>
+                {% else %}
+                <span class="tm-time-spent tm-none">none</span>
+                {% endif %}
+                <span class="tm-time-sep" aria-hidden="true">&middot;</span><button type="button" class="tm-add-link" data-tm-act="start-pomodoro">Start timer</button>
+              </dd>
+              <dt class="tm-prop-extra" data-row="estimate"{% if task.estimate_label.is_none() %} hidden{% endif %}>Estimate</dt>
+              <dd class="tm-prop-extra" data-row="estimate" data-cell="estimate"{% if task.estimate_label.is_none() %} hidden{% endif %}>
+                {% if let Some(e) = task.estimate_label %}<span id="modal-estimate">{{ e }}</span>{% else %}<button type="button" class="tm-add-link" data-tm-act="estimate">Add estimate</button>{% endif %}
+              </dd>
+              {% endif %}
+              {% if is_done %}{% if let Some(done) = task.completed_display %}
+              <dt>Done</dt>
+              <dd class="tm-stat tm-done">&#10003; {{ done }}</dd>
+              {% endif %}{% endif %}
+            </dl>
+            {% if !is_epic %}<div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color" hidden></div>{% endif %}
+            {% if role.writes() %}<details class="tm-add-field-menu" id="tm-add-field-menu" hidden>
+              <summary>Add field</summary>
+              <div class="tm-add-field-items"></div>
+            </details>{% endif %}
           </div>
         </section>
 
@@ -400,7 +408,7 @@
         </div>
         {% endif %}
 
-        <section class="tm-side-group" id="modal-metadata-wrap">
+        <section class="tm-side-group" id="modal-metadata-wrap"{% if task.metadata_pretty.is_none() %} hidden{% endif %}>
           <h3 class="tm-side-title tm-metadata-label"><button type="button" class="tm-fold" data-fold-group="metadata" aria-expanded="true" aria-controls="tm-body-metadata">Metadata</button></h3>
           <div class="tm-side-body" id="tm-body-metadata">
             {% if let Some(metadata) = task.metadata_pretty %}

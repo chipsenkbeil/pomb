@@ -3667,6 +3667,7 @@
       showConfirmDialog('Edit metadata',
         'Agents and tools write this metadata and may depend on it. Changing it by hand can break them. Edit it only if you know what reads it.',
         'Edit', function () {
+          wrap.hidden = false;
           editor.hidden = false;
           edit.hidden = true;
           wrap.querySelector('#tm-metadata-input').focus();
@@ -4295,19 +4296,7 @@
   function fieldGroupSection(group, index) {
     var section = sideEl('section', 'tm-side-group');
     section.dataset.group = group.name;
-    if (!group.shown.length && group.empty.length) {
-      section.classList.add('tm-side-group-folded');
-      section.title = group.empty.join(', ');
-      section.appendChild(sideEl('span', 'tm-side-title', group.name ? 'Fields · ' + group.name : 'Fields'));
-      section.appendChild(sideEl('span', 'tm-empty-line', group.empty.length + ' empty'));
-      if (group.editable) {
-        var open = sideEl('button', 'tm-add-link', 'Edit');
-        open.type = 'button';
-        open.dataset.editFields = group.name;
-        section.appendChild(open);
-      }
-      return section;
-    }
+    if (!group.shown.length) return null;
     var title = sideEl('h3', 'tm-side-title');
     var fold = sideEl('button', 'tm-fold', group.name ? 'Fields · ' + group.name : 'Fields');
     fold.type = 'button';
@@ -4354,11 +4343,69 @@
   }
 
   function renderFieldGroups() {
-    var host = document.getElementById('tm-field-groups');
+    const host = document.getElementById('tm-field-groups');
     if (!host) return;
     host.textContent = '';
-    fieldGroupModel({}).forEach(function (group, index) { host.appendChild(fieldGroupSection(group, index)); });
+    const groups = fieldGroupModel({});
+    groups.forEach((group, index) => {
+      const section = fieldGroupSection(group, index);
+      if (section) host.appendChild(section);
+    });
+    renderAddFieldMenu(groups);
     applySidebarFolds();
+  }
+
+  const ADD_FIELD = Object.freeze({ ROW: 'addRow', GROUP: 'addGroup', METADATA: 'addMetadata' });
+
+  function addFieldEntries(groups) {
+    const entries = [];
+    document.querySelectorAll('#tm-body-details dd[data-row][hidden]').forEach((dd) => {
+      const term = dd.previousElementSibling;
+      entries.push({ label: term ? term.textContent : dd.dataset.row, attr: ADD_FIELD.ROW, value: dd.dataset.row });
+    });
+    groups.forEach((group) => {
+      if (group.editable && !group.shown.length) {
+        entries.push({ label: group.name ? 'Fields · ' + group.name : 'Fields', attr: ADD_FIELD.GROUP, value: group.name });
+      }
+    });
+    const metadata = document.getElementById('modal-metadata-wrap');
+    if (metadata && metadata.hidden) entries.push({ label: 'Metadata', attr: ADD_FIELD.METADATA, value: '' });
+    return entries;
+  }
+
+  function renderAddFieldMenu(groups) {
+    const menu = document.getElementById('tm-add-field-menu');
+    if (!menu) return;
+    const items = menu.querySelector('.tm-add-field-items');
+    items.textContent = '';
+    const entries = addFieldEntries(groups);
+    entries.forEach((entry) => {
+      const item = sideEl('button', 'tm-side-btn', entry.label);
+      item.type = 'button';
+      item.dataset[entry.attr] = entry.value;
+      items.appendChild(item);
+    });
+    menu.hidden = !entries.length;
+    if (!entries.length) menu.open = false;
+  }
+
+  function pickAddField(item) {
+    const menu = document.getElementById('tm-add-field-menu');
+    if (menu) menu.open = false;
+    if (item.dataset[ADD_FIELD.METADATA] !== undefined) {
+      const edit = document.querySelector('#modal-metadata-wrap [data-metadata-edit]');
+      if (edit) edit.click();
+      return;
+    }
+    if (item.dataset[ADD_FIELD.GROUP] !== undefined) {
+      openFieldEditor(item.dataset[ADD_FIELD.GROUP]);
+      return;
+    }
+    const row = item.dataset[ADD_FIELD.ROW];
+    document.querySelectorAll('#tm-body-details [data-row="' + row + '"]').forEach((cell) => { cell.hidden = false; });
+    renderAddFieldMenu(fieldGroupModel({}));
+    const control = document.querySelector('#tm-body-details dd[data-row="' + row + '"] button');
+    if (control) control.focus();
   }
 
   var sidebarFolds = null;
@@ -4518,6 +4565,8 @@
     if (!side) return;
     renderFieldGroups();
     side.addEventListener('click', function (e) {
+      const add = e.target.closest('[data-add-row], [data-add-group], [data-add-metadata]');
+      if (add) { pickAddField(add); return; }
       var edit = e.target.closest('[data-edit-fields]');
       if (edit) { openFieldEditor(edit.dataset.editFields); return; }
       if (e.target.closest('[data-edit-fields-done]')) closeFieldEditor();
@@ -6545,7 +6594,10 @@
   }
 
   function openMembersDialog(taskId) {
-    var anchor = taskAnchor(taskId, '#modal-members-row .tm-member-add');
+    let anchor = taskAnchor(taskId, '#modal-members-row .tm-member-add');
+    if (anchor && anchor.closest('[hidden]')) {
+      anchor = document.querySelector('#modal-root [data-tm-menu="tm-add-menu"]');
+    }
     initMembersDialog();
     membersBulkIds = null;
     membersDialogTaskId = taskId || null;
