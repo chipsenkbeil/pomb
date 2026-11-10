@@ -3,9 +3,10 @@ positional
 flags: --backup --cleanup --delete-branch
 Check a release on green-box, and clean up its worktrees.
 Usage: dev verify SHA [--backup FILE] [--cleanup WORKTREE...] [--delete-branch BRANCH]...
-Read-only checks against the live service over ssh, each printed as PASS or FAIL: build_sha equals the release sha, prod app.js equals the release tree's, a cross-site POST gets 403, the journal shows the schema and listening lines, public /login answers as an install should, OpenAPI servers[0].url is the public URL, and a bad Bearer token gets code token_invalid. --backup also checks that the named database copy exists on the host. Any FAIL exits non-zero and nothing else happens.
+Read-only checks against the live service over ssh, each printed as PASS or FAIL: build_sha equals the release sha, prod app.js equals the release tree's, a cross-site POST gets 403, the journal shows the schema and listening lines, public /login answers as an install should, OpenAPI servers[0].url is the public URL, and a bad Bearer token gets code token_invalid. --backup takes a file name or a path under /var/lib/pomb-backups/, and also checks that the named database copy exists on the host. Any FAIL exits non-zero and nothing else happens.
 --cleanup removes the named .dev/worktrees/* and deletes their branches when fully merged into main on the remote of record, and --delete-branch forces named branches too.
 ]]
+local backup = require("pomb.backup")
 local devos = require("dev.os")
 local forge = require("pomb.forge")
 local fs = require("dev.fs")
@@ -16,7 +17,6 @@ local stderr = io.stderr
 
 local HOST = "green-box"
 local PUBLIC_URL = "https://pomb.chip.network"
-local BACKUP_DIR = "/var/lib/pomb-backups"
 local WORKTREES = ".dev/worktrees/"
 local SHORT = 12
 local USAGE = "usage: dev verify <release-sha> [--backup <file>] [--cleanup <worktree>...]"
@@ -184,6 +184,14 @@ local function cleanup_worktree(worktree, opts)
 end
 
 local parsed = parse(ctx.args)
+local backup_path
+if parsed.backup and parsed.backup ~= "" then
+    local why
+    backup_path, why = backup.resolve(parsed.backup)
+    if not backup_path then
+        abort(why)
+    end
+end
 local repo = main_repo()
 local remote_name, why = forge.remote(repo)
 if not remote_name then
@@ -262,11 +270,10 @@ check(
     "code " .. (token_code ~= "" and token_code or "none")
 )
 
-if parsed.backup and parsed.backup ~= "" then
-    local path = BACKUP_DIR .. "/" .. parsed.backup
-    local test = { "ssh", HOST, "sudo test -s " .. devos.quote(path) }
+if backup_path then
+    local test = { "ssh", HOST, "sudo test -s " .. devos.quote(backup_path) }
     local present = devos.run(test, { stdout = "null", stderr = "null" }) == 0
-    check("backup_present", present, path)
+    check("backup_present", present, backup_path)
 end
 
 if failures > 0 then
