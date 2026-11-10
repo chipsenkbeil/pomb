@@ -24734,6 +24734,7 @@ async fn settings_submit(
         modal_folded_groups: current.modal_folded_groups,
         muted_notifications: current.muted_notifications,
         subtask_templates: current.subtask_templates,
+        spent_bookmarks: current.spent_bookmarks,
         full_name: current.full_name,
         dismissed_hints: current.dismissed_hints,
         show_tips: current.show_tips,
@@ -24834,6 +24835,12 @@ struct SettingsUpdate {
     /// and an id kept only when it names a stored template not yet kept, else regenerated. A list
     /// past 50 templates, or a template past 200 subtask names, is refused with 400.
     subtask_templates: Option<Vec<SubtaskTemplate>>,
+    /// Time spent report bookmarks. Replaces the whole list.
+    ///
+    /// Names are trimmed, and a bookmark with a blank name or a repeated name is dropped after
+    /// the first. A list past 50 bookmarks, a name past 60 characters, more than 10 filters in
+    /// one bookmark, or a filter id or value past 200 characters is refused with 400.
+    spent_bookmarks: Option<Vec<SpentBookmark>>,
     /// The name members show as, in place of the handle. Trimmed; empty means the handle. A name
     /// past 80 characters is refused with 400.
     full_name: Option<String>,
@@ -25019,6 +25026,17 @@ async fn api_update_settings(
                     seen_ids.insert(template.id.clone());
                 }
                 Some(template)
+            })
+            .collect();
+    }
+    if let Some(bookmarks) = patch.spent_bookmarks {
+        let mut seen = HashSet::new();
+        settings.spent_bookmarks = bookmarks
+            .into_iter()
+            .filter_map(|mut bookmark| {
+                bookmark.name = bookmark.name.trim().to_string();
+                (!bookmark.name.is_empty() && seen.insert(bookmark.name.clone()))
+                    .then_some(bookmark)
             })
             .collect();
     }
@@ -29801,6 +29819,7 @@ them, which the Backups section of the settings page calls after a confirmation.
             SaveSubtaskTemplateInput,
             AddSubtasksFromTemplateInput,
             SubtaskTemplate,
+            SpentBookmark,
             CreateCommentInput,
             QuestionInput,
             QuestionChoiceInput,

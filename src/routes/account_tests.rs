@@ -697,3 +697,52 @@ async fn tip_switches_should_be_stored() {
     assert!(!fx.db.settings(&fx.admin).expect("settings").show_tips);
     assert!(fx.db.instance_settings().expect("instance").disable_tips);
 }
+
+#[tokio::test]
+async fn spent_bookmarks_should_persist_and_refuse_past_the_cap() {
+    let fx = Fixture::new();
+    let filters = json!({"spent-board": "b1", "spent-period": "week"});
+    let saved = fx
+        .send(
+            "PUT",
+            "/api/settings",
+            Some(json!({"spent_bookmarks": [
+                {"name": " Weekly ", "filters": filters},
+                {"name": "Weekly", "filters": {}},
+                {"name": "  ", "filters": {}},
+            ]})),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    let expected = json!([{"name": "Weekly", "filters": filters}]);
+    assert_eq!(saved.body["spent_bookmarks"], expected);
+    let read = fx.send("GET", "/api/settings", None).await;
+    assert_eq!(read.body["spent_bookmarks"], expected);
+
+    let unrelated = fx
+        .send("PUT", "/api/settings", Some(json!({"full_name": "Ada"})))
+        .await;
+    assert_eq!(unrelated.body["spent_bookmarks"], expected);
+
+    let many: Vec<Value> = (0..51)
+        .map(|n| json!({"name": format!("b{n}"), "filters": {}}))
+        .collect();
+    let refused = fx
+        .call(
+            "PUT",
+            "/api/settings",
+            Some(json!({"spent_bookmarks": many})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    let long = fx
+        .call(
+            "PUT",
+            "/api/settings",
+            Some(json!({"spent_bookmarks": [{"name": "x".repeat(61), "filters": {}}]})),
+        )
+        .await;
+    assert_eq!(long.status, StatusCode::BAD_REQUEST, "{}", long.body);
+    let kept = fx.send("GET", "/api/settings", None).await;
+    assert_eq!(kept.body["spent_bookmarks"], expected);
+}

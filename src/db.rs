@@ -1129,7 +1129,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 84;
+pub const SCHEMA_VERSION: u64 = 85;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1220,6 +1220,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "735ee709d084a3663625557b7e7ba31e2bff2c9e72847f21a133ac4071b36fe8",
     "00c82eb31b386bf84813988f8daf4462e6d9ad3d8ded1250c8ea0a6b801c613b",
     "c4f0a082c10bab22b28d6094c470648980f407c4f5e66ac344589136f56b6856",
+    "f3d7f7aed30f557c41f67dd66ed057aa03376248d236e76e6d9b5036812be920",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -16360,8 +16361,8 @@ mod schema_fingerprint_tests {
         AgentRoleGrantRow, AgentRoleRow, Avatar, AvatarKind, BoardEventRow, BoardMemberRow,
         BoardRole, BreakActivity, DiskLimits, FieldColumn, InviteRow, LimitGroup, NotificationRow,
         OutboxRow, OwnerHolder, ParentToken, PruneSettings, PruneStatus, QuestionChoice, Quotas,
-        RateLimits, RegistrationMode, Responsible, SeatVerdict, SubtaskTemplate, TimeFormat,
-        TimerMode, WebhookEvent, WeekStart,
+        RateLimits, RegistrationMode, Responsible, SeatVerdict, SpentBookmark, SubtaskTemplate,
+        TimeFormat, TimerMode, WebhookEvent, WeekStart,
     };
     use crate::permissions::StandardKey;
 
@@ -16712,6 +16713,7 @@ mod schema_fingerprint_tests {
             shape::<AvatarKind>("AvatarKind"),
             shape::<LaneLimit>("LaneLimit"),
             shape::<Subtask>("Subtask"),
+            shape::<SpentBookmark>("SpentBookmark"),
             shape::<SubtaskTemplate>("SubtaskTemplate"),
             shape::<SwimlaneRow>("SwimlaneRow"),
             shape::<TaskAttachment>("TaskAttachment"),

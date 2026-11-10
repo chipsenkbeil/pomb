@@ -11693,20 +11693,81 @@
       qs('log-custom-end').addEventListener('change', function () { CustomRange.fieldChanged('end'); });
     }
 
-    // KF-393: Time spent filter bookmarks, kept in this browser.
+    // Time spent filter bookmarks, kept on the account.
+    const MAX_SPENT_BOOKMARKS = 50;
+    const MAX_SPENT_BOOKMARK_NAME = 60;
+    const MAX_SPENT_BOOKMARK_FILTERS = 10;
+    const MAX_SPENT_BOOKMARK_TEXT = 200;
     var SpentBookmarks = {
       key: 'pomb-spent-bookmarks',
       fields: ['spent-board', 'spent-period', 'spent-entry-type', 'spent-color', 'spent-group'],
-      read: function () {
-        try { return JSON.parse(window.localStorage.getItem(this.key) || '[]') || []; } catch (e) { return []; }
+      list: [],
+      ready: false,
+      localList() {
+        try {
+          const found = JSON.parse(window.localStorage.getItem(this.key) || '[]');
+          return Array.isArray(found) ? found : [];
+        } catch (e) { return []; }
       },
-      write: function (list) {
-        try { window.localStorage.setItem(this.key, JSON.stringify(list)); } catch (e) { toast('Could not save the bookmark.'); }
-        this.render();
+      put(list) {
+        return fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ spent_bookmarks: list }),
+        }).then((res) => {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        }).then((settings) => settings.spent_bookmarks || []);
+      },
+      write(list) {
+        if (!this.ready) return Promise.resolve();
+        return this.put(list).then((saved) => {
+          this.list = saved;
+          this.render();
+        }).catch(() => { toast('Could not save the bookmark.'); });
+      },
+      load() {
+        fetchJson('/api/settings').then((settings) => {
+          this.list = settings.spent_bookmarks || [];
+          this.ready = true;
+          this.render();
+          this.migrate();
+        }).catch(() => { toast('Could not load the bookmarks.'); });
+      },
+      migrate() {
+        const found = this.localList().filter((b) => b && typeof b.name === 'string'
+          && b.name.trim() !== '' && b.name.trim().length <= MAX_SPENT_BOOKMARK_NAME
+          && b.filters && typeof b.filters === 'object'
+          && Object.keys(b.filters).length <= MAX_SPENT_BOOKMARK_FILTERS
+          && Object.entries(b.filters).every(([k, v]) => typeof v === 'string'
+            && k.length <= MAX_SPENT_BOOKMARK_TEXT && v.length <= MAX_SPENT_BOOKMARK_TEXT));
+        const names = new Set(this.list.map((b) => b.name));
+        const merged = this.list.slice();
+        found.forEach((b) => {
+          const name = b.name.trim();
+          if (!names.has(name)) {
+            names.add(name);
+            merged.push({ name, filters: b.filters });
+          }
+        });
+        const forget = () => {
+          try { window.localStorage.removeItem(this.key); } catch (e) {}
+        };
+        if (merged.length === this.list.length) {
+          forget();
+          return;
+        }
+        if (merged.length > MAX_SPENT_BOOKMARKS) toast('Some old bookmarks were over the limit and were dropped.');
+        this.put(merged.slice(0, MAX_SPENT_BOOKMARKS)).then((saved) => {
+          this.list = saved;
+          this.render();
+          forget();
+        }).catch(() => { toast('Could not move the old bookmarks to your account.'); });
       },
       render: function () {
         var self = this;
-        var list = this.read();
+        const list = this.list;
         qs('spent-bookmarks-count').textContent = String(list.length);
         var ul = qs('spent-bookmarks-list');
         ul.innerHTML = '';
@@ -11723,7 +11784,7 @@
           del.setAttribute('aria-label', 'Delete bookmark ' + b.name);
           del.textContent = '×';
           del.addEventListener('click', function () {
-            var next = self.read();
+            const next = self.list.slice();
             next.splice(i, 1);
             self.write(next);
           });
@@ -11734,11 +11795,12 @@
       },
       save: function () {
         var input = qs('spent-bookmark-name');
+        if (!this.ready) return;
         var name = input.value.trim();
         if (!name) { input.focus(); return; }
         var filters = {};
         this.fields.forEach(function (id) { filters[id] = qs(id).value; });
-        var list = this.read();
+        const list = this.list.filter((b) => b.name !== name);
         list.push({ name: name, filters: filters });
         input.value = '';
         this.write(list);
@@ -11761,6 +11823,7 @@
           if (e.key === 'Enter') { e.preventDefault(); self.save(); }
         });
         this.render();
+        this.load();
       },
     };
 

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use chrono::{DateTime, Utc};
@@ -332,6 +332,14 @@ impl TextCap {
     pub const RESPONSIBLE_SESSION: Self = Self::chars("responsible.name", 200);
     /// The change a reviewer suggests with a seat verdict.
     pub const SEAT_REVISION: Self = Self::bytes("revision", 4 * 1024);
+    /// Most time spent bookmarks, in the account settings.
+    pub const SPENT_BOOKMARKS: Self = Self::items("spent_bookmarks", 50);
+    /// A filter id or value in a time spent bookmark.
+    pub const SPENT_BOOKMARK_FILTER: Self = Self::chars("spent_bookmarks.filters.value", 200);
+    /// Most filters in one time spent bookmark.
+    pub const SPENT_BOOKMARK_FILTERS: Self = Self::items("spent_bookmarks.filters", 10);
+    /// A time spent bookmark's name.
+    pub const SPENT_BOOKMARK_NAME: Self = Self::chars("spent_bookmarks.name", 60);
     /// Why a timer session stopped early.
     pub const STOP_REASON: Self = Self::bytes("reason", 1024);
     /// A subtask's name.
@@ -4647,6 +4655,15 @@ fn default_daily_goal() -> u32 {
     1
 }
 
+/// A time spent report filter set an account saved under a name.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct SpentBookmark {
+    /// The bookmark's name, unique within the account.
+    pub name: String,
+    /// The report's filter values by filter id, such as `spent-board` and `spent-period`.
+    pub filters: BTreeMap<String, String>,
+}
+
 /// A saved list of subtask names an account adds to a task in one step.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct SubtaskTemplate {
@@ -4713,6 +4730,9 @@ pub struct Settings {
     /// Subtask templates saved from a task's checklist, added from its Subtasks menu.
     #[serde(default)]
     pub subtask_templates: Vec<SubtaskTemplate>,
+    /// Time spent report filter sets saved under a name.
+    #[serde(default)]
+    pub spent_bookmarks: Vec<SpentBookmark>,
     /// The name members show as, in place of the handle. Empty means the handle.
     #[serde(default)]
     pub full_name: String,
@@ -4888,6 +4908,29 @@ impl Settings {
                 TextCap::FOLDED_GROUP.check(group)?;
             }
         }
+        let held_bookmarks = before.map_or(&[][..], |held| held.spent_bookmarks.as_slice());
+        if self.spent_bookmarks.len() > held_bookmarks.len() {
+            TextCap::SPENT_BOOKMARKS.check_count(&self.spent_bookmarks)?;
+        }
+        for bookmark in &self.spent_bookmarks {
+            let held = held_bookmarks
+                .iter()
+                .find(|held| held.name == bookmark.name);
+            if held.is_none() {
+                TextCap::SPENT_BOOKMARK_NAME.check(&bookmark.name)?;
+            }
+            let held_filters = held.map(|held| &held.filters);
+            if bookmark.filters.len() > held_filters.map_or(0, BTreeMap::len) {
+                TextCap::SPENT_BOOKMARK_FILTERS
+                    .check_count(&bookmark.filters.keys().collect::<Vec<_>>())?;
+            }
+            for (key, value) in &bookmark.filters {
+                if held_filters.and_then(|held| held.get(key)) != Some(value) {
+                    TextCap::SPENT_BOOKMARK_FILTER.check(key)?;
+                    TextCap::SPENT_BOOKMARK_FILTER.check(value)?;
+                }
+            }
+        }
         let held_templates = before.map_or(&[][..], |held| held.subtask_templates.as_slice());
         if self.subtask_templates.len() > held_templates.len() {
             TextCap::SUBTASK_TEMPLATES.check_count(&self.subtask_templates)?;
@@ -4964,6 +5007,7 @@ impl Default for Settings {
             modal_folded_groups: Vec::new(),
             muted_notifications: Vec::new(),
             subtask_templates: Vec::new(),
+            spent_bookmarks: Vec::new(),
             full_name: String::new(),
             dismissed_hints: Vec::new(),
             show_tips: true,
