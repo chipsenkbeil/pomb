@@ -211,9 +211,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "create_invite",
             "delete_account",
             "delete_agent_role",
-            "delete_all_notifications",
             "delete_member_account",
-            "delete_notification",
             "end_session",
             "finish_reauth",
             "get_api_token",
@@ -223,11 +221,8 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "list_accounts",
             "list_api_tokens",
             "list_invites",
-            "list_notifications",
             "list_passkeys",
             "list_sessions",
-            "mark_all_notifications_read",
-            "mark_notification_read",
             "regenerate_recovery_code",
             "register_passkey",
             "remove_passkey",
@@ -279,7 +274,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        43
+        38
     );
 }
 

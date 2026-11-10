@@ -2638,9 +2638,9 @@ async fn ownerless_credentials_should_act_as_the_owner_after_setup() {
     );
 }
 
-/// An account lists and marks only its own notifications, and only from the browser session.
+/// An account lists and marks only its own notifications, and a token sees only its own account's.
 #[tokio::test]
-async fn notifications_should_belong_to_their_account_and_the_browser_session() {
+async fn notifications_should_belong_to_their_account() {
     let fx = accounts().await;
     let board = fx
         .db
@@ -2685,10 +2685,15 @@ async fn notifications_should_belong_to_their_account_and_the_browser_session() 
     let still: Value = serde_json::from_str(&text).expect("json");
     assert_eq!(still["unread"], 1, "B's calls changed A's notification");
 
-    for (method, uri) in [(&get, list), (&post, all)] {
-        let (status, text) = send(&fx.app, Who::Token(&fx.a_token), method, uri, None).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
-        assert!(text.contains("session_required"), "{uri}: {text}");
+    for (token, count) in [(&fx.a_token, 1), (&fx.b_token, 0)] {
+        let (status, text) = send(&fx.app, Who::Token(token), &get, list, None).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let seen: Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(
+            seen["items"].as_array().map(Vec::len),
+            Some(count),
+            "{text}"
+        );
     }
 
     let (status, text) = send(&fx.app, Who::Session(&fx.a_cookie), &post, &one, None).await;
@@ -2697,9 +2702,9 @@ async fn notifications_should_belong_to_their_account_and_the_browser_session() 
     assert_eq!(marked["unread"], 0, "{text}");
 }
 
-/// An account dismisses only its own notifications, and only from the browser session.
+/// An account dismisses only its own notifications, and a token sees only its own account's.
 #[tokio::test]
-async fn dismissing_notifications_should_belong_to_their_account_and_the_browser_session() {
+async fn dismissing_notifications_should_belong_to_their_account() {
     let fx = accounts().await;
     let board = fx
         .db
@@ -2740,11 +2745,16 @@ async fn dismissing_notifications_should_belong_to_their_account_and_the_browser
         "B's calls removed A's notifications"
     );
 
-    for (uri, label) in [(one.as_str(), "one"), (list, "all")] {
-        let (status, text) = send(&fx.app, Who::Token(&fx.a_token), &delete, uri, None).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{label}: {text}");
-        assert!(text.contains("session_required"), "{label}: {text}");
+    for (uri, label, want) in [
+        (one.as_str(), "one", StatusCode::NOT_FOUND),
+        (list, "all", StatusCode::OK),
+    ] {
+        let (status, text) = send(&fx.app, Who::Token(&fx.b_token), &delete, uri, None).await;
+        assert_eq!(status, want, "{label}: {text}");
     }
+    let (_, text) = send(&fx.app, Who::Token(&fx.a_token), &get, list, None).await;
+    let kept: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(kept["items"].as_array().map(Vec::len), Some(2), "{text}");
 
     let (status, text) = send(&fx.app, Who::Session(&fx.a_cookie), &delete, &one, None).await;
     assert_eq!(status, StatusCode::OK, "{text}");

@@ -363,3 +363,65 @@ async fn muting_a_kind_should_stop_new_notifications_of_that_kind() {
     .await;
     assert_eq!(fx.notifications().len(), 2);
 }
+
+fn seeded_token(fx: &Fixture, scope: AuthScope) -> String {
+    let (record, token) = new_api_token_record(&fx.admin, "scoped", scope, None);
+    fx.db.create_api_token(&record).expect("token");
+    token
+}
+
+async fn over_bearer(fx: &Fixture, token: &str, method: &str, uri: &str) -> Reply {
+    let auth = format!("Bearer {token}");
+    call(&fx.app, method, uri, &[("authorization", &auth)], None).await
+}
+
+#[tokio::test]
+async fn a_read_token_should_list_notifications_over_bearer() {
+    let fx = Fixture::new();
+    let task = fx.followed("Moved");
+    fx.send("DELETE", &format!("/api/tasks/{task}"), None).await;
+    let read = seeded_token(&fx, AuthScope::Read);
+    let reply = over_bearer(&fx, &read, "GET", "/api/notifications").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["unread"], 1, "{}", reply.body);
+}
+
+#[tokio::test]
+async fn an_admin_token_should_mark_read_and_delete_notifications_over_bearer() {
+    let fx = Fixture::new();
+    let task = fx.followed("Doomed");
+    fx.send("DELETE", &format!("/api/tasks/{task}"), None).await;
+    let list = over_bearer(&fx, &fx.token, "GET", "/api/notifications").await;
+    let id = list.body["items"][0]["id"].as_u64().expect("id");
+    let read_uri = format!("/api/notifications/{id}/read");
+    let marked = over_bearer(&fx, &fx.token, "POST", &read_uri).await;
+    assert_eq!(marked.status, StatusCode::OK, "{}", marked.body);
+    assert_eq!(marked.body["unread"], 0, "{}", marked.body);
+    let gone = over_bearer(
+        &fx,
+        &fx.token,
+        "DELETE",
+        &format!("/api/notifications/{id}"),
+    )
+    .await;
+    assert_eq!(gone.status, StatusCode::OK, "{}", gone.body);
+    assert!(fx.notifications().is_empty());
+    let all = over_bearer(&fx, &fx.token, "DELETE", "/api/notifications").await;
+    assert_eq!(all.status, StatusCode::OK, "{}", all.body);
+}
+
+#[tokio::test]
+async fn a_read_token_should_be_denied_writes_over_bearer_with_permission_denied() {
+    let fx = Fixture::new();
+    let read = seeded_token(&fx, AuthScope::Read);
+    for (method, uri) in [
+        ("POST", "/api/notifications/read"),
+        ("POST", "/api/notifications/1/read"),
+        ("DELETE", "/api/notifications"),
+        ("DELETE", "/api/notifications/1"),
+    ] {
+        let reply = over_bearer(&fx, &read, method, uri).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{method} {uri}");
+        assert_eq!(reply.body["code"], "permission_denied", "{method} {uri}");
+    }
+}

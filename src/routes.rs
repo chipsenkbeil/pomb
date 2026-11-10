@@ -887,34 +887,29 @@ const ROUTE_ACCESS: &[(Method, &str, Rc, Wr)] = {
         (Method::POST, "/api/tasks", Rc::Account, Wr::Grows),
         (Method::GET, "/api/tasks", Rc::Account, Wr::No),
         (Method::GET, "/api/search", Rc::Account, Wr::No),
-        (
-            Method::GET,
-            "/api/notifications",
-            Rc::AccountSession,
-            Wr::No,
-        ),
+        (Method::GET, "/api/notifications", Rc::Account, Wr::No),
         (
             Method::POST,
             "/api/notifications/read",
-            Rc::AccountSession,
+            Rc::Account,
             Wr::Grows,
         ),
         (
             Method::POST,
             "/api/notifications/:id/read",
-            Rc::AccountSession,
+            Rc::Account,
             Wr::Grows,
         ),
         (
             Method::DELETE,
             "/api/notifications",
-            Rc::AccountSession,
+            Rc::Account,
             Wr::Exempt,
         ),
         (
             Method::DELETE,
             "/api/notifications/:id",
-            Rc::AccountSession,
+            Rc::Account,
             Wr::Exempt,
         ),
         (Method::GET, "/api/tasks/:id", Rc::Task, Wr::No),
@@ -28463,7 +28458,7 @@ struct UnreadView {
 /// made a member of a task. A task it is a member of or watches got a comment, moved or was
 /// deleted. A column was renamed or deleted, or a board was deleted. Only changes made with an API
 /// token notify, and the account's own changes in the browser never do. An account sees only its
-/// own notifications, and keeps its newest 500. Needs the browser session.
+/// own notifications, and keeps its newest 500. Needs `settings.read`.
 #[utoipa::path(
     get,
     path = "/api/notifications",
@@ -28473,16 +28468,14 @@ struct UnreadView {
     responses(
         (status = 200, description = "A page of notifications, newest first, with the unread count", body = NotificationPageView),
         (status = 400, description = "`invalid_request`: a `before` that is not a notification id, or a `limit` outside 1 to 100"),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 403, description = "`permission_denied`: the token lacks the settings permission the action needs"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn list_notifications(
     account: AccountDb,
-    Extension(user): Extension<AuthUser>,
     Query(pairs): Query<Vec<(String, String)>>,
 ) -> Result<Json<NotificationPageView>, AppError> {
-    require_cookie_auth(&user)?;
     let query = NotificationsQuery::from_pairs(pairs)?;
     let limit = parse_limit(
         query.limit.as_deref(),
@@ -28524,7 +28517,7 @@ async fn list_notifications(
     }))
 }
 
-/// Marks one of the signed-in account's notifications read. Needs the browser session.
+/// Marks one of the signed-in account's notifications read. Needs `settings.write`.
 #[utoipa::path(
     post,
     path = "/api/notifications/{id}/read",
@@ -28533,17 +28526,15 @@ async fn list_notifications(
     params(("id" = u64, Path, description = "Notification id")),
     responses(
         (status = 200, description = "The notification is read, and the body holds the count still unread", body = UnreadView),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
         (status = 404, description = "The account has no such notification"),
+        (status = 403, description = "`permission_denied`: the token lacks the settings permission the action needs"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn mark_notification_read(
     account: AccountDb,
-    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<UnreadView>, AppError> {
-    require_cookie_auth(&user)?;
     let unread = id
         .parse::<u64>()
         .ok()
@@ -28557,7 +28548,7 @@ async fn mark_notification_read(
     }))
 }
 
-/// Marks every notification of the signed-in account read. Needs the browser session.
+/// Marks every notification of the signed-in account read. Needs `settings.write`.
 #[utoipa::path(
     post,
     path = "/api/notifications/read",
@@ -28565,22 +28556,18 @@ async fn mark_notification_read(
     tag = "Notifications",
     responses(
         (status = 200, description = "Every notification is read, so the unread count is 0", body = UnreadView),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 403, description = "`permission_denied`: the token lacks the settings permission the action needs"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
-async fn mark_all_notifications_read(
-    account: AccountDb,
-    Extension(user): Extension<AuthUser>,
-) -> Result<Json<UnreadView>, AppError> {
-    require_cookie_auth(&user)?;
+async fn mark_all_notifications_read(account: AccountDb) -> Result<Json<UnreadView>, AppError> {
     account
         .mark_all_notifications_read()
         .map_err(AppError::from)?;
     Ok(Json(UnreadView { unread: 0 }))
 }
 
-/// Removes one of the signed-in account's notifications. Needs the browser session.
+/// Removes one of the signed-in account's notifications. Needs `settings.write`.
 #[utoipa::path(
     delete,
     path = "/api/notifications/{id}",
@@ -28589,17 +28576,15 @@ async fn mark_all_notifications_read(
     params(("id" = u64, Path, description = "Notification id")),
     responses(
         (status = 200, description = "The notification is gone, and the body holds the count still unread", body = UnreadView),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
         (status = 404, description = "The account has no such notification"),
+        (status = 403, description = "`permission_denied`: the token lacks the settings permission the action needs"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn delete_notification(
     account: AccountDb,
-    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<UnreadView>, AppError> {
-    require_cookie_auth(&user)?;
     let unread = id
         .parse::<u64>()
         .ok()
@@ -28613,7 +28598,7 @@ async fn delete_notification(
     }))
 }
 
-/// Removes every notification of the signed-in account. Needs the browser session.
+/// Removes every notification of the signed-in account. Needs `settings.write`.
 #[utoipa::path(
     delete,
     path = "/api/notifications",
@@ -28621,15 +28606,11 @@ async fn delete_notification(
     tag = "Notifications",
     responses(
         (status = 200, description = "Every notification is gone, so the unread count is 0", body = UnreadView),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 403, description = "`permission_denied`: the token lacks the settings permission the action needs"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
-async fn delete_all_notifications(
-    account: AccountDb,
-    Extension(user): Extension<AuthUser>,
-) -> Result<Json<UnreadView>, AppError> {
-    require_cookie_auth(&user)?;
+async fn delete_all_notifications(account: AccountDb) -> Result<Json<UnreadView>, AppError> {
     account.delete_all_notifications().map_err(AppError::from)?;
     Ok(Json(UnreadView { unread: 0 }))
 }
