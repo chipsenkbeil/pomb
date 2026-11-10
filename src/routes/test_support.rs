@@ -7,12 +7,13 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
-use super::server::TEST_PUBLIC_URL;
-use crate::BODY_LIMIT_BYTES;
+use super::router;
+use super::server::{TEST_PUBLIC_URL, passkey_mode, unthrottled_limits};
 use crate::api_error::ErrorCode;
-use crate::auth::{AuthChoice, AuthMode, SignIn};
+use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
 use crate::db::Db;
-use crate::models::{Actor, TaskKind};
+use crate::models::{AccountId, Actor, AuthScope, TaskKind};
+use crate::{AppState, BODY_LIMIT_BYTES};
 
 const RP_ID: &str = "pomb.test";
 const FLAG_USER_PRESENT: u8 = 0x01;
@@ -254,4 +255,87 @@ pub(crate) async fn add_passkey(
         })),
     )
     .await
+}
+
+pub(crate) struct Fixture {
+    _dir: tempfile::TempDir,
+    pub(crate) app: axum::Router,
+    pub(crate) db: Db,
+    pub(crate) admin: AccountId,
+    token: String,
+}
+
+impl Fixture {
+    pub(crate) fn new() -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fixture.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let admin = db.create_user("admin").expect("admin");
+        let (record, token) = new_api_token_record(&admin, "admin", AuthScope::Admin, None);
+        db.create_api_token(&record).expect("token");
+        let app = router(
+            AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()),
+        );
+        Self {
+            _dir: dir,
+            app,
+            db,
+            admin,
+            token,
+        }
+    }
+
+    pub(crate) fn board(&self, name: &str, columns: &[&str]) -> (String, Vec<String>) {
+        let board = self.db.create_board(&self.admin, name).expect("board");
+        self.db.create_swimlane(&board, "Lane").expect("lane");
+        let ids = columns
+            .iter()
+            .map(|column| self.db.create_column(&board, column, None).expect("column"))
+            .collect();
+        (board, ids)
+    }
+
+    pub(crate) async fn send(&self, method: &str, uri: &str, body: Option<Value>) -> Reply {
+        let bearer = format!("Bearer {}", self.token);
+        call(&self.app, method, uri, &[("authorization", &bearer)], body).await
+    }
+
+    pub(crate) async fn task(&self, column: &str, name: &str) -> String {
+        let body = json!({"column_id": column, "name": name});
+        let reply = self.send("POST", "/api/tasks", Some(body)).await;
+        assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+        reply.body["id"].as_str().expect("id").to_string()
+    }
+
+    pub(crate) async fn epic(&self, column: &str, name: &str) -> String {
+        let body = json!({"column_id": column, "name": name, "kind": "epic"});
+        let reply = self.send("POST", "/api/tasks", Some(body)).await;
+        assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+        reply.body["id"].as_str().expect("id").to_string()
+    }
+
+    pub(crate) async fn bulk(&self, board: &str, body: Value) -> Reply {
+        let uri = format!("/api/boards/{board}/tasks/bulk");
+        self.send("POST", &uri, Some(body)).await
+    }
+
+    pub(crate) async fn top_placement(&self, board: &str) {
+        let body = json!({"new_tasks_at_top": true});
+        let reply = self
+            .send("PUT", &format!("/api/boards/{board}/config"), Some(body))
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    }
+
+    pub(crate) fn cell(&self, board: &str, column: &str) -> Vec<String> {
+        let mut tasks: Vec<_> = self
+            .db
+            .board_tasks(board)
+            .expect("tasks")
+            .into_iter()
+            .filter(|task| task.column_id == column)
+            .collect();
+        tasks.sort_by(|a, b| a.position.total_cmp(&b.position));
+        tasks.into_iter().map(|task| task.name).collect()
+    }
 }
