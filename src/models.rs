@@ -784,6 +784,17 @@ pub enum LimitUnit {
     Hours,
 }
 
+impl LimitUnit {
+    /// Returns the name the unit has in JSON.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Count => "count",
+            Self::Hours => "hours",
+        }
+    }
+}
+
 /// A step of the pull model that a board column can stand in for. Blocked and Done are not
 /// stages: the board config and `is_done` name those columns.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -5990,5 +6001,20 @@ mod responsible_tests {
         assert_eq!(back, session);
         let bare = serde_json::json!({"kind": "member"});
         assert!(serde_json::from_value::<Responsible>(bare).is_err());
+    }
+}
+
+#[cfg(test)]
+mod limit_unit_tests {
+    use super::*;
+
+    #[test]
+    fn as_str_should_match_the_serde_name() {
+        for unit in [LimitUnit::Count, LimitUnit::Hours] {
+            let json = serde_json::to_value(unit).unwrap();
+            assert_eq!(json, serde_json::json!(unit.as_str()));
+        }
+        assert_eq!(LimitUnit::Count.as_str(), "count");
+        assert_eq!(LimitUnit::Hours.as_str(), "hours");
     }
 }

@@ -476,7 +476,7 @@
             data-task-count="{{ col.count }}"
             data-estimate-minutes="{{ col.estimate_minutes }}"
             data-wip-limit="{% if let Some(lim) = col.wip_limit %}{{ lim }}{% endif %}"
-            data-wip-unit="{% if col.limit_unit == LimitUnit::Hours %}hours{% else %}count{% endif %}"
+            data-wip-unit="{{ col.limit_unit.as_str() }}"
             {% if let Some(group) = col.group %}data-group-id="{{ group.id }}" data-group-limit="{{ group.limit }}"{% endif %}
             data-is-done="{% if col.is_done %}1{% else %}0{% endif %}"
             data-is-blocked="{% if col.is_blocked %}1{% else %}0{% endif %}"
