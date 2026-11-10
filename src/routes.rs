@@ -19209,13 +19209,13 @@ async fn delete_calendar_feed(
     }
 }
 
-/// A saved set of filter values for one chart report of a board.
+/// A saved set of filter values for one chart report or the history page of a board.
 #[derive(Serialize, ToSchema)]
 struct ReportBookmarkView {
     /// The bookmark's id.
     id: String,
-    /// The report it belongs to: `burndown`, `cumulative-flow`, `cycle-lead`, `throughput` or
-    /// `monte-carlo`.
+    /// The report it belongs to: `burndown`, `cumulative-flow`, `cycle-lead`, `throughput`,
+    /// `monte-carlo` or `history`.
     report: String,
     /// The name the owner gave it.
     name: String,
@@ -19256,7 +19256,7 @@ struct ReportBookmarkList {
 #[derive(Deserialize, ToSchema)]
 struct ReportBookmarkInput {
     /// The report the filters belong to: `burndown`, `cumulative-flow`, `cycle-lead`,
-    /// `throughput` or `monte-carlo`.
+    /// `throughput`, `monte-carlo` or `history`.
     report: String,
     /// The name of the bookmark, 1 to 60 characters.
     name: String,
@@ -19369,8 +19369,8 @@ async fn list_report_bookmarks(
     }))
 }
 
-/// Saves the filter values of a chart report as a bookmark of the board. A board holds at most 50
-/// bookmarks.
+/// Saves the filter values of a chart report or the history page as a bookmark of the board. A
+/// board holds at most 50 bookmarks.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/report-bookmarks",
@@ -31727,6 +31727,27 @@ mod tests {
         assert_eq!(
             json_body(response).await["bookmarks"],
             serde_json::json!([])
+        );
+    }
+
+    /// The history page keeps its filter bookmarks through the report bookmark routes.
+    #[tokio::test]
+    async fn history_report_bookmark_should_store_and_list() {
+        let fx = kf420_fixture();
+        let uri = format!("/api/boards/{}/report-bookmarks", fx.board_id);
+        let body = serde_json::json!({
+            "report": "history",
+            "name": "Ann moves",
+            "filters": {"history-event-filter": "changed", "history-user-filter": "ann"},
+        });
+        let response = fx.post_json(&uri, &body.to_string()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let saved = json_body(response).await;
+        assert_eq!(saved["report"], "history");
+        let response = fx.send("GET", &uri, "same-origin").await;
+        assert_eq!(
+            json_body(response).await["bookmarks"],
+            serde_json::json!([saved])
         );
     }
 

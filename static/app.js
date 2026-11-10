@@ -15321,73 +15321,112 @@
     var FILTER_FIELDS = ['history-event-filter', 'history-property-filter', 'history-user-filter',
       'history-period-filter', 'history-from', 'history-to', 'history-order-filter'];
 
-    var Bookmarks = {
-      key: function () { return 'pomb-history-bookmarks-' + boardId; },
-      read: function () {
-        try { return JSON.parse(window.localStorage.getItem(this.key()) || '[]') || []; } catch (e) { return []; }
+    const legacyBookmarkBodies = (raw) => {
+      let list;
+      try { list = JSON.parse(raw || '[]'); } catch (e) { return []; }
+      if (!Array.isArray(list)) return [];
+      const bodies = [];
+      list.forEach((b) => {
+        const name = b && typeof b.name === 'string' ? b.name.trim().slice(0, 60) : '';
+        if (!name) return;
+        const filters = {};
+        FILTER_FIELDS.forEach((id) => {
+          const value = b.filters && b.filters[id];
+          if (typeof value === 'string') filters[id] = value.slice(0, 200);
+        });
+        bodies.push({ report: 'history', name: name, filters: filters });
+      });
+      return bodies;
+    };
+
+    const Bookmarks = {
+      list: [],
+      legacyKey() { return 'pomb-history-bookmarks-' + boardId; },
+      post(body) {
+        return ReportTools.send('POST', ReportTools.endpoint(boardId), body);
       },
-      write: function (list) {
-        try { window.localStorage.setItem(this.key(), JSON.stringify(list)); } catch (e) { toast('Could not save the bookmark.'); }
-        this.render();
+      load() {
+        return ReportTools.send('GET', ReportTools.endpoint(boardId)).then((data) => {
+          this.list = (data.bookmarks || []).filter((b) => b.report === 'history');
+          this.render();
+        }).catch(() => { toast('Could not load the bookmarks.'); });
       },
-      render: function () {
-        var self = this;
-        var list = this.read();
+      create(body) {
+        return this.post(body).then(() => this.load())
+          .catch((err) => { toast(err.message || 'Could not save the bookmark.'); });
+      },
+      remove(id) {
+        return ReportTools.send('DELETE', ReportTools.endpoint(boardId, id)).then(() => this.load())
+          .catch((err) => { toast(err.message || 'Could not delete the bookmark.'); });
+      },
+      importLegacy() {
+        const key = this.legacyKey();
+        let pending;
+        try { pending = legacyBookmarkBodies(window.localStorage.getItem(key)); } catch (e) { return Promise.resolve(); }
+        const run = (i) => {
+          if (i === pending.length) {
+            try { window.localStorage.removeItem(key); } catch (e) {}
+            return Promise.resolve();
+          }
+          return this.post(pending[i]).then(() => {
+            try { window.localStorage.setItem(key, JSON.stringify(pending.slice(i + 1))); } catch (e) {}
+            return run(i + 1);
+          });
+        };
+        return run(0).catch(() => { toast('Could not move the old bookmarks to the board.'); });
+      },
+      render() {
+        const list = this.list;
         qs('history-bookmarks-count').textContent = String(list.length);
-        var ul = qs('history-bookmarks-list');
+        const ul = qs('history-bookmarks-list');
         ul.innerHTML = '';
-        list.forEach(function (b, i) {
-          var li = document.createElement('li');
-          var apply = document.createElement('button');
+        list.forEach((b) => {
+          const li = document.createElement('li');
+          const apply = document.createElement('button');
           apply.type = 'button';
           apply.className = 'spent-bookmark-apply';
           apply.textContent = b.name;
-          apply.addEventListener('click', function () { self.apply(b); });
-          var del = document.createElement('button');
-          del.type = 'button';
-          del.className = 'spent-bookmark-delete';
-          del.setAttribute('aria-label', 'Delete bookmark ' + b.name);
-          del.textContent = '×';
-          del.addEventListener('click', function () {
-            var next = self.read();
-            next.splice(i, 1);
-            self.write(next);
-          });
+          apply.addEventListener('click', () => this.apply(b));
           li.appendChild(apply);
-          li.appendChild(del);
+          if (b.own) {
+            const del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'spent-bookmark-delete';
+            del.setAttribute('aria-label', 'Delete bookmark ' + b.name);
+            del.textContent = '×';
+            del.addEventListener('click', () => this.remove(b.id));
+            li.appendChild(del);
+          }
           ul.appendChild(li);
         });
       },
-      save: function () {
-        var input = qs('history-bookmark-name');
-        var name = input.value.trim();
+      save() {
+        const input = qs('history-bookmark-name');
+        const name = input.value.trim();
         if (!name) { input.focus(); return; }
-        var filters = {};
-        FILTER_FIELDS.forEach(function (id) { filters[id] = qs(id).value; });
-        var list = this.read();
-        list.push({ name: name, filters: filters });
+        const filters = {};
+        FILTER_FIELDS.forEach((id) => { filters[id] = qs(id).value; });
         input.value = '';
-        this.write(list);
+        this.create({ report: 'history', name: name, filters: filters });
       },
-      apply: function (bookmark) {
-        FILTER_FIELDS.forEach(function (id) {
+      apply(bookmark) {
+        FILTER_FIELDS.forEach((id) => {
           if (bookmark.filters && id in bookmark.filters) qs(id).value = bookmark.filters[id];
         });
         syncVisibility();
         reload();
       },
-      init: function () {
-        var self = this;
-        qs('history-bookmarks-toggle').addEventListener('click', function () {
-          var body = qs('history-bookmarks-body');
+      init() {
+        qs('history-bookmarks-toggle').addEventListener('click', () => {
+          const body = qs('history-bookmarks-body');
           body.hidden = !body.hidden;
           qs('history-bookmarks-toggle').setAttribute('aria-expanded', String(!body.hidden));
         });
-        qs('history-bookmark-save').addEventListener('click', function () { self.save(); });
-        qs('history-bookmark-name').addEventListener('keydown', function (e) {
-          if (e.key === 'Enter') { e.preventDefault(); self.save(); }
+        qs('history-bookmark-save').addEventListener('click', () => this.save());
+        qs('history-bookmark-name').addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); this.save(); }
         });
-        this.render();
+        this.load().then(() => this.importLegacy()).then(() => this.load());
       },
     };
 
@@ -15407,7 +15446,10 @@
       reload();
     }
 
-    return { init: init, periodRange: periodRange, queryString: queryString };
+    return {
+      init: init, periodRange: periodRange, queryString: queryString,
+      legacyBookmarkBodies: legacyBookmarkBodies,
+    };
   })();
 
   var PrintBoard = (function () {

@@ -39,5 +39,18 @@ var dated = BoardHistoryPage.queryString({
 }, wednesday);
 check('period sends both instants', /^from=[^&]+&to=[^&]+$/.test(dated), true);
 
+const old = JSON.stringify([
+  { name: ' Ann moves ', filters: { 'history-event-filter': 'changed', 'history-user-filter': 'ann', stray: 'x', 'history-from': 3 } },
+  { name: '   ', filters: {} },
+  { name: 'No filters' },
+  { filters: { 'history-order-filter': 'oldest' } },
+]);
+check('history_bookmark_import_should_post_old_entries', BoardHistoryPage.legacyBookmarkBodies(old), [
+  { report: 'history', name: 'Ann moves', filters: { 'history-event-filter': 'changed', 'history-user-filter': 'ann' } },
+  { report: 'history', name: 'No filters', filters: {} },
+]);
+check('a broken old key imports nothing', BoardHistoryPage.legacyBookmarkBodies('{oops'), []);
+check('an old key that is not a list imports nothing', BoardHistoryPage.legacyBookmarkBodies('{"a":1}'), []);
+
 console.log('failures=' + failures);
 process.exit(failures ? 1 : 0);

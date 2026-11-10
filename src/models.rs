@@ -545,13 +545,15 @@ impl LimitGroup {
     }
 }
 
-/// The chart reports that keep bookmarks, by the last segment of their page path.
-pub const BOOKMARK_REPORTS: [&str; 5] = [
+/// The chart reports and the history page that keep bookmarks, by the last segment of their page
+/// path.
+pub const BOOKMARK_REPORTS: [&str; 6] = [
     "burndown",
     "cumulative-flow",
     "cycle-lead",
     "throughput",
     "monte-carlo",
+    "history",
 ];
 
 /// Most report bookmarks one board holds.
