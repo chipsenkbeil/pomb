@@ -34525,9 +34525,7 @@ mod tests {
             assert_eq!(status, axum::http::StatusCode::OK);
             ids.insert(name, id);
         }
-        let older = (Local::now().date_naive() - Duration::days(14))
-            .format("%Y-%m-%d")
-            .to_string();
+        let older = day_offset_date(-14);
         let set = serde_json::json!({ "grouping_date": older });
         let (status, _) = send(&fx, "PATCH", &format!("/api/tasks/{}", ids["A"]), Some(set)).await;
         assert_eq!(status, axum::http::StatusCode::OK);
@@ -34683,9 +34681,7 @@ mod tests {
         let to_todo = db.create_column(&to, "Todo", None).expect("column");
         let to_done = db.create_column(&to, "Done", None).expect("column");
         db.set_column_done(&to_done, true).expect("done column");
-        let older = (Local::now().date_naive() - Duration::days(14))
-            .format("%Y-%m-%d")
-            .to_string();
+        let older = day_offset_date(-14);
 
         // Target Done cell in board order: Y (grouped older), X (today)
         for (name, grouping) in [("X", None), ("Y", Some(older.as_str()))] {
