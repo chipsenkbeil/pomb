@@ -4838,8 +4838,8 @@ struct ColumnHead {
     description: String,
     collapsed: bool,
     wip_limit: Option<i64>,
-    /// "count" or "hours", what the WIP limit counts.
-    limit_unit: &'static str,
+    /// What the WIP limit counts, tasks or their estimated hours.
+    limit_unit: LimitUnit,
     /// The header's "used / limit" text, empty without a WIP limit.
     limit_label: String,
     count: usize,
@@ -5917,16 +5917,16 @@ fn board_template(
 
             // The warning is a *violation*, so it fires only when the used amount exceeds the
             // limit and not when it merely reaches it
-            let in_hours = col.wip_limit_in_hours();
+            let limit_unit = col.wip_limit_unit();
             let over_limit = col.wip_limit.is_some_and(|limit| {
-                if in_hours {
+                if limit_unit == LimitUnit::Hours {
                     estimate_total > limit * 60
                 } else {
                     count as i64 > limit
                 }
             });
             let limit_label = match col.wip_limit {
-                Some(limit) if in_hours => {
+                Some(limit) if limit_unit == LimitUnit::Hours => {
                     format!("{} / {limit}h", format_column_hours(estimate_total))
                 }
                 Some(limit) => format!("{count} / {limit}"),
@@ -5938,7 +5938,7 @@ fn board_template(
                 description: col.description.clone(),
                 collapsed: col.collapsed,
                 wip_limit: col.wip_limit,
-                limit_unit: if in_hours { "hours" } else { "count" },
+                limit_unit,
                 limit_label,
                 count,
                 over_limit,
@@ -30099,9 +30099,9 @@ mod tests {
     use crate::models::{
         AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
         AuthScope, BoardRole, BoardRow, BreakActivity, ColorRow, ColumnRow, EntryKind, FeedTask,
-        FieldDefRow, FieldKind, FieldOwner, HistoryKind, MAX_BOARD_FEEDS, MAX_REPORT_BOOKMARKS,
-        SECONDS_PER_DAY, Subtask, SwimlaneRow, TaskKind, TaskRow, TimeFormat, TimerMode, UserRow,
-        WebhookEvent, WebhookRow, WeekStart,
+        FieldDefRow, FieldKind, FieldOwner, HistoryKind, LimitUnit, MAX_BOARD_FEEDS,
+        MAX_REPORT_BOOKMARKS, SECONDS_PER_DAY, Subtask, SwimlaneRow, TaskKind, TaskRow, TimeFormat,
+        TimerMode, UserRow, WebhookEvent, WebhookRow, WeekStart,
     };
     use crate::{AppState, BODY_LIMIT_BYTES, auth, markdown};
 
@@ -32465,7 +32465,7 @@ mod tests {
                 description: String::new(),
                 collapsed: collapsed.contains(&i),
                 wip_limit: None,
-                limit_unit: "count",
+                limit_unit: LimitUnit::Count,
                 limit_label: String::new(),
                 count: 0,
                 over_limit: false,
@@ -36965,6 +36965,25 @@ mod tests {
         assert!(
             page.contains("swimlane-row swimlane-row--folded"),
             "the fold survives a render"
+        );
+    }
+
+    #[tokio::test]
+    async fn column_head_should_carry_the_limit_unit_as_the_enum() {
+        let (_dir, fx) = kf221_fixture();
+        fx.db
+            .set_column_config(&fx.col_wip, r#"{"wip_limit_type":"hours"}"#)
+            .expect("config");
+
+        let (status, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(
+            page.contains(r#"data-wip-unit="hours""#),
+            "the hours column renders its unit"
+        );
+        assert!(
+            page.contains(r#"data-wip-unit="count""#),
+            "the other columns still count tasks"
         );
     }
 
