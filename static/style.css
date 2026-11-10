@@ -263,6 +263,23 @@
   --board-avatar-ink: #9f6021;
   --invite-ink: #4d4d4d;
   --filter-reset-ink: #1a73e8;
+  --timer-pill-bg: #484848;
+  --timer-play-ink: #16a34a;
+  --timer-stop-red: #ff7070;
+  --timer-play-green: #4cd964;
+  --timer-panel-bg: #3e3e3e;
+  --timer-sub-ink: rgba(245, 252, 255, 0.8);
+  --timer-btn-bg: #4e4e4e;
+  --timer-input-border: #535353;
+  --timer-btn-green-hover: #50b350;
+  --timer-link-ink: #e4ecf6;
+  --timer-ink-light: #b8b8b8;
+  --timer-ink-dim: #8b8b8b;
+  --timer-sep: #4b4b4b;
+  --timer-scroll-thumb: #898989;
+  --timer-reason-hover: #717171;
+  --white-07: rgba(255, 255, 255, 0.07);
+  --white-10: rgba(255, 255, 255, 0.1);
 }
 
 * { box-sizing: border-box; }
@@ -3392,7 +3409,7 @@ textarea.tm-field-input { resize: vertical; }
   margin-right: 6px;
   padding: 0;
   border: none;
-  color: #ffffff;
+  color: var(--on-color);
   cursor: pointer;
   font-variant-numeric: tabular-nums;
   font-weight: 700;
@@ -3405,19 +3422,19 @@ textarea.tm-field-input { resize: vertical; }
   justify-content: center;
   border-radius: 50%;
   background: transparent;
-  color: #000000;
+  color: var(--kf-black);
   opacity: 0.7;
 }
-#timer-pill.timer-pill--idle:hover { background: rgba(0, 0, 0, 0.08); }
+#timer-pill.timer-pill--idle:hover { background: var(--icon-on-bg); }
 /* KF-463: golden timer/28: 145x34, 20px bold digits at x=44, the icon
    ending at x=33 and a 25px chevron disc ending 10px from the edge. */
 #timer-pill:not(.timer-pill--idle) {
   min-width: 145px;
   margin-right: 7px;
   padding: 0 10px 0 0;
-  background: #484848;
+  background: var(--timer-pill-bg);
   border-radius: 4px;
-  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.35), 0 0 3px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 0.5px 1px var(--modal-shadow-color), 0 0 3px var(--popover-shadow-color);
   font-size: 20px;
   line-height: 30px;
 }
@@ -3425,14 +3442,14 @@ textarea.tm-field-input { resize: vertical; }
   min-width: 57px;
   margin: 0 auto 0 11px;
 }
-#timer-pill:not(.timer-pill--idle):hover { background: #404040; }
-#timer-pill:focus-visible { outline: 2px solid #3b82f6; outline-offset: 1px; }
+#timer-pill:not(.timer-pill--idle):hover { background: var(--boards-btn-hover-bg); }
+#timer-pill:focus-visible { outline: 2px solid var(--blue-500); outline-offset: 1px; }
 .timer-pill-clock { display: none; }
 .timer-pill--idle .timer-pill-clock { display: block; }
 .timer-pill--idle .timer-pill-icon,
 .timer-pill--idle #timer-pill-time,
 .timer-pill--idle .timer-pill-chevron { display: none; }
-body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
+body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
 
 @keyframes timer-blink {
   0%, 49% { opacity: 1; }
@@ -3448,9 +3465,9 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   line-height: 1;
 }
 
-.timer-pill-play { color: #16a34a; }
+.timer-pill-play { color: var(--timer-play-ink); }
 
-.timer-pill-stop { color: #dc2626; }
+.timer-pill-stop { color: var(--danger); }
 
 /* KF-325: KanbanFlow's running pill shows a solid red rounded square
    (20x20, #ff7070 — measured from the GM-103 golden), not a text glyph. */
@@ -3460,7 +3477,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   height: 20px;
   margin-left: 13px;
   border-radius: 2px;
-  background: #ff7070;
+  background: var(--timer-stop-red);
   flex: none;
 }
 
@@ -3472,7 +3489,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   height: 0;
   border-top: 10px solid transparent;
   border-bottom: 9px solid transparent;
-  border-left: 16px solid #4cd964;
+  border-left: 16px solid var(--timer-play-green);
   margin-left: 17px;
   flex: none;
 }
@@ -3485,7 +3502,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   border-radius: 50%;
   opacity: 0.9;
 }
-#timer-pill:hover .timer-pill-chevron { background: rgba(255, 255, 255, 0.1); }
+#timer-pill:hover .timer-pill-chevron { background: var(--white-10); }
 .timer-pill-chevron::after {
   content: "";
   position: absolute;
@@ -3493,13 +3510,13 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   top: 6px;
   width: 8px;
   height: 8px;
-  border-right: 1.5px solid #ffffff;
-  border-bottom: 1.5px solid #ffffff;
+  border-right: 1.5px solid var(--on-color);
+  border-bottom: 1.5px solid var(--on-color);
   transform: rotate(45deg);
 }
 
 /* KF-325: KanbanFlow's running countdown reads white on the dark pill. */
-#timer-pill.running #timer-pill-time { color: #fff; }
+#timer-pill.running #timer-pill-time { color: var(--on-color); }
 
 #timer-pill.running .timer-pill-icon { animation: timer-blink 1.5s infinite; }
 
@@ -3507,30 +3524,30 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   display: block;
   width: 100%;
   margin-top: 0.25rem;
-  background: #374151;
-  color: #f3f4f6;
-  border: 1px solid #4b5563;
+  background: var(--ink-soft);
+  color: var(--divider-soft);
+  border: 1px solid var(--text-gray);
   border-radius: 6px;
   padding: 0.4rem 0.5rem;
 }
 /* KF-328: duration dropdowns live in the light timer-settings dialog. */
 .dlg-light .timer-select {
-  background: #fff;
+  background: var(--on-color);
   color: var(--ink);
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--field-border);
   color-scheme: light;
 }
 
 .timer-popup-close {
   background: none;
   border: none;
-  color: #9ca3af;
+  color: var(--ink-faint);
   cursor: pointer;
   font-size: 1.3rem;
   line-height: 1;
 }
 
-.timer-popup-close:hover { color: #fff; }
+.timer-popup-close:hover { color: var(--on-color); }
 .dlg-light .timer-popup-close:hover { color: var(--ink); }
 .dlg-light .dlg-actions .kf-btn { margin: 0; }
 
@@ -3546,10 +3563,10 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   min-height: 310px;
   display: flex;
   flex-direction: column;
-  background: #3e3e3e;
-  color: #fff;
+  background: var(--timer-panel-bg);
+  color: var(--on-color);
   border-radius: 4px;
-  box-shadow: 0 0 8px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0 8px var(--shadow-heavy);
   font-family: Arial, Helvetica, sans-serif;
   z-index: 200;
 }
@@ -3576,8 +3593,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   align-self: flex-start;
   padding: 0;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
-  color: #e6e6e6;
+  background: var(--white-10);
+  color: var(--kf-divider);
 }
 
 .timer-popup-time-label {
@@ -3585,7 +3602,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   font-size: 12px;
   font-weight: 700;
   line-height: 14px;
-  color: rgba(245, 252, 255, 0.8);
+  color: var(--timer-sub-ink);
 }
 
 .timer-clock-row {
@@ -3616,11 +3633,11 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   height: 44px;
   margin-left: 0;
   padding: 0;
-  background: #4e4e4e;
-  border: 1px solid #535353;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
+  background: var(--timer-btn-bg);
+  border: 1px solid var(--timer-input-border);
+  box-shadow: 0 0 0 1px var(--black-10);
   border-radius: 2px;
-  color: #fff;
+  color: var(--on-color);
   font-family: inherit;
   font-size: 17px;
   letter-spacing: 0.3px;
@@ -3632,8 +3649,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 #tp-stop,
 #tp-take-break { width: 104px; }
 
-.timer-btn-green { background: #49a849; }
-.timer-btn-green:hover { background: #50b350; }
+.timer-btn-green { background: var(--kf-success); }
+.timer-btn-green:hover { background: var(--timer-btn-green-hover); }
 
 /* Green ▶ on Start and the red ■ on Stop (ref 01 / ref 05). */
 .timer-btn-play {
@@ -3641,14 +3658,14 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   height: 0;
   border-top: 10px solid transparent;
   border-bottom: 10px solid transparent;
-  border-left: 17px solid #4cd964;
+  border-left: 17px solid var(--timer-play-green);
 }
 
 .timer-btn-stop {
   width: 20px;
   height: 20px;
   border-radius: 2px;
-  background: #ff7070;
+  background: var(--timer-stop-red);
 }
 
 .timer-task-row {
@@ -3659,7 +3676,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   margin: 20px 15px 0;
   padding: 0 6px;
   border-radius: 2px;
-  background: #515151;
+  background: var(--topbar-well-bg);
   font-size: 12px;
   font-weight: 700;
 }
@@ -3689,7 +3706,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   padding: 0;
   background: none;
   border: none;
-  color: #fff;
+  color: var(--on-color);
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
@@ -3701,7 +3718,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   padding: 0;
   background: none;
   border: none;
-  color: #e4ecf6;
+  color: var(--timer-link-ink);
   /* KF-529: golden timer/25 "Change task": 13.3333px, 77x16 at x 1083. */
   font-family: system-ui, Arial, Helvetica, sans-serif;
   font-size: 13.3333px;
@@ -3712,7 +3729,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   cursor: pointer;
 }
 
-.timer-task-link:hover { color: #fff; }
+.timer-task-link:hover { color: var(--on-color); }
 
 /* KF-279: the TODAY log (10-05 capture): bold "TODAY", the day total and
    pomodoro count; 44 px #4D4D4D entry boxes 4 px apart with a 10 px task
@@ -3744,7 +3761,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   margin-bottom: 4px;
   padding: 5px 24px 5px 5px;
   border-radius: 2px;
-  background: #4d4d4d;
+  background: var(--invite-ink);
   font-size: 12px;
 }
 .today-entry:last-child { margin-bottom: 0; }
@@ -3773,7 +3790,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .today-when {
   margin-top: 2px;
   line-height: 16px;
-  color: #dddddd;
+  color: var(--kf-rule-soft);
   white-space: nowrap;
 }
 
@@ -3790,12 +3807,12 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 
   background: none;
   border: none;
-  color: #b8b8b8;
+  color: var(--timer-ink-light);
   fill: currentColor;
   cursor: pointer;
 }
 
-.today-kebab:hover { color: #fff; }
+.today-kebab:hover { color: var(--on-color); }
 
 .today-more {
   display: flex;
@@ -3804,7 +3821,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   padding: 0;
   background: none;
   border: none;
-  color: #8b8b8b;
+  color: var(--timer-ink-dim);
   fill: currentColor;
   cursor: pointer;
 }
@@ -3814,7 +3831,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .timer-popup-foot {
   display: flex;
   height: 51px;
-  background: #2e2e2e;
+  background: var(--key-badge-bg);
 }
 
 .timer-foot-btn {
@@ -3827,7 +3844,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   padding: 10px 0 0;
   background: none;
   border: none;
-  color: #fff;
+  color: var(--on-color);
   cursor: pointer;
   font-family: inherit;
   font-size: 12px;
@@ -3835,8 +3852,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 
 
 .timer-foot-ico { display: block; }
-.timer-foot-btn span { font-size: 10px; line-height: 10px; color: #dddddd; }
-.timer-foot-btn:hover, .timer-foot-btn:hover span { color: #fff; }
+.timer-foot-btn span { font-size: 10px; line-height: 10px; color: var(--kf-rule-soft); }
+.timer-foot-btn:hover, .timer-foot-btn:hover span { color: var(--on-color); }
 
 /* KF-001: "Select task" mode pill, centered over the board-header row. */
 .timer-select-pill {
@@ -3849,10 +3866,10 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   gap: 12px;
   height: 44px;
   padding: 0 14px 0 20px;
-  background: #fff;
+  background: var(--on-color);
   border-radius: 4px;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.3);
-  color: #333;
+  box-shadow: 0 1px 6px var(--shadow-heavy);
+  color: var(--text-charcoal);
   font-family: Arial, Helvetica, sans-serif;
   font-size: 20px;
   z-index: 210;
@@ -3864,7 +3881,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   padding: 0;
   background: none;
   border: none;
-  color: #555;
+  color: var(--text-medium);
   font-size: 24px;
   line-height: 1;
   cursor: pointer;
@@ -3882,11 +3899,11 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   max-height: min(490px, calc(100vh - 50px));
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: #898989 transparent;
-  background: #3e3e3e;
-  color: #ffffff;
+  scrollbar-color: var(--timer-scroll-thumb) transparent;
+  background: var(--timer-panel-bg);
+  color: var(--on-color);
   border-radius: 2px;
-  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 1px 8px var(--modal-shadow-color);
   font-family: Arial, Helvetica, sans-serif;
   z-index: 210;
 }
@@ -3908,7 +3925,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   padding: 0;
   border: none;
   background: none;
-  color: #ffffff;
+  color: var(--on-color);
   cursor: pointer;
 }
 
@@ -3920,8 +3937,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   text-align: left;
   background: none;
   border: none;
-  border-bottom: 1px solid #4b4b4b;
-  color: #ffffff;
+  border-bottom: 1px solid var(--timer-sep);
+  color: var(--on-color);
   cursor: pointer;
   font-family: inherit;
   font-size: 16px;
@@ -3929,27 +3946,27 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   padding: 0 0 0 16px;
 }
 
-.why-stop-reasons button:hover { background: #717171; }
-.why-stop-reasons button.why-add { color: #93c5fd; }
+.why-stop-reasons button:hover { background: var(--timer-reason-hover); }
+.why-stop-reasons button.why-add { color: var(--topbar-focus-ring); }
 
 .why-stop-add {
   display: flex;
   gap: 0.5rem;
   padding: 0.7rem 1rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid var(--topbar-ghost-hover-bg);
 }
 
 .why-stop-input {
   flex: 1;
-  background: #111827;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--ink-strong);
+  border: 1px solid var(--white-15);
   border-radius: 6px;
-  color: #f3f4f6;
+  color: var(--divider-soft);
   font-size: 0.9rem;
   padding: 0.45rem 0.6rem;
 }
 
-.why-stop-input::placeholder { color: #9ca3af; }
+.why-stop-input::placeholder { color: var(--ink-faint); }
 
 .why-task-done {
   display: block;
@@ -3957,18 +3974,18 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   text-align: left;
   background: none;
   border: none;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  color: #86efac;
+  border-top: 1px solid var(--topbar-ghost-hover-bg);
+  color: var(--entry-badge-b-ink);
   cursor: pointer;
   font-size: 0.92rem;
   font-weight: 600;
   padding: 0.7rem 1rem;
 }
 
-.why-task-done:hover { background: rgba(255, 255, 255, 0.07); }
+.why-task-done:hover { background: var(--white-07); }
 
 /* "Task done" is the final why-stop menu item (KF-011) */
-.why-stop-reasons button.why-done { color: #86efac; font-weight: 600; }
+.why-stop-reasons button.why-done { color: var(--entry-badge-b-ink); font-weight: 600; }
 
 /* ---------- toast ---------- */
 
@@ -3977,11 +3994,11 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   bottom: 1.5rem;
   left: 50%;
   transform: translateX(-50%);
-  background: #1f2937;
-  color: #f3f4f6;
+  background: var(--ink);
+  color: var(--divider-soft);
   border-radius: 8px;
   padding: 0.7rem 1.1rem;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 8px 24px var(--modal-shadow-color);
   z-index: 300;
   font-size: 0.9rem;
 }
