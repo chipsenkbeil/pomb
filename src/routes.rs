@@ -11796,7 +11796,7 @@ struct RestoredTask {
         (status = 401, description = "Missing or invalid credentials"),
         (status = 403, description = "`card_locked`: the task carries a locking label"),
         (status = 404, description = "No such task in the recycle bin"),
-        (status = 409, description = "The task waited longer than 30 days in the bin, or `wip_limit_reached`: the column it returns to or that column's limit group is at its WIP limit and `force` is not true"),
+        (status = 409, description = "The task waited longer than 30 days in the bin, or `wip_limit_reached`: the column it returns to or that column's limit group is at its WIP limit and `force` is not true, or `quota_exceeded`: the board holds its most tasks"),
         (status = 422, description = "`column_rule`: the task's old column is gone and it breaks the entry rule of the board's first column"),
     ),
 )]

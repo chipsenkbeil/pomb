@@ -427,6 +427,74 @@ async fn quota_should_refuse_tasks_over_limit_including_a_move_into_a_full_board
 }
 
 #[tokio::test]
+async fn restoring_a_task_onto_a_board_at_its_task_quota_should_answer_quota_exceeded_and_keep_it_in_the_bin()
+ {
+    const LIMIT: u32 = 2;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        tasks_per_board: LIMIT,
+        ..Quotas::default()
+    })
+    .await;
+    let (board, column) = fx.board(&fx.member, "Full");
+    let mut ids = Vec::new();
+    for n in 0..LIMIT {
+        let made = fx
+            .member(
+                "POST",
+                "/api/tasks",
+                Some(new_task(&column, &format!("Task {n}"))),
+            )
+            .await;
+        assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+        ids.push(made.body["id"].as_str().expect("id").to_string());
+    }
+    let deleted = fx
+        .member("DELETE", &format!("/api/tasks/{}", ids[0]), None)
+        .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+    let refill = fx
+        .member("POST", "/api/tasks", Some(new_task(&column, "Refill")))
+        .await;
+    assert_eq!(refill.status, StatusCode::CREATED, "{}", refill.body);
+
+    let refused = fx
+        .member("POST", &format!("/api/bin/{}/restore", ids[0]), None)
+        .await;
+    assert_quota(&refused, Quota::TasksPerBoard, LIMIT);
+    assert_eq!(fx.db.binned_tasks(&board).expect("bin").len(), 1);
+    assert_eq!(
+        fx.db.board_tasks(&board).expect("tasks").len(),
+        LIMIT as usize
+    );
+}
+
+#[tokio::test]
+async fn restoring_a_task_onto_a_board_with_room_should_succeed() {
+    const LIMIT: u32 = 2;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        tasks_per_board: LIMIT,
+        ..Quotas::default()
+    })
+    .await;
+    let (board, column) = fx.board(&fx.member, "Room");
+    let made = fx
+        .member("POST", "/api/tasks", Some(new_task(&column, "Task")))
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let id = made.body["id"].as_str().expect("id").to_string();
+    let deleted = fx.member("DELETE", &format!("/api/tasks/{id}"), None).await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+
+    let restored = fx
+        .member("POST", &format!("/api/bin/{id}/restore"), None)
+        .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.body);
+    assert!(fx.db.binned_tasks(&board).expect("bin").is_empty());
+}
+
+#[tokio::test]
 async fn quota_should_refuse_comments_over_limit() {
     const LIMIT: u32 = 2;
     let fx = Fixture::multi();

@@ -8,11 +8,12 @@ use super::{
     BIN, BIN_BY_BOARD, BOARDS, COLUMNS, COLUMNS_BY_BOARD, Commit, Db, DbResult, ENTRIES_BY_TASK,
     SETTINGS, SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
     WipCheck, index_in, mmap_insert, mmap_remove, push_column_event, push_event, read_in, read_one,
-    task_owner_in, txn_board_accounts, txn_clear_timer_if, txn_mmap_get, txn_read_one,
-    txn_task_bytes, txn_wip_refusal, unlink_deleted_tasks, write_one,
+    task_owner_in, txn_board_accounts, txn_board_task_count, txn_clear_timer_if, txn_mmap_get,
+    txn_read_one, txn_refuse_board_over_quota, txn_task_bytes, txn_wip_refusal,
+    unlink_deleted_tasks, write_one,
 };
 use crate::models::{
-    Actor, BIN_PERMANENT_DELETE_KEY, BinRow, BoardRow, ColorRow, ColumnRow, HistoryKind,
+    Actor, BIN_PERMANENT_DELETE_KEY, BinRow, BoardRow, ColorRow, ColumnRow, HistoryKind, Quota,
     SECONDS_PER_DAY, SwimlaneRow, TaskAttachment, TaskRow,
 };
 
@@ -290,6 +291,8 @@ impl Db {
                 None => return Ok(RestoreOutcome::NotFound),
             },
         };
+        let held = txn_board_task_count(&txn, &row.board_id)?;
+        txn_refuse_board_over_quota(&txn, &row.board_id, Quota::TasksPerBoard, held + 1)?;
         if wip == WipCheck::Enforce
             && let Some(refusal) = txn_wip_refusal(&txn, &row.task, &column, None)?
         {
