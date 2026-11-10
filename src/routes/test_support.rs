@@ -60,7 +60,7 @@ impl SoftAuthenticator {
     }
 
     fn cose_key(&self) -> Vec<u8> {
-        let point = self.key.verifying_key().to_encoded_point(false);
+        let point = self.key.verifying_key().to_sec1_point(false);
         let mut key = vec![0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20];
         key.extend_from_slice(point.x().expect("x"));
         key.extend_from_slice(&[0x22, 0x58, 0x20]);
