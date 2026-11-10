@@ -37,17 +37,43 @@ local function release_fixture()
     return dir, work
 end
 
+local function write_stubs(dir)
+    local bin = dir .. "/bin"
+    assert(fs.mkdir(bin, { parents = true }))
+    assert(fs.write(bin .. "/ssh", "#!/bin/sh\necho ran >>'" .. dir .. "/ssh.log'\n"))
+    assert(fs.write(
+        bin .. "/curl",
+        "#!/bin/sh\necho \"$@\" >>'" .. dir .. "/curl.log'\nprintf 'HTTP/2 200\\r\\n\\r\\n'\n"
+    ))
+    assert(devos.run({ "chmod", "755", bin .. "/ssh", bin .. "/curl" }) == 0)
+    return bin
+end
+
 local function verify_with_fake_ssh(args)
     local dir = assert(fs.realpath(testenv.tempdir()))
-    assert(fs.mkdir(dir .. "/bin", { parents = true }))
-    assert(fs.write(dir .. "/bin/ssh", "#!/bin/sh\necho ran >>'" .. dir .. "/ssh.log'\n"))
-    assert(devos.run({ "chmod", "755", dir .. "/bin/ssh" }) == 0)
+    local bin = write_stubs(dir)
     local _, code, err = testenv.verb(ROOT, args, {
-        env = { PATH = dir .. "/bin:" .. os.getenv("PATH") },
+        env = { PATH = bin .. ":" .. os.getenv("PATH") },
     })
     local ssh = fs.read(dir .. "/ssh.log")
     fs.remove(dir, { recursive = true })
     return code, err, ssh
+end
+
+local function verify_on_release_fixture()
+    local dir, work = release_fixture()
+    local bin = write_stubs(dir)
+    local both = dir .. "/both.txt"
+    local code = devos.run({ "dev", "verify", "HEAD" }, {
+        cwd = work,
+        env = { PATH = bin .. ":" .. os.getenv("PATH") },
+        stdout = both,
+        stderr = "stdout",
+    })
+    local text = assert(fs.read(both))
+    local curl = fs.read(dir .. "/curl.log")
+    fs.remove(dir, { recursive = true })
+    return code, text, curl
 end
 
 t.test("backup resolves a bare file name under the backup directory", function()
@@ -95,21 +121,14 @@ t.test("bare_backup_usage refuses a --backup with no value before any ssh check"
     end
 end)
 
+t.test("verify_login_probe_should_use_the_curl_on_path", function()
+    local code, text, curl = verify_on_release_fixture()
+    t.eq(code, 1)
+    t.ok(curl ~= nil and curl:find("https://pomb.chip.network/login", 1, true) ~= nil, text)
+end)
+
 t.test("verify_summary_should_follow_every_check_line_in_one_file", function()
-    local dir, work = release_fixture()
-    local bin = dir .. "/bin"
-    assert(fs.mkdir(bin))
-    assert(fs.write(bin .. "/ssh", "#!/bin/sh\necho ran >>'" .. dir .. "/ssh.log'\n"))
-    assert(devos.run({ "chmod", "755", bin .. "/ssh" }) == 0)
-    local both = dir .. "/both.txt"
-    local code = devos.run({ "dev", "verify", "HEAD" }, {
-        cwd = work,
-        env = { PATH = bin .. ":" .. os.getenv("PATH") },
-        stdout = both,
-        stderr = "stdout",
-    })
-    local text = assert(fs.read(both))
-    fs.remove(dir, { recursive = true })
+    local code, text = verify_on_release_fixture()
     local lines = {}
     for line in text:gmatch("[^\n]+") do
         lines[#lines + 1] = line
