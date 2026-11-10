@@ -291,6 +291,15 @@
   --info-note-border: #bcd7f5;
   --amber-600: #d97706;
   --error-ink: #b42318;
+  --add-green-hover: #2fa43e;
+  --add-green: #3dc54e;
+  --drag-helper-border: rgba(0, 0, 0, 0.25);
+  --drag-group-bg: rgba(60, 60, 60, 0.85);
+  --drag-helper-bg: rgba(255, 255, 255, 0.75);
+  --rule-aa: #aaaaaa;
+  --rule-d3: #d3d3d3;
+  --rule-d8: #d8d8d8;
+  --rule-e0: #e0e0e0;
 }
 
 * { box-sizing: border-box; }
@@ -834,7 +843,7 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
      (.board-table-wrap) carries the 10px insets so the legend stays
      full-bleed (KF-212). */
   padding: 0;
-  background: #f2f2f2;
+  background: var(--kf-hover-bg);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -859,13 +868,13 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
 .board-scroll::-webkit-scrollbar {
   width: 10px;
   height: 10px;
-  background-color: #eeeeee;
+  background-color: var(--hover-light);
 }
 .board-scroll::-webkit-scrollbar-thumb {
-  background-color: #bbbbbb;
-  box-shadow: rgba(255, 255, 255, 0.5) 0 0 1px;
+  background-color: var(--bar-border);
+  box-shadow: var(--white-50) 0 0 1px;
 }
-.board-scroll::-webkit-scrollbar-corner { background-color: #dddddd; }
+.board-scroll::-webkit-scrollbar-corner { background-color: var(--kf-rule-soft); }
 body.dark .board-scroll::-webkit-scrollbar { background-color: #555555; }
 body.dark .board-scroll::-webkit-scrollbar-thumb { background-color: #777777; }
 body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
@@ -879,7 +888,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   flex-direction: column;
   /* KF-212: edge-to-edge — no horizontal inset (KanbanFlow parity). */
   padding: 0;
-  background: #f2f2f2;
+  background: var(--kf-hover-bg);
 }
 
 /* KF-249: segment row — 23px = 1px per-segment top edge + 22px fills. */
@@ -904,7 +913,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
      the legend names Arial first. fontconfig maps it to Liberation Sans
      (Arial-metric-compatible) here. */
   font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
-  color: #222222;
+  color: var(--text-dark);
   white-space: nowrap;
   overflow: hidden;
 }
@@ -949,7 +958,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
      crossings (#cdcdcd on the frame top, #d3d3d3 on the rule under the
      header): plain borders blend the bottom crossing wrong, and
      pseudo-elements cost the header text its subpixel antialiasing. */
-  border-top: 1px solid #c3c3c3;
+  border-top: 1px solid var(--rule-c3);
   border-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAJ0lEQVQI1y3BoQEAMAwCwc/+s6EisgYKS03vRlKTAMDdlW92t7YBeGWIEBfY/8NBAAAAAElFTkSuQmCC") 1 / 1px 0 0 0 / 0 stretch;
 }
 
@@ -967,9 +976,9 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
 .corner-cell {
   width: var(--lane-column-width);
   border: none;
-  background: #fff;
+  background: var(--surface-white);
   /* KF-445: the header rule runs under the corner cell too. */
-  box-shadow: 0 1px 0 #c3c3c3;
+  box-shadow: 0 1px 0 var(--rule-c3);
 }
 
 /* KF-049: flat light-gray header, not a white card (KanbanFlow parity). */
@@ -979,12 +988,12 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   position: relative;
   min-width: 220px;
   /* KF-311: #eeeeee, KanbanFlow's computed header background. */
-  background: #eeeeee;
+  background: var(--hover-light);
   border: none;
   /* KF-182: vertical separators between columns (KanbanFlow parity).
      KF-358: #d7d7d7 on each column's left edge, pixel-measured on the
      09-30 capture (separators at x 390/770/1149/1529 at 1919 wide). */
-  border-left: 1px solid #d7d7d7;
+  border-left: 1px solid var(--rule-d7);
   border-radius: 0;
   /* KF-311: KanbanFlow left-aligns the name 11px in from the column's left
      edge; the "+" is out of flow at the right. */
@@ -1013,7 +1022,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   font-weight: 700;
   font-size: 15px;
   line-height: 22.5px;
-  color: #111111;
+  color: var(--ink-print);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1022,7 +1031,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
 .columnHeader-watch {
   flex: none;
   margin-left: 4px;
-  color: #555555;
+  color: var(--kf-ink-muted);
 }
 
 /* KF-514: a long name ellipsizes at least 4px short of the sum badge. */
@@ -1037,7 +1046,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   top: 1px;
   flex: 0 0 auto;
   font-size: 12px;
-  color: #666666;
+  color: var(--text-mid);
   font-weight: 700;
   margin-left: 8px;
   white-space: nowrap;
@@ -1083,11 +1092,11 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   flex: 0 0 auto;
   margin-left: auto;
   padding: 0 8px;
-  border-right: 1px solid #d7d7d7;
+  border-right: 1px solid var(--rule-d7);
   font-size: 12px;
   font-weight: 700;
   line-height: 15px;
-  color: #666666;
+  color: var(--text-mid);
   white-space: nowrap;
   pointer-events: none;
 }
@@ -1105,9 +1114,9 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   width: 34px;
   height: 34px;
   border: none;
-  background: transparent;
+  background: var(--clear);
   border-radius: 50%;
-  color: #3DC54E;
+  color: var(--add-green);
   cursor: pointer;
   padding: 0;
   display: flex;
@@ -1117,7 +1126,7 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
 .columnHeader-add svg { display: block; }
 
 
-.columnHeader-add:hover { background: transparent; border-color: #3DC54E; color: #3DC54E; }
+.columnHeader-add:hover { background: var(--clear); border-color: var(--add-green); color: var(--add-green); }
 
 /* WIP limit exceeded (KF-034, KF-035): darkred count + red warning line.
    The header background stays unchanged — no amber wash. */
@@ -1145,10 +1154,10 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
      on that row beside the line. */
   height: 27px;
   margin-top: 1px;
-  border-bottom: 1px solid #d7d7d7;
-  background: #f3f3f3;
-  box-shadow: 0 -1px 0 #f3f3f3;
-  color: #8b0000;
+  border-bottom: 1px solid var(--rule-d7);
+  background: var(--hover-faint);
+  box-shadow: 0 -1px 0 var(--hover-faint);
+  color: var(--kf-darkred);
   font-size: 10px;
   font-weight: 700;
   line-height: 30px;
@@ -1188,7 +1197,7 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   right: 6px;
   bottom: -1px;
   height: 3px;
-  background: #ff8080;
+  background: var(--board-warningLineColor);
 }
 
 /* KF-223: collapsed column strip (KanbanFlow parity, 09-30 captures): a
@@ -1226,7 +1235,7 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   pointer-events: none;
   font-size: 12px;
   font-weight: 700;
-  color: #111111;
+  color: var(--ink-print);
 }
 
 .columnHeader--collapsed .columnHeader-countBadge--over {
@@ -1280,7 +1289,7 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   font-weight: 700;
   letter-spacing: 1px;
   line-height: 20px;
-  color: #555555;
+  color: var(--kf-ink-muted);
   pointer-events: none;
 }
 
@@ -1288,20 +1297,20 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   position: relative;
   width: var(--lane-column-width);
   border: none;
-  border-top: 1px solid #c3c3c3;
-  border-right: 1px solid #d7d7d7;
-  background: #eeeeee;
+  border-top: 1px solid var(--rule-c3);
+  border-right: 1px solid var(--rule-d7);
+  background: var(--hover-light);
   text-align: left;
   vertical-align: top;
   padding: 8px 10px 22px;
   font-size: 14px;
-  color: #222222;
+  color: var(--text-dark);
 }
 
 .swimlane-name {
   font-size: 14px;
   font-weight: 700;
-  color: #222222;
+  color: var(--text-dark);
   overflow-wrap: anywhere;
   cursor: pointer;
 }
@@ -1312,8 +1321,8 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   height: 13px;
   margin-left: 5px;
   border-radius: 50%;
-  background: #888888;
-  color: #ffffff;
+  background: var(--text-dim);
+  color: var(--surface-white);
   font-size: 10px;
   font-style: italic;
   font-weight: 700;
@@ -1342,15 +1351,15 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   width: 22px;
   height: 7px;
   margin-left: -11px;
-  border-top: 1px solid #aaaaaa;
-  border-bottom: 1px solid #aaaaaa;
+  border-top: 1px solid var(--rule-aa);
+  border-bottom: 1px solid var(--rule-aa);
   cursor: ns-resize;
 }
 .swimlane-grip::before {
   content: "";
   position: absolute;
   inset: 2px 0;
-  border-top: 1px solid #aaaaaa;
+  border-top: 1px solid var(--rule-aa);
 }
 
 .swimlane-expand {
@@ -1361,8 +1370,8 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   height: 28px;
   padding: 0;
   border: none;
-  background: transparent;
-  color: #444444;
+  background: var(--clear);
+  color: var(--text-strong);
   cursor: pointer;
 }
 
@@ -1372,8 +1381,8 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   height: 100%;
   padding: 0;
   border: none;
-  background: transparent;
-  color: #222222;
+  background: var(--clear);
+  color: var(--text-dark);
   font-size: 22px;
   font-weight: 700;
   line-height: 1;
@@ -1386,13 +1395,13 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   justify-content: space-between;
   height: 28px;
   padding: 0 6px 0 8px;
-  background: #f3f3f3;
-  border-bottom: 1px solid #e4e4e4;
+  background: var(--hover-faint);
+  border-bottom: 1px solid var(--scroll-track);
 }
 .lane-cellCount {
   font-size: 11px;
   font-weight: 700;
-  color: #555555;
+  color: var(--kf-ink-muted);
 }
 .lane-cellCount--over {
   color: var(--board-headerWarningTextColor);
@@ -1409,11 +1418,11 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   height: 24px;
   padding: 0;
   border: none;
-  background: transparent;
-  color: #3DC54E;
+  background: var(--clear);
+  color: var(--add-green);
   cursor: pointer;
 }
-.lane-cellAdd:hover { color: #2fa43e; }
+.lane-cellAdd:hover { color: var(--add-green-hover); }
 .board-cell--collapsed .lane-cellHead { display: none; }
 
 .board-table tbody tr.swimlane-row:not(:only-child) > .board-cell {
@@ -1443,13 +1452,13 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
 .swimlane-filler-label {
   width: var(--lane-column-width);
   padding: 0;
-  border-right: 1px solid #d7d7d7;
-  background: #eeeeee;
+  border-right: 1px solid var(--rule-d7);
+  background: var(--hover-light);
 }
 .swimlane-filler-cell {
   position: relative;
   padding: 0;
-  border-left: 1px solid #e4e4e4;
+  border-left: 1px solid var(--scroll-track);
 }
 .swimlane-filler-cell::after {
   content: "";
@@ -1458,7 +1467,7 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupB
   bottom: -1px;
   width: 1px;
   height: 1px;
-  background: #d3d3d3;
+  background: var(--rule-d3);
   pointer-events: none;
 }
 body.dark .swimlane-filler-label { background: #3e3e3e; border-right-color: #2b2b2b; }
@@ -1478,10 +1487,10 @@ body.dark .swimlane-filler-cell::after { background: #262626; }
   flex: 1 0 auto;
   min-width: min-content;
   margin: 0 10px 9px;
-  border: 1px solid #c3c3c3;
+  border: 1px solid var(--rule-c3);
   /* The sticky header row (and any folded strip) draws the top edge. */
   border-top: none;
-  background: #fff;
+  background: var(--surface-white);
 }
 
 .board-table-wrap .board-table {
@@ -1498,12 +1507,12 @@ body.dark .swimlane-filler-cell::after { background: #262626; }
 .board-table-wrap > .board-table:last-child { margin-right: -1px; }
 .board-table-wrap > .board-table:first-child #column-headers-row > :first-child,
 .board-table-wrap > .board-table:first-child tbody tr > :first-child {
-  border-left: 1px solid transparent;
+  border-left: 1px solid var(--clear);
   background-clip: padding-box;
 }
 .board-table-wrap > .board-table:last-child #column-headers-row > :last-child,
 .board-table-wrap > .board-table:last-child tbody tr > :last-child {
-  border-right: 1px solid transparent;
+  border-right: 1px solid var(--clear);
   background-clip: padding-box;
 }
 
@@ -1512,12 +1521,12 @@ body.dark .swimlane-filler-cell::after { background: #262626; }
    KF-355: KanbanFlow's column bodies are pure white (pixel-measured
    #ffffff 2026-10-12), not #f7f8fa. */
 .board-cell {
-  background: #ffffff;
+  background: var(--surface-white);
   /* KF-358: #c3c3c3 rule under the header row and #e4e4e4 column
      separators; the frame draws the outer edges. */
   border: none;
-  border-top: 1px solid #c3c3c3;
-  border-left: 1px solid #e4e4e4;
+  border-top: 1px solid var(--rule-c3);
+  border-left: 1px solid var(--scroll-track);
   border-radius: 0;
   padding: 0;
   vertical-align: top;
@@ -1536,18 +1545,18 @@ body.dark .swimlane-filler-cell::after { background: #262626; }
   left: -1px;
   width: 1px;
   height: 1px;
-  background: #d3d3d3;
+  background: var(--rule-d3);
   pointer-events: none;
 }
 .board-cell:not(:first-child)::before { top: -1px; }
 .board-table tbody tr:last-child > .board-cell:not(:first-child)::after { bottom: -1px; }
 
-.board-cell--collapsed { background: #fff; padding: 0; cursor: pointer; }
+.board-cell--collapsed { background: var(--surface-white); padding: 0; cursor: pointer; }
 .board-cell--collapsed .task-list { display: none; }
 
 /* KF-457: an overflowing column shows KanbanFlow's 7px scrollbar. */
 .task-list::-webkit-scrollbar { width: 7px; }
-.task-list::-webkit-scrollbar-thumb { background-color: #bbbbbb; }
+.task-list::-webkit-scrollbar-thumb { background-color: var(--bar-border); }
 body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 
 /* KF-363: KanbanFlow's cards sit 8px in from the column edges and 8px
@@ -1572,7 +1581,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   padding: 4px 0;
   background: none;
   border: none;
-  color: #2096c8;
+  color: var(--kf-link);
   font-size: 12px;
   cursor: pointer;
 }
@@ -1583,8 +1592,8 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 .done-group-label {
   margin: 0 1px 2px;
   padding: 0 1px 2px;
-  border-bottom: 1px solid #d8d8d8;
-  color: #888888;
+  border-bottom: 1px solid var(--rule-d8);
+  color: var(--text-dim);
   font-size: 12px;
   font-weight: 700;
   line-height: 18px;
@@ -1598,21 +1607,21 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   max-width: 240px;
   padding: 6px 12px;
   overflow: hidden;
-  border: 1px solid rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--drag-helper-border);
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.75);
-  color: #222222;
+  background: var(--drag-helper-bg);
+  color: var(--text-dark);
   font-size: 13px;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.drag-helper--group { background: rgba(60, 60, 60, 0.85); color: #ffffff; font-weight: 700; }
+.drag-helper--group { background: var(--drag-group-bg); color: var(--surface-white); font-weight: 700; }
 
 /* SortableJS placeholder + drag ghost */
 .sortable-placeholder {
-  border: 2px dashed rgba(0, 0, 0, 0.2);
+  border: 2px dashed var(--badge-shadow-color);
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.03);
+  background: var(--black-03);
   min-height: 3rem;
 }
 
@@ -1620,9 +1629,9 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
    classes outrank the card's colour classes. */
 .task-card.sortable-placeholder {
   min-height: 0;
-  border-color: #e0e0e0;
+  border-color: var(--rule-e0);
   border-radius: 3px;
-  background: #e0e0e0;
+  background: var(--rule-e0);
   box-shadow: none;
 }
 .task-card.sortable-placeholder > * { visibility: hidden; }
