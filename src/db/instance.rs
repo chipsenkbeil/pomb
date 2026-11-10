@@ -179,7 +179,7 @@ mod tests {
     use crate::db::PublicDb;
 
     #[tokio::test]
-    async fn settings_db_should_build_only_through_its_extractor() {
+    async fn instance_should_save_backup_settings_through_the_extractor_handle() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = Db::connect(dir.path().join("pomb.redb").to_str().expect("utf8 path"))
             .expect("connect");
