@@ -25658,6 +25658,22 @@ async fn poll_device_token(
     }
 }
 
+/// Tells whether a device request asks for exactly its scope's preset or for a custom set of
+/// permissions.
+#[derive(Copy, Clone)]
+enum Grant {
+    Preset,
+    Custom,
+}
+
+impl Grant {
+    /// Returns whether the request names a custom permission set.
+    #[must_use]
+    fn is_custom(self) -> bool {
+        matches!(self, Self::Custom)
+    }
+}
+
 /// The device-pairing page in one of its steps: "enter", "confirm",
 /// "approved", or "denied".
 #[derive(Template)]
@@ -25669,6 +25685,8 @@ struct DeviceTemplate {
     client_name: String,
     /// The scope the client requested, as a list of one for the template.
     scopes: Vec<String>,
+    /// Whether the request is a preset or a custom permission set, which the headline names.
+    grant: Grant,
     /// Whether the request holds a permanent delete permission, which the page warns about.
     requested_admin: bool,
     /// The permissions the request holds, comma separated, which the picker offers.
@@ -25760,6 +25778,7 @@ impl DeviceTemplate {
             user_code: user_code.to_string(),
             client_name: String::new(),
             scopes: Vec::new(),
+            grant: Grant::Preset,
             requested_admin: false,
             requested_names: String::new(),
             role_name: String::new(),
@@ -25785,6 +25804,11 @@ impl DeviceTemplate {
             user_code: auth::display_user_code(&row.user_code),
             client_name: row.client_name.clone(),
             scopes: vec![row.scope.as_str().to_string()],
+            grant: if row.permissions == row.scope.permissions() {
+                Grant::Preset
+            } else {
+                Grant::Custom
+            },
             requested_admin: holds_delete(&row.permissions),
             requested_names: row
                 .permissions

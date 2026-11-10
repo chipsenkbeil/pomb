@@ -5882,6 +5882,39 @@ async fn device_page_should_highlight_a_request_naming_no_boards() {
 }
 
 #[tokio::test]
+async fn device_page_should_name_the_preset_of_an_exact_preset_request() {
+    let (_dir, fx) = fixture();
+    for (extra, scope) in [
+        (json!({"scopes": ["work"]}), "work"),
+        (json!({"scopes": ["admin"]}), "admin"),
+    ] {
+        let page = device_page_for(&fx, extra).await;
+        assert!(
+            page.contains(&format!("the <strong>{scope}</strong> scope")),
+            "{page}"
+        );
+        assert!(!page.contains("with custom permissions"), "{page}");
+    }
+}
+
+#[tokio::test]
+async fn device_page_should_call_a_partial_permission_request_custom() {
+    let (_dir, fx) = fixture();
+    let (status, started) = start_device(
+        &fx,
+        json!({"client_name": "agentctl on laptop", "permissions": ["tasks.read"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let user_code = started["user_code"].as_str().expect("user_code");
+    let (status, page) =
+        form_post(&fx, As::Admin, "/device", &format!("user_code={user_code}")).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page.contains("with custom permissions."), "{page}");
+    assert!(!page.contains("the <strong>read</strong> scope"), "{page}");
+}
+
+#[tokio::test]
 async fn device_approval_should_accept_never_only_when_the_request_names_no_hours() {
     let (status, _, whoami) = approve_asked(json!({}), "&expires_in_hours=never").await;
     assert_eq!(status, StatusCode::OK);

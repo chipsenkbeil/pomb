@@ -6,8 +6,8 @@
     <h1>Connect a device</h1>
     {% if let Some(error) = error %}<p class="login-error">{{ error }}</p>{% endif %}
     {% if step == "confirm" %}
-    <p class="device-ask"><strong>{{ client_name }}</strong> wants an API token with
-      {% if scopes.len() == 1 %}the <strong>{{ scopes[0] }}</strong> scope{% else %}the <strong>{{ scopes.join(" and ") }}</strong> scopes{% endif %}.</p>
+    <p class="device-ask"><strong>{{ client_name }}</strong> wants an API token
+      {% if grant.is_custom() %}with custom permissions{% else %}with {% if scopes.len() == 1 %}the <strong>{{ scopes[0] }}</strong> scope{% else %}the <strong>{{ scopes.join(" and ") }}</strong> scopes{% endif %}{% endif %}.</p>
     <p class="device-code">Code <code>{{ user_code }}</code></p>
     {% if requested_admin %}<p class="login-error device-warning">Admin can delete boards, change board
       structure and settings, and read the calendar feed link. Pick a narrower role or drop permissions unless this client needs that.</p>{% endif %}
