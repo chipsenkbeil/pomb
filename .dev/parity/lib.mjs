@@ -149,7 +149,7 @@ export async function newContext(browser, state, entry, baseUrl) {
 
 const sub = (s, state) =>
   typeof s === 'string'
-    ? s.replaceAll('{gm}', state.boards.gm).replaceAll('{vt}', state.boards.vt).replaceAll('{ep}', state.boards.ep)
+    ? s.replaceAll('{gm}', state.boards.gm).replaceAll('{vt}', state.boards.vt).replaceAll('{ep}', state.boards.ep).replaceAll('{pn}', state.boards.pn)
     : s;
 
 // In-page fetch with the session cookie; used by "api" steps.

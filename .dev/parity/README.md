@@ -41,7 +41,9 @@ kill $(jq -r .pid /tmp/parity-3420/state.json)
 workdir) and `--auth none`, so the first request creates the owner, named
 `owner`. It seeds the Golden Master board
 (`dev tools seed-golden-master`, `.dev/golden-master-board.json`) and the
-Visual Test board (`dev parity seed-visual-test`), and writes `state.json`. The
+Visual Test board (`dev parity seed-visual-test`), the Epic Test board
+(`dev parity seed-epic`) and the Panel Test board (`dev parity seed-panel`),
+and writes `state.json`. The
 server clock is frozen with libfaketime: the Golden Master board is seeded on
 2026-09-30 15:22 and served from 2026-10-16 18:00 (America/Chicago), the day of
 the goldens. The browser clock is pinned to the same instant.
@@ -114,7 +116,8 @@ Each entry:
 ```
 
 `golden` is the path of a `*.styles.json` under the goldens folder.
-`{gm}`, `{vt}` and `{ep}` are the Golden Master, Visual Test and Epic Test board ids.
+`{gm}`, `{vt}`, `{ep}` and `{pn}` are the Golden Master, Visual Test, Epic
+Test and Panel Test board ids.
 
 Setup and teardown steps (one key each): `goto`, `click` (with `nth`,
 `button`), `dblclick`, `hover`, `contextmenu`, `clickAt` ([x,y], `button`),

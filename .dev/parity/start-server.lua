@@ -63,7 +63,7 @@ local log = work .. "/server-" .. port .. ".log"
 need(fs.remove(db, { recursive = true }))
 need(fs.write(jar, ""))
 need(fs.write(log, ""))
-for _, name in ipairs({ "gm", "vt", "ep" }) do
+for _, name in ipairs({ "gm", "vt", "ep", "pn" }) do
     need(fs.write(work .. "/seed-" .. name .. ".err", ""))
 end
 
@@ -161,6 +161,7 @@ for _, hint in ipairs({ "members", "timer" }) do
 end
 local vt = seed({ "dev", "parity", "seed-visual-test", base, jar }, work .. "/seed-vt.err")
 local ep = seed({ "dev", "parity", "seed-epic", base, jar }, work .. "/seed-ep.err")
+local pn = seed({ "dev", "parity", "seed-panel", base, jar }, work .. "/seed-pn.err")
 
 local date_header = ""
 for line in curl({ "curl", "-sI", base .. "/login" }):gmatch("[^\r\n]+") do
@@ -172,7 +173,7 @@ end
 local state = json.encode({
     base = base,
     jar = jar,
-    boards = { gm = gm, vt = vt, ep = ep },
+    boards = { gm = gm, vt = vt, ep = ep, pn = pn },
     faketime = serve_time,
     ftfile = ftfile,
     tz = tz,
