@@ -133,7 +133,9 @@ end
 local function seed(argv, errfile)
     local out, code = devos.capture(argv, { stderr = errfile })
     if code ~= 0 then
-        os.exit(code)
+        local text = fs.read(errfile) or ""
+        local name = table.concat(argv, " ", 1, 3)
+        verb.die("The seeder " .. name .. " failed with exit " .. code .. ". " .. text)
     end
     local last
     for line in out:gmatch("[^\n]+") do

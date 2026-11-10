@@ -352,7 +352,7 @@ local function seed_task(i, task)
         create_column = first_column
     end
 
-    local body = { name = name, column_id = create_column, color_id = color_id }
+    local body = { name = name, column_id = create_column, color_id = color_id, force = true }
     if truthy(task.estimate_hours) then
         body.estimate_hours = task.estimate_hours
     end
