@@ -35631,6 +35631,38 @@ mod tests {
         assert_eq!(columns.as_array().expect("columns").len(), 1);
     }
 
+    /// Deleting the board's Blocked column clears its `blocked_column_id`. Deleting another column
+    /// leaves it in place.
+    #[tokio::test]
+    async fn delete_column_should_clear_the_blocked_column_id() {
+        let (_dir, fx) = kf221_fixture();
+        let blocked = fx
+            .db
+            .create_column(&fx.board_id, "Blocked", None)
+            .expect("column");
+        let board_uri = format!("/api/boards/{}/config", fx.board_id);
+        let (status, text) = send(
+            &fx,
+            "PUT",
+            &board_uri,
+            Some(serde_json::json!({"blocked_column_id": blocked})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+
+        let (status, _) = send(&fx, "DELETE", &format!("/api/columns/{}", fx.col_wip), None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let (_, text) = send(&fx, "PUT", &board_uri, Some(serde_json::json!({}))).await;
+        let view: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(view["blocked_column_id"], blocked.as_str());
+
+        let (status, _) = send(&fx, "DELETE", &format!("/api/columns/{blocked}"), None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let (_, text) = send(&fx, "PUT", &board_uri, Some(serde_json::json!({}))).await;
+        let view: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert!(view["blocked_column_id"].is_null(), "{view}");
+    }
+
     /// Two concurrent deletes of a board's only two columns never leave it with none.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_column_deletes_should_leave_one_column() {

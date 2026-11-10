@@ -7843,6 +7843,7 @@ impl Db {
                 mmap_remove(&txn, INBOUND_BY_BOARD, &column.board_id, &address.id)?;
             }
         }
+        txn_set_blocked_column(&txn, &column.board_id, id, false)?;
         txn_leave_limit_groups(&txn, &column.board_id, id)?;
         txn_remove_owned::<ColumnRow>(&txn, COLUMNS, id)?;
         mmap_remove(&txn, COLUMNS_BY_BOARD, &column.board_id, id)?;
