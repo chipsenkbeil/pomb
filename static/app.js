@@ -509,11 +509,8 @@
       label.classList.remove('done-group-label--target');
     });
     if (!list || list.dataset.doneColumn !== 'true') return;
-    Array.prototype.some.call(list.querySelectorAll('.done-group-label'), function (label) {
-      if (label.textContent.trim() !== 'Today') return false;
-      label.classList.add('done-group-label--target');
-      return true;
-    });
+    const today = list.querySelector('.done-group-label[data-done-today]');
+    if (today) today.classList.add('done-group-label--target');
   }
 
   function reloadSelectionSoon(failed) {

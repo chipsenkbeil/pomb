@@ -23,6 +23,7 @@ eval(slice('  function dragHelper(card) {', '  function reloadSelectionSoon'));
 function label(text) {
   var l = {
     text: text, marked: false,
+    dataset: { doneToday: text === 'Today' },
     textContent: ' ' + text + ' ',
     classList: {
       add: function () { l.marked = true; },
@@ -36,6 +37,7 @@ function list(done, groups) {
   return {
     dataset: { doneColumn: done ? 'true' : 'false' },
     querySelectorAll: function () { return groups; },
+    querySelector: () => groups.filter((g) => g.dataset.doneToday)[0],
   };
 }
 

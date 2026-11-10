@@ -4485,6 +4485,7 @@ fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGro
     dated.sort_by_key(|(date, _)| done_display_key(*date, today));
     let mut groups = vec![DoneGroup {
         label: done_group_label(today, today),
+        is_today: true,
         hidden: false,
         tasks: Vec::new(),
     }];
@@ -4509,6 +4510,7 @@ fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGro
             }
             _ => groups.push(DoneGroup {
                 label,
+                is_today: date == Some(today),
                 hidden: task.archive_hidden(),
                 tasks: vec![task],
             }),
@@ -4768,6 +4770,8 @@ impl CellView {
 #[derive(Clone, Debug)]
 struct DoneGroup {
     label: String,
+    /// The group for tasks done today.
+    is_today: bool,
     tasks: Vec<TaskView>,
     /// Every task in the group is past the first page, so the label stays hidden until "Load more
     /// tasks" reaches it.
@@ -34052,9 +34056,9 @@ mod tests {
         let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
         assert!(status.is_success(), "swimlane created");
         let groups = |page: &str| -> Vec<String> {
-            page.split("done-group-label\">")
+            page.split("done-group-label")
                 .skip(1)
-                .filter_map(|rest| rest.split('<').next())
+                .filter_map(|rest| rest.split_once('>')?.1.split('<').next())
                 .map(str::to_string)
                 .collect()
         };
@@ -34091,6 +34095,41 @@ mod tests {
             .to_string();
         let (_, page) = send(&fx, "GET", &board, None).await;
         assert_eq!(groups(&page), ["Today", future.as_str(), "Yesterday"]);
+    }
+
+    #[tokio::test]
+    async fn done_group_should_flag_the_today_group() {
+        let (_dir, fx) = kf221_fixture();
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        assert!(status.is_success(), "swimlane created");
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "name": "Older" })).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+        send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+        let yesterday = (Local::now().date_naive() - Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let set = serde_json::json!({ "grouping_date": yesterday });
+        send(&fx, "PATCH", &format!("/api/tasks/{id}"), Some(set)).await;
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "name": "Newer" })).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+        send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+        let (_, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        assert_eq!(
+            page.matches("data-done-today").count(),
+            1,
+            "one flagged label"
+        );
+        assert!(
+            page.contains("done-group-label\" data-done-today>Today<"),
+            "the Today label is flagged"
+        );
+        assert!(
+            page.contains("done-group-label\">Yesterday<"),
+            "Yesterday is not flagged"
+        );
     }
 
     /// A Done card carries the day it groups under, and the card menu offers to edit it.
@@ -34134,7 +34173,11 @@ mod tests {
         let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
         send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
         let (_, page) = send(&fx, "GET", &board, None).await;
-        assert_eq!(page.matches("done-group-label\">Today<").count(), 1);
+        assert_eq!(
+            page.matches("done-group-label\" data-done-today>Today<")
+                .count(),
+            1
+        );
     }
 
     /// A timeline is set at creation, read back on the task and the board export, changed by a
@@ -34307,9 +34350,9 @@ mod tests {
             uris.push(format!("/api/tasks/{id}"));
         }
         let groups = |page: &str| -> Vec<String> {
-            page.split("done-group-label\">")
+            page.split("done-group-label")
                 .skip(1)
-                .filter_map(|rest| rest.split('<').next())
+                .filter_map(|rest| rest.split_once('>')?.1.split('<').next())
                 .map(str::to_string)
                 .collect()
         };

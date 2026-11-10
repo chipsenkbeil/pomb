@@ -555,7 +555,7 @@
           <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.archiving %} data-done-column="true"{% endif %}{% if cell.sorted %} data-sorted="1"{% endif %}{% if folded %} hidden{% endif %}>
             {% if cell.archiving %}
               {% for group in cell.done_groups %}
-              <div class="done-group-label"{% if group.hidden %} hidden{% endif %}>{{ group.label }}</div>
+              <div class="done-group-label"{% if group.is_today %} data-done-today{% endif %}{% if group.hidden %} hidden{% endif %}>{{ group.label }}</div>
               {% for task in group.tasks %}{% include "task_card.html" %}{% endfor %}
               {% endfor %}
               {% if cell.archive_more > 0 %}
