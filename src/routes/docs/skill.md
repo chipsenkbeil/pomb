@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "37"
+  version: "38"
 ---
 
 # Pomb
@@ -78,8 +78,10 @@ curl -sS -H "$auth" --json "$body" "$POMB_URL/api/tasks/$task/comments"
 A Bearer call gets every 4xx and 5xx as JSON `{"code", "message"}`. A call to `/api/*` with no
 credentials gets every 4xx that way. Match on `code` and show `message` to the user:
 
-- `claim_held`: another agent holds the task, so pick a different one.
-- `stale_fence`: your claim is gone, so stop working the task.
+- `owner_held`: another agent owns the task, so pick a different one.
+- `seat_held`: another reviewer works that seat, so pick a different seat or stop.
+- `owner_seat`: you own the task, so you cannot take a seat on it.
+- `stale_fence`: your ownership is gone, so stop working the task.
 - `wip_limit_reached`: the column or its limit group is full, so ask the user before any `force`.
 - `token_invalid`, or `token_expired` on a token with no lead: ask the user to pair again.
 - `exceeds_grant`: you asked for more than your grant holds, so ask for less.
@@ -110,18 +112,21 @@ else the user. `POST /api/v1/auth/tokens/revoke-self` revokes your token and its
 2. List ready, unclaimed work with `GET /api/boards/{id}/tasks?ready=true&claimed=false`, adding
    `column_id`, `color_id` or `label` to narrow it. The list is paged: while `next_cursor` is not
    null, repeat the request with `cursor=<next_cursor>`. Read one task with `GET /api/tasks/{id}`.
-3. Claim it with `POST /api/tasks/{id}/claim` and
-   `{"claimant": "claude-code@<host>", "ttl_seconds": 900}`, and keep the `fence` from the reply.
-4. While working, send `POST /api/tasks/{id}/claim/heartbeat` with `{"fence": N}` every
-   `ttl_seconds / 3` seconds (300 for 900). Send `If-Claim-Fence: N` on `PATCH /api/tasks/{id}`,
-   `POST /api/tasks/{id}/move` and `POST /api/tasks/{id}/comments`.
+3. Grab it with `POST /api/tasks/{id}/owner` and
+   `{"name": "claude-code@<host>", "ttl_seconds": 900}`, and keep the `fence` from the reply. On 409
+   `owner_held` another holder owns the task, so pick a different one.
+4. While working, send `POST /api/tasks/{id}/owner/renew` with `{"name": "claude-code@<host>",
+   "ttl_seconds": 900}` and `If-Owner-Fence: N` every `ttl_seconds / 3` seconds (300 for 900). Send
+   `If-Owner-Fence: N` on `PATCH /api/tasks/{id}`, `POST /api/tasks/{id}/move` and
+   `POST /api/tasks/{id}/comments`.
 5. Report progress with `POST /api/tasks/{id}/comments` and `{"body": "...", "kind": "agent"}`. Move
    a finished task into a Done column with `POST /api/tasks/{id}/move` and
    `{"column_id": "<done column id>", "position": 0}`, where `position` is the index among the other
    tasks in that column and 0 is the top. Ask which Done column if there are several. Tick a
    description's `- [ ]` box with `POST /api/tasks/{id}/checklist/{index}` and
    `{"checked": true, "description_hash": "<task description_hash>"}`. On 409 reread and retry.
-6. Release with `POST /api/tasks/{id}/claim/release` and `{"fence": N}` (empty 200), also on stop.
+6. Release with `POST /api/tasks/{id}/owner/release`, `If-Owner-Fence: N` and
+   `{"name": "claude-code@<host>"}`, also on stop.
 7. An epic (`kind` `epic`) is claimed once every direct child is done. While a child is open, a claim is
    a 409 `epic_not_claimable` and a move into a WIP-limited or Done column a 409 `epic_has_open_children`.
    Make one with `POST /api/tasks`, `"kind": "epic"` and a `board_id` in place of `column_id`, or `PATCH`
@@ -130,6 +135,18 @@ else the user. `POST /api/v1/auth/tokens/revoke-self` revokes your token and its
    the owner does with `POST /api/tasks/{id}/close`, or a move into Done does, and a move out reopens it.
 9. On a decision you cannot make alone, add a `question` to `POST /api/tasks/{id}/comments`. Relay the owner's
    pick with `POST /api/tasks/{id}/comments/{comment_id}/answer` and `{"choice": N, "quote": "<his words>"}`.
+
+## Reviewing a task
+
+A reviewer sits in a seat of the task, apart from its owner, and never grabs the work.
+
+1. Take a seat with `POST /api/tasks/{id}/seats/take` and
+   `{"seat": "<seat name>", "name": "claude-code@<host>"}`. `GET /api/boards/{id}/seats` lists the
+   seat names. Taking a seat moves no card.
+2. Record the answer with `POST /api/tasks/{id}/seats/verdict`, sending the `seat`, your `name`, a
+   `verdict` of `approved` or `changes_needed`, and an optional `revision`.
+3. The owner asks for a fresh review with `POST /api/tasks/{id}/seats/ask-again`. Every seat that
+   answered `changes_needed` goes back to waiting and keeps its holder, and `approved` seats stay.
 
 ## Waiting for changes
 

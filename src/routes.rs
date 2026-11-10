@@ -47,7 +47,7 @@ use utoipa::openapi::path::Operation;
 use utoipa::openapi::security::{
     ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme,
 };
-use utoipa::openapi::{ContentBuilder, OpenApi as OpenApiSpec, Ref, RefOr};
+use utoipa::openapi::{ContentBuilder, Deprecated, OpenApi as OpenApiSpec, Ref, RefOr};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 use uuid::Uuid;
 use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential, Url};
@@ -12485,7 +12485,7 @@ fn column_wip_limit(held: WipHeld, limit: i64) -> AppError {
     WipRefused::Column { held, limit }.into()
 }
 
-/// Claims a task, or renews the caller's own live claim.
+/// Claims a task, or renews the caller's own live claim. Deprecated: use `POST /api/tasks/{id}/owner`.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/claim",
@@ -12559,7 +12559,7 @@ async fn claim_task(
     }
 }
 
-/// Extends the lease of the live claim holding `fence`.
+/// Extends the lease of the live claim holding `fence`. Deprecated: use `POST /api/tasks/{id}/owner/renew`.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/claim/heartbeat",
@@ -12602,7 +12602,7 @@ async fn heartbeat_claim(
     }
 }
 
-/// Releases the claim holding `fence`.
+/// Releases the claim holding `fence`. Deprecated: use `POST /api/tasks/{id}/owner/release`.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/claim/release",
@@ -12770,7 +12770,9 @@ fn owner_result(outcome: OwnerOutcome) -> Result<Json<OwnerView>, AppError> {
     }
 }
 
-/// Grabs a task, or renews the caller's own live lease.
+/// Grabs a task.
+///
+/// A holder that grabs a task it already owns renews its own live lease.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/owner",
@@ -12814,6 +12816,8 @@ async fn grab_owner(
 }
 
 /// Extends the lease of the caller's live ownership.
+///
+/// The request carries the fence of the grab.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/owner/renew",
@@ -12854,7 +12858,9 @@ async fn renew_owner(
     )
 }
 
-/// Ends the lease of the caller's ownership and keeps the owner's name.
+/// Ends the lease of the caller's ownership.
+///
+/// The owner keeps its name.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/owner/release",
@@ -22180,7 +22186,9 @@ struct BoardSeatsInput {
     seats: Vec<SeatSlot>,
 }
 
-/// Returns the seats the board offers: a name and a role each, which a task created later copies.
+/// Returns the seats the board offers.
+///
+/// Each seat has a name and a role, and a task created later copies them.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/seats",
@@ -22204,7 +22212,9 @@ async fn get_board_seats(
     }))
 }
 
-/// Replaces the seats the board offers. Tasks that exist keep the seats they hold, and tasks
+/// Replaces the seats the board offers.
+///
+/// Tasks that exist keep the seats they hold, and tasks
 /// created later start with the new ones. A list that leaves out a seat the board has removes it,
 /// which needs `seats.manage`.
 #[utoipa::path(
@@ -22246,7 +22256,9 @@ async fn update_board_seats(
     Ok(Json(BoardSeatsView { seats }))
 }
 
-/// Adds a seat to one task, which changes no other task and not the board's seats.
+/// Adds a seat to one task.
+///
+/// It changes no other task and not the board's seats.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/seats",
@@ -22352,7 +22364,9 @@ fn seat_lease_end(now: DateTime<Utc>, ttl_seconds: i64) -> String {
     (now + Duration::seconds(ttl_seconds)).to_rfc3339()
 }
 
-/// Takes a seat on one task, as a reviewer starting its review. A seat nobody holds, or whose
+/// Takes a seat on one task, as a reviewer starting its review.
+///
+/// A seat nobody holds, or whose
 /// holder's lease lapsed while at work, goes to the first taker, and the holder that lapsed keeps
 /// no claim on it. A holder that takes its own seat again starts a new review and loses its
 /// verdict. Taking a seat sets no owner and moves no card. Needs `seats.take`, which the work,
@@ -22429,7 +22443,9 @@ async fn take_task_seat(
     Ok(Json(outcome?))
 }
 
-/// Records the verdict of the seat's holder, Approved or Changes needed, with an optional
+/// Records the verdict of a seat's holder.
+///
+/// The verdict is Approved or Changes needed, with an optional
 /// revision that Pomb stores as sent. The seat then waits, its lease ends and the holder's name
 /// stays. Only the holder of a seat whose lease still holds may answer for it. Needs
 /// `seats.take`.
@@ -22490,7 +22506,9 @@ async fn set_task_seat_verdict(
     Ok(Json(outcome?))
 }
 
-/// Asks for a fresh review. Every seat that answered Changes needed goes back to waiting with no
+/// Asks for a fresh review of the task.
+///
+/// Every seat that answered Changes needed goes back to waiting with no
 /// verdict and no revision, and keeps its holder. A seat that answered Approved changes not at
 /// all. Only the task's live owner may ask. Needs `tasks.claim`.
 #[utoipa::path(
@@ -22554,7 +22572,9 @@ struct DropSeatQuery {
     name: Option<String>,
 }
 
-/// Drops a seat from one task, with whoever holds it and whatever verdict it holds, and leaves
+/// Drops a seat from one task.
+///
+/// It drops the seat with whoever holds it and whatever verdict it holds, and leaves
 /// every other task and the board's seats unchanged. Needs `seats.manage`, which the lead and
 /// admin presets and the lead role hold.
 #[utoipa::path(
@@ -28876,6 +28896,26 @@ impl Modify for RateLimitAddon {
     }
 }
 
+/// Marks the three claim operations deprecated, which `utoipa::path` cannot express without
+/// deprecating the handlers the router still mounts.
+struct ClaimDeprecationAddon;
+
+impl Modify for ClaimDeprecationAddon {
+    fn modify(&self, openapi: &mut OpenApiSpec) {
+        for item in openapi.paths.paths.values_mut() {
+            for operation in item.post.iter_mut() {
+                let claim_operation = matches!(
+                    operation.operation_id.as_deref(),
+                    Some("claim_task" | "heartbeat_task_claim" | "release_task_claim")
+                );
+                if claim_operation {
+                    operation.deprecated = Some(Deprecated::True);
+                }
+            }
+        }
+    }
+}
+
 /// Gives every 4xx and 5xx response the [`ErrorBody`] JSON schema that Bearer clients receive.
 struct ErrorBodyAddon;
 
@@ -29968,7 +30008,7 @@ them, which the Backups section of the settings page calls after a confirmation.
             ImportCounts,
         )
     ),
-    modifiers(&SecurityAddon, &ErrorBodyAddon, &RateLimitAddon, &CeremonyAddon),
+    modifiers(&SecurityAddon, &ErrorBodyAddon, &RateLimitAddon, &CeremonyAddon, &ClaimDeprecationAddon),
     security(("bearerAuth" = [])),
     tags(
         (name = "Tasks", description = TASKS_DOC),

@@ -19,11 +19,11 @@ const COMPOSITIONS: [&str; 3] = ["oneOf", "anyOf", "allOf"];
 pub const SKILL: &str = include_str!("docs/skill.md");
 
 /// Version of [`SKILL`], carried in its frontmatter and reported as `skill_version`.
-pub const SKILL_VERSION: &str = "37";
+pub const SKILL_VERSION: &str = "38";
 
 /// SHA-256 of [`SKILL`] per version, oldest first.
 #[cfg(test)]
-const SKILL_FINGERPRINTS: [(&str, &str); 37] = [
+const SKILL_FINGERPRINTS: [(&str, &str); 38] = [
     (
         "1",
         "c935bab15837c98040da423a9e4479bee899b60c4a8eb39a8cad0338d4c2e57e",
@@ -171,6 +171,10 @@ const SKILL_FINGERPRINTS: [(&str, &str); 37] = [
     (
         "37",
         "84047ec04b02e3eff165cc890b8b89d23d378f8943f21c704b263ebb8a6fc848",
+    ),
+    (
+        "38",
+        "c1953a80bf94d32287b077921fc2dacc902f204b2e1bd71feca4c8c1e02ebc9c",
     ),
 ];
 
@@ -695,8 +699,8 @@ mod tests {
         let version = format!("metadata:\n  version: \"{SKILL_VERSION}\"");
         assert!(frontmatter.contains(&version), "{frontmatter}");
         assert!(
-            SKILL.lines().count() <= 176,
-            "the skill runs past 176 lines"
+            SKILL.lines().count() <= 193,
+            "the skill runs past 193 lines"
         );
         assert!(
             LLMS_TXT.lines().count() <= 20,
@@ -718,6 +722,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn skill_should_cover_owner_and_seats_without_api_prose() {
+        let written = written_operations(SKILL);
+        for path in [
+            "/api/tasks/{id}/owner",
+            "/api/tasks/{id}/owner/renew",
+            "/api/tasks/{id}/owner/release",
+            "/api/tasks/{id}/seats/take",
+            "/api/tasks/{id}/seats/verdict",
+            "/api/tasks/{id}/seats/ask-again",
+        ] {
+            assert!(
+                written.contains(&("post".to_string(), path.to_string())),
+                "the skill does not name POST {path}"
+            );
+        }
+        for code in ["owner_held", "seat_held", "owner_seat"] {
+            assert!(SKILL.contains(code), "the skill does not mention {code}");
+        }
+        assert!(
+            !SKILL.contains("| Status") && !SKILL.contains("| Code |"),
+            "the skill holds a status-code table"
+        );
     }
 
     /// Every string value anywhere in `value`.

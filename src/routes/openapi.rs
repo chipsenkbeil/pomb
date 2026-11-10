@@ -923,3 +923,38 @@ async fn backup_routes_should_document_the_permission_they_enforce() {
         );
     }
 }
+
+#[test]
+fn openapi_should_document_owner_and_seat_routes() {
+    let spec = spec();
+    let documented = [
+        "grab_task_owner",
+        "renew_task_owner",
+        "release_task_owner",
+        "get_board_seats",
+        "update_board_seats",
+        "add_task_seat",
+        "take_task_seat",
+        "set_task_seat_verdict",
+        "ask_task_seats_again",
+        "drop_task_seat",
+    ];
+    let deprecated = ["claim_task", "heartbeat_task_claim", "release_task_claim"];
+    let mut seen = BTreeSet::new();
+    for (method, path, operation) in all_operations(&spec) {
+        let id = operation["operationId"].as_str().expect("operationId");
+        if documented.contains(&id) {
+            seen.insert(id);
+            for field in ["summary", "description"] {
+                let text = operation[field].as_str().unwrap_or_default();
+                assert!(!text.trim().is_empty(), "{method} {path} has no {field}");
+            }
+            assert_ne!(operation["deprecated"], true, "{method} {path}");
+        }
+        if deprecated.contains(&id) {
+            seen.insert(id);
+            assert_eq!(operation["deprecated"], true, "{method} {path}");
+        }
+    }
+    assert_eq!(seen.len(), documented.len() + deprecated.len());
+}
