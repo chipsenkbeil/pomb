@@ -5170,7 +5170,42 @@ struct FilterField {
     options: Vec<String>,
 }
 
+/// One cell of the band row over the column headers: a limit group's band, or a gap over columns
+/// that belong to no group.
+#[derive(Clone, Debug)]
+struct GroupBand {
+    /// The columns the cell spans.
+    span: usize,
+    /// The group the band shows, absent for a gap.
+    group: Option<ColumnGroup>,
+}
+
 impl BoardTemplate {
+    /// Returns the cells of the band row over the column headers, empty when no column is in a
+    /// group.
+    fn group_bands(&self) -> Vec<GroupBand> {
+        let mut bands: Vec<GroupBand> = Vec::new();
+        for col in &self.columns {
+            let same = bands.last().is_some_and(|band| {
+                band.group.as_ref().map(|g| &g.id) == col.group.as_ref().map(|g| &g.id)
+            });
+            if same {
+                if let Some(band) = bands.last_mut() {
+                    band.span += 1;
+                }
+            } else {
+                bands.push(GroupBand {
+                    span: 1,
+                    group: col.group.clone(),
+                });
+            }
+        }
+        if bands.iter().all(|band| band.group.is_none()) {
+            bands.clear();
+        }
+        bands
+    }
+
     /// Returns the About text a new epic starts with.
     fn epic_template(&self) -> &'static str {
         EPIC_TEMPLATE
@@ -23244,6 +23279,8 @@ struct SettingsColumnView {
 /// A limit group as the board settings page lists it.
 #[derive(Clone, Debug)]
 struct SettingsGroupView {
+    /// The group's id.
+    id: String,
     /// The names of the columns the group covers, in board order.
     columns: String,
     /// The most cards the columns hold together.
@@ -23403,6 +23440,7 @@ fn board_settings_context(
         limit_groups::LimitGroupView::all(db, &board.limit_groups)?
             .iter()
             .map(|group| SettingsGroupView {
+                id: group.id.clone(),
                 columns: group
                     .column_ids
                     .iter()

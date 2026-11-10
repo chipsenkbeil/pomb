@@ -452,6 +452,19 @@
   <div class="board-table-wrap">
   <table class="board-table{% if layout.lane_label_column && layout.lane_names_folded %} board-table--names-folded{% endif %}" aria-label="{{ board_name }} board" style="--expanded-columns: {{ self.expanded_column_count() }}; --collapsed-columns: {{ self.collapsed_column_count() }}">
     <thead>
+      {% let group_bands = self.group_bands() %}
+      {% if !group_bands.is_empty() %}
+      <tr class="columnHeader-bandRow">
+        {% if layout.lane_label_column %}<th class="columnHeader-bandGap" scope="col"></th>{% endif %}
+        {% for band in group_bands %}
+        {% if let Some(group) = band.group %}
+        <th class="columnHeader-groupBand{% if group.over %} columnHeader-groupBand--over{% endif %}" colspan="{{ band.span }}" scope="colgroup" data-group-id="{{ group.id }}" title="Limit group">{{ group.label }}</th>
+        {% else %}
+        <th class="columnHeader-bandGap" colspan="{{ band.span }}" scope="col"></th>
+        {% endif %}
+        {% endfor %}
+      </tr>
+      {% endif %}
       <tr id="column-headers-row">
         {% if layout.lane_label_column %}<th class="corner-cell" scope="col">{% if role.is_owner() %}<button type="button" class="lane-names-toggle" data-lane-names-toggle aria-pressed="{% if layout.lane_names_folded %}true{% else %}false{% endif %}" title="{% if layout.lane_names_folded %}Unfold the swimlane names{% else %}Fold the swimlane names{% endif %}" aria-label="Swimlane names">{% if layout.lane_names_folded %}+{% else %}&minus;{% endif %}</button>{% endif %}</th>{% endif %}
         {% for col in columns %}
@@ -485,9 +498,6 @@
             <span class="columnHeader-name">{{ col.name }}</span>{% if col.watched %}<svg class="columnHeader-watch" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" role="img" aria-label="Watched"><title>Watched</title><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>{% endif %}
             {% if let Some(lim) = col.wip_limit %}
             <span class="columnHeader-count"{% if col.over_limit %} title="*LIMIT EXCEEDED*"{% endif %}>{{ col.limit_label }}</span>
-            {% endif %}
-            {% if let Some(group) = col.group %}
-            <span class="columnHeader-groupCount{% if group.over %} columnHeader-groupCount--over{% endif %}" title="Limit group">{{ group.label }}</span>
             {% endif %}
             <!-- KF-316: an expanded header shows no count cell for Column
                  sum None; only a WIP column carries the inline "n / m".

@@ -85,23 +85,38 @@
         </table>
         {% endif %}
       </section>
-      {% if !limit_groups.is_empty() %}
-      <section class="settings-section" id="settings-limit-groups">
+      <section class="settings-section" id="settings-limit-groups" data-board-id="{{ board_id }}">
         <h2>Limit groups</h2>
+        {% if limit_groups.is_empty() %}
+        <p class="settings-hint">No columns are linked yet.</p>
+        {% else %}
         <table class="bshell-table">
-          <thead><tr><th>Columns</th><th>Limit</th><th>Cards</th></tr></thead>
+          <thead><tr><th>Columns</th><th>Limit</th><th>Cards</th><th></th></tr></thead>
           <tbody>
             {% for g in limit_groups %}
-            <tr>
+            <tr data-group-id="{{ g.id }}">
               <td>{{ g.columns }}</td>
-              <td>{{ g.limit }}</td>
+              <td><input type="number" class="settings-group-limit" min="1" value="{{ g.limit }}" aria-label="Limit of {{ g.columns }}"></td>
               <td>{{ g.count }}</td>
+              <td>
+                <button type="button" class="kf-btn kf-btn-success" data-group-save>Save</button>
+                <button type="button" class="kf-btn kf-btn-danger" data-group-unlink>Unlink</button>
+              </td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
+        {% endif %}
+        <form class="settings-form" id="settings-group-form">
+          <p class="settings-hint">Pick two or more adjacent columns that are in no group, and the most cards they hold together.</p>
+          {% for c in columns %}
+          <label><input type="checkbox" name="column" value="{{ c.id }}"> {{ c.name }}</label>
+          {% endfor %}
+          <input type="number" name="limit" min="1" value="1" required aria-label="Group limit">
+          <button type="submit" class="kf-btn kf-btn-success">Link columns</button>
+        </form>
+        <p class="settings-hint" id="settings-group-error" role="alert" hidden></p>
       </section>
-      {% endif %}
       {% if swimlanes.len() > 1 %}
       <section class="settings-section">
         <h2>Swimlanes</h2>
@@ -713,6 +728,9 @@
 {% endif %}
 {% if tab == "rules" %}
 <div hidden data-page="board-settings-rules"></div>
+{% endif %}
+{% if tab == "layout" %}
+<div hidden data-page="board-settings-groups"></div>
 {% endif %}
 {% if tab == "labels" %}
 <div hidden data-page="board-settings-labels"></div>

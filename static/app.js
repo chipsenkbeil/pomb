@@ -300,17 +300,17 @@
   const refreshGroupCounts = () => {
     const headers = document.querySelectorAll('.columnHeader[data-group-id]');
     const totals = new Map();
+    const limits = new Map();
     headers.forEach((th) => {
       const id = th.dataset.groupId;
       totals.set(id, (totals.get(id) || 0) + (parseInt(th.dataset.taskCount, 10) || 0));
+      limits.set(id, parseInt(th.dataset.groupLimit, 10));
     });
-    headers.forEach((th) => {
-      const el = th.querySelector('.columnHeader-groupCount');
-      if (!el) return;
-      const count = totals.get(th.dataset.groupId);
-      const limit = parseInt(th.dataset.groupLimit, 10);
-      el.textContent = count + ' / ' + limit;
-      el.classList.toggle('columnHeader-groupCount--over', count > limit);
+    document.querySelectorAll('.columnHeader-groupBand[data-group-id]').forEach((band) => {
+      const count = totals.get(band.dataset.groupId);
+      const limit = limits.get(band.dataset.groupId);
+      band.textContent = count + ' / ' + limit;
+      band.classList.toggle('columnHeader-groupBand--over', count > limit);
     });
   };
 
@@ -692,7 +692,7 @@
         api('/api/columns/' + encodeURIComponent(evt.item.dataset.columnId) + '/move',
             'POST', { position: newIndex })
           .then(drained)
-          .then(function (res) { if (!res.ok) window.location.reload(); })
+          .then((res) => { if (!res.ok || document.querySelector('.columnHeader-bandRow')) window.location.reload(); })
           .catch(function () { window.location.reload(); });
       },
     });

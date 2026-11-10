@@ -3227,6 +3227,54 @@
     });
   };
 
+  pages['board-settings-groups'] = () => {
+    'use strict';
+    const section = document.getElementById('settings-limit-groups');
+    const base = '/api/boards/' + encodeURIComponent(section.dataset.boardId) + '/limit-groups';
+    const errorBox = document.getElementById('settings-group-error');
+    const send = (method, url, body) => {
+      errorBox.hidden = true;
+      return fetch(url, {
+        method,
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+      }).then((res) => {
+        if (res.ok) { window.location.reload(); return undefined; }
+        return res.text().then((text) => {
+          let message = text;
+          try { message = JSON.parse(text).message || text; } catch { message = text; }
+          throw new Error(message || ('HTTP ' + res.status));
+        });
+      }).catch((error) => {
+        errorBox.textContent = error.message;
+        errorBox.hidden = false;
+      });
+    };
+    document.getElementById('settings-group-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const form = event.target;
+      const ids = Array.from(form.querySelectorAll('input[name="column"]:checked'), (box) => box.value);
+      send('POST', base, { column_ids: ids, limit: parseInt(form.elements.limit.value, 10) });
+    });
+    section.addEventListener('click', (event) => {
+      const row = event.target.closest('tr[data-group-id]');
+      if (!row) return;
+      const url = base + '/' + encodeURIComponent(row.dataset.groupId);
+      if (event.target.closest('[data-group-save]')) {
+        const limit = parseInt(row.querySelector('.settings-group-limit').value, 10);
+        if (!(limit >= 1)) {
+          errorBox.textContent = 'The limit must be at least 1.';
+          errorBox.hidden = false;
+          return;
+        }
+        send('PATCH', url, { limit });
+      } else if (event.target.closest('[data-group-unlink]')) {
+        send('DELETE', url);
+      }
+    });
+  };
+
   document.querySelectorAll('[data-page]').forEach(function (marker) {
     var page = pages[marker.dataset.page];
     if (typeof page !== 'function') {

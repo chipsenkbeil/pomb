@@ -325,14 +325,13 @@ async fn board_page_should_show_a_limit_group_count_against_its_limit_on_its_col
     fx.task(0).await;
 
     let page = fx.page(&format!("/b/{}", fx.board)).await;
-    assert_eq!(page.matches("columnHeader-groupCount\"").count(), 2);
-    assert_eq!(
-        page.matches("title=\"Limit group\">2 / 4</span>").count(),
-        2
-    );
+    assert_eq!(page.matches("columnHeader-groupBand\"").count(), 1);
+    assert!(!page.contains("columnHeader-groupCount"));
+    assert_eq!(page.matches("title=\"Limit group\">2 / 4</th>").count(), 1);
+    assert!(page.contains("colspan=\"2\" scope=\"colgroup\""));
     assert_eq!(
         page.matches(&format!("data-group-id=\"{group}\"")).count(),
-        2
+        3
     );
     assert_eq!(page.matches("data-group-limit=\"4\"").count(), 2);
 }
@@ -348,21 +347,29 @@ async fn board_page_should_mark_a_limit_group_over_its_limit() {
     }
 
     let page = fx.page(&format!("/b/{}", fx.board)).await;
-    assert_eq!(page.matches("columnHeader-groupCount--over").count(), 2);
-    assert!(page.contains("columnHeader-groupCount--over\" title=\"Limit group\">3 / 2</span>"));
+    assert_eq!(page.matches("columnHeader-groupBand--over").count(), 1);
+    assert!(page.contains("title=\"Limit group\">3 / 2</th>"));
 }
 
 #[tokio::test]
 async fn board_settings_should_list_each_limit_group_with_its_columns_and_limit() {
     let fx = Fixture::new();
     let uri = format!("/b/{}/settings/layout", fx.board);
-    assert!(!fx.page(&uri).await.contains("Limit groups"));
+    assert!(fx.page(&uri).await.contains("id=\"settings-group-form\""));
 
     fx.group(&[1, 2], 5).await;
     fx.task(1).await;
     let page = fx.page(&uri).await;
     assert!(page.contains("<h2>Limit groups</h2>"));
     assert!(page.contains("<td>Two, Three</td>"));
-    assert!(page.contains("<td>5</td>"));
+    assert!(page.contains("class=\"settings-group-limit\" min=\"1\" value=\"5\""));
     assert!(page.contains("<td>1</td>"));
+}
+
+#[tokio::test]
+async fn board_page_should_show_no_group_band_without_a_group() {
+    let fx = Fixture::new();
+    let page = fx.page(&format!("/b/{}", fx.board)).await;
+    assert!(!page.contains("columnHeader-groupBand"));
+    assert!(!page.contains("columnHeader-bandRow"));
 }

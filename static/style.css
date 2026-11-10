@@ -1043,22 +1043,36 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   white-space: nowrap;
 }
 
-.columnHeader-groupCount {
-  position: relative;
-  top: 1px;
-  flex: 0 0 auto;
+.board-table { --band-row-h: 22px; }
+
+.board-table thead .columnHeader-bandRow th {
+  height: var(--band-row-h);
+  padding: 2px 10px;
+  border: none;
+  border-image: none;
+  background: var(--btn-bg);
   font-size: 12px;
-  color: var(--muted);
   font-weight: 700;
-  margin-left: 8px;
+  line-height: 18px;
+  text-align: center;
   white-space: nowrap;
 }
 
-.columnHeader-groupCount--over {
+.board-table thead:has(.columnHeader-bandRow) #column-headers-row th { top: var(--band-row-h); }
+
+.columnHeader-bandRow .columnHeader-groupBand {
+  color: var(--muted);
+  background: var(--hover-light);
+  border-left: 1px solid var(--rule-light);
+  border-bottom: 1px solid var(--rule-light);
+}
+
+.columnHeader-bandRow .columnHeader-groupBand--over {
   color: var(--board-headerWarningTextColor);
 }
 
-body.dark .columnHeader-groupCount:not(.columnHeader-groupCount--over) { color: #cccccc; }
+body.dark .columnHeader-bandRow .columnHeader-groupBand { background: var(--btn-hover); border-color: var(--btn-border); }
+body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupBand--over) { color: var(--btn-ink); }
 
 /* KF-371: an expanded header's Column sum (Task count or Estimated hours)
    ends the title row, so the name ellipsizes before it; the KF-313 rule

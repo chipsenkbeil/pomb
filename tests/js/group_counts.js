@@ -3,22 +3,28 @@ const start = src.indexOf('  const refreshGroupCounts = ');
 const end = src.indexOf('\n  };', start) + '\n  };'.length;
 if (start < 0 || end < start) throw new Error('refreshGroupCounts not found');
 
-const header = (groupId, limit, taskCount) => {
+const header = (groupId, limit, taskCount) => ({
+  dataset: { groupId, groupLimit: String(limit), taskCount: String(taskCount) },
+});
+
+const band = (groupId) => {
   const classes = new Set();
-  const span = {
+  return {
+    dataset: { groupId },
     textContent: '',
     classList: { toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)) },
-  };
-  return {
-    dataset: { groupId, groupLimit: String(limit), taskCount: String(taskCount) },
-    querySelector: (sel) => (sel === '.columnHeader-groupCount' ? span : null),
-    span,
     classes,
   };
 };
 
-const load = (headers) => {
-  const document = { querySelectorAll: (sel) => (sel === '.columnHeader[data-group-id]' ? headers : []) };
+const load = (headers, bands) => {
+  const document = {
+    querySelectorAll: (sel) => {
+      if (sel === '.columnHeader[data-group-id]') return headers;
+      if (sel === '.columnHeader-groupBand[data-group-id]') return bands;
+      return [];
+    },
+  };
   return eval('(function () {' + src.slice(start, end) + '\n return refreshGroupCounts; })()');
 };
 
@@ -35,21 +41,23 @@ const check = (name, got, want) => {
 const a = header('g1', 3, 1);
 const b = header('g1', 3, 1);
 const other = header('g2', 1, 1);
-const refresh = load([a, b, other]);
+const band1 = band('g1');
+const band2 = band('g2');
+const refresh = load([a, b, other], [band1, band2]);
 refresh();
-check('a group sums its columns', [a.span.textContent, b.span.textContent], ['2 / 3', '2 / 3']);
-check('under the limit has no over class', a.classes.has('columnHeader-groupCount--over'), false);
-check('another group stays apart', other.span.textContent, '1 / 1');
+check('a group sums its columns', band1.textContent, '2 / 3');
+check('under the limit has no over class', band1.classes.has('columnHeader-groupBand--over'), false);
+check('another group stays apart', band2.textContent, '1 / 1');
 
 b.dataset.taskCount = '3';
 refresh();
-check('a drag into the group raises every span', [a.span.textContent, b.span.textContent], ['4 / 3', '4 / 3']);
-check('over the limit sets the over class on each', [a.classes.has('columnHeader-groupCount--over'), b.classes.has('columnHeader-groupCount--over')], [true, true]);
-check('the other group is not over', other.classes.has('columnHeader-groupCount--over'), false);
+check('a drag into the group raises the band', band1.textContent, '4 / 3');
+check('over the limit sets the over class', band1.classes.has('columnHeader-groupBand--over'), true);
+check('the other group is not over', band2.classes.has('columnHeader-groupBand--over'), false);
 
 b.dataset.taskCount = '2';
 refresh();
-check('a drag out clears the over class', a.classes.has('columnHeader-groupCount--over'), false);
+check('a drag out clears the over class', band1.classes.has('columnHeader-groupBand--over'), false);
 
 if (failures) process.exit(1);
 console.log('group counts ok');
