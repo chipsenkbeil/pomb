@@ -118,6 +118,10 @@ function isoDate(d) {
     String(d.getDate()).padStart(2, '0');
 }
 
+function previewCell(value) {
+  return value === null ? '(none)' : value;
+}
+
 const CARD_KIND = Object.freeze({ EPIC: 'epic' });
 const CARD_SUBMENU = Object.freeze({ MOVE: 'move', COLOR: 'color', EPIC: 'epic' });
 const CARD_ACT = Object.freeze({ TIMER: 'timer', MOVE: 'move', COLOR: 'color', ADD_TO_EPIC: 'add-to-epic', ASSIGN_MEMBERS: 'assign-members', MAKE_EPIC: 'make-epic', GROUPING_DATE: 'grouping-date', COPY_HERE: 'copy-here', COPY: 'copy', TASK_URL: 'task-url', DELETE: 'delete' });
@@ -125,5 +129,5 @@ const BULK_ACT = Object.freeze({ MOVE: 'move', COLOR: 'color', MEMBERS: 'members
 const BULK_SUB = Object.freeze({ COLOR: 'color', MEMBERS: 'members', UNASSIGN: 'unassign' });
 
 if (typeof module !== 'undefined') {
-  module.exports = { LocalTime: LocalTime, isoDate: isoDate, CARD_KIND: CARD_KIND, CARD_SUBMENU: CARD_SUBMENU, CARD_ACT: CARD_ACT, BULK_ACT: BULK_ACT, BULK_SUB: BULK_SUB };
+  module.exports = { LocalTime: LocalTime, isoDate: isoDate, previewCell: previewCell, CARD_KIND: CARD_KIND, CARD_SUBMENU: CARD_SUBMENU, CARD_ACT: CARD_ACT, BULK_ACT: BULK_ACT, BULK_SUB: BULK_SUB };
 }
