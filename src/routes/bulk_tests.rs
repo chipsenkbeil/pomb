@@ -149,7 +149,7 @@ async fn bulk_move_should_give_each_task_of_a_group_drag_its_own_place_in_the_sa
 }
 
 #[tokio::test]
-async fn bulk_move_should_not_be_blocked_by_a_wip_limit() {
+async fn bulk_move_should_pass_a_wip_limit_only_when_forced() {
     let fx = Fixture::new();
     let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
     fx.db.set_column_wip(&columns[1], Some(1)).expect("limit");
@@ -158,6 +158,12 @@ async fn bulk_move_should_not_be_blocked_by_a_wip_limit() {
     let b = fx.task(&columns[0], "b").await;
 
     let body = json!({"task_ids": [a, b], "action": "move", "column_id": columns[1]});
+    let refused = fx.bulk(&board, body).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(fx.cell(&board, &columns[1]), ["d"]);
+
+    let body =
+        json!({"task_ids": [a, b], "action": "move", "column_id": columns[1], "force": true});
     let reply = fx.bulk(&board, body).await;
 
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);

@@ -299,7 +299,7 @@ mod tests {
     use super::*;
     use crate::db::{
         BOARD_EVENTS, EVENT_WAKEUPS, META, MoveGuards, NewComment, NewTaskPlacement,
-        SCHEMA_VERSION, SCHEMA_VERSION_KEY, push_event, read_schema_version,
+        SCHEMA_VERSION, SCHEMA_VERSION_KEY, WipCheck, push_event, read_schema_version,
     };
     use crate::models::{API_TOKEN_ACTOR, AccountId, ActorKind, HistoryKind};
 
@@ -338,7 +338,7 @@ mod tests {
         fn task_by(&self, name: &str, actor: Actor<'_>) -> String {
             let row = Db::new_task_row(&self.todo, None, name, 0, None);
             self.db
-                .insert_task_checked(row, NewTaskPlacement::Bottom, actor)
+                .insert_task_checked(row, NewTaskPlacement::Bottom, actor, WipCheck::Force)
                 .expect("task")
                 .expect("fields")
         }

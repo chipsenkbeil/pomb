@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "36"
+  version: "37"
 ---
 
 # Pomb
@@ -80,7 +80,7 @@ credentials gets every 4xx that way. Match on `code` and show `message` to the u
 
 - `claim_held`: another agent holds the task, so pick a different one.
 - `stale_fence`: your claim is gone, so stop working the task.
-- `wip_limit_reached`: the target column is full, so ask the user.
+- `wip_limit_reached`: the column or its limit group is full, so ask the user before any `force`.
 - `token_invalid`, or `token_expired` on a token with no lead: ask the user to pair again.
 - `exceeds_grant`: you asked for more than your grant holds, so ask for less.
 - `permission_denied`: tell the user the `permission` it names. A null `board_id` means the token

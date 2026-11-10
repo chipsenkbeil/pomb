@@ -5,7 +5,7 @@ use tower::ServiceExt;
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use crate::auth::new_api_token_record;
-use crate::db::{Db, RestoreOutcome};
+use crate::db::{Db, RestoreOutcome, WipCheck};
 use crate::models::{
     AccountId, Actor, AuthScope, BIN_RETENTION_DAYS, HistoryKind, SECONDS_PER_DAY,
 };
@@ -357,7 +357,7 @@ fn a_task_past_retention_should_not_restore_and_the_cleanup_should_purge_it() {
     let late = now + (BIN_RETENTION_DAYS + 1) * SECONDS_PER_DAY;
     assert_eq!(
         fx.db
-            .restore_task(&id, late, Actor::SYSTEM)
+            .restore_task(&id, late, WipCheck::Force, Actor::SYSTEM)
             .expect("restore"),
         RestoreOutcome::Expired
     );
@@ -368,7 +368,7 @@ fn a_task_past_retention_should_not_restore_and_the_cleanup_should_purge_it() {
     assert_eq!(stored(&fx), before);
     assert_eq!(
         fx.db
-            .restore_task(&id, late, Actor::SYSTEM)
+            .restore_task(&id, late, WipCheck::Force, Actor::SYSTEM)
             .expect("restore"),
         RestoreOutcome::NotFound
     );
@@ -415,7 +415,12 @@ fn deleting_the_board_should_delete_its_binned_tasks_and_their_files() {
     assert!(fx.db.binned_tasks(&fx.board_id).expect("bin").is_empty());
     assert_eq!(
         fx.db
-            .restore_task(&id, chrono::Utc::now().timestamp(), Actor::SYSTEM)
+            .restore_task(
+                &id,
+                chrono::Utc::now().timestamp(),
+                WipCheck::Force,
+                Actor::SYSTEM
+            )
             .expect("restore"),
         RestoreOutcome::NotFound
     );
@@ -430,7 +435,12 @@ fn restoring_should_place_the_task_last_in_its_column() {
     let last = task_in(&fx, &fx.col_todo, "Third");
     let outcome = fx
         .db
-        .restore_task(&first, chrono::Utc::now().timestamp(), Actor::SYSTEM)
+        .restore_task(
+            &first,
+            chrono::Utc::now().timestamp(),
+            WipCheck::Force,
+            Actor::SYSTEM,
+        )
         .expect("restore");
     assert!(matches!(outcome, RestoreOutcome::Restored { .. }));
     let position = |id: &str| fx.db.task(id).expect("read").expect("task").position;

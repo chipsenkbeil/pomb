@@ -13,22 +13,22 @@ use serde::de::DeserializeOwned;
 use tokio::sync::watch;
 
 use super::{
-    AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardMember,
-    BoardSnapshot, BookmarkAdd, BookmarkPatch, COLUMNS, COLUMNS_BY_BOARD, Change, ChangeOutcome,
-    ChildLinks, ChildTokenRefusal, ClaimOutcome, ClaimRequest, ColorDeleteOutcome,
-    ColumnDeleteOutcome, ColumnKind, ColumnMove, ColumnPatch, CommentWrite, Commit, CopyTasks, Db,
-    DbResult, DeviceGrant, EntryEdit, EpicCloseOutcome, EventRead, FIELD_DEFS, FeedAdd,
-    FencedWrite, FieldCreateOutcome, GrabRequest, GroupWrite, INBOUND_ADDRESSES, Incoming,
-    IssuedInbound, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkRefusal,
-    MemberSet, MoveGuards, MoveOutcome, NewComment, NewInbound, NewTaskPlacement, NewTimeEntry,
-    NewWebhook, NotificationPage, OwnerChange, OwnerOutcome, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, PurgeOutcome, QuestionGuard, QuestionMove, QuestionWrite, Reads,
-    RestoreOutcome, RoleTokenRefusal, Rows, SWIMLANES, SessionEndOutcome, SessionListing,
-    SessionToken, StandardRoles, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
-    SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, TaskContext,
-    TemplateDeleteOutcome, TokenEdit, UmbrellaChange, WEBHOOKS, WebhookPatch, first_board,
-    index_in, link_event_target, links_blocked_in, no_signed_in_account, read_in, redacted_history,
-    role_in, task_role_in,
+    AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardCopy, BoardImport,
+    BoardMember, BoardSnapshot, BookmarkAdd, BookmarkPatch, BulkMove, COLUMNS, COLUMNS_BY_BOARD,
+    Change, ChangeOutcome, ChildLinks, ChildTokenRefusal, ClaimOutcome, ClaimRequest,
+    ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnMove, ColumnPatch, CommentWrite,
+    Commit, CopyTasks, Db, DbResult, DeviceGrant, EntryEdit, EpicCloseOutcome, EventRead,
+    FIELD_DEFS, FeedAdd, FencedWrite, FieldCreateOutcome, GrabRequest, GroupWrite,
+    INBOUND_ADDRESSES, Incoming, IssuedInbound, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome,
+    LinkEdit, LinkRefusal, MemberSet, MoveGuards, MoveOutcome, NewComment, NewInbound,
+    NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage, OwnerChange, OwnerOutcome,
+    PasskeyAddOutcome, PasskeyDeleteOutcome, PurgeOutcome, QuestionGuard, QuestionMove,
+    QuestionWrite, Reads, RestoreOutcome, RoleTokenRefusal, Rows, SWIMLANES, SessionEndOutcome,
+    SessionListing, SessionToken, StandardRoles, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
+    SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
+    TaskContext, TemplateDeleteOutcome, TokenEdit, UmbrellaChange, WEBHOOKS, WebhookPatch,
+    WipCheck, first_board, index_in, link_event_target, links_blocked_in, no_signed_in_account,
+    read_in, redacted_history, role_in, task_role_in,
 };
 use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission, required_role,
@@ -1542,13 +1542,14 @@ impl AccountDb {
         source: &OwnedBoard,
         name: &str,
         tasks: CopyTasks,
+        wip: WipCheck,
         actor: Actor<'_>,
     ) -> DbResult<Option<String>> {
         self.db.copy_board_by(
             &self.account,
             &source.row().id,
             name,
-            tasks,
+            BoardCopy { tasks, wip },
             self.joining_token(),
             actor,
         )
@@ -1677,13 +1678,14 @@ impl AccountDb {
         column: &OwnedColumn,
         row: TaskRow,
         placement: NewTaskPlacement,
+        wip: WipCheck,
         actor: Actor<'_>,
     ) -> DbResult<Result<String, String>> {
         let row = TaskRow {
             column_id: column.row().id.clone(),
             ..row
         };
-        self.db.insert_task_checked(row, placement, actor)
+        self.db.insert_task_checked(row, placement, actor, wip)
     }
 
     /// Runs `f` on a task in one write transaction, storing the row when `f` reports a change. Any
@@ -1759,12 +1761,12 @@ impl AccountDb {
         column: &OwnedColumn,
         swimlane_id: Option<&str>,
         position: f64,
-        commit: Commit,
+        run: BulkMove,
         actor: Actor<'_>,
     ) -> DbResult<MoveOutcome> {
         let ids: Vec<String> = tasks.iter().map(|task| task.row().id.clone()).collect();
         self.db
-            .move_tasks_logged(&ids, &column.row().id, swimlane_id, position, commit, actor)
+            .move_tasks_logged(&ids, &column.row().id, swimlane_id, position, run, actor)
     }
 
     /// Moves a task, its time entries and its attachments into the recycle bin and drops its
@@ -1855,9 +1857,10 @@ impl AccountDb {
         &self,
         binned: &OwnedBinned,
         now: i64,
+        wip: WipCheck,
         actor: Actor<'_>,
     ) -> DbResult<RestoreOutcome> {
-        self.db.restore_task(binned.id(), now, actor)
+        self.db.restore_task(binned.id(), now, wip, actor)
     }
 
     /// Notifies the account that `actor` deleted `task`, which is gone from the board by now.

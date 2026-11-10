@@ -14,7 +14,7 @@ use super::{
     new_task_placement, parse_body, required,
 };
 use crate::db::{
-    AccountDb, IssuedInbound, MAX_PREFIX_CHARS, NewInbound, PublicDb, push_column_event,
+    AccountDb, IssuedInbound, MAX_PREFIX_CHARS, NewInbound, PublicDb, WipCheck, push_column_event,
 };
 use crate::limit::{ClientIp, IpScope, rate_limited_response};
 use crate::models::{Actor, ActorKind, Cap, HistoryKind, InboundAddressRow, Responsible, TextCap};
@@ -276,6 +276,10 @@ pub(crate) struct InboundMail {
     /// The HTML body, used only when there is no plain-text body.
     #[serde(default, alias = "HtmlBody", alias = "body-html", alias = "html_body")]
     html: Option<String>,
+    /// true makes the task even when its column or limit group is at its WIP limit. Absent or
+    /// false refuses with 409 `wip_limit_reached` and makes nothing.
+    #[serde(default)]
+    force: bool,
 }
 
 /// The task a mail made.
@@ -413,7 +417,7 @@ async fn read_capped(headers: &HeaderMap, body: Body) -> Result<Bytes, AppError>
         (status = 201, description = "The mail became a task", body = ReceivedMail),
         (status = 400, description = "The body is not a JSON object of the mail fields"),
         (status = 404, description = "No inbound address has this address, which is also the answer for a rotated or deleted one"),
-        (status = 409, description = "`quota_exceeded`: the owner's board or storage quota is full"),
+        (status = 409, description = "`quota_exceeded`: the owner's board or storage quota is full. `wip_limit_reached`: the column or its limit group is at its WIP limit and `force` is not true"),
         (status = 413, description = "The body is over 1 MiB, and nothing was created"),
         (status = 415, description = "The body is not `application/json`"),
         (status = 422, description = "`column_rule`: the column's entry rules refuse the task"),
@@ -520,7 +524,13 @@ pub(crate) async fn receive_inbound_mail(
         Some(&column.row().id),
     );
     let task_id = account
-        .insert_task_checked(&column, row, placement, actor)
+        .insert_task_checked(
+            &column,
+            row,
+            placement,
+            WipCheck::forcing(mail.force),
+            actor,
+        )
         .map_err(AppError::from)?
         .map_err(AppError::bad_request)?;
     Ok((StatusCode::CREATED, Json(ReceivedMail { task_id })).into_response())

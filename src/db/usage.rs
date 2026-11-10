@@ -619,7 +619,7 @@ mod tests {
     use super::*;
     use crate::db::{
         ColumnDeleteOutcome, ColumnPatch, EntryEdit, FieldCreateOutcome, META, NewWebhook,
-        OwnerChange, SCHEMA_VERSION_KEY, SwimlanePatch, WebhookPatch,
+        OwnerChange, SCHEMA_VERSION_KEY, SwimlanePatch, WebhookPatch, WipCheck,
     };
     use crate::models::{
         AccountId, Actor, BIN_RETENTION_DAYS, BoardRole, FieldColumn, FieldKind, FieldOwner,
@@ -833,7 +833,7 @@ mod tests {
         assert_counts_match(&fx.db);
         let now = Utc::now().timestamp();
         fx.db
-            .restore_task(&task, now, Actor::SYSTEM)
+            .restore_task(&task, now, WipCheck::Force, Actor::SYSTEM)
             .expect("restore");
         assert_counts_match(&fx.db);
         assert!(stored(&fx.db, &fx.member) >= held);

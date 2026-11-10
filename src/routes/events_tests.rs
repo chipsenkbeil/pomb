@@ -11,7 +11,7 @@ use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{Reply, call};
 use super::{REQUEST_TIMEOUT_SECS, router};
 use crate::auth::new_api_token_record;
-use crate::db::{Db, NewTaskPlacement};
+use crate::db::{Db, NewTaskPlacement, WipCheck};
 use crate::limit::Limits;
 use crate::models::{AccountId, Actor, ActorKind, AuthScope, InstanceMode};
 use crate::{AppState, BODY_LIMIT_BYTES, markdown};
@@ -123,7 +123,7 @@ impl Fixture {
         };
         let row = Db::new_task_row(&self.todo, None, name, 0, None);
         self.db
-            .insert_task_checked(row, NewTaskPlacement::Bottom, person)
+            .insert_task_checked(row, NewTaskPlacement::Bottom, person, WipCheck::Force)
             .expect("task")
             .expect("fields")
     }

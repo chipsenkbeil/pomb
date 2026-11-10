@@ -685,6 +685,41 @@ pub struct MoveGuards<'a> {
     pub skip_epic_guard: bool,
 }
 
+/// Whether a write refuses a task into a column or limit group already at its WIP limit.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum WipCheck {
+    /// Refuse with a [`WipRefused`] error and write nothing.
+    Enforce,
+    /// Add the task past the limit.
+    Force,
+}
+
+impl WipCheck {
+    /// Returns [`WipCheck::Force`] when `force` is set, else [`WipCheck::Enforce`].
+    #[must_use]
+    pub fn forcing(force: bool) -> Self {
+        if force { Self::Force } else { Self::Enforce }
+    }
+}
+
+/// What a board copy takes along and how it treats WIP limits.
+#[derive(Copy, Clone, Debug)]
+pub struct BoardCopy {
+    /// The tasks the copy starts with.
+    pub tasks: CopyTasks,
+    /// Whether a column may end over its WIP limit.
+    pub wip: WipCheck,
+}
+
+/// How a bulk move runs.
+#[derive(Copy, Clone, Debug)]
+pub struct BulkMove {
+    /// What the move does with its transaction once every task moved.
+    pub commit: Commit,
+    /// Whether a task may enter a column or limit group at its WIP limit.
+    pub wip: WipCheck,
+}
+
 /// What a bulk write does with its transaction once every task changed.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Commit {
@@ -746,6 +781,58 @@ pub enum MoveOutcome {
         count: usize,
         limit: i64,
     },
+}
+
+/// Refusal of a write that would put a task into a column, or into a column's limit group, past
+/// its WIP limit.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum WipRefused {
+    Column {
+        /// What the column holds.
+        held: WipHeld,
+        /// The column's limit, in tasks or hours.
+        limit: i64,
+    },
+    Group {
+        /// What the group holds.
+        count: usize,
+        /// The group's limit.
+        limit: i64,
+    },
+}
+
+impl fmt::Display for WipRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Column {
+                held: WipHeld::Tasks(count),
+                limit,
+            } => write!(f, "column WIP limit reached ({count}/{limit})"),
+            Self::Column {
+                held: WipHeld::Minutes(minutes),
+                limit,
+            } => write!(
+                f,
+                "column WIP limit reached ({}/{})",
+                format_minutes(minutes),
+                format_minutes(limit * 60)
+            ),
+            Self::Group { count, limit } => {
+                write!(f, "limit group WIP limit reached ({count}/{limit})")
+            }
+        }
+    }
+}
+
+impl Error for WipRefused {}
+
+impl From<WipRefused> for MoveOutcome {
+    fn from(refusal: WipRefused) -> Self {
+        match refusal {
+            WipRefused::Column { held, limit } => Self::WipLimit { held, limit },
+            WipRefused::Group { count, limit } => Self::GroupLimit { count, limit },
+        }
+    }
 }
 
 /// Where a question's write moves the task.
@@ -5135,6 +5222,87 @@ fn txn_refuse_board_over_quota(
     txn_refuse_over_quota(txn, &board.owner_id, quota, after)
 }
 
+/// Returns the refusal of putting work task `task` into `target` when that would pass the column's
+/// limit or its limit group's, read inside an open write transaction. `from` is the column the
+/// task leaves, none for a task that is new to the board. A task that stays in its column, and a
+/// task that holds no work, never add to it.
+fn txn_wip_refusal(
+    txn: &WriteTransaction,
+    task: &TaskRow,
+    target: &ColumnRow,
+    from: Option<&str>,
+) -> DbResult<Option<WipRefused>> {
+    if !task.is_work() || from == Some(target.id.as_str()) {
+        return Ok(None);
+    }
+    if let Some(limit) = target.wip_limit {
+        if target.wip_limit_in_hours() {
+            let minutes =
+                |task: &TaskRow| (task.estimate_hours.unwrap_or(0.0) * 60.0).round() as i64;
+            let cell: Vec<TaskRow> = txn_indexed_rows(txn, TASKS_BY_COLUMN, &target.id, TASKS)?;
+            let held: i64 = cell
+                .iter()
+                .filter(|other| other.id != task.id && other.is_work())
+                .map(minutes)
+                .sum();
+            if minutes(task) > 0 && held + minutes(task) > limit * 60 {
+                return Ok(Some(WipRefused::Column {
+                    held: WipHeld::Minutes(held),
+                    limit,
+                }));
+            }
+        } else {
+            let count = txn_indexed_rows::<TaskRow>(txn, TASKS_BY_COLUMN, &target.id, TASKS)?
+                .iter()
+                .filter(|other| other.id != task.id && other.is_work())
+                .count();
+            if count as i64 >= limit {
+                return Ok(Some(WipRefused::Column {
+                    held: WipHeld::Tasks(count),
+                    limit,
+                }));
+            }
+        }
+    }
+    let group = txn_group_over_limit(
+        txn,
+        &target.board_id,
+        &task.id,
+        from.unwrap_or_default(),
+        &target.id,
+    )?;
+    Ok(group.map(|(count, limit)| WipRefused::Group { count, limit }))
+}
+
+/// Returns the refusal for the first column of board `board_id` that holds more work than its
+/// limit, read inside an open write transaction.
+fn txn_board_over_wip(txn: &WriteTransaction, board_id: &str) -> DbResult<Option<WipRefused>> {
+    let columns: Vec<ColumnRow> = txn_indexed_rows(txn, COLUMNS_BY_BOARD, board_id, COLUMNS)?;
+    for column in columns {
+        let Some(limit) = column.wip_limit else {
+            continue;
+        };
+        let held: Vec<TaskRow> = txn_indexed_rows(txn, TASKS_BY_COLUMN, &column.id, TASKS)?;
+        let work = held.iter().filter(|task| task.is_work());
+        if column.wip_limit_in_hours() {
+            let minutes: i64 = work
+                .map(|task| (task.estimate_hours.unwrap_or(0.0) * 60.0).round() as i64)
+                .sum();
+            if minutes > limit * 60 {
+                let held = WipHeld::Minutes(minutes);
+                return Ok(Some(WipRefused::Column { held, limit }));
+            }
+        } else {
+            let count = work.count();
+            if count as i64 > limit {
+                let held = WipHeld::Tasks(count);
+                return Ok(Some(WipRefused::Column { held, limit }));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Returns how many tasks board `board_id` holds, read inside an open write transaction.
 fn txn_board_task_count(txn: &WriteTransaction, board_id: &str) -> DbResult<usize> {
     let mut count = 0;
@@ -8522,16 +8690,19 @@ impl Db {
 
     /// Builds a new board named `name` for `owner` that copies board `source_id`: its colors,
     /// columns with their limits, swimlanes and due time, and the tasks `tasks` names, all in one
-    /// write transaction. Returns `None` when the source is unknown.
+    /// write transaction. Returns `None` when the source is unknown. With `WipCheck::Enforce`
+    /// a copy that puts a column over its limit is refused with a [`WipRefused`] error and
+    /// writes nothing.
     pub fn copy_board_by(
         &self,
         owner: &AccountId,
         source_id: &str,
         name: &str,
-        tasks: CopyTasks,
+        copy: BoardCopy,
         joining_token: &str,
         actor: Actor<'_>,
     ) -> DbResult<Option<String>> {
+        let BoardCopy { tasks, wip } = copy;
         if !self.board_exists(source_id)? {
             return Ok(None);
         }
@@ -8554,6 +8725,11 @@ impl Db {
         )?;
         let held = txn_board_task_count(&txn, &board_id)?;
         txn_refuse_board_over_quota(&txn, &board_id, Quota::TasksPerBoard, held)?;
+        if wip == WipCheck::Enforce
+            && let Some(refusal) = txn_board_over_wip(&txn, &board_id)?
+        {
+            return Err(refusal.into());
+        }
         txn.commit()?;
         Ok(Some(board_id))
     }
@@ -9081,7 +9257,7 @@ impl Db {
     /// boards created before colors existed.
     pub fn insert_task(&self, row: TaskRow, placement: NewTaskPlacement) -> DbResult<String> {
         Ok(self
-            .insert_task_checked(row, placement, Actor::SYSTEM)?
+            .insert_task_checked(row, placement, Actor::SYSTEM, WipCheck::Force)?
             .unwrap_or_else(|_| unreachable!("a row without fields always passes")))
     }
 
@@ -9089,16 +9265,24 @@ impl Db {
     /// board's field definitions as stored in the same transaction.
     /// Returns `Err` with a message naming the key, writing nothing, when
     /// one no longer fits.
+    /// With `WipCheck::Enforce` a task into a column or limit group already at its limit fails
+    /// with a [`WipRefused`] error and writes nothing.
     pub fn insert_task_checked(
         &self,
         mut row: TaskRow,
         placement: NewTaskPlacement,
         actor: Actor<'_>,
+        wip: WipCheck,
     ) -> DbResult<Result<String, String>> {
         let txn = self.db.begin_write()?;
         if let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, &row.column_id)? {
             let held = txn_board_task_count(&txn, &column.board_id)?;
             txn_refuse_board_over_quota(&txn, &column.board_id, Quota::TasksPerBoard, held + 1)?;
+            if wip == WipCheck::Enforce
+                && let Some(refusal) = txn_wip_refusal(&txn, &row, &column, None)?
+            {
+                return Err(refusal.into());
+            }
             txn_ensure_board_colors(&txn, &column.board_id)?;
             if row.seats.is_empty()
                 && let Some(board) = txn_read_one::<BoardRow>(&txn, BOARDS, &column.board_id)?
@@ -11651,15 +11835,16 @@ impl Db {
     /// Moves every task in `ids` into one cell, the first at `position` and each next one right
     /// after the one before, so the tasks keep the order given. The moves share one write
     /// transaction: when any task is missing, none moves. A move to another column logs the same
-    /// `moved` event a single move does, and the target column's WIP limit does not block. With
-    /// `Commit::Discard` every move runs and the transaction ends without a commit.
+    /// `moved` event a single move does, and with `WipCheck::Enforce` a task that would pass the
+    /// target column's or limit group's limit moves none. With `Commit::Discard` every move runs
+    /// and the transaction ends without a commit.
     pub fn move_tasks_logged(
         &self,
         ids: &[String],
         column_id: &str,
         swimlane_id: Option<&str>,
         position: f64,
-        commit: Commit,
+        run: BulkMove,
         actor: Actor<'_>,
     ) -> DbResult<MoveOutcome> {
         let txn = self.db.begin_write()?;
@@ -11679,6 +11864,7 @@ impl Db {
             let guards = MoveGuards {
                 event: detail.as_deref(),
                 batch: &ids[offset + 1..],
+                enforce_wip: run.wip == WipCheck::Enforce,
                 ..MoveGuards::default()
             };
             let at = position + offset as f64;
@@ -11687,7 +11873,7 @@ impl Db {
                 return Ok(outcome);
             }
         }
-        commit.finish(txn)?;
+        run.commit.finish(txn)?;
         Ok(MoveOutcome::Moved)
     }
 
@@ -11724,48 +11910,10 @@ impl Db {
         let old_column_id = task.column_id.clone();
         let old_swimlane_id = task.swimlane_id.clone();
 
-        // A move within its own column never adds to that column
-        if let (true, Some(limit), true, true) = (
-            guards.enforce_wip,
-            target.wip_limit,
-            old_column_id != column_id,
-            task.is_work(),
-        ) {
-            if target.wip_limit_in_hours() {
-                let minutes =
-                    |task: &TaskRow| (task.estimate_hours.unwrap_or(0.0) * 60.0).round() as i64;
-                let cell: Vec<TaskRow> = txn_indexed_rows(txn, TASKS_BY_COLUMN, column_id, TASKS)?;
-                let held: i64 = cell
-                    .iter()
-                    .filter(|other| other.id != id && other.is_work())
-                    .map(minutes)
-                    .sum();
-                if minutes(&task) > 0 && held + minutes(&task) > limit * 60 {
-                    return Ok(MoveOutcome::WipLimit {
-                        held: WipHeld::Minutes(held),
-                        limit,
-                    });
-                }
-            } else {
-                let count = txn_indexed_rows::<TaskRow>(txn, TASKS_BY_COLUMN, column_id, TASKS)?
-                    .iter()
-                    .filter(|other| other.id != id && other.is_work())
-                    .count();
-                if count as i64 >= limit {
-                    return Ok(MoveOutcome::WipLimit {
-                        held: WipHeld::Tasks(count),
-                        limit,
-                    });
-                }
-            }
-        }
         if guards.enforce_wip
-            && old_column_id != column_id
-            && task.is_work()
-            && let Some((count, limit)) =
-                txn_group_over_limit(txn, &target.board_id, id, &old_column_id, column_id)?
+            && let Some(refusal) = txn_wip_refusal(txn, &task, &target, Some(&old_column_id))?
         {
-            return Ok(MoveOutcome::GroupLimit { count, limit });
+            return Ok(refusal.into());
         }
 
         let old_column: Option<ColumnRow> = txn_read_one(txn, COLUMNS, &old_column_id)?;

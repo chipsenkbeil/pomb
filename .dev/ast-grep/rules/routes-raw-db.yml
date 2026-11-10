@@ -46,6 +46,7 @@ ignores:
   - src/routes/webhook_tests.rs
   - src/routes/units_tests.rs
   - src/routes/history_values_tests.rs
+  - src/routes/wip_paths_tests.rs
 rule:
   any:
     - kind: field_expression

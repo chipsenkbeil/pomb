@@ -438,7 +438,8 @@ mod tests {
     use super::*;
     use crate::db::usage::{OverQuota, txn_store_task};
     use crate::db::{
-        FencedWrite, MoveGuards, NewComment, NewTaskPlacement, NewWebhook, TASKS, push_event,
+        FencedWrite, MoveGuards, NewComment, NewTaskPlacement, NewWebhook, TASKS, WipCheck,
+        push_event,
     };
     use crate::models::{AccountId, HistoryKind, InstanceMode, Subtask};
 
@@ -541,7 +542,7 @@ mod tests {
         fn task_in(&self, column: &str, name: &str) -> String {
             let row = Db::new_task_row(column, None, name, 0, None);
             self.db
-                .insert_task_checked(row, NewTaskPlacement::Bottom, USER)
+                .insert_task_checked(row, NewTaskPlacement::Bottom, USER, WipCheck::Force)
                 .expect("task")
                 .expect("fields")
         }
@@ -736,7 +737,7 @@ mod tests {
             crate::db::ColumnDeleteOutcome::Deleted
         ));
         fx.db
-            .restore_task(&task, chrono::Utc::now().timestamp(), USER)
+            .restore_task(&task, chrono::Utc::now().timestamp(), WipCheck::Force, USER)
             .expect("restore");
         assert_eq!(
             fx.events(&everything),

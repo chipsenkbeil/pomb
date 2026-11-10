@@ -67,7 +67,7 @@ use crate::backup::{BackupFile, RunError};
 use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
     AdminActionOutcome, AgentRoleNameTaken, BoardDenied, BookmarkAdd, BookmarkPatch, Bound,
-    ChangeOutcome, ChildLinks, ChildRef, ChildTokenRefusal, ClaimOutcome, ClaimRequest,
+    BulkMove, ChangeOutcome, ChildLinks, ChildRef, ChildTokenRefusal, ClaimOutcome, ClaimRequest,
     ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnMove, ColumnWatch, CommentWrite,
     Commit, CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment,
     EntryEdit, EpicCloseOutcome, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome,
@@ -81,8 +81,8 @@ use crate::db::{
     RoleDenied, RoleTokenRefusal, SessionEndOutcome, SessionListing, SessionRefused, SessionToken,
     SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext,
     TemplateDeleteOutcome, TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart, UmbrellaRef,
-    WebhookColumnMissing, WebhookPatch, WipHeld, carry_fields, clean_labels, local_day,
-    merge_metadata, push_change_event, push_column_event, push_event, round_estimate,
+    WebhookColumnMissing, WebhookPatch, WipCheck, WipHeld, WipRefused, carry_fields, clean_labels,
+    local_day, merge_metadata, push_change_event, push_column_event, push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -1968,6 +1968,12 @@ impl From<BoardDenied> for AppError {
     }
 }
 
+impl From<WipRefused> for AppError {
+    fn from(refusal: WipRefused) -> Self {
+        Self::conflict(refusal.to_string()).with_code(ErrorCode::WipLimitReached)
+    }
+}
+
 impl From<Box<dyn std::error::Error>> for AppError {
     fn from(error: Box<dyn std::error::Error>) -> Self {
         if let Some(refusal) = error.downcast_ref::<BoardDenied>() {
@@ -1993,6 +1999,9 @@ impl From<Box<dyn std::error::Error>> for AppError {
         }
         if error.downcast_ref::<NumberingExhausted>().is_some() {
             return Self::conflict(error.to_string());
+        }
+        if let Some(refusal) = error.downcast_ref::<WipRefused>() {
+            return (*refusal).into();
         }
         if let Some(duplicate) = error.downcast_ref::<DuplicateAttachment>() {
             return Self::conflict(duplicate.to_string()).with_code(ErrorCode::DuplicateAttachment);
@@ -8661,6 +8670,10 @@ struct CreateTaskInput {
     /// and absent or null stores none.
     #[schema(value_type = Option<Object>)]
     metadata: Option<serde_json::Value>,
+    /// true adds the task even when its column or limit group is at its WIP limit. Absent or false
+    /// refuses with 409 `wip_limit_reached` and adds nothing.
+    #[serde(default)]
+    force: bool,
 }
 
 /// Lists tasks with their board and `column_entered_at`, optionally for one board, one page at a time.
@@ -8978,7 +8991,7 @@ fn create_target_column(db: &AccountDb, input: &CreateTaskInput) -> Result<Owned
         (status = 201, description = "Created task", body = TaskDetail),
         (status = 400, description = "Invalid input: empty name, unparseable due_at, neither `column_id` nor (for an epic) `board_id`, or a `board_id` that is not the column's board"),
         (status = 404, description = "Column or board not found"),
-        (status = 409, description = "The board's numbering has no number left"),
+        (status = 409, description = "`wip_limit_reached`: the column or its limit group is at its WIP limit and `force` is not true, and nothing is created. Without a code: the board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -9147,7 +9160,13 @@ async fn create_task(
     // The field values are checked again against the definitions stored at
     // write time, in the same transaction as the insert.
     let id = db
-        .insert_task_checked(&column, row, placement, user.actor())
+        .insert_task_checked(
+            &column,
+            row,
+            placement,
+            WipCheck::forcing(input.force),
+            user.actor(),
+        )
         .map_err(|err| match err.to_string().as_str() {
             crate::db::UNKNOWN_COLOR => AppError::bad_request(crate::db::UNKNOWN_COLOR),
             _ => AppError::from(err),
@@ -10526,10 +10545,7 @@ async fn move_task(
         MoveOutcome::OpenChildren { count } => return Err(epic_has_open_children(count)),
         MoveOutcome::WipLimit { held, limit } => return Err(column_wip_limit(held, limit)),
         MoveOutcome::GroupLimit { count, limit } => {
-            return Err(AppError::conflict(format!(
-                "limit group WIP limit reached ({count}/{limit})"
-            ))
-            .with_code(ErrorCode::WipLimitReached));
+            return Err(WipRefused::Group { count, limit }.into());
         }
     }
 
@@ -10657,6 +10673,10 @@ struct BulkTasksInput {
     remove_links: Option<Vec<BulkLink>>,
     /// `relations`: relations to add to each task.
     add_links: Option<Vec<BulkLink>>,
+    /// `move`: true moves the tasks even into a column or limit group at its WIP limit. Absent or
+    /// false refuses the whole request with 409 `wip_limit_reached`.
+    #[serde(default)]
+    force: bool,
 }
 
 /// What a bulk request changes on one task.
@@ -10687,7 +10707,8 @@ struct BulkTasksResult {
 /// cannot change, none does. `color`, `labels`, `members`, `unassign_members`, `subtasks` and
 /// `due_dates` write one history event per changed field on every task. `move` keeps the order of
 /// `task_ids`, logs the same history event a single move does, stamps and clears the Done time
-/// like it, and ignores the target column's WIP limit. `relations` removes and adds task links as
+/// like it, and refuses with 409 `wip_limit_reached` when a task would pass the target column's or
+/// limit group's WIP limit, unless `force` is true. `relations` removes and adds task links as
 /// the link endpoints do, and `delete` moves the tasks to the recycle bin as
 /// `DELETE /api/tasks/{id}` does. Every changed task queues the webhook events a single change
 /// queues.
@@ -10707,7 +10728,7 @@ struct BulkTasksResult {
         (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks, a link the tasks cannot hold or a `parent` or `child` link whose umbrella is not an epic (`not_epic`)"),
         (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task carries a locking label, or a task it links to carries one and the link is not `blocked_by` or `related`, and the token is not the owner's. `role_move_forbidden`: a `move` by a token issued as a role that the board's column rules do not let move one of the tasks out of its column into the target"),
         (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
-        (status = 409, description = "`epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column"),
+        (status = 409, description = "`epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column. `wip_limit_reached`: a `move` would put a task past the target column's or limit group's WIP limit and `force` is not true, and no task moves"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -11016,7 +11037,10 @@ async fn bulk_tasks(
                     &column,
                     swimlane_id.as_deref(),
                     position,
-                    commit,
+                    BulkMove {
+                        commit,
+                        wip: WipCheck::forcing(input.force),
+                    },
                     actor,
                 )
                 .map_err(AppError::from)?
@@ -11024,9 +11048,13 @@ async fn bulk_tasks(
                 MoveOutcome::Moved => {}
                 MoveOutcome::NotFound => return Err(AppError::not_found("task not found")),
                 MoveOutcome::OpenChildren { count } => return Err(epic_has_open_children(count)),
-                MoveOutcome::StaleFence
-                | MoveOutcome::WipLimit { .. }
-                | MoveOutcome::GroupLimit { .. } => {
+                MoveOutcome::WipLimit { held, limit } => {
+                    return Err(column_wip_limit(held, limit));
+                }
+                MoveOutcome::GroupLimit { count, limit } => {
+                    return Err(WipRefused::Group { count, limit }.into());
+                }
+                MoveOutcome::StaleFence => {
                     return Err(AppError::conflict("the tasks could not be moved"));
                 }
             }
@@ -11364,6 +11392,15 @@ fn merged_members(current: &[String], add: &[String], remove: &[String]) -> Vec<
 #[into_params(parameter_in = Query)]
 struct MoveTaskQuery {
     /// true moves into a column past its WIP limit (the board UI sends it).
+    force: Option<bool>,
+}
+
+/// Query of a task restore.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct RestoreTaskQuery {
+    /// true restores into a column or limit group at its WIP limit. Absent or false refuses with
+    /// 409 `wip_limit_reached` and leaves the task in the bin.
     force: Option<bool>,
 }
 
@@ -11728,13 +11765,16 @@ struct RestoredTask {
     path = "/api/bin/{id}/restore",
     operation_id = "restore_task",
     tag = "Tasks",
-    params(("id" = String, Path, description = "Id of the deleted task")),
+    params(
+        ("id" = String, Path, description = "Id of the deleted task"),
+        RestoreTaskQuery,
+    ),
     responses(
         (status = 200, description = "Task restored", body = RestoredTask),
         (status = 401, description = "Missing or invalid credentials"),
         (status = 403, description = "`card_locked`: the task carries a locking label"),
         (status = 404, description = "No such task in the recycle bin"),
-        (status = 409, description = "The task waited longer than 30 days in the bin"),
+        (status = 409, description = "The task waited longer than 30 days in the bin, or `wip_limit_reached`: the column it returns to or that column's limit group is at its WIP limit and `force` is not true"),
         (status = 422, description = "`column_rule`: the task's old column is gone and it breaks the entry rule of the board's first column"),
     ),
 )]
@@ -11742,6 +11782,7 @@ async fn restore_task(
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
+    Query(query): Query<RestoreTaskQuery>,
 ) -> Result<Json<RestoredTask>, AppError> {
     let binned = found(account.binned_task_board(&id), "task not found in the bin")?;
     ensure_unlocked(&account, &user, binned.board_id(), binned.task())?;
@@ -11754,7 +11795,12 @@ async fn restore_task(
         ensure_entry_allowed(&account, column, binned.board_id(), binned.task())?;
     }
     let outcome = account
-        .restore_task(&binned, chrono::Utc::now().timestamp(), user.actor())
+        .restore_task(
+            &binned,
+            chrono::Utc::now().timestamp(),
+            WipCheck::forcing(query.force.unwrap_or(false)),
+            user.actor(),
+        )
         .map_err(AppError::from)?;
     match outcome {
         RestoreOutcome::Restored {
@@ -12414,14 +12460,7 @@ fn epic_has_open_children(count: usize) -> AppError {
 
 /// Returns the 409 for a full target column, naming time with units for an hours limit.
 fn column_wip_limit(held: WipHeld, limit: i64) -> AppError {
-    let amounts = match held {
-        WipHeld::Tasks(count) => format!("{count}/{limit}"),
-        WipHeld::Minutes(minutes) => {
-            format!("{}/{}", format_minutes(minutes), format_minutes(limit * 60))
-        }
-    };
-    AppError::conflict(format!("column WIP limit reached ({amounts})"))
-        .with_code(ErrorCode::WipLimitReached)
+    WipRefused::Column { held, limit }.into()
 }
 
 /// Claims a task, or renews the caller's own live claim.
@@ -13218,6 +13257,10 @@ struct ConvertSubtaskInput {
     /// (the new task is blocked by the parent).
     #[serde(default)]
     relation: ConvertRelation,
+    /// true adds the task even when its column or limit group is at its WIP limit. Absent or false
+    /// refuses with 409 `wip_limit_reached` and adds nothing.
+    #[serde(default)]
+    force: bool,
 }
 
 /// Turns a subtask into a task of its own. The new task takes the subtask's name and due date and
@@ -13240,6 +13283,7 @@ struct ConvertSubtaskInput {
         (status = 400, description = "Unknown color or member, or a column on another board"),
         (status = 403, description = "`permission_denied`: the token lacks `subtasks.edit`, `subtasks.delete` or, for a relation, `links.write`. `card_locked`: the parent carries a locking label"),
         (status = 404, description = "Task, subtask or column not found"),
+        (status = 409, description = "`wip_limit_reached`: the target column or its limit group is at its WIP limit and `force` is not true"),
         (status = 422, description = "`column_rule`: the target column refuses the new task, or the parent's column refuses the parent without the subtask"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -13318,7 +13362,13 @@ async fn convert_subtask(
         Some(&column.row().id),
     );
     let new_id = db
-        .insert_task_checked(&column, row, placement, actor)
+        .insert_task_checked(
+            &column,
+            row,
+            placement,
+            WipCheck::forcing(input.force),
+            actor,
+        )
         .map_err(AppError::from)?
         .map_err(AppError::bad_request)?;
     let new_task = found(db.task(&new_id), "task vanished after create")?;
@@ -14131,10 +14181,9 @@ fn question_comment(written: QuestionWrite) -> Result<TaskComment, AppError> {
         QuestionWrite::Locked => Err(card_locked()),
         QuestionWrite::OpenChildren { count } => Err(epic_has_open_children(count)),
         QuestionWrite::WipLimit { held, limit } => Err(column_wip_limit(held, limit)),
-        QuestionWrite::GroupLimit { count, limit } => Err(AppError::conflict(format!(
-            "limit group WIP limit reached ({count}/{limit})"
-        ))
-        .with_code(ErrorCode::WipLimitReached)),
+        QuestionWrite::GroupLimit { count, limit } => {
+            Err(WipRefused::Group { count, limit }.into())
+        }
         QuestionWrite::NoQuestion => Err(AppError::bad_request("the comment is not a question")),
         QuestionWrite::AlreadyAnswered => {
             Err(AppError::conflict("the question is answered already"))
@@ -21370,6 +21419,10 @@ struct CreateBoardInput {
     /// With `copy_tasks`, leaves the copied tasks with no members and no responsible actor.
     #[serde(default)]
     clear_members: bool,
+    /// With `copy_tasks`, true copies the tasks even when a column ends over its WIP limit.
+    /// Absent or false refuses with 409 `wip_limit_reached` and creates no board.
+    #[serde(default)]
+    force: bool,
 }
 
 /// Creates a board, optionally from a template or as a copy of one of the account's boards, and
@@ -21386,6 +21439,7 @@ struct CreateBoardInput {
         (status = 400, description = "Invalid input: name blank or over 100 characters, a template together with a board to copy, or `copy_tasks` or `clear_members` without a board to copy"),
         (status = 403, description = "`permission_denied`: `copy_board_id` needs `boards.read` and `copy_tasks` needs `tasks.read`"),
         (status = 404, description = "Template or board to copy not found"),
+        (status = 409, description = "`wip_limit_reached`: the copied tasks would leave a column over its WIP limit and `force` is not true"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -21435,7 +21489,13 @@ async fn create_board(
                 (true, true) => CopyTasks::ClearMembers,
             };
             found(
-                db.copy_board(&source, &name, tasks, user.actor()),
+                db.copy_board(
+                    &source,
+                    &name,
+                    tasks,
+                    WipCheck::forcing(input.force),
+                    user.actor(),
+                ),
                 "board not found",
             )?
         }
@@ -29981,6 +30041,9 @@ mod seats_tests;
 mod webhook_tests;
 
 #[cfg(test)]
+mod wip_paths_tests;
+
+#[cfg(test)]
 mod server;
 
 #[cfg(test)]
@@ -32728,7 +32791,7 @@ mod tests {
         fx: &Kf221Fixture,
         extra: serde_json::Value,
     ) -> (axum::http::StatusCode, serde_json::Value) {
-        let mut body = serde_json::json!({"column_id": fx.col_wip, "name": "Task"});
+        let mut body = serde_json::json!({"column_id": fx.col_wip, "name": "Task", "force": true});
         if let (Some(target), Some(fields)) = (body.as_object_mut(), extra.as_object()) {
             target.extend(fields.clone());
         }

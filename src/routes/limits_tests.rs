@@ -4869,7 +4869,7 @@ async fn board_pages_should_render_cards_from_their_slim_view() {
         .member(
             "POST",
             "/api/tasks",
-            Some(json!({"column_id": column, "name": "Second card"})),
+            Some(json!({"column_id": column, "name": "Second card", "force": true})),
         )
         .await;
     assert!(second.status.is_success(), "{}", second.body);
