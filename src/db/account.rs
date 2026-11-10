@@ -1717,6 +1717,12 @@ impl AccountDb {
             .apply_task_change_in_board(&task.row().id, children, actor, f)
     }
 
+    /// Returns how many children of the epic `task` sit outside a Done column, whatever board they
+    /// are on.
+    pub fn open_children(&self, task: &OwnedTask) -> DbResult<usize> {
+        self.db.open_children(&task.row().id)
+    }
+
     /// Moves a task into `column` after the checks in `guards`, all in one write transaction.
     pub fn move_task_logged(
         &self,

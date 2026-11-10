@@ -12512,10 +12512,7 @@ async fn claim_task(
     let task = found(account.task(&id), "task not found")?;
     ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     if !task.row().is_work() {
-        let mut reads = account.link_reads().map_err(AppError::from)?;
-        let links = reads.task_links(&id).map_err(AppError::from)?;
-        let children = reads.children(&links).map_err(AppError::from)?;
-        let open = children.len() - done_children(&children);
+        let open = account.open_children(&task).map_err(AppError::from)?;
         if open > 0 {
             let still = if open == 1 {
                 "child is"

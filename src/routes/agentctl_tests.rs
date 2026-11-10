@@ -13398,6 +13398,68 @@ async fn claiming_an_epic_with_an_open_child_should_be_a_409_epic_not_claimable(
     assert!(stored(&fx, &epic)["claim"].is_null());
 }
 
+async fn claim_as(fx: &Fixture, token: &str, task: &str) -> (StatusCode, Value) {
+    let body = json!({"claimant": "agent", "ttl_seconds": 60});
+    let (status, text) = request(
+        fx,
+        As::Bearer(token),
+        "POST",
+        &format!("/api/tasks/{task}/claim"),
+        Some(body),
+        true,
+    )
+    .await;
+    let value = serde_json::from_str(&text).unwrap_or(Value::String(text));
+    (status, value)
+}
+
+#[tokio::test]
+async fn claiming_an_epic_with_an_open_child_on_an_unseen_board_should_be_a_409_epic_not_claimable()
+{
+    let (_dir, fx) = fixture();
+    let (_, _, far_task) = other_board(&fx);
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let (status, linked) = link(&fx, &far_task, "parent", &epic).await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    let (_, scoped) = assigned_token(&fx, AuthScope::Work, &[&fx.board_id]);
+
+    let (status, error) = claim_as(&fx, &scoped, &epic).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert_eq!(error["code"], "epic_not_claimable");
+    assert_eq!(
+        error["message"],
+        "an epic can be claimed once every child is done, and 1 child is still open"
+    );
+    assert!(stored(&fx, &epic)["claim"].is_null());
+}
+
+#[tokio::test]
+async fn claiming_an_epic_whose_child_on_an_unseen_board_is_done_should_succeed() {
+    let (_dir, fx) = fixture();
+    let (board, _, far_task) = other_board(&fx);
+    let done = fx
+        .db
+        .create_column(&board, "Shipped", None)
+        .expect("column");
+    fx.db.set_column_done(&done, true).expect("set done");
+    fx.db.move_task(&far_task, &done, None, 1.0).expect("move");
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let (status, linked) = link(&fx, &far_task, "parent", &epic).await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    let (_, scoped) = assigned_token(&fx, AuthScope::Work, &[&fx.board_id]);
+
+    let (status, claimed) = claim_as(&fx, &scoped, &epic).await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+}
+
 #[tokio::test]
 async fn a_column_holding_only_epics_should_delete_and_send_them_to_the_first_column() {
     let (_dir, fx) = fixture();

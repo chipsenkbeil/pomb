@@ -11831,6 +11831,13 @@ impl Db {
         }
     }
 
+    /// Returns how many children of the epic `epic_id` sit in a column that is not a Done column,
+    /// counting the same children as the epic move guard.
+    pub fn open_children(&self, epic_id: &str) -> DbResult<usize> {
+        let txn = self.db.begin_write()?;
+        txn_open_children(&txn, epic_id, &[])
+    }
+
     /// [`Db::move_task`] with the checks in `guards`. Every read the move depends on, the checks,
     /// the move, both cells' renumbering, the field carry, the readiness bump, and the history
     /// event share one write transaction.
