@@ -29971,6 +29971,9 @@ mod boards_tests;
 mod bulk_tests;
 
 #[cfg(test)]
+mod move_tests;
+
+#[cfg(test)]
 mod wip_modal_tests;
 
 #[cfg(test)]

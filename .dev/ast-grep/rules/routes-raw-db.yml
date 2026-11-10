@@ -18,6 +18,7 @@ ignores:
   - src/routes/boards_tests.rs
   - src/routes/column_stage_tests.rs
   - src/routes/bulk_tests.rs
+  - src/routes/move_tests.rs
   - src/routes/wip_modal_tests.rs
   - src/routes/card_face_tests.rs
   - src/routes/epics_tests.rs
