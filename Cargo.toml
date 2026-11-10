@@ -64,7 +64,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 ureq = { version = "3", default-features = false, features = ["json", "rustls-no-provider", "rustls-webpki-roots"] }
 utoipa = "5"
 uuid = { version = "1", features = ["v4"] }
-webauthn-rs = { version = "=0.6.1-dev", default-features = false, features = ["conditional-ui"] }
+webauthn-rs = { version = "=0.6.2", default-features = false, features = ["conditional-ui"] }
 
 [dev-dependencies]
 chrono-tz = "0.10"

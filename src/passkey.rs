@@ -7,7 +7,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::{RngCore, thread_rng};
 use webauthn_rs::prelude::{
-    CreationChallengeResponse, CredentialID, DiscoverableAuthentication, DiscoverableKey, Passkey,
+    CreationChallengeResponse, CredentialID, DiscoverableAuthentication, Passkey,
     PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
     Url, Uuid, Webauthn, WebauthnBuilder, WebauthnError,
 };
@@ -337,11 +337,7 @@ impl RelyingParty {
             .ok_or(PasskeyError::UnknownCredential)?;
         let result = self
             .webauthn
-            .finish_discoverable_authentication(
-                credential,
-                state,
-                &[DiscoverableKey::from(&stored)],
-            )
+            .finish_discoverable_authentication_v2(credential, state, &stored)
             .map_err(PasskeyError::Rejected)?;
         stored.update_credential(&result);
         Ok(SignedIn {

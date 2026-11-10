@@ -49,8 +49,8 @@ reason = "wraps aws-lc-sys, which is C code"
 
 [[advisories.ignore]]
 id = "RUSTSEC-2023-0071"
-reason = "rsa reaches pomb only through webauthn-rs, which verifies RS256 passkey signatures with public keys; the Marvin timing attack needs a private-key decryption or signature, and pomb holds no RSA private key"
+reason = "rsa 0.10.0-rc.19 reaches pomb only through crypto-glue 0.2.2, which webauthn-rs-core 0.6.2 and webauthn-attestation-ca 0.6.2 use to verify RS256 passkey signatures with public keys; the Marvin timing attack needs a private-key decryption or signature, and pomb holds no RSA private key"
 
 [[advisories.ignore]]
 id = "RUSTSEC-2026-0387"
-reason = "crypto-bigint 0.5 reaches pomb only through webauthn-rs's elliptic-curve 0.13, which pomb uses to verify passkey signatures; every value in that arithmetic is public, so its timing leaks no secret, and no 0.5 release has the fix"
+reason = "crypto-bigint 0.5.5 reaches pomb only through the p256 0.13.2 dev-dependency that the tests use (elliptic-curve 0.13.8, ecdsa 0.16.9), never through webauthn-rs 0.6.2 or the shipped binary; no 0.5 release has the fix"
