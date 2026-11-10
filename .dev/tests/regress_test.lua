@@ -2,17 +2,11 @@ local devos = require("dev.os")
 local fs = require("dev.fs")
 local t = require("dev.testing")
 local testenv = require("dev.testenv")
+local gitenv = require("pomb.gitenv")
 
 local ROOT = fs.dirname(fs.dirname(fs.dirname(debug.getinfo(1, "S").source:sub(2))))
 
-devos.defaults.env = {
-    GIT_CONFIG_GLOBAL = "/dev/null",
-    GIT_CONFIG_NOSYSTEM = "1",
-    GIT_AUTHOR_NAME = "Test",
-    GIT_AUTHOR_EMAIL = "test@example.com",
-    GIT_COMMITTER_NAME = "Test",
-    GIT_COMMITTER_EMAIL = "test@example.com",
-}
+devos.defaults.env = gitenv.env
 
 local STUB_CI = [[
 if [ "$1" = -C ]; then cd "$2" || exit 2; fi
@@ -26,11 +20,7 @@ if [ -e '@dir@/fail' ]; then exit 1; fi
 exit 0
 ]]
 
-local function git(dir, ...)
-    local out, code = devos.capture({ "git", "-C", dir, ... })
-    assert(code == 0, table.concat({ ... }, " "))
-    return (out:gsub("%s+$", ""))
-end
+local git = gitenv.git
 
 local function commit(work, body)
     assert(fs.write(work .. "/marker", body .. "\n"))

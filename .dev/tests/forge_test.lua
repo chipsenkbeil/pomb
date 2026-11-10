@@ -3,19 +3,15 @@ local forge = require("pomb.forge")
 local fs = require("dev.fs")
 local t = require("dev.testing")
 local testenv = require("dev.testenv")
+local gitenv = require("pomb.gitenv")
 
-devos.defaults.env = {
-    GIT_CONFIG_GLOBAL = "/dev/null",
-    GIT_CONFIG_NOSYSTEM = "1",
-    GIT_AUTHOR_NAME = "t",
-    GIT_AUTHOR_EMAIL = "t@t",
-    GIT_COMMITTER_NAME = "t",
-    GIT_COMMITTER_EMAIL = "t@t",
-}
+devos.defaults.env = gitenv.env
 
-local function git(root, ...)
-    local out, code = devos.capture({ "git", "-C", root, ... })
-    assert(code == 0, table.concat({ ... }, " "))
+local git = gitenv.git
+
+local function raw_commit(root)
+    local out, code = devos.capture({ "git", "-C", root, "cat-file", "commit", "HEAD" })
+    assert(code == 0, "cat-file commit HEAD")
     return out
 end
 
@@ -57,7 +53,7 @@ t.test("add_change_id appends the trailer hashed from the commit", function()
     fs.write(root .. "/file", "content\n")
     git(root, "add", "file")
     git(root, "commit", "-q", "-m", "subject")
-    local before = git(root, "cat-file", "commit", "HEAD")
+    local before = raw_commit(root)
     local hash = { "git", "-C", root, "hash-object", "-t", "commit", "--stdin" }
     local hashed = devos.capture_input(hash, before)
     t.eq(forge.add_change_id(root), true)
