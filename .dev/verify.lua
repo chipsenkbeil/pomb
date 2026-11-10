@@ -281,6 +281,7 @@ if backup_path then
 end
 
 if failures > 0 then
+    io.stdout:flush()
     stderr:write(("\n%d check(s) failed, so the worktrees are untouched.\n"):format(failures))
     return 1
 end
