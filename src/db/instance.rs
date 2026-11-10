@@ -7,13 +7,14 @@ use super::{
     AccountAction, AccountSummary, AdminActionOutcome, AppState, Db, DbResult, LargestUse,
     no_signed_in_account,
 };
-use crate::api_error::{ErrorCode, coded_response};
+use crate::api_error::{ErrorCode, coded_response, permission_denied};
 use crate::auth::AuthUser;
 use crate::backup::{Backups, RunError};
 use crate::models::{
     AccountRole, BackupSettings, BackupStatus, InstanceSettings, InviteRow, PruneStatus,
     UnnamedFiles,
 };
+use crate::permissions::Permission;
 
 /// Instance settings for the admin. It has no board-content methods at all, so holding it never
 /// reaches another account's boards.
@@ -38,6 +39,30 @@ impl FromRequestParts<AppState> for InstanceDb {
                 "this action needs the instance admin",
             )),
             None => Err(no_signed_in_account()),
+        }
+    }
+}
+
+/// The instance handle for the backup routes: the admin's browser session or a token of the admin
+/// account that holds `settings.write`. A member, a lead token and a token below the admin preset
+/// get a 403 `permission_denied`.
+#[derive(Clone, Debug)]
+pub struct SettingsDb(pub InstanceDb);
+
+#[axum::async_trait]
+impl FromRequestParts<AppState> for SettingsDb {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
+        let Some(user) = parts.extensions.get::<AuthUser>() else {
+            return Err(no_signed_in_account());
+        };
+        if user.role == AccountRole::Admin && user.has(Permission::SettingsWrite) {
+            Ok(Self(InstanceDb {
+                db: state.db.clone(),
+            }))
+        } else {
+            Err(permission_denied(Permission::SettingsWrite))
         }
     }
 }

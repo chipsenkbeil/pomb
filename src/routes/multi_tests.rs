@@ -30,9 +30,9 @@ use crate::models::{
 /// Days since its last use for a board well past the default inactivity limit.
 const PRUNED_LONG_AGO_DAYS: i64 = 365;
 
-/// Fewest Admin-class routes the member refusal test must cover: backups, invites, accounts,
+/// Fewest Admin-class routes the member refusal test must cover: invites, accounts,
 /// settings and the admin page.
-const MIN_ADMIN_ROUTES: usize = 13;
+const MIN_ADMIN_ROUTES: usize = 10;
 
 /// The bootstrap token the instances under test accept.
 const BOOTSTRAP: &str = "pomb_multi_bootstrap_token_for_tests";

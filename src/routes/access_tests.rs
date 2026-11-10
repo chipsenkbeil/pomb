@@ -1461,13 +1461,14 @@ fn route_access_should_cover_every_route() {
     };
     println!(
         "ROUTE_ACCESS: Board {}, Task {}, Entity {}, Account {}, AccountSession {}, Admin {}, \
-         Public {}",
+         Instance {}, Public {}",
         count(RouteClass::Board),
         count(RouteClass::Task),
         count(RouteClass::Entity),
         count(RouteClass::Account),
         count(RouteClass::AccountSession),
         count(RouteClass::Admin),
+        count(RouteClass::Instance),
         count(RouteClass::Public),
     );
 }
@@ -2768,4 +2769,43 @@ async fn dismissing_notifications_should_belong_to_their_account() {
     let (_, text) = send(&fx.app, Who::Session(&fx.a_cookie), &get, list, None).await;
     let empty: Value = serde_json::from_str(&text).expect("json");
     assert_eq!(empty["items"], json!([]), "{text}");
+}
+
+/// The four backup routes answer the admin's token and refuse a member's session and token, a lead
+/// token and a token without `settings.write`, each with `permission_denied`.
+#[tokio::test]
+async fn backup_routes_should_open_to_the_admin_token_and_refuse_every_other_credential() {
+    let seeded = registered().await;
+    let fx = open(&seeded);
+    let mint = |scope: AuthScope| {
+        let (record, raw) = new_api_token_record(&seeded.b, "Backup agent", scope, None);
+        fx.db.create_api_token(&record).expect("token");
+        raw
+    };
+    let lead = mint(AuthScope::Provision);
+    let work = mint(AuthScope::Work);
+    let settings = Payload::Json(json!({"enabled": true, "interval_hours": 24, "keep": 7}));
+    let routes = [
+        (Method::GET, "/api/v1/backups", None),
+        (Method::POST, "/api/v1/backups", None),
+        (Method::PUT, "/api/v1/backups/settings", Some(&settings)),
+        (Method::DELETE, "/api/v1/backups/unnamed-files", None),
+    ];
+    for (method, uri, payload) in routes {
+        for (who, credential) in [
+            ("member token", Who::Token(&fx.a_token)),
+            ("member session", Who::Session(&fx.a_cookie)),
+            ("lead token", Who::Token(&lead)),
+            ("work token", Who::Token(&work)),
+        ] {
+            let (status, text) = send(&fx.app, credential, &method, uri, payload).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri} as {who}");
+            assert!(
+                text.contains("permission_denied"),
+                "{method} {uri} as {who}: {text}"
+            );
+        }
+        let (status, text) = send(&fx.app, Who::Token(&fx.b_token), &method, uri, payload).await;
+        assert_eq!(status, StatusCode::OK, "{method} {uri}: {text}");
+    }
 }

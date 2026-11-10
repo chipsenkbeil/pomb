@@ -79,10 +79,11 @@ use crate::db::{
     PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuestionGuard, QuestionMove,
     QuestionWrite, QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked,
     RoleDenied, RoleTokenRefusal, SessionEndOutcome, SessionListing, SessionRefused, SessionToken,
-    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext,
-    TemplateDeleteOutcome, TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart, UmbrellaRef,
-    WebhookColumnMissing, WebhookPatch, WipCheck, WipHeld, WipRefused, carry_fields, clean_labels,
-    local_day, merge_metadata, push_change_event, push_column_event, push_event, round_estimate,
+    SettingsDb, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome,
+    TaskContext, TemplateDeleteOutcome, TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart,
+    UmbrellaRef, WebhookColumnMissing, WebhookPatch, WipCheck, WipHeld, WipRefused, carry_fields,
+    clean_labels, local_day, merge_metadata, push_change_event, push_column_event, push_event,
+    round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -837,6 +838,9 @@ enum RouteClass {
     AccountSession,
     /// Instance administration, which needs the admin's browser session.
     Admin,
+    /// Instance settings, which need the admin's browser session or a token of the admin account
+    /// that holds `settings.write`.
+    Instance,
     /// No credential: sign-in, setup, device pairing for the client, the calendar feed and docs.
     Public,
 }
@@ -1638,18 +1642,18 @@ const ROUTE_ACCESS: &[(Method, &str, Rc, Wr)] = {
             Rc::AccountSession,
             Wr::Exempt,
         ),
-        (Method::GET, "/api/v1/backups", Rc::Admin, Wr::No),
-        (Method::POST, "/api/v1/backups", Rc::Admin, Wr::Exempt),
+        (Method::GET, "/api/v1/backups", Rc::Instance, Wr::No),
+        (Method::POST, "/api/v1/backups", Rc::Instance, Wr::Exempt),
         (
             Method::PUT,
             "/api/v1/backups/settings",
-            Rc::Admin,
+            Rc::Instance,
             Wr::Exempt,
         ),
         (
             Method::DELETE,
             "/api/v1/backups/unnamed-files",
-            Rc::Admin,
+            Rc::Instance,
             Wr::Exempt,
         ),
         (
@@ -8520,16 +8524,14 @@ fn backups_view(state: &AppState, instance: &InstanceDb) -> Result<BackupsView, 
     tag = "Backups",
     responses(
         (status = 200, description = "Backup settings, latest attempt and kept files", body = BackupsView),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 403, description = "`permission_denied`: the token lacks `settings.write`, or its account is not the admin"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn get_backups(
     State(state): State<AppState>,
-    instance: InstanceDb,
-    Extension(user): Extension<AuthUser>,
+    SettingsDb(instance): SettingsDb,
 ) -> Result<Json<BackupsView>, AppError> {
-    require_cookie_auth(&user)?;
     Ok(Json(backups_view(&state, &instance)?))
 }
 
@@ -8556,17 +8558,15 @@ struct BackupSettingsInput {
     responses(
         (status = 200, description = "The stored settings", body = BackupSettings),
         (status = 400, description = "`invalid_request`: a missing or unknown field, or a value outside its bounds"),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 403, description = "`permission_denied`: the token lacks `settings.write`, or its account is not the admin"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn update_backup_settings(
-    instance: InstanceDb,
-    Extension(user): Extension<AuthUser>,
+    SettingsDb(instance): SettingsDb,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<BackupSettings>, AppError> {
-    require_cookie_auth(&user)?;
     let input: BackupSettingsInput = parse_body(&headers, body).await?;
     let settings = BackupSettings {
         enabled: input.enabled,
@@ -8590,16 +8590,14 @@ async fn update_backup_settings(
     responses(
         (status = 200, description = "The outcome of the backup", body = BackupStatus),
         (status = 409, description = "A backup is already running"),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 403, description = "`permission_denied`: the token lacks `settings.write`, or its account is not the admin"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn run_backup(
     State(state): State<AppState>,
-    instance: InstanceDb,
-    Extension(user): Extension<AuthUser>,
+    SettingsDb(instance): SettingsDb,
 ) -> Result<Json<BackupStatus>, AppError> {
-    require_cookie_auth(&user)?;
     let now = chrono::Utc::now().timestamp();
     match instance.run_backup(&state.backups, now).await {
         Ok(status) => Ok(Json(status)),
@@ -8618,15 +8616,13 @@ async fn run_backup(
     tag = "Backups",
     responses(
         (status = 200, description = "How many files were deleted and their bytes", body = UnnamedFiles),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 403, description = "`permission_denied`: the token lacks `settings.write`, or its account is not the admin"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn remove_unnamed_attachment_files(
-    instance: InstanceDb,
-    Extension(user): Extension<AuthUser>,
+    SettingsDb(instance): SettingsDb,
 ) -> Result<Json<UnnamedFiles>, AppError> {
-    require_cookie_auth(&user)?;
     Ok(Json(
         instance
             .remove_unnamed_attachment_files()

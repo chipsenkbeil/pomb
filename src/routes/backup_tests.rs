@@ -202,7 +202,7 @@ async fn failed_back_up_now_should_show_the_error_and_keep_serving() {
 }
 
 #[tokio::test]
-async fn backup_operations_should_need_the_browser_session() {
+async fn backup_operations_should_run_over_bearer_with_the_admin_token() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = open_db(dir.path());
     let (record, raw) =
@@ -210,10 +210,41 @@ async fn backup_operations_should_need_the_browser_session() {
     db.create_api_token(&record).expect("token");
     let app = app_for(db);
     let bearer = format!("Bearer {raw}");
+    let headers = [("authorization", bearer.as_str())];
+    let settings = json!({"enabled": true, "interval_hours": 12, "keep": 3});
+
+    let saved = call_as(
+        &app,
+        "PUT",
+        "/api/v1/backups/settings",
+        &headers,
+        Some(settings),
+    )
+    .await;
+    let started = call_as(&app, "POST", "/api/v1/backups", &headers, None).await;
+    let listed = call_as(&app, "GET", "/api/v1/backups", &headers, None).await;
+
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    assert_eq!(started.body["ok"], true, "{}", started.body);
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    assert_eq!(listed.body["settings"]["interval_hours"], 12);
+    assert_eq!(listed.body["files"].as_array().map(Vec::len), Some(1));
+}
+
+#[tokio::test]
+async fn backup_operations_should_refuse_a_token_without_settings_write_over_bearer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = open_db(dir.path());
+    let (record, raw) =
+        new_api_token_record(&AccountId::ownerless(), "work-bot", AuthScope::Work, None);
+    db.create_api_token(&record).expect("token");
+    let app = app_for(db);
+    let bearer = format!("Bearer {raw}");
     for (method, uri) in [
-        ("GET", "/api/v1/backups"),
         ("POST", "/api/v1/backups"),
         ("PUT", "/api/v1/backups/settings"),
+        ("DELETE", UNNAMED_URI),
     ] {
         let body =
             (method == "PUT").then(|| json!({"enabled": true, "interval_hours": BackupSettings::DEFAULT_INTERVAL_HOURS, "keep": BackupSettings::DEFAULT_KEEP}));
@@ -226,7 +257,7 @@ async fn backup_operations_should_need_the_browser_session() {
         )
         .await;
         assert_eq!(reply.status, StatusCode::FORBIDDEN, "{method} {uri}");
-        assert_eq!(reply.body["code"], "session_required", "{method} {uri}");
+        assert_eq!(reply.body["code"], "permission_denied", "{method} {uri}");
     }
     assert!(!dir.path().join("backups").exists(), "no backup ran");
 }
@@ -360,7 +391,7 @@ async fn removing_unnamed_files_should_delete_only_the_unnamed_ones() {
 }
 
 #[tokio::test]
-async fn removing_unnamed_files_should_need_the_browser_session_and_the_same_origin() {
+async fn removing_unnamed_files_should_work_over_bearer_and_need_the_same_origin() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = open_db(dir.path());
     let (record, raw) =
@@ -370,14 +401,6 @@ async fn removing_unnamed_files_should_need_the_browser_session_and_the_same_ori
     let file = seed_unnamed_file(dir.path(), b"abc");
     let bearer = format!("Bearer {raw}");
 
-    let token = call_as(
-        &app,
-        "DELETE",
-        UNNAMED_URI,
-        &[("authorization", bearer.as_str())],
-        None,
-    )
-    .await;
     let cross_site = call_as(
         &app,
         "DELETE",
@@ -390,10 +413,19 @@ async fn removing_unnamed_files_should_need_the_browser_session_and_the_same_ori
         None,
     )
     .await;
-
-    assert_eq!(token.status, StatusCode::FORBIDDEN);
-    assert_eq!(token.body["code"], "session_required");
     assert_eq!(cross_site.status, StatusCode::FORBIDDEN);
     assert_eq!(cross_site.body, REFUSED_BODY);
     assert!(file.exists(), "nothing was deleted");
+
+    let token = call_as(
+        &app,
+        "DELETE",
+        UNNAMED_URI,
+        &[("authorization", bearer.as_str())],
+        None,
+    )
+    .await;
+    assert_eq!(token.status, StatusCode::OK, "{}", token.body);
+    assert_eq!(token.body, json!({"count": 1, "bytes": 3}));
+    assert!(!file.exists(), "the unnamed file was deleted");
 }

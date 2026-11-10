@@ -215,7 +215,6 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "end_session",
             "finish_reauth",
             "get_api_token",
-            "get_backups",
             "get_webhook_secret",
             "inspect_api_token",
             "list_accounts",
@@ -226,12 +225,10 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "regenerate_recovery_code",
             "register_passkey",
             "remove_passkey",
-            "remove_unnamed_attachment_files",
             "revoke_agent_role_tokens",
             "revoke_api_token",
             "revoke_children_of_token",
             "revoke_invite",
-            "run_backup",
             "sign_out_other_sessions",
             "start_passkey_registration",
             "start_reauth",
@@ -242,7 +239,6 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "update_admin_settings",
             "update_agent_role",
             "update_api_token",
-            "update_backup_settings",
         ]
     );
     public.sort_unstable();
@@ -274,7 +270,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        38
+        34
     );
 }
 
