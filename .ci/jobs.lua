@@ -112,6 +112,18 @@ return {
         run("Build release", "dev build")
       end,
     },
+    lock = {
+      name = "Resolve Cargo.lock",
+      matrix = { RUNNER },
+      run = function()
+        local update = "cargo update -p " .. shell_quote(ci.args[1] or "")
+        if ci.args[2] then
+          update = update .. " --precise " .. shell_quote(ci.args[2])
+        end
+        run("Update Cargo.lock", update)
+        ci.artifact("Cargo.lock")
+      end,
+    },
     regress = {
       name = "Regress browser",
       matrix = { BROWSER_RUNNER },
