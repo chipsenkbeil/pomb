@@ -257,9 +257,11 @@
           </div>
         </section>
 
-        <section class="tm-side-group" id="tm-group-seats">
+        <section class="tm-side-group" id="tm-group-seats"{% if panel.seats.is_empty() %} hidden{% endif %}>
           <h3 class="tm-side-title"><button type="button" class="tm-fold" data-fold-group="seats" aria-expanded="true" aria-controls="tm-body-seats">Reviewers</button></h3>
           <div class="tm-side-body" id="tm-body-seats">
+            {% if is_done && !panel.seats.is_empty() %}<button type="button" class="tm-seats-fold" data-seats-fold aria-expanded="false" aria-controls="tm-seat-rows"><span class="tm-seats-circles">{% for seat in panel.seats %}{% if let Some(circle) = seat.circle %}{% call c::circle(circle, "seat") %}{% endif %}{% endfor %}</span><span class="tm-seats-summary">{{ panel.approved }} of {{ panel.seats.len() }} approved{% if let Some(revision) = panel.last_revision %} <code class="tm-seat-revision">at {{ revision }}</code>{% endif %}</span></button>{% endif %}
+            <div class="tm-seat-rows" id="tm-seat-rows"{% if is_done && !panel.seats.is_empty() %} hidden{% endif %}>
             {% for seat in panel.seats %}<div class="tm-seat-row" data-seat-row="{{ seat.name }}">
               <span class="tm-row-label">{% if let Some(circle) = seat.circle %}{% call c::circle(circle, "seat") %}{% endif %}<span class="tm-seat-name">{{ seat.name }}</span> <span class="tm-seat-role">({{ seat.role }})</span></span>
               <span class="tm-row-values"><span class="tm-seat-state">{{ seat.state.label() }}</span>{% if let Some(revision) = seat.revision %}<code class="tm-seat-revision tm-row-sub" title="{{ revision }}">at {{ revision }}</code>{% endif %}</span>
@@ -268,6 +270,7 @@
               {% if panel.can_drop %}<button type="button" class="tm-side-btn" data-owner-act="seat-drop" data-seat="{{ seat.name }}">Drop</button>{% endif %}
               </span>
             </div>{% endfor %}
+            </div>
             {% if panel.can_ask_again %}<button type="button" class="tm-side-btn" data-owner-act="ask-again">Ask again</button>{% endif %}
             {% if role.writes() %}<details class="tm-seat-add-menu">
               <summary class="tm-seat-add-open" title="Add a seat" aria-label="Add a seat">+</summary>

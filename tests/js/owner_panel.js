@@ -54,6 +54,7 @@ eval(fn('  function showOwnerPanelError(boxId, message) {'));
 eval(fn('  function ownerPanelSend(spec) {'));
 eval(fn('  function ownerPanelSpec(button) {'));
 eval(fn('  function runOwnerPanelAction(button) {'));
+eval(fn('  function toggleSeatsFold(button) {'));
 
 function button(attrs) {
   return { getAttribute: (name) => name in attrs ? attrs[name] : null };
@@ -102,6 +103,14 @@ async function main() {
   await runOwnerPanelAction(button({ 'data-owner-act': 'seat-take', 'data-seat': 'code' }));
   check('panel_should_show_the_refusal_of_a_seat_take', [boxes['tm-seat-error'].textContent, boxes['tm-seat-error'].hidden, refreshes],
     ['seat held', false, 0]);
+
+  boxes['tm-seat-rows'] = { hidden: true };
+  const attrs = { 'aria-controls': 'tm-seat-rows', 'aria-expanded': 'false' };
+  const fold = { getAttribute: (name) => attrs[name], setAttribute: (name, value) => { attrs[name] = value; } };
+  toggleSeatsFold(fold);
+  check('seats_fold_should_toggle_the_rows', [boxes['tm-seat-rows'].hidden, attrs['aria-expanded']], [false, 'true']);
+  toggleSeatsFold(fold);
+  check('seats_fold_should_close_the_rows_again', [boxes['tm-seat-rows'].hidden, attrs['aria-expanded']], [true, 'false']);
 
   console.log('failures=' + failures);
   if (failures) throw new Error(failures + ' owner panel check(s) failed');

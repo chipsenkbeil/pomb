@@ -397,3 +397,60 @@ async fn panel_should_show_when_the_owner_took_the_card() {
         "{html}"
     );
 }
+
+#[tokio::test]
+async fn panel_should_fold_the_seats_on_a_done_card() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let reviewer = fx.token(None);
+    let take = format!("/api/tasks/{task}/seats/take");
+    let body = json!({"seat": "code", "name": "rev-bot", "ttl_seconds": 600});
+    fx.agent(&reviewer, &take, body).await;
+    let verdict = format!("/api/tasks/{task}/seats/verdict");
+    let body =
+        json!({"seat": "code", "name": "rev-bot", "verdict": "approved", "revision": "abc123"});
+    fx.agent(&reviewer, &verdict, body).await;
+
+    let html = fx.modal(&task).await;
+    assert!(!html.contains("data-seats-fold"), "{html}");
+    assert!(!html.contains(r#"id="tm-seat-rows" hidden"#), "{html}");
+
+    let done = fx
+        .db
+        .create_column(&fx.board, "Done", None)
+        .expect("column");
+    fx.db.set_column_done(&done, true).expect("done");
+    fx.db.move_task(&task, &done, None, 1.0).expect("move");
+    let html = fx.modal(&task).await;
+    assert!(html.contains("data-seats-fold"), "{html}");
+    assert!(
+        html.contains(r#"aria-expanded="false" aria-controls="tm-seat-rows""#),
+        "{html}"
+    );
+    assert!(html.contains("1 of 2 approved"), "{html}");
+    assert!(
+        html.contains(r#"<code class="tm-seat-revision">at abc123</code>"#),
+        "{html}"
+    );
+    assert!(html.contains(r#"id="tm-seat-rows" hidden"#), "{html}");
+    assert_eq!(html.matches("data-seat-row=").count(), 2, "{html}");
+}
+
+#[tokio::test]
+async fn panel_should_omit_reviewers_without_seats() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    for seat in ["code", "verify"] {
+        fx.browse(
+            "DELETE",
+            &format!("/api/tasks/{task}/seats?name={seat}"),
+            None,
+        )
+        .await;
+    }
+    let html = fx.modal(&task).await;
+    assert!(html.contains(r#"id="tm-group-seats" hidden"#), "{html}");
+    assert_eq!(html.matches("data-seat-row=").count(), 0, "{html}");
+    assert!(!html.contains("data-seats-fold"), "{html}");
+    assert!(html.contains(r#"data-owner-act="seat-add""#), "{html}");
+}

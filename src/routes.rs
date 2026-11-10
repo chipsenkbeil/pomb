@@ -3275,6 +3275,10 @@ struct SidePanel {
     owner: PanelOwner,
     /// One row per seat on the card.
     seats: Vec<PanelSeat>,
+    /// How many seats approved.
+    approved: usize,
+    /// The revision of the last seat that sent one.
+    last_revision: Option<String>,
     /// Whether the signed-in member owns the card and a seat asked for changes.
     can_ask_again: bool,
     /// Whether the account may drop a seat from the card.
@@ -3379,6 +3383,11 @@ impl SidePanel {
                 take,
             });
         }
+        let approved = seats
+            .iter()
+            .filter(|seat| seat.state == PanelSeatState::Approved)
+            .count();
+        let last_revision = seats.iter().rev().find_map(|seat| seat.revision.clone());
         let release_fence = (mine && claim_fence > 0).then_some(claim_fence);
         Ok(Self {
             can_ask_again: mine
@@ -3396,6 +3405,8 @@ impl SidePanel {
                 take,
             },
             seats,
+            approved,
+            last_revision,
         })
     }
 }

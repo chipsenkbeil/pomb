@@ -3697,7 +3697,17 @@
     return ownerPanelSend(spec);
   }
 
+  function toggleSeatsFold(button) {
+    const rows = document.getElementById(button.getAttribute('aria-controls'));
+    const open = button.getAttribute('aria-expanded') === 'true';
+    button.setAttribute('aria-expanded', open ? 'false' : 'true');
+    if (rows) rows.hidden = open;
+  }
+
   function wireOwnerPanel(overlay) {
+    overlay.querySelectorAll('[data-seats-fold]').forEach((button) => {
+      button.addEventListener('click', () => { toggleSeatsFold(button); });
+    });
     overlay.querySelectorAll('[data-owner-act]').forEach((button) => {
       button.addEventListener('click', () => { runOwnerPanelAction(button); });
     });
@@ -4446,7 +4456,7 @@
     applySidebarFolds();
   }
 
-  const ADD_FIELD = Object.freeze({ ROW: 'addRow', GROUP: 'addGroup', METADATA: 'addMetadata' });
+  const ADD_FIELD = Object.freeze({ ROW: 'addRow', GROUP: 'addGroup', METADATA: 'addMetadata', SEATS: 'addSeats' });
 
   function addFieldEntries(groups) {
     const entries = [];
@@ -4461,6 +4471,8 @@
     });
     const metadata = document.getElementById('modal-metadata-wrap');
     if (metadata && metadata.hidden) entries.push({ label: 'Metadata', attr: ADD_FIELD.METADATA, value: '' });
+    const seats = document.getElementById('tm-group-seats');
+    if (seats && seats.hidden) entries.push({ label: 'Reviewers', attr: ADD_FIELD.SEATS, value: '' });
     return entries;
   }
 
@@ -4486,6 +4498,12 @@
     if (item.dataset[ADD_FIELD.METADATA] !== undefined) {
       const edit = document.querySelector('#modal-metadata-wrap [data-metadata-edit]');
       if (edit) edit.click();
+      return;
+    }
+    if (item.dataset[ADD_FIELD.SEATS] !== undefined) {
+      const seats = document.getElementById('tm-group-seats');
+      if (seats) seats.hidden = false;
+      renderAddFieldMenu(fieldGroupModel({}));
       return;
     }
     if (item.dataset[ADD_FIELD.GROUP] !== undefined) {
@@ -4656,7 +4674,7 @@
     if (!side) return;
     renderFieldGroups();
     side.addEventListener('click', function (e) {
-      const add = e.target.closest('[data-add-row], [data-add-group], [data-add-metadata]');
+      const add = e.target.closest('[data-add-row], [data-add-group], [data-add-metadata], [data-add-seats]');
       if (add) { pickAddField(add); return; }
       var edit = e.target.closest('[data-edit-fields]');
       if (edit) { openFieldEditor(edit.dataset.editFields); return; }

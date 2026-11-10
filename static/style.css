@@ -10016,3 +10016,9 @@ body.dark .tlp-panel-bar { background: #333; }
   .api-docs-menu { position: static; width: auto; max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--card-border); }
   .api-docs-body { padding: 1rem; }
 }
+.tm-seats-fold { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 0; border: 0; background: none; color: var(--ink); font-size: 12px; text-align: left; cursor: pointer; }
+.tm-seats-fold:hover { color: var(--accent); }
+.tm-seats-fold:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.tm-seats-circles { display: inline-flex; flex: none; }
+.tm-seats-circles .card-circle + .card-circle { margin-left: -6px; }
+.tm-seats-summary { display: flex; flex-direction: column; min-width: 0; }

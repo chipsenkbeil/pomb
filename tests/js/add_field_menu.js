@@ -14,6 +14,7 @@ function check(name, got, want) {
 const hiddenDd = { hidden: true, dataset: { row: 'due' }, previousElementSibling: { textContent: 'Due' } };
 const shownDd = { hidden: false, dataset: { row: 'labels' }, previousElementSibling: { textContent: 'Labels' } };
 const metadata = { hidden: true };
+let seatsGroup = null;
 const menu = { open: true, hidden: true, items: [], querySelector: () => items };
 const items = { textContent: '', children: [], appendChild(node) { this.children.push(node); } };
 const clicks = [];
@@ -27,6 +28,7 @@ const document = {
   getElementById(id) {
     if (id === 'modal-metadata-wrap') return metadata;
     if (id === 'tm-add-field-menu') return menu;
+    if (id === 'tm-group-seats') return seatsGroup;
     return null;
   },
   querySelector(selector) {
@@ -41,7 +43,7 @@ const document = {
 function sideEl(tag, className, text) { return { tag, className, textContent: text, dataset: {} }; }
 function fieldGroupModel() { return [{ name: 'a', editable: true, shown: [] }, { name: 'b', editable: true, shown: [1] }]; }
 function openFieldEditor(name) { opened.push(name); }
-const ADD_FIELD = Object.freeze({ ROW: 'addRow', GROUP: 'addGroup', METADATA: 'addMetadata' });
+const ADD_FIELD = Object.freeze({ ROW: 'addRow', GROUP: 'addGroup', METADATA: 'addMetadata', SEATS: 'addSeats' });
 eval(fn('  function addFieldEntries(groups) {'));
 eval(fn('  function renderAddFieldMenu(groups) {'));
 eval(fn('  function pickAddField(item) {'));
@@ -58,6 +60,15 @@ check('menu_should_reveal_the_picked_row', [cells[0].hidden, cells[1].hidden, fo
 pickAddField(items.children[1]);
 pickAddField(items.children[2]);
 check('menu_should_open_the_group_editor_and_the_metadata_dialog', [opened, clicks], [['a'], ['edit']]);
+
+seatsGroup = { hidden: true };
+renderAddFieldMenu(fieldGroupModel());
+const reviewers = items.children.find((n) => n.textContent === 'Reviewers');
+check('menu_should_offer_reviewers_when_the_card_has_no_seats', reviewers ? Object.keys(reviewers.dataset)[0] : null, 'addSeats');
+pickAddField(reviewers);
+items.children.length = 0;
+renderAddFieldMenu(fieldGroupModel());
+check('menu_should_unhide_the_reviewers_group_when_picked', [seatsGroup.hidden, items.children.some((n) => n.textContent === 'Reviewers')], [false, false]);
 
 console.log('failures=' + failures);
 if (failures) throw new Error(failures + ' add field menu check(s) failed');
