@@ -32814,6 +32814,22 @@ mod tests {
         (status, value)
     }
 
+    async fn done_task_with_date(
+        fx: &Kf221Fixture,
+        name: &str,
+        grouping_date: Option<&str>,
+    ) -> String {
+        let (_, task) = create_task_json(fx, serde_json::json!({ "name": name })).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+        send(fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+        if let Some(date) = grouping_date {
+            let set = serde_json::json!({ "grouping_date": date });
+            send(fx, "PATCH", &format!("/api/tasks/{id}"), Some(set)).await;
+        }
+        id
+    }
+
     /// Create takes `metadata` under the PATCH rules, and the 201 body and a later GET return it.
     #[tokio::test]
     async fn create_task_should_store_metadata_object_without_null_keys() {
@@ -34058,36 +34074,23 @@ mod tests {
                 .collect()
         };
         let board = format!("/b/{}", fx.board_id);
-        let (_, task) = create_task_json(&fx, serde_json::json!({ "name": "Older" })).await;
-        let id = task["id"].as_str().expect("id").to_string();
-        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
-        send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
         let yesterday = (Local::now().date_naive() - Duration::days(1))
             .format("%Y-%m-%d")
             .to_string();
+        let older = done_task_with_date(&fx, "Older", None).await;
         let set = serde_json::json!({ "grouping_date": yesterday });
-        let (status, _) = send(&fx, "PATCH", &format!("/api/tasks/{id}"), Some(set)).await;
+        let (status, _) = send(&fx, "PATCH", &format!("/api/tasks/{older}"), Some(set)).await;
         assert_eq!(status, axum::http::StatusCode::OK);
         let (_, page) = send(&fx, "GET", &board, None).await;
         assert_eq!(groups(&page), ["Today", "Yesterday"]);
 
         // A future grouping date gets its own group after Today, and today's
         // tasks keep the one Today header.
-        for (name, date) in [("Future", Some(4)), ("Current", None)] {
-            let (_, task) = create_task_json(&fx, serde_json::json!({ "name": name })).await;
-            let id = task["id"].as_str().expect("id").to_string();
-            let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
-            send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
-            if let Some(days) = date {
-                let day = Local::now().date_naive() + Duration::days(days);
-                let set =
-                    serde_json::json!({ "grouping_date": day.format("%Y-%m-%d").to_string() });
-                send(&fx, "PATCH", &format!("/api/tasks/{id}"), Some(set)).await;
-            }
-        }
-        let future = (Local::now().date_naive() + Duration::days(4))
-            .format("%A, %-d %B")
-            .to_string();
+        let future_day = Local::now().date_naive() + Duration::days(4);
+        let future_date = future_day.format("%Y-%m-%d").to_string();
+        done_task_with_date(&fx, "Future", Some(future_date.as_str())).await;
+        done_task_with_date(&fx, "Current", None).await;
+        let future = future_day.format("%A, %-d %B").to_string();
         let (_, page) = send(&fx, "GET", &board, None).await;
         assert_eq!(groups(&page), ["Today", future.as_str(), "Yesterday"]);
     }
@@ -34098,19 +34101,11 @@ mod tests {
         let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
         let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
         assert!(status.is_success(), "swimlane created");
-        let (_, task) = create_task_json(&fx, serde_json::json!({ "name": "Older" })).await;
-        let id = task["id"].as_str().expect("id").to_string();
-        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
-        send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
         let yesterday = (Local::now().date_naive() - Duration::days(1))
             .format("%Y-%m-%d")
             .to_string();
-        let set = serde_json::json!({ "grouping_date": yesterday });
-        send(&fx, "PATCH", &format!("/api/tasks/{id}"), Some(set)).await;
-        let (_, task) = create_task_json(&fx, serde_json::json!({ "name": "Newer" })).await;
-        let id = task["id"].as_str().expect("id").to_string();
-        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
-        send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+        done_task_with_date(&fx, "Older", Some(yesterday.as_str())).await;
+        done_task_with_date(&fx, "Newer", None).await;
         let (_, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
         assert_eq!(
             page.matches("data-done-today").count(),
@@ -34134,12 +34129,7 @@ mod tests {
         let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
         let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
         assert!(status.is_success(), "swimlane created");
-        let (_, task) = create_task_json(&fx, serde_json::json!({ "name": "Dated" })).await;
-        let id = task["id"].as_str().expect("id").to_string();
-        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
-        send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
-        let set = serde_json::json!({ "grouping_date": "2026-01-05" });
-        send(&fx, "PATCH", &format!("/api/tasks/{id}"), Some(set)).await;
+        done_task_with_date(&fx, "Dated", Some("2026-01-05")).await;
         let (_, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
         assert!(
             page.contains("data-group-day=\"2026-01-05\""),
@@ -34163,10 +34153,7 @@ mod tests {
         let board = format!("/b/{}", fx.board_id);
         let (_, page) = send(&fx, "GET", &board, None).await;
         assert_eq!(page.matches("done-group-label").count(), 0, "empty Done");
-        let (_, task) = create_task_json(&fx, serde_json::json!({ "name": "Finished" })).await;
-        let id = task["id"].as_str().expect("id").to_string();
-        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
-        send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+        done_task_with_date(&fx, "Finished", None).await;
         let (_, page) = send(&fx, "GET", &board, None).await;
         assert_eq!(
             page.matches("done-group-label\" data-done-today>Today<")
