@@ -32828,6 +32828,12 @@ mod tests {
         (status, value)
     }
 
+    fn day_offset_date(days: i64) -> String {
+        (Local::now().date_naive() + Duration::days(days))
+            .format("%Y-%m-%d")
+            .to_string()
+    }
+
     async fn done_task_with_date(
         fx: &Kf221Fixture,
         name: &str,
@@ -34088,9 +34094,7 @@ mod tests {
                 .collect()
         };
         let board = format!("/b/{}", fx.board_id);
-        let yesterday = (Local::now().date_naive() - Duration::days(1))
-            .format("%Y-%m-%d")
-            .to_string();
+        let yesterday = day_offset_date(-1);
         let older = done_task_with_date(&fx, "Older", None).await;
         let set = serde_json::json!({ "grouping_date": yesterday });
         let (status, _) = send(&fx, "PATCH", &format!("/api/tasks/{older}"), Some(set)).await;
@@ -34115,9 +34119,7 @@ mod tests {
         let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
         let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
         assert!(status.is_success(), "swimlane created");
-        let yesterday = (Local::now().date_naive() - Duration::days(1))
-            .format("%Y-%m-%d")
-            .to_string();
+        let yesterday = day_offset_date(-1);
         done_task_with_date(&fx, "Older", Some(yesterday.as_str())).await;
         done_task_with_date(&fx, "Newer", None).await;
         let (_, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
@@ -34356,9 +34358,7 @@ mod tests {
         let (_, page) = send(&fx, "GET", &board, None).await;
         assert_eq!(groups(&page), ["Today"]);
 
-        let yesterday = (Local::now().date_naive() - Duration::days(1))
-            .format("%Y-%m-%d")
-            .to_string();
+        let yesterday = day_offset_date(-1);
         let set = serde_json::json!({ "grouping_date": yesterday });
         let (status, _) = send(&fx, "PATCH", &uris[0], Some(set)).await;
         assert_eq!(status, axum::http::StatusCode::OK);
