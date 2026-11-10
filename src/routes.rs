@@ -29295,6 +29295,11 @@ A token holds a set of permissions, and `GET /api/v1/auth/permissions` lists eve
 its group, description and the presets that hold it. `GET /api/v1/auth/whoami` lists what the
 calling credential holds. Every token reaches both routes, whatever it holds.
 
+The `work` preset holds exactly these permissions, in catalog order: `boards.read`, `seats.take`,
+`tasks.read`, `tasks.create`, `tasks.edit`, `tasks.move`, `tasks.claim`, `subtasks.edit`,
+`subtasks.check`, `links.write`, `comments.read`, `comments.write`, `attachments.read`,
+`attachments.write`, `time.read`, `time.write`, `settings.read`.
+
 `POST /api/v1/auth/tokens` takes one of `scopes`, a `preset` or a custom set of `permissions`, plus
 `boards`, and `POST /api/v1/auth/tokens/inspect` shows what a token of the account holds. Both need
 the browser session. A device request takes one of `scopes`, a `preset` or a custom set of

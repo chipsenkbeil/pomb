@@ -11,7 +11,7 @@ use super::{ApiDoc, DEFAULT_WAIT_SECS, MAX_EVENTS_PER_REPLY, MAX_WAIT_SECS, rout
 use crate::archive::MAX_ARCHIVE_BYTES;
 use crate::db::{Db, MAX_API_TOKENS_PER_ACCOUNT, MAX_EVENTS_PER_BOARD};
 use crate::models::{AuthScope, RateLimits};
-use crate::permissions::Permission;
+use crate::permissions::{Permission, Preset};
 use crate::{AppState, auth};
 
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
@@ -635,21 +635,48 @@ fn spec_should_name_the_permission_each_operation_needs() {
     assert_eq!(permission_of("get", "/api/calendar-feed/{token}"), None);
 }
 
+fn section_of(reference: &str, heading: &str) -> String {
+    let at = reference
+        .find(heading)
+        .unwrap_or_else(|| panic!("no section {heading}"));
+    let rest = &reference[at + heading.len()..];
+    rest[..rest.find("\n### ").unwrap_or(rest.len())].to_string()
+}
+
 #[test]
 fn reference_should_show_each_operations_permission() {
     let reference = render_api_reference(&spec());
-    let section = |heading: &str| {
-        let at = reference
-            .find(heading)
-            .unwrap_or_else(|| panic!("no section {heading}"));
-        let rest = &reference[at + heading.len()..];
-        rest[..rest.find("\n### ").unwrap_or(rest.len())].to_string()
-    };
+    let section = |heading: &str| section_of(&reference, heading);
     assert!(section("\n### POST /api/tasks\n").contains("Permission: `tasks.create`."));
     assert!(section("\n### DELETE /api/boards/{id}\n").contains("Permission: `boards.delete`."));
     assert!(section("\n### GET /api/boards\n").contains("Permission: `boards.read`."));
     assert!(section("\n### GET /skill.md\n").contains("Auth: none."));
     assert!(section("\n### PATCH /api/columns/{id}\n").contains("Permission: `columns.edit`."));
+}
+
+#[test]
+fn watch_should_show_tasks_claim_in_the_reference() {
+    let reference = render_api_reference(&spec());
+    assert!(
+        section_of(&reference, "\n### POST /api/tasks/{id}/watch\n")
+            .contains("Permission: `tasks.claim`.")
+    );
+}
+
+#[test]
+fn work_preset_prose_should_match_the_catalog() {
+    let reference = one_line(&render_api_reference(&spec()));
+    let marker = "The `work` preset holds exactly these permissions, in catalog order: ";
+    let at = reference.find(marker).expect("the work preset list") + marker.len();
+    let rest = &reference[at..];
+    let end = rest.find("`.").expect("the work preset list ends");
+    let listed: Vec<&str> = rest[..end].trim_start_matches('`').split("`, `").collect();
+    let expected: Vec<&str> = Preset::Work
+        .permissions()
+        .into_iter()
+        .map(Permission::name)
+        .collect();
+    assert_eq!(listed, expected);
 }
 
 fn prose_of(operation: &Value) -> String {
