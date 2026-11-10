@@ -7,6 +7,8 @@ local ROOT = fs.dirname(fs.dirname(fs.dirname(debug.getinfo(1, "S").source:sub(2
 
 local WORKTREE = "release-1"
 local REPO = "release-1-0123456789abcdef"
+local HEAD = "0123456789abcdef0123456789abcdef01234567"
+local OTHER = "89abcdef0123456789abcdef0123456789abcdef"
 
 local function row(id, status, source, repo)
     return ('{"run":"%s","repo":"%s","source":"%s","kind":"run","status":"%s"}'):format(
@@ -27,13 +29,24 @@ local function stub(root, name, body)
     assert(devos.run({ "chmod", "755", path }) == 0)
 end
 
-local function gate(before, after, dev_exit)
+local function gate(before, after, dev_exit, head)
     local root = assert(fs.realpath(testenv.tempdir()))
     assert(fs.mkdir(root .. "/bin"))
     assert(fs.mkdir(root .. "/" .. WORKTREE))
     assert(fs.symlink(ROOT .. "/.dev", root .. "/.dev"))
     assert(fs.write(root .. "/runs.json", doc(before)))
     assert(fs.write(root .. "/next.json", doc(after)))
+    local real_git = (assert(devos.capture({ "sh", "-c", "command -v git" }))):gsub("%s+$", "")
+    local wt = root .. "/" .. WORKTREE
+    stub(
+        root,
+        "git",
+        ([[if [ "$1" = -C ] && [ "$2" = '%s' ] && [ "$3" = rev-parse ] && [ "$4" = HEAD ]; then
+echo %s
+exit 0
+fi
+exec '%s' "$@"]]):format(wt, head or HEAD, real_git)
+    )
     stub(root, "ci", "cat '" .. root .. "/runs.json'")
     stub(root, "dev", ("cp '%s/next.json' '%s/runs.json'\nexit %d"):format(root, root, dev_exit))
     local words = { "__gate", root .. "/" .. WORKTREE, "lint", root .. "/gate.log" }
@@ -76,12 +89,33 @@ end)
 t.test("gate refuses a run that did not pass", function()
     local _, code, err = gate({}, { row("aaaaaa", "failed", "local") }, 0)
     t.ok(code ~= 0)
-    t.ok(err:find("only a passed run from local counts.", 1, true), err)
+    t.ok(err:find("only a passed run counts.", 1, true), err)
 end)
 
 t.test("gate refuses a dirty source", function()
-    local _, code = gate({}, { row("aaaaaa", "passed", "local(dirty)") }, 0)
+    local _, code, err = gate({}, { row("aaaaaa", "passed", "local(dirty)") }, 0)
     t.ok(code ~= 0)
+    t.ok(err:find("only a clean local source counts.", 1, true), err)
+end)
+
+t.test("gate_should_accept_a_local_source_naming_head", function()
+    local source = "local@" .. HEAD:sub(1, 12)
+    local out, code, err = gate({}, { row("bbbbbb", "passed", source) }, 0)
+    t.eq(code, 0, err)
+    t.eq(out, "bbbbbb " .. REPO .. " " .. source .. "\n")
+end)
+
+t.test("gate_should_refuse_a_local_source_naming_another_commit", function()
+    local _, code, err = gate({}, { row("bbbbbb", "passed", "local@" .. OTHER:sub(1, 12)) }, 0)
+    t.ok(code ~= 0)
+    t.ok(err:find("which is not the HEAD " .. HEAD .. " of", 1, true), err)
+end)
+
+t.test("gate_should_refuse_a_dirty_local_source_naming_head", function()
+    local source = "local(dirty)@" .. HEAD:sub(1, 12)
+    local _, code, err = gate({}, { row("bbbbbb", "passed", source) }, 0)
+    t.ok(code ~= 0)
+    t.ok(err:find("only a clean local source counts.", 1, true), err)
 end)
 
 t.test("gate refuses when dev fails", function()

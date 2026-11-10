@@ -2,7 +2,7 @@
 hidden
 positional
 Run one dev gate on ci and fail unless ci tested the worktree.
-Usage: dev __gate <worktree> <verb> <log>. Exactly one new ci run must appear under the worktree's name, and it must have passed from a clean local source.
+Usage: dev __gate <worktree> <verb> <log>. Exactly one new ci run must appear under the worktree's name, and it must have passed from a clean local source: local, or local@SHA where SHA is a prefix of the worktree's HEAD.
 ]]
 local devos = require("dev.os")
 local fs = require("dev.fs")
@@ -14,6 +14,14 @@ local function fail(...)
     io.stderr:write(...)
     io.stderr:write("\n")
     return 1
+end
+
+local function head_of(wt)
+    local out, code = devos.capture({ "git", "-C", wt, "rev-parse", "HEAD" }, { stderr = "null" })
+    if code ~= 0 then
+        return nil
+    end
+    return (out:gsub("%s+$", ""))
 end
 
 local function runs(wt)
@@ -63,7 +71,7 @@ if #fresh ~= 1 then
 end
 
 local row = fresh[1]
-if row.status ~= "passed" or row.source ~= "local" then
+if row.status ~= "passed" then
     return fail(
         "The ci run ",
         row.run,
@@ -73,8 +81,47 @@ if row.status ~= "passed" or row.source ~= "local" then
         row.status,
         " from ",
         row.source,
-        ", and only a passed run from local counts."
+        ", and only a passed run counts."
     )
+end
+local sha = row.source:match("^local@(.+)$")
+if row.source ~= "local" and not sha then
+    return fail(
+        "The ci run ",
+        row.run,
+        " of ",
+        row.repo,
+        " is from ",
+        row.source,
+        ", and only a clean local source counts."
+    )
+end
+if sha then
+    local head = head_of(wt)
+    if not head then
+        return fail(
+            "Could not read the HEAD commit of ",
+            wt,
+            ", so the source ",
+            row.source,
+            " cannot be checked."
+        )
+    end
+    if head:sub(1, #sha) ~= sha then
+        return fail(
+            "The ci run ",
+            row.run,
+            " of ",
+            row.repo,
+            " tested ",
+            row.source,
+            ", which is not the HEAD ",
+            head,
+            " of ",
+            wt,
+            ", so it did not test this worktree."
+        )
+    end
 end
 io.stdout:write(row.run, " ", row.repo, " ", row.source, "\n")
 return 0
