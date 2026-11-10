@@ -128,6 +128,21 @@ const CARD_ACT = Object.freeze({ TIMER: 'timer', MOVE: 'move', COLOR: 'color', A
 const BULK_ACT = Object.freeze({ MOVE: 'move', COLOR: 'color', MEMBERS: 'members', MEMBERS_MENU: 'members-menu', DELETE: 'delete' });
 const BULK_SUB = Object.freeze({ COLOR: 'color', MEMBERS: 'members', UNASSIGN: 'unassign' });
 
+function boardEventPlan(events, cardColumns) {
+  const refresh = [];
+  let reload = false;
+  events.forEach((event) => {
+    if (event.kind === 'task_added') {
+      reload = true;
+    } else if (event.kind === 'task_moved') {
+      if (cardColumns[event.task_id] !== event.column_id) reload = true;
+    } else if (event.task_id in cardColumns && !refresh.includes(event.task_id)) {
+      refresh.push(event.task_id);
+    }
+  });
+  return { refresh: refresh, reload: reload };
+}
+
 if (typeof module !== 'undefined') {
-  module.exports = { LocalTime: LocalTime, isoDate: isoDate, previewCell: previewCell, CARD_KIND: CARD_KIND, CARD_SUBMENU: CARD_SUBMENU, CARD_ACT: CARD_ACT, BULK_ACT: BULK_ACT, BULK_SUB: BULK_SUB };
+  module.exports = { LocalTime: LocalTime, isoDate: isoDate, previewCell: previewCell, CARD_KIND: CARD_KIND, CARD_SUBMENU: CARD_SUBMENU, CARD_ACT: CARD_ACT, BULK_ACT: BULK_ACT, BULK_SUB: BULK_SUB, boardEventPlan: boardEventPlan };
 }

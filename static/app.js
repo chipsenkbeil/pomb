@@ -21844,6 +21844,116 @@
   window.TimeInColumnPage = TimeInColumnPage;
   window.BoardChrome = BoardChrome;
 
+  const BOARD_LIVE_WAIT_SECS = 30;
+  const BOARD_LIVE_RETRY_MS = 1000;
+  const BOARD_LIVE_MAX_RETRY_MS = 60000;
+  const BOARD_LIVE_IDLE_POLL_MS = 1000;
+
+  const BoardLive = {
+    started: false,
+    cursor: null,
+    delay: BOARD_LIVE_RETRY_MS,
+    abort: null,
+    reloadHeld: false,
+
+    init() {
+      if (this.started || !boardId() || typeof fetch !== 'function') return;
+      this.started = true;
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) this.stop();
+        else this.start();
+      });
+      if (!document.hidden) this.start();
+    },
+
+    start() {
+      if (this.abort) return;
+      this.abort = new AbortController();
+      this.loop(this.abort);
+    },
+
+    stop() {
+      if (this.abort) this.abort.abort();
+      this.abort = null;
+    },
+
+    url() {
+      const url = '/api/boards/' + encodeURIComponent(boardId()) + '/events/wait?timeout=' + BOARD_LIVE_WAIT_SECS;
+      return this.cursor === null ? url : url + '&after=' + encodeURIComponent(this.cursor);
+    },
+
+    cardColumns() {
+      const out = {};
+      document.querySelectorAll('.task-card[data-task-id]').forEach((card) => {
+        const list = card.closest('.task-list[data-column-id]');
+        if (list) out[card.dataset.taskId] = list.dataset.columnId;
+      });
+      return out;
+    },
+
+    loop(token) {
+      if (this.abort !== token) return;
+      fetch(this.url(), { headers: { Accept: 'application/json' }, credentials: 'same-origin', signal: token.signal })
+        .then((res) => {
+          if (res.status === 410) {
+            this.cursor = null;
+            this.apply({ refresh: [], reload: true });
+            return null;
+          }
+          if (!res.ok) throw new Error('wait failed: ' + res.status);
+          return res.json();
+        })
+        .then((body) => {
+          if (this.abort !== token) return;
+          this.delay = BOARD_LIVE_RETRY_MS;
+          if (body) {
+            if (this.cursor !== null) this.apply(boardEventPlan(body.events, this.cardColumns()));
+            this.cursor = body.cursor;
+          }
+          this.loop(token);
+        })
+        .catch(() => {
+          if (this.abort !== token) return;
+          const wait = this.delay;
+          this.delay = Math.min(this.delay * 2, BOARD_LIVE_MAX_RETRY_MS);
+          window.setTimeout(() => this.loop(token), wait);
+        });
+    },
+
+    apply(plan) {
+      if (plan.reload) {
+        this.reloadWhenIdle();
+        return;
+      }
+      if (dragging) {
+        window.setTimeout(() => this.apply(plan), BOARD_LIVE_IDLE_POLL_MS);
+        return;
+      }
+      plan.refresh.forEach((id) => TimerUI.refreshTaskCard(id));
+    },
+
+    busy() {
+      return dragging || !!document.querySelector('#modal-root .task-modal, .dlg-overlay:not([hidden]), .addTask-overlay:not([hidden]), .menu-floating:not([hidden])');
+    },
+
+    reloadWhenIdle() {
+      if (this.reloadHeld) return;
+      if (!this.busy()) {
+        window.location.reload();
+        return;
+      }
+      this.reloadHeld = true;
+      const timer = window.setInterval(() => {
+        if (this.busy()) return;
+        window.clearInterval(timer);
+        window.location.reload();
+      }, BOARD_LIVE_IDLE_POLL_MS);
+    },
+  };
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => BoardLive.init());
+  else BoardLive.init();
+
   // KF-278: hovering Time spent shows a tooltip and the "Add time entry /
   // Open time log" menu. Both nodes are created once and reused by every
   // modal open.
