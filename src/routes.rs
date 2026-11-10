@@ -8530,9 +8530,9 @@ fn backups_view(state: &AppState, instance: &InstanceDb) -> Result<BackupsView, 
 )]
 async fn get_backups(
     State(state): State<AppState>,
-    SettingsDb(instance): SettingsDb,
+    settings: SettingsDb,
 ) -> Result<Json<BackupsView>, AppError> {
-    Ok(Json(backups_view(&state, &instance)?))
+    Ok(Json(backups_view(&state, settings.instance())?))
 }
 
 /// Request body of `PUT /api/v1/backups/settings`: every field is required and no other is
@@ -8563,21 +8563,22 @@ struct BackupSettingsInput {
     ),
 )]
 async fn update_backup_settings(
-    SettingsDb(instance): SettingsDb,
+    settings: SettingsDb,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<BackupSettings>, AppError> {
     let input: BackupSettingsInput = parse_body(&headers, body).await?;
-    let settings = BackupSettings {
+    let updated = BackupSettings {
         enabled: input.enabled,
         interval_hours: input.interval_hours,
         keep: input.keep,
     };
-    settings.validate().map_err(AppError::bad_request)?;
-    instance
-        .update_backup_settings(&settings)
+    updated.validate().map_err(AppError::bad_request)?;
+    settings
+        .instance()
+        .update_backup_settings(&updated)
         .map_err(AppError::from)?;
-    Ok(Json(settings))
+    Ok(Json(updated))
 }
 
 /// Takes a backup now and returns its outcome, whether or not the schedule is on. A failed backup
@@ -8596,10 +8597,10 @@ async fn update_backup_settings(
 )]
 async fn run_backup(
     State(state): State<AppState>,
-    SettingsDb(instance): SettingsDb,
+    settings: SettingsDb,
 ) -> Result<Json<BackupStatus>, AppError> {
     let now = chrono::Utc::now().timestamp();
-    match instance.run_backup(&state.backups, now).await {
+    match settings.instance().run_backup(&state.backups, now).await {
         Ok(status) => Ok(Json(status)),
         Err(RunError::Busy) => Err(AppError::conflict(RunError::Busy.to_string())),
         Err(error) => Err(AppError::internal(error.to_string())),
@@ -8621,10 +8622,11 @@ async fn run_backup(
     ),
 )]
 async fn remove_unnamed_attachment_files(
-    SettingsDb(instance): SettingsDb,
+    settings: SettingsDb,
 ) -> Result<Json<UnnamedFiles>, AppError> {
     Ok(Json(
-        instance
+        settings
+            .instance()
             .remove_unnamed_attachment_files()
             .map_err(AppError::from)?,
     ))

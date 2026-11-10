@@ -47,7 +47,15 @@ impl FromRequestParts<AppState> for InstanceDb {
 /// account that holds `settings.write`. A member, a lead token and a token below the admin preset
 /// get a 403 `permission_denied`.
 #[derive(Clone, Debug)]
-pub struct SettingsDb(pub InstanceDb);
+pub struct SettingsDb(InstanceDb);
+
+impl SettingsDb {
+    /// Returns the instance handle the extractor checked.
+    #[must_use]
+    pub fn instance(&self) -> &InstanceDb {
+        &self.0
+    }
+}
 
 #[axum::async_trait]
 impl FromRequestParts<AppState> for SettingsDb {
@@ -159,5 +167,47 @@ impl InstanceDb {
     /// Takes a backup into `backups` now and returns its outcome.
     pub async fn run_backup(&self, backups: &Backups, now: i64) -> Result<BackupStatus, RunError> {
         backups.run(&self.db, now).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Request;
+
+    use super::*;
+    use crate::auth::{AuthChoice, AuthMode, SignIn, user_for_token};
+    use crate::db::PublicDb;
+
+    #[tokio::test]
+    async fn settings_db_should_build_only_through_its_extractor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("pomb.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let admin = db.create_user("admin").expect("create user");
+        let session = db.create_session(&admin, "").expect("session");
+        let sign_in =
+            SignIn::new(AuthChoice::Chosen(AuthMode::None), "127.0.0.1", None).expect("none mode");
+        let state = AppState::new(db.clone(), None, sign_in);
+        let user = user_for_token(&PublicDb::new(db.clone()), &session).expect("admin session");
+        let (mut parts, _) = Request::new(()).into_parts();
+        parts.extensions.insert(user);
+
+        let settings = SettingsDb::from_request_parts(&mut parts, &state)
+            .await
+            .expect("settings.write");
+        settings
+            .instance()
+            .update_backup_settings(&BackupSettings {
+                enabled: true,
+                interval_hours: 12,
+                keep: 3,
+            })
+            .expect("save");
+        let stored = db.backup_settings().expect("read");
+
+        assert_eq!(
+            (stored.enabled, stored.interval_hours, stored.keep),
+            (true, 12, 3)
+        );
     }
 }
