@@ -3771,6 +3771,7 @@
           wrap.hidden = false;
           editor.hidden = false;
           edit.hidden = true;
+          renderAddFieldMenu(fieldGroupModel({}));
           wrap.querySelector('#tm-metadata-input').focus();
         });
     });

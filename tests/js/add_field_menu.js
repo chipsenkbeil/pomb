@@ -16,7 +16,7 @@ const shownDd = { hidden: false, dataset: { row: 'labels' }, previousElementSibl
 const metadata = { hidden: true };
 let seatsGroup = null;
 const menu = { open: true, hidden: true, items: [], querySelector: () => items };
-const items = { textContent: '', children: [], appendChild(node) { this.children.push(node); } };
+const items = { children: [], set textContent(value) { this.children.length = 0; }, appendChild(node) { this.children.push(node); } };
 const clicks = [];
 const edit = { click: () => { clicks.push('edit'); } };
 const opened = [];
@@ -54,11 +54,12 @@ check('menu_should_list_hidden_rows_empty_groups_and_metadata',
   [['Due', 'addRow'], ['Fields · a', 'addGroup'], ['Metadata', 'addMetadata']]);
 check('menu_should_show_when_it_has_entries', menu.hidden, false);
 
-pickAddField(items.children[0]);
+const [rowItem, groupItem, metadataItem] = items.children;
+pickAddField(rowItem);
 check('menu_should_reveal_the_picked_row', [cells[0].hidden, cells[1].hidden, focused, menu.open], [false, false, 'control', false]);
 
-pickAddField(items.children[1]);
-pickAddField(items.children[2]);
+pickAddField(groupItem);
+pickAddField(metadataItem);
 check('menu_should_open_the_group_editor_and_the_metadata_dialog', [opened, clicks], [['a'], ['edit']]);
 
 seatsGroup = { hidden: true };
@@ -69,6 +70,25 @@ pickAddField(reviewers);
 items.children.length = 0;
 renderAddFieldMenu(fieldGroupModel());
 check('menu_should_unhide_the_reviewers_group_when_picked', [seatsGroup.hidden, items.children.some((n) => n.textContent === 'Reviewers')], [false, false]);
+
+const listsMetadata = () => items.children.some((n) => n.textContent === 'Metadata');
+let confirmed = null;
+const showConfirmDialog = (title, body, label, action) => { confirmed = action; };
+const metadataEditor = { hidden: true };
+const metadataEdit = { hidden: false, addEventListener(type, fn) { this.onClick = fn; } };
+const sink = { addEventListener() {} };
+metadata.querySelector = (s) => ({ '#tm-metadata-editor': metadataEditor, '[data-metadata-edit]': metadataEdit, '#tm-metadata-input': { focus() {} } })[s] || sink;
+eval(fn('  function wireMetadata(overlay) {'));
+wireMetadata({ querySelector: (s) => (s === '#modal-metadata-wrap' ? metadata : null) });
+metadata.hidden = true;
+renderAddFieldMenu(fieldGroupModel());
+metadataEdit.onClick();
+confirmed();
+const shownAfterEdit = metadata.hidden;
+const listedAfterEdit = listsMetadata();
+metadata.hidden = true;
+renderAddFieldMenu(fieldGroupModel());
+check('menu_should_drop_metadata_once_the_block_is_shown', [shownAfterEdit, listedAfterEdit, listsMetadata()], [false, false, true]);
 
 console.log('failures=' + failures);
 if (failures) throw new Error(failures + ' add field menu check(s) failed');
