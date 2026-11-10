@@ -289,7 +289,8 @@ end
 local jobs = {}
 for _, gate in ipairs(GATES) do
     say(("Running dev %s --remote.\n"):format(gate))
-    jobs[#jobs + 1] = ("( dev __release_gate %s %s %s; echo $? >%s ) &"):format(
+    jobs[#jobs + 1] = ("( cd %s && dev __release_gate %s %s %s; echo $? >%s ) &"):format(
+        devos.quote(gate_trees[gate]),
         devos.quote(gate_trees[gate]),
         gate,
         devos.quote(logs),

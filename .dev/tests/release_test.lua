@@ -32,7 +32,7 @@ local FILES = {
 }
 
 local STUB_DEV = [[
-case "$1" in __*) exec luajit '@main@' "$@";; esac
+case "$1" in __*) [ "$1" != __release_gate ] || echo "$PWD" >>'@dir@/gate_cwd.log'; exec luajit '@main@' "$@";; esac
 echo "$1" >>'@dir@/gates.log'
 [ ! -e '@dir@/repo/.dev/release.lock' ] || cat '@dir@/repo/.dev/release.lock' >>'@dir@/locked.log'
 [ -z "$MOVE_MAIN" ] || git -C "$MOVE_MAIN" push -q origin HEAD:main
@@ -535,6 +535,20 @@ t.test("release should run each gate on its own gate worktree", function()
         "gate-7-build-0123,gate-7-lint-0123,gate-7-nixcheck-0123,gate-7-test-0123"
     )
     t.ok(not fs.exists(fix.repo .. "/.dev/worktrees/gate-7-lint"))
+    done(fix)
+end)
+
+t.test("release should start each gate job in its own gate worktree", function()
+    local fix = fixture("0.5.85", "0.5.85", 1)
+    local _, code, err = release(fix, RELEASE)
+    t.eq(code, 0, err)
+    local dirs = lines(fix.dir .. "/gate_cwd.log")
+    table.sort(dirs)
+    local want = {}
+    for i, gate in ipairs({ "build", "lint", "nixcheck", "test" }) do
+        want[i] = ("%s/.dev/worktrees/gate-7-%s"):format(fix.repo, gate)
+    end
+    t.eq(table.concat(dirs, ","), table.concat(want, ","))
     done(fix)
 end)
 
