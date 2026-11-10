@@ -1599,7 +1599,7 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/v1/auth/sessions/:id",
         Permission::SettingsWrite,
     ),
-    (Method::GET, "/api/v1/backups", Permission::SettingsRead),
+    (Method::GET, "/api/v1/backups", Permission::SettingsWrite),
     (Method::POST, "/api/v1/backups", Permission::SettingsWrite),
     (
         Method::PUT,
@@ -2603,6 +2603,7 @@ mod tests {
             "/api/v1/auth/sessions/:id",
             AuthScope::Admin,
         ),
+        (Method::GET, "/api/v1/backups", AuthScope::Admin),
         (Method::POST, "/api/v1/backups", AuthScope::Admin),
         (
             Method::POST,

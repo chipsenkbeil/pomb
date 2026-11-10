@@ -1,15 +1,16 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
-use axum::http::Method;
+use axum::http::{Method, StatusCode};
 use serde_json::Value;
 use utoipa::OpenApi;
 
 use super::docs::{one_line, operations as all_operations, render_api_reference};
 use super::slot::{QUEUE_WAIT_SECS, SEND_SECS};
-use super::{ApiDoc, DEFAULT_WAIT_SECS, MAX_EVENTS_PER_REPLY, MAX_WAIT_SECS};
+use super::test_support::call;
+use super::{ApiDoc, DEFAULT_WAIT_SECS, MAX_EVENTS_PER_REPLY, MAX_WAIT_SECS, router};
 use crate::archive::MAX_ARCHIVE_BYTES;
 use crate::db::{Db, MAX_API_TOKENS_PER_ACCOUNT, MAX_EVENTS_PER_BOARD};
-use crate::models::RateLimits;
+use crate::models::{AuthScope, RateLimits};
 use crate::permissions::Permission;
 use crate::{AppState, auth};
 
@@ -842,5 +843,56 @@ fn openapi_should_mark_the_bulk_preview_values_nullable() {
     for field in ["before", "after"] {
         let property = schema["properties"][field].to_string();
         assert!(property.contains("\"null\""), "{field}: {property}");
+    }
+}
+
+#[tokio::test]
+async fn backup_routes_should_document_the_permission_they_enforce() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("pomb.redb");
+    let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+    let owner = db.create_user("owner").expect("owner");
+    let (mut record, raw) = auth::new_api_token_record(&owner, "reader", AuthScope::Admin, None);
+    record.permissions = BTreeSet::from([Permission::SettingsRead]);
+    db.create_api_token(&record).expect("token");
+    let sign_in = auth::SignIn::new(
+        auth::AuthChoice::Chosen(auth::AuthMode::None),
+        "127.0.0.1",
+        None,
+    )
+    .expect("none mode");
+    let app = router(AppState::new(db, None, sign_in));
+    let spec = spec();
+    let bearer = format!("Bearer {raw}");
+    let settings = serde_json::json!({"enabled": true, "interval_hours": 24, "keep": 7});
+    for (method, route, body) in [
+        ("get", "/api/v1/backups", None),
+        ("post", "/api/v1/backups", None),
+        ("put", "/api/v1/backups/settings", Some(settings)),
+        ("delete", "/api/v1/backups/unnamed-files", None),
+    ] {
+        assert_eq!(
+            spec["paths"][route][method]["security"][0]["bearerAuth"][0], "settings.write",
+            "{method} {route}"
+        );
+        let reply = call(
+            &app,
+            &method.to_uppercase(),
+            route,
+            &[("authorization", &bearer)],
+            body,
+        )
+        .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::FORBIDDEN,
+            "{method} {route}: {}",
+            reply.body
+        );
+        assert_eq!(reply.body["code"], "permission_denied", "{method} {route}");
+        assert_eq!(
+            reply.body["permission"], "settings.write",
+            "{method} {route}"
+        );
     }
 }
