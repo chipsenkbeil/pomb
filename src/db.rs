@@ -2201,18 +2201,23 @@ fn rewrite_scopes_in(
 }
 
 /// Gives every token and device request all boards and the permissions of the preset its scope
-/// stands for, except `tokens.issue`, which no upgrade grants.
+/// stands for, except the ungranted permissions.
 fn grant_scope_permissions(txn: &WriteTransaction) -> DbResult<()> {
     grant_permissions_in(txn, API_TOKENS, "api_tokens")?;
     grant_permissions_in(txn, SUSPENDED_TOKENS, "suspended_tokens")?;
     grant_permissions_in(txn, DEVICE_AUTHS, "device_auths")
 }
 
-/// The permissions of a preset that no upgrade grants to a stored row.
-const UNGRANTED: [Permission; 2] = [Permission::TokensIssue, Permission::RolesGrant];
+/// The permissions of a preset that no upgrade grants to a stored row: `tokens.issue`,
+/// `roles.grant` and `webhooks.manage`.
+const UNGRANTED: [Permission; 3] = [
+    Permission::TokensIssue,
+    Permission::RolesGrant,
+    Permission::WebhooksManage,
+];
 
 /// Gives `added` to every token and device request that holds the whole lead or admin preset of
-/// its scope as it stood before they existed.
+/// its scope as it stood before they existed, less the ungranted permissions.
 fn grant_added_permissions(txn: &WriteTransaction, added: &[Permission]) -> DbResult<()> {
     for table in [API_TOKENS, SUSPENDED_TOKENS, DEVICE_AUTHS] {
         rewrite_rows(txn, table, |_, row| grant_to_preset(row, added))?;
@@ -2221,8 +2226,8 @@ fn grant_added_permissions(txn: &WriteTransaction, added: &[Permission]) -> DbRe
 }
 
 /// Gives `row` the permissions in `added` that the preset of its scope holds, and reports whether
-/// it did. Only a row short of its preset by nothing but `added`, `tokens.issue` and `roles.grant`,
-/// which no upgrade grants, gains them, so a custom set and a full preset stay as they are.
+/// it did. Only a row short of its preset by nothing but `added` and the ungranted permissions
+/// gains them, so a custom set and a full preset stay as they are.
 fn grant_to_preset(row: &mut JsonObject, added: &[Permission]) -> bool {
     let Some(scope) = row
         .get("scope")
@@ -2283,8 +2288,9 @@ fn grant_permissions_in(txn: &WriteTransaction, table: Rows, name: &str) -> DbRe
             return Err(format!("a row in {name} holds no valid scope").into());
         };
         let mut granted = scope.permissions();
-        granted.remove(&Permission::TokensIssue);
-        granted.remove(&Permission::RolesGrant);
+        for permission in UNGRANTED {
+            granted.remove(&permission);
+        }
         object.insert("permissions".to_string(), serde_json::to_value(granted)?);
         object.insert(
             "boards".to_string(),
@@ -14737,6 +14743,35 @@ mod schema_version_tests {
         assert!(token.permissions.contains(&Permission::TasksBin));
     }
 
+    /// An admin-preset token made before `webhooks.manage` joined the preset gains `labels.manage`
+    /// on the upgrade and still lacks `webhooks.manage`.
+    #[test]
+    fn version_50_file_should_grant_label_management_to_an_admin_token_without_webhook_management()
+    {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let id = {
+            let db = Db::connect(&path).expect("connect");
+            let (record, _) = new_api_token_record(&account, "admin", AuthScope::Admin, None);
+            db.create_api_token(&record).expect("token");
+            record.id
+        };
+        edit_raw(&path, API_TOKENS, &id, |object| {
+            object["permissions"]
+                .as_array_mut()
+                .expect("permissions")
+                .retain(|name| name != "webhooks.manage" && name != "labels.manage");
+        });
+        stamp(&path, 50);
+
+        let db = Db::connect(&path).expect("open version 50");
+        let token: ApiTokenRecord = read_one(&db.db, API_TOKENS, &id)
+            .expect("read")
+            .expect("row");
+        assert!(token.permissions.contains(&Permission::LabelsManage));
+        assert!(!token.permissions.contains(&Permission::WebhooksManage));
+    }
+
     /// A version-57 file's tokens at the lead or admin preset gain `epics.manage`, and a custom set
     /// and the lower presets keep what they hold.
     #[test]
@@ -15383,8 +15418,9 @@ mod schema_version_tests {
 
         let db = Db::connect(&path).expect("open version 26");
         let upgraded = |mut preset: BTreeSet<Permission>| {
-            preset.remove(&Permission::TokensIssue);
-            preset.remove(&Permission::RolesGrant);
+            for permission in UNGRANTED {
+                preset.remove(&permission);
+            }
             preset
         };
         let lead = upgraded(Preset::Lead.permissions());
@@ -15425,6 +15461,28 @@ mod schema_version_tests {
                 assert!(new == *old, "{name} row changed beyond the new fields");
             }
         }
+    }
+
+    /// A version-26 admin token gains its preset except `webhooks.manage`.
+    #[test]
+    fn version_26_file_should_not_grant_webhook_management_to_an_admin_token() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let id = {
+            let db = Db::connect(&path).expect("connect");
+            let (record, _) = new_api_token_record(&account, "admin", AuthScope::Admin, None);
+            db.create_api_token(&record).expect("token");
+            record.id
+        };
+        strip_grants(&path, API_TOKENS, &id);
+        stamp(&path, 26);
+
+        let db = Db::connect(&path).expect("open version 26");
+        let token: ApiTokenRecord = read_one(&db.db, API_TOKENS, &id)
+            .expect("read")
+            .expect("row");
+        assert!(!token.permissions.contains(&Permission::WebhooksManage));
+        assert!(token.permissions.contains(&Permission::LabelsManage));
     }
 
     /// A row with a scope outside the four fails the upgrade, which leaves the file stamped and
