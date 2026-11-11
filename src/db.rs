@@ -4574,24 +4574,21 @@ fn txn_check_child_token(
     }
     record.expires_at =
         Some((now + hours * SECONDS_PER_HOUR).min(parent.expires_at.unwrap_or(i64::MAX)));
-    txn_remove_expired_issued_tokens(txn, &record.account_id, now)?;
-    if txn_token_name_taken(txn, &record.account_id, &record.name, None)? {
+    let mut tokens = txn_account_tokens(txn, &record.account_id)?;
+    txn_remove_expired_issued_tokens(txn, &record.account_id, &mut tokens, now)?;
+    if txn_token_name_taken(&tokens, &record.name, None) {
         return Ok(Err(ChildTokenRefusal::NameTaken));
     }
     Ok(Ok(()))
 }
 
-/// Returns whether a token of `account` other than `except` has `name`, whatever its letter case.
-fn txn_token_name_taken(
-    txn: &WriteTransaction,
-    account: &str,
-    name: &str,
-    except: Option<&str>,
-) -> DbResult<bool> {
+/// Returns whether a token of `tokens` other than `except` has `name`, whatever its letter case.
+#[must_use]
+fn txn_token_name_taken(tokens: &[ApiTokenRecord], name: &str, except: Option<&str>) -> bool {
     let name = name.to_lowercase();
-    Ok(txn_account_tokens(txn, account)?
+    tokens
         .iter()
-        .any(|token| except != Some(token.id.as_str()) && token.name.to_lowercase() == name))
+        .any(|token| except != Some(token.id.as_str()) && token.name.to_lowercase() == name)
 }
 
 /// Returns the tokens of `account`, live and suspended, inside an open write transaction.
@@ -4605,18 +4602,25 @@ fn txn_account_tokens(txn: &WriteTransaction, account: &str) -> DbResult<Vec<Api
     Ok(tokens)
 }
 
-/// Deletes the expired issued tokens of `account`, live or suspended, with the tokens they
-/// issued, inside an open write transaction, and returns how many live ones it deleted.
+/// Deletes the expired issued tokens among `tokens`, the tokens of `account` read inside an open
+/// write transaction, with the tokens they issued, and drops them from `tokens`. Returns how many
+/// live ones it deleted.
 fn txn_remove_expired_issued_tokens(
     txn: &WriteTransaction,
     account: &str,
+    tokens: &mut Vec<ApiTokenRecord>,
     now: i64,
 ) -> DbResult<u64> {
+    let expired: Vec<String> = tokens
+        .iter()
+        .filter(|token| token.parent_id.is_some() && token.is_expired(now))
+        .map(|token| token.id.clone())
+        .collect();
     let mut removed = 0;
-    for token in txn_account_tokens(txn, account)? {
-        if token.parent_id.is_some() && token.is_expired(now) {
-            removed += txn_remove_token(txn, account, &token.id)?;
-        }
+    for id in expired {
+        removed += txn_remove_token_from(txn, account, tokens, &id)?;
+        let gone = token_subtree_ids(tokens, &id);
+        tokens.retain(|token| !gone.contains(&token.id));
     }
     Ok(removed)
 }
@@ -4654,10 +4658,49 @@ fn txn_unindex_token_key(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbRe
     }
 }
 
-/// Deletes the token `id` of `account` from [`API_TOKENS`] and [`SUSPENDED_TOKENS`] and its index
-/// entries, inside an open write transaction, together with the children it issued, and returns
-/// how many live tokens it deleted.
+/// Deletes the token `id` of `account` and the children it issued, reading the account's tokens
+/// once, inside an open write transaction, and returns how many live tokens it deleted.
 fn txn_remove_token(txn: &WriteTransaction, account: &str, id: &str) -> DbResult<u64> {
+    let tokens = txn_account_tokens(txn, account)?;
+    txn_remove_token_from(txn, account, &tokens, id)
+}
+
+/// Deletes the token `id` of `account` and every token `tokens` holds beneath it, inside an open
+/// write transaction, and returns how many live tokens it deleted. It does not recurse.
+fn txn_remove_token_from(
+    txn: &WriteTransaction,
+    account: &str,
+    tokens: &[ApiTokenRecord],
+    id: &str,
+) -> DbResult<u64> {
+    let mut removed = 0;
+    for gone in token_subtree_ids(tokens, id) {
+        removed += txn_delete_token_rows(txn, account, &gone)?;
+    }
+    Ok(removed)
+}
+
+/// Returns `id` and the ids of every token `tokens` holds beneath it, found in one pass over the
+/// list.
+#[must_use]
+fn token_subtree_ids(tokens: &[ApiTokenRecord], id: &str) -> Vec<String> {
+    let mut ids = vec![id.to_string()];
+    let mut next = 0;
+    while let Some(parent) = ids.get(next) {
+        let children: Vec<String> = tokens
+            .iter()
+            .filter(|token| token.parent_id.as_deref() == Some(parent.as_str()))
+            .map(|token| token.id.clone())
+            .collect();
+        ids.extend(children);
+        next += 1;
+    }
+    ids
+}
+
+/// Deletes the token `id` of `account` from [`API_TOKENS`] and [`SUSPENDED_TOKENS`] and its index
+/// entries, inside an open write transaction, and returns 1 when it deleted a live token, else 0.
+fn txn_delete_token_rows(txn: &WriteTransaction, account: &str, id: &str) -> DbResult<u64> {
     let live = txn
         .open_table(API_TOKENS)?
         .remove(id)?
@@ -4673,11 +4716,7 @@ fn txn_remove_token(txn: &WriteTransaction, account: &str, id: &str) -> DbResult
         txn_unindex_role_token(txn, token)?;
     }
     mmap_remove(txn, TOKENS_BY_ACCOUNT, account, id)?;
-    let mut removed = u64::from(live.is_some());
-    for child in txn_child_tokens(txn, account, id)? {
-        removed += txn_remove_token(txn, account, &child)?;
-    }
-    Ok(removed)
+    Ok(u64::from(live.is_some()))
 }
 
 /// Returns the ids of the tokens of `account`, live or suspended, that token `parent` issued,
@@ -6889,7 +6928,8 @@ impl Db {
         }
         let mut removed = 0;
         for account in accounts {
-            removed += txn_remove_expired_issued_tokens(&txn, &account, now)?;
+            let mut tokens = txn_account_tokens(&txn, &account)?;
+            removed += txn_remove_expired_issued_tokens(&txn, &account, &mut tokens, now)?;
         }
         txn.commit()?;
         Ok(removed)
@@ -7041,7 +7081,8 @@ impl Db {
             return Ok(None);
         };
         if let Some(name) = edit.name.filter(|name| *name != record.name) {
-            if txn_token_name_taken(&txn, account.as_str(), &name, Some(id))? {
+            let tokens = txn_account_tokens(&txn, account.as_str())?;
+            if txn_token_name_taken(&tokens, &name, Some(id)) {
                 return Err(Box::new(TokenNameTaken));
             }
             record.name = name;

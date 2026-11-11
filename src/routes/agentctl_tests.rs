@@ -14680,6 +14680,71 @@ async fn an_expired_child_should_free_its_name_and_leave_the_child_list() {
     );
 }
 
+#[tokio::test]
+async fn a_live_child_name_should_stay_taken_after_the_expiry_sweep() {
+    let (_dir, fx) = fixture();
+    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let now = chrono::Utc::now().timestamp();
+    for (name, created) in [("stale", now - 2 * SECONDS_PER_HOUR), ("live", now)] {
+        let (mut record, _) = new_api_token_record(&fx.user_id, name, AuthScope::Read, None);
+        record.parent_id = Some(lead_id.clone());
+        record.parent_name = Some("lead".to_string());
+        assert!(
+            fx.db
+                .create_child_api_token(record, 1, created)
+                .expect("create")
+                .is_ok()
+        );
+    }
+
+    let (status, reply) = issue(&fx, &lead, json!({"name": "LIVE", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{reply}");
+    let (status, text) = bare(&fx, &lead, "GET", CHILDREN).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        names_of(&serde_json::from_str(&text).expect("json")),
+        ["live"]
+    );
+}
+
+#[tokio::test]
+async fn revoking_a_parent_should_delete_its_children_in_one_pass() {
+    let (_dir, fx) = fixture();
+    let (lead_id, lead_raw) = token_record(&fx, "lead", AuthScope::Provision);
+    let (bystander_id, _) = token_record(&fx, "bystander", AuthScope::Provision);
+    let now = chrono::Utc::now().timestamp();
+    let mut children = Vec::new();
+    for (parent_id, parent_name, name) in [
+        (lead_id.as_str(), "lead", "one"),
+        (lead_id.as_str(), "lead", "two"),
+        (lead_id.as_str(), "lead", "three"),
+        (bystander_id.as_str(), "bystander", "kept"),
+    ] {
+        let (mut record, raw) = new_api_token_record(&fx.user_id, name, AuthScope::Read, None);
+        record.parent_id = Some(parent_id.to_string());
+        record.parent_name = Some(parent_name.to_string());
+        assert!(
+            fx.db
+                .create_child_api_token(record, 1, now)
+                .expect("create")
+                .is_ok()
+        );
+        children.push((name, raw));
+    }
+
+    assert!(
+        fx.db
+            .delete_api_token(&fx.user_id, &lead_id)
+            .expect("delete")
+    );
+
+    assert!(fx.db.find_api_token(&lead_raw).expect("find").is_none());
+    for (name, raw) in &children {
+        let found = fx.db.find_api_token(raw).expect("find").is_some();
+        assert_eq!(found, *name == "kept", "{name}");
+    }
+}
+
 struct PartProbe {
     needs: &'static str,
     method: &'static str,
