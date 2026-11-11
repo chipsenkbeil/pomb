@@ -26,6 +26,7 @@ use axum::response::Response;
 
 use crate::AppState;
 use crate::api_error::{ErrorCode, coded_response};
+use crate::auth::AuthMode;
 use crate::models::{AccountId, RateLimits};
 
 /// A source of the current time.
@@ -495,19 +496,33 @@ const PROXIES: [TrustProxy; 2] = [TrustProxy::Cloudflare, TrustProxy::Forwarded]
 /// Whether a loopback request carried a proxy header while no proxy is trusted.
 static PROXY_HEADERS_IGNORED: AtomicBool = AtomicBool::new(false);
 
+/// Returns the warning for the loopback `peer` that named a client in a proxy header while no
+/// proxy is trusted. Under [`AuthMode::None`] a trusted proxy is refused at startup, so the
+/// warning points to `--auth passkey` instead of a proxy setting.
+fn proxy_ignored_warning(peer: IpAddr, auth: AuthMode) -> String {
+    match auth {
+        AuthMode::None => format!(
+            "pomb: a request from {peer} names a client in a proxy header, which is ignored, \
+             so every client of that proxy shares one address; only --auth passkey can trust \
+             a proxy header"
+        ),
+        AuthMode::Passkey => format!(
+            "pomb: a request from {peer} names a client in a proxy header, which \
+             POMB_TRUST_PROXY=none ignores, so every client of that proxy shares one \
+             address; set POMB_TRUST_PROXY to cloudflare or forwarded"
+        ),
+    }
+}
+
 /// Logs, the first time only, that the loopback `peer` named a client in a proxy header that
 /// [`TrustProxy::None`] ignores.
-fn warn_proxy_ignored(peer: IpAddr, headers: &HeaderMap) {
+fn warn_proxy_ignored(peer: IpAddr, headers: &HeaderMap, auth: AuthMode) {
     let proxied = PROXIES
         .iter()
         .filter_map(|proxy| proxy.header())
         .any(|header| headers.contains_key(header));
     if proxied && !PROXY_HEADERS_IGNORED.swap(true, AtomicOrdering::Relaxed) {
-        eprintln!(
-            "pomb: a request from {peer} names a client in a proxy header, which \
-             POMB_TRUST_PROXY=none ignores, so every client of that proxy shares one \
-             address; set POMB_TRUST_PROXY to cloudflare or forwarded"
-        );
+        eprintln!("{}", proxy_ignored_warning(peer, auth));
     }
 }
 
@@ -517,13 +532,18 @@ fn warn_proxy_ignored(peer: IpAddr, headers: &HeaderMap) {
 /// [`TrustProxy::Forwarded`]. Any other peer, and every peer under [`TrustProxy::None`], is the
 /// client itself. A proxied request without a usable header counts as its peer, which is logged
 /// the first time. A request with no peer address shares one unspecified address.
-pub fn client_ip(peer: Option<IpAddr>, headers: &HeaderMap, trust: TrustProxy) -> IpAddr {
+pub fn client_ip(
+    peer: Option<IpAddr>,
+    headers: &HeaderMap,
+    trust: TrustProxy,
+    auth: AuthMode,
+) -> IpAddr {
     let Some(peer) = peer.map(|ip| ip.to_canonical()) else {
         return IpAddr::from([0, 0, 0, 0]);
     };
     let Some(header) = trust.header().filter(|_| peer.is_loopback()) else {
         if peer.is_loopback() {
-            warn_proxy_ignored(peer, headers);
+            warn_proxy_ignored(peer, headers, auth);
         }
         return peer;
     };
@@ -559,7 +579,8 @@ impl ClientIp {
         let peer = extensions
             .get::<ConnectInfo<SocketAddr>>()
             .map(|ConnectInfo(addr)| addr.ip());
-        Self(client_ip(peer, headers, state.trust_proxy))
+        let auth = state.sign_in.mode();
+        Self(client_ip(peer, headers, state.trust_proxy, auth))
     }
 
     /// Returns the network whose holdings the client shares: its IPv4 address, or its IPv6 /48.
@@ -629,6 +650,8 @@ mod tests {
     const ONE_HIT: usize = 1;
     /// Seconds a per-IP request counts.
     const WINDOW_SECS: u64 = Limits::WINDOW.as_secs();
+    /// The sign-in that may trust a proxy header.
+    const PASSKEY: AuthMode = AuthMode::Passkey;
 
     fn secs(base: Instant, secs: u64) -> Instant {
         base + Duration::from_secs(secs)
@@ -845,7 +868,7 @@ mod tests {
         let headers = proxied();
         for peer in ["127.0.0.1", "::1", "203.0.113.9"] {
             assert_eq!(
-                client_ip(Some(ip(peer)), &headers, TrustProxy::None),
+                client_ip(Some(ip(peer)), &headers, TrustProxy::None, PASSKEY),
                 ip(peer)
             );
         }
@@ -857,18 +880,18 @@ mod tests {
         let trust = TrustProxy::Cloudflare;
         for loopback in ["127.0.0.1", "::1", "::ffff:127.0.0.1"] {
             assert_eq!(
-                client_ip(Some(ip(loopback)), &headers, trust),
+                client_ip(Some(ip(loopback)), &headers, trust, PASSKEY),
                 ip("203.0.113.44")
             );
         }
         assert_eq!(
-            client_ip(Some(ip("198.51.100.1")), &headers, trust),
+            client_ip(Some(ip("198.51.100.1")), &headers, trust, PASSKEY),
             ip("198.51.100.1")
         );
         let mut forwarded_only = HeaderMap::new();
         forwarded_only.insert("x-forwarded-for", "198.51.100.7".parse().expect("value"));
         assert_eq!(
-            client_ip(Some(ip("127.0.0.1")), &forwarded_only, trust),
+            client_ip(Some(ip("127.0.0.1")), &forwarded_only, trust, PASSKEY),
             ip("127.0.0.1"),
             "a missing header counts as the peer, never another header"
         );
@@ -879,25 +902,45 @@ mod tests {
         let mut headers = proxied();
         let trust = TrustProxy::Forwarded;
         assert_eq!(
-            client_ip(Some(ip("127.0.0.1")), &headers, trust),
+            client_ip(Some(ip("127.0.0.1")), &headers, trust, PASSKEY),
             ip("198.51.100.7")
         );
         assert_eq!(
-            client_ip(Some(ip("::ffff:127.0.0.1")), &headers, trust),
+            client_ip(Some(ip("::ffff:127.0.0.1")), &headers, trust, PASSKEY),
             ip("198.51.100.7")
         );
         assert_eq!(
-            client_ip(Some(ip("203.0.113.9")), &headers, trust),
+            client_ip(Some(ip("203.0.113.9")), &headers, trust, PASSKEY),
             ip("203.0.113.9")
         );
         assert_eq!(
-            client_ip(Some(ip("127.0.0.1")), &HeaderMap::new(), trust),
+            client_ip(Some(ip("127.0.0.1")), &HeaderMap::new(), trust, PASSKEY),
             ip("127.0.0.1")
         );
         headers.insert("x-forwarded-for", "garbage".parse().expect("value"));
         assert_eq!(
-            client_ip(Some(ip("127.0.0.1")), &headers, trust),
+            client_ip(Some(ip("127.0.0.1")), &headers, trust, PASSKEY),
             ip("127.0.0.1")
+        );
+    }
+
+    #[test]
+    fn proxy_warning_under_auth_none_should_not_advise_a_trust_proxy() {
+        let warning = proxy_ignored_warning(ip("127.0.0.1"), AuthMode::None);
+        assert!(!warning.contains("POMB_TRUST_PROXY"), "{warning}");
+        assert!(!warning.contains("cloudflare"), "{warning}");
+        assert!(!warning.contains("forwarded"), "{warning}");
+        assert!(warning.contains("--auth passkey"), "{warning}");
+    }
+
+    #[test]
+    fn proxy_warning_under_passkey_should_advise_a_trust_proxy() {
+        let warning = proxy_ignored_warning(ip("127.0.0.1"), AuthMode::Passkey);
+        assert_eq!(
+            warning,
+            "pomb: a request from 127.0.0.1 names a client in a proxy header, which \
+             POMB_TRUST_PROXY=none ignores, so every client of that proxy shares one \
+             address; set POMB_TRUST_PROXY to cloudflare or forwarded"
         );
     }
 }
