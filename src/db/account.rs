@@ -2798,9 +2798,7 @@ impl AccountDb {
         expires_at: Option<i64>,
     ) -> DbResult<(ApiTokenRecord, String)> {
         let (mut record, raw) = new_api_token_record(&self.account, name, grant.scope, expires_at);
-        record.permissions = grant.permissions;
-        record.boards = grant.boards;
-        record.child_lifetime_hours = grant.child_lifetime_hours;
+        grant.apply_to(&mut record);
         self.db.create_api_token(&record)?;
         Ok((record, raw))
     }
@@ -2815,9 +2813,7 @@ impl AccountDb {
         expires_at: Option<i64>,
     ) -> DbResult<Option<(ApiTokenRecord, String)>> {
         let (mut record, raw) = new_api_token_record(&self.account, name, grant.scope, expires_at);
-        record.permissions = grant.permissions;
-        record.boards = grant.boards;
-        record.child_lifetime_hours = grant.child_lifetime_hours;
+        grant.apply_to(&mut record);
         let stored = self.db.create_owner_token_as_role(role_id, record)?;
         Ok(stored.map(|record| (record, raw)))
     }
@@ -2844,9 +2840,7 @@ impl AccountDb {
         hours: i64,
     ) -> DbResult<Result<(ApiTokenRecord, String), ChildTokenRefusal>> {
         let (mut record, raw) = new_api_token_record(&self.account, name, grant.scope, None);
-        record.permissions = grant.permissions;
-        record.boards = grant.boards;
-        record.child_lifetime_hours = grant.child_lifetime_hours;
+        grant.apply_to(&mut record);
         record.parent_id = Some(parent.id.clone());
         record.parent_name = Some(parent.name.clone());
         let now = Utc::now().timestamp();
@@ -2879,9 +2873,7 @@ impl AccountDb {
         hours: i64,
     ) -> DbResult<Result<(ApiTokenRecord, String), RoleTokenRefusal>> {
         let (mut record, raw) = new_api_token_record(&self.account, name, grant.scope, None);
-        record.permissions = grant.permissions;
-        record.boards = grant.boards;
-        record.child_lifetime_hours = grant.child_lifetime_hours;
+        grant.apply_to(&mut record);
         record.parent_id = Some(parent.id.clone());
         record.parent_name = Some(parent.name.clone());
         let now = Utc::now().timestamp();

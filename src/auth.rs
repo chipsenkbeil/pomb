@@ -583,6 +583,15 @@ pub struct TokenGrant {
     pub child_lifetime_hours: i64,
 }
 
+impl TokenGrant {
+    /// Copies the permissions, boards and child lifetime onto `record`.
+    pub fn apply_to(self, record: &mut ApiTokenRecord) {
+        record.permissions = self.permissions;
+        record.boards = self.boards;
+        record.child_lifetime_hours = self.child_lifetime_hours;
+    }
+}
+
 /// Builds the [`ApiTokenRecord`] for a fresh token of `account_id` (keeping its SHA-256). The raw
 /// token itself is returned alongside and must be shown to the user once —
 /// it is never stored.
