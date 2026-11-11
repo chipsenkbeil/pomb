@@ -15550,6 +15550,7 @@ struct RenameAttachmentInput {
         (status = 200, description = "The renamed attachment's metadata", body = TaskAttachment),
         (status = 400, description = "The name is empty, too long, or contains `/` or `\\`"),
         (status = 404, description = "Task or attachment not found"),
+        (status = 409, description = "`quota_exceeded`: the rename would push the task past its byte cap. `duplicate_attachment`: the task already holds another attachment with this name"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
