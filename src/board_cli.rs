@@ -10,7 +10,7 @@ use clap::Subcommand;
 use serde_json::{Value, json};
 use wire::{
     Attachment, BoardDetail, BoardEntry, Color, Column, Comment, Created, Export, Parent,
-    ServerLimits, Subtask, Task, TaskDetail, TaskLabels,
+    ServerLimits, Subtask, Task, TaskDetail, TaskKind, TaskLabels,
 };
 
 use crate::client::{self, Client};
@@ -751,6 +751,10 @@ fn attach_file(
 /// The parent and children lines of a card, each ending in a newline.
 fn kin_lines(detail: &TaskDetail) -> String {
     let mut lines = String::new();
+    if detail.kind == TaskKind::Epic {
+        let state = if detail.closed { ", closed" } else { "" };
+        lines.push_str(&format!("epic{state}\n"));
+    }
     if let Some(Parent { id, name }) = &detail.parent {
         lines.push_str(&format!("parent: {} {name}\n", short(id)));
     }

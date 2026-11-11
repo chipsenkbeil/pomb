@@ -142,6 +142,23 @@ pub struct TaskDetail {
     /// How many children the card has.
     #[serde(default)]
     pub children_total: usize,
+    /// Whether the card is a plain task or an epic.
+    #[serde(default)]
+    pub kind: TaskKind,
+    /// Whether the epic is closed. Always false for a task.
+    #[serde(default)]
+    pub closed: bool,
+}
+
+/// What a task is, as the server names it.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    /// A plain task.
+    #[default]
+    Task,
+    /// An epic that groups child cards.
+    Epic,
 }
 
 /// The umbrella a card is part of.

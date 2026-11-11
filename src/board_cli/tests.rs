@@ -735,7 +735,50 @@ async fn board_show_should_count_the_children_of_an_umbrella() {
     assert_eq!(
         server.output(show(&ids.docs)).await,
         format!(
-            "{}  Backlog  2 Pomodori  docs  Write the docs\nchildren: 1 of 2 done\n\nno description\n\nno comments",
+            "{}  Backlog  2 Pomodori  docs  Write the docs\nepic\nchildren: 1 of 2 done\n\nno description\n\nno comments",
+            short(&ids.docs)
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn board_show_should_name_an_open_epic() {
+    let server = start().await;
+    let ids = server.seed().await;
+    server
+        .api(
+            "PATCH",
+            &format!("/api/tasks/{}", ids.docs),
+            Some(json!({"kind": "epic"})),
+        )
+        .await;
+    assert_eq!(
+        server.output(show(&ids.docs)).await,
+        format!(
+            "{}  Backlog  2 Pomodori  docs  Write the docs\nepic\n\nno description\n\nno comments",
+            short(&ids.docs)
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn board_show_should_say_when_an_epic_is_closed() {
+    let server = start().await;
+    let ids = server.seed().await;
+    server
+        .api(
+            "PATCH",
+            &format!("/api/tasks/{}", ids.docs),
+            Some(json!({"kind": "epic"})),
+        )
+        .await;
+    server
+        .api("POST", &format!("/api/tasks/{}/close", ids.docs), None)
+        .await;
+    assert_eq!(
+        server.output(show(&ids.docs)).await,
+        format!(
+            "{}  Backlog  2 Pomodori  docs  Write the docs\nepic, closed\n\nno description\n\nno comments",
             short(&ids.docs)
         )
     );
