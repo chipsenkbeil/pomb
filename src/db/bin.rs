@@ -6,15 +6,17 @@ use super::outbox::{txn_queue_task_deleted, txn_queue_task_restored};
 use super::usage::{OverQuota, txn_count_usage, txn_remove_entry, txn_store_entry, txn_write_task};
 use super::{
     BIN, BIN_BY_BOARD, BOARDS, COLUMNS, COLUMNS_BY_BOARD, Commit, Db, DbResult, ENTRIES_BY_TASK,
-    SETTINGS, SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
-    USERS, WipCheck, index_in, mmap_insert, mmap_remove, push_column_event, push_event, read_in,
-    read_one, task_owner_in, txn_board_accounts, txn_board_task_count, txn_clear_timer_if,
-    txn_mmap_get, txn_read_one, txn_refuse_board_over_quota, txn_task_bytes, txn_wip_refusal,
+    LINKS_BY_TARGET, SETTINGS, SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS, TASKS_BY_COLUMN,
+    TIME_ENTRIES, USERS, WipCheck, blocked_by_reaches, index_in, link_event_detail, mmap_insert,
+    mmap_remove, parent_chain_reaches, push_column_event, push_event, read_in, read_one, task_in,
+    task_owner_in, txn_board_accounts, txn_board_task_count, txn_clear_timer_if, txn_mmap_get,
+    txn_read_one, txn_refuse_board_over_quota, txn_task_bytes, txn_wip_refusal,
     unlink_deleted_tasks, write_one,
 };
 use crate::models::{
-    Actor, BIN_PERMANENT_DELETE_KEY, BinRow, BoardRow, ColorRow, ColumnRow, HistoryKind, Quota,
-    SECONDS_PER_DAY, SwimlaneRow, TaskAttachment, TaskRow, UserRow,
+    Actor, BIN_PERMANENT_DELETE_KEY, BinLink, BinRow, BoardRow, ColorRow, ColumnRow, HistoryKind,
+    LinkKind, Quota, SECONDS_PER_DAY, SwimlaneRow, TaskAttachment, TaskKind, TaskLink, TaskRow,
+    UserRow,
 };
 
 /// Key of the Unix second the cleanup of the recycle bin last ran, in [`SETTINGS`].
@@ -158,6 +160,7 @@ fn bin_task_in(txn: &WriteTransaction, id: &str, actor: Actor<'_>) -> DbResult<O
     let entry_ids = txn_mmap_get(txn, ENTRIES_BY_TASK, id)?;
     let freed = txn_task_bytes(txn, &[id.to_string()])?;
     txn_queue_task_deleted(txn, &task, actor)?;
+    let links = links_around(txn, id, &task)?;
     unlink_deleted_tasks(txn, &[id.to_string()])?;
     txn_count_usage(txn, &owner, 0, freed)?;
     let mut entries = Vec::new();
@@ -185,11 +188,112 @@ fn bin_task_in(txn: &WriteTransaction, id: &str, actor: Actor<'_>) -> DbResult<O
         column_name: column.name,
         deleted_by: actor.name.to_string(),
         deleted_at: chrono::Utc::now().timestamp(),
+        links,
     };
     txn_count_usage(txn, &owner, bin_bytes(&row)?, 0)?;
     write_one(txn, BIN, id, &row)?;
     mmap_insert(txn, BIN_BY_BOARD, &column.board_id, id)?;
     Ok(Some(row))
+}
+
+/// Returns the links `task` holds and the links other tasks hold to it, read before they go.
+fn links_around(txn: &WriteTransaction, id: &str, task: &TaskRow) -> DbResult<Vec<BinLink>> {
+    let mut links: Vec<BinLink> = task
+        .links
+        .iter()
+        .map(|link| BinLink {
+            holder_id: id.to_string(),
+            link: link.clone(),
+        })
+        .collect();
+    for holder_id in txn_mmap_get(txn, LINKS_BY_TARGET, id)? {
+        if holder_id == id {
+            continue;
+        }
+        let Some(holder) = txn_read_one::<TaskRow>(txn, TASKS, &holder_id)? else {
+            continue;
+        };
+        links.extend(
+            holder
+                .links
+                .into_iter()
+                .filter(|link| link.target_id == id)
+                .map(|link| BinLink {
+                    holder_id: holder_id.clone(),
+                    link,
+                }),
+        );
+    }
+    Ok(links)
+}
+
+/// Hands `bin_link` to the deleted task `id` so its restore puts the link back, and drops it when
+/// that task is gone.
+fn defer_link(txn: &WriteTransaction, id: &str, bin_link: &BinLink) -> DbResult<()> {
+    let Some(mut row) = txn_read_one::<BinRow>(txn, BIN, id)? else {
+        return Ok(());
+    };
+    if row
+        .links
+        .iter()
+        .any(|kept| kept.link.id == bin_link.link.id)
+    {
+        return Ok(());
+    }
+    row.links.push(bin_link.clone());
+    write_one(txn, BIN, id, &row)
+}
+
+/// Puts back each of `links` whose holder and target are both on the board again and that
+/// still fits the link rules, and skips the rest. A link whose other task is still in the bin
+/// waits in that task's row.
+fn restore_links_in(txn: &WriteTransaction, links: &[BinLink], actor: Actor<'_>) -> DbResult<()> {
+    let mut tasks = txn.open_table(TASKS)?;
+    for bin_link in links {
+        let link = &bin_link.link;
+        let holder_id = bin_link.holder_id.as_str();
+        let holder = task_in(&tasks, holder_id)?;
+        let target = task_in(&tasks, &link.target_id)?;
+        let missing_id = if holder.is_none() {
+            holder_id
+        } else {
+            link.target_id.as_str()
+        };
+        let (Some(mut holder), Some(target)) = (holder, target) else {
+            defer_link(txn, missing_id, bin_link)?;
+            continue;
+        };
+        let same = |held: &&TaskLink, target_id: &str| {
+            held.kind == link.kind && held.target_id == target_id
+        };
+        let already_linked = holder.links.iter().any(|held| same(&held, &link.target_id))
+            || (link.kind == LinkKind::Related
+                && target.links.iter().any(|held| same(&held, holder_id)));
+        let refused = match link.kind {
+            LinkKind::BlockedBy => blocked_by_reaches(&tasks, &link.target_id, holder_id)?,
+            LinkKind::Parent => {
+                holder
+                    .links
+                    .iter()
+                    .any(|held| held.kind == LinkKind::Parent)
+                    || target.kind != TaskKind::Epic
+                    || parent_chain_reaches(&tasks, &link.target_id, holder_id)?
+            }
+            _ => false,
+        };
+        if already_linked || refused {
+            continue;
+        }
+        let detail = link_event_detail(link, Some(&target.name), |detail| {
+            format!("Restored link {detail}")
+        });
+        holder.links.push(link.clone());
+        push_event(&mut holder, HistoryKind::LinkAdded, detail, actor);
+        holder.updated_at = Some(chrono::Utc::now().to_rfc3339());
+        txn_write_task(txn, &mut tasks, &holder, OverQuota::Allow, actor)?;
+        mmap_insert(txn, LINKS_BY_TARGET, &link.target_id, holder_id)?;
+    }
+    Ok(())
 }
 
 /// Takes `row` out of the recycle bin in `txn` and its bytes off its account.
@@ -357,6 +461,7 @@ impl Db {
             txn_write_task(&txn, &mut tasks, task, OverQuota::Allow, actor)?;
         }
         mmap_insert(&txn, TASKS_BY_COLUMN, &column.id, id)?;
+        restore_links_in(&txn, &row.links, actor)?;
         for entry in &row.entries {
             if read_in::<UserRow>(&txn, USERS, &entry.account_id)?.is_none() {
                 continue;
@@ -452,7 +557,7 @@ mod tests {
 
     use super::*;
     use crate::db::usage::txn_recount_usage;
-    use crate::db::{ACCOUNT_USAGE, AccountDeleteOutcome, NewTimeEntry};
+    use crate::db::{ACCOUNT_USAGE, AccountDeleteOutcome, LinkAddOutcome, NewTimeEntry, mmap_get};
     use crate::models::{AccountId, BoardRole, EntryKind, InstanceMode};
 
     /// An open database with an admin who owns a task on a board and a member on that board.
@@ -610,5 +715,178 @@ mod tests {
         assert_eq!(entry_ids(&fx.db, &fx.task), expected);
         assert!(stored(&fx.db, &fx.member) > 0);
         assert_counts_match(&fx.db);
+    }
+
+    /// Makes a second task in the column of the fixture's task and returns its id.
+    fn other_task(fx: &Fixture, name: &str) -> String {
+        let column = fx.db.task(&fx.task).expect("read").expect("task").column_id;
+        fx.db
+            .create_task(&column, None, name, 1, None)
+            .expect("task")
+    }
+
+    /// Returns the sorted kind and target of every link `task` shows.
+    #[must_use]
+    fn links_of(db: &Db, task: &str) -> Vec<(LinkKind, String)> {
+        let mut links: Vec<_> = db
+            .list_task_links(task)
+            .expect("links")
+            .expect("task")
+            .into_iter()
+            .map(|link| (link.kind, link.target_id))
+            .collect();
+        links.sort_by(|a, b| a.1.cmp(&b.1));
+        links
+    }
+
+    #[test]
+    fn restoring_should_bring_back_the_links_in_both_directions() {
+        let fx = fixture();
+        let blocker = other_task(&fx, "Blocker");
+        let blocked = other_task(&fx, "Blocked");
+        let link = |task: &str, kind, target: &str| {
+            fx.db
+                .add_task_link(task, kind, target, None, Actor::SYSTEM)
+                .expect("link")
+        };
+        link(&fx.task, LinkKind::BlockedBy, &blocker);
+        link(&blocked, LinkKind::BlockedBy, &fx.task);
+        let before = links_of(&fx.db, &fx.task);
+        assert_eq!(before.len(), 2);
+        assert!(fx.db.delete_task(&fx.task, Actor::SYSTEM).expect("delete"));
+        restore(&fx);
+        assert_eq!(links_of(&fx.db, &fx.task), before);
+        assert_eq!(
+            links_of(&fx.db, &blocked),
+            vec![(LinkKind::BlockedBy, fx.task.clone())]
+        );
+        assert_eq!(
+            links_of(&fx.db, &blocker),
+            vec![(LinkKind::Blocks, fx.task.clone())]
+        );
+    }
+
+    #[test]
+    fn restoring_should_drop_a_link_to_a_purged_task() {
+        let fx = fixture();
+        let gone = other_task(&fx, "Gone");
+        let kept = other_task(&fx, "Kept");
+        for target in [&gone, &kept] {
+            fx.db
+                .add_task_link(&fx.task, LinkKind::Related, target, None, Actor::SYSTEM)
+                .expect("link");
+        }
+        assert!(fx.db.delete_task(&fx.task, Actor::SYSTEM).expect("delete"));
+        assert!(fx.db.delete_task(&gone, Actor::SYSTEM).expect("delete"));
+        let purged = fx
+            .db
+            .purge_bin_where(|_, row| Ok(row.task.id == gone))
+            .expect("purge");
+        assert_eq!(purged, 1);
+        restore(&fx);
+        assert_eq!(
+            links_of(&fx.db, &fx.task),
+            vec![(LinkKind::Related, kept.clone())]
+        );
+        assert_eq!(
+            links_of(&fx.db, &kept),
+            vec![(LinkKind::Related, fx.task.clone())]
+        );
+    }
+
+    #[test]
+    fn restoring_should_keep_a_link_between_two_binned_tasks_in_either_order() {
+        for first_is_holder in [true, false] {
+            let fx = fixture();
+            let other = other_task(&fx, "Other");
+            fx.db
+                .add_task_link(&fx.task, LinkKind::Related, &other, None, Actor::SYSTEM)
+                .expect("link");
+            assert!(fx.db.delete_task(&fx.task, Actor::SYSTEM).expect("delete"));
+            assert!(fx.db.delete_task(&other, Actor::SYSTEM).expect("delete"));
+            let order = if first_is_holder {
+                [&fx.task, &other]
+            } else {
+                [&other, &fx.task]
+            };
+            for id in order {
+                let outcome = fx
+                    .db
+                    .restore_task(id, Utc::now().timestamp(), WipCheck::Force, Actor::SYSTEM)
+                    .expect("restore");
+                assert!(matches!(outcome, RestoreOutcome::Restored { .. }));
+            }
+            assert_eq!(
+                links_of(&fx.db, &fx.task),
+                vec![(LinkKind::Related, other.clone())]
+            );
+            assert_eq!(
+                links_of(&fx.db, &other),
+                vec![(LinkKind::Related, fx.task.clone())]
+            );
+        }
+    }
+
+    #[test]
+    fn restoring_should_drop_a_link_that_would_close_a_blocked_by_cycle() {
+        let fx = fixture();
+        let a = other_task(&fx, "A");
+        let c = other_task(&fx, "C");
+        let link = |task: &str, target: &str| {
+            fx.db
+                .add_task_link(task, LinkKind::BlockedBy, target, None, Actor::SYSTEM)
+                .expect("link")
+        };
+        link(&fx.task, &c);
+        link(&a, &fx.task);
+        assert!(fx.db.delete_task(&fx.task, Actor::SYSTEM).expect("delete"));
+        assert!(matches!(link(&c, &a), LinkAddOutcome::Added(_)));
+        restore(&fx);
+        assert_eq!(
+            links_of(&fx.db, &fx.task),
+            vec![(LinkKind::BlockedBy, c.clone())]
+        );
+        assert_eq!(links_of(&fx.db, &a), vec![(LinkKind::Blocks, c.clone())]);
+    }
+
+    #[test]
+    fn restoring_should_drop_a_parent_link_to_a_task_that_is_no_longer_an_epic() {
+        let fx = fixture();
+        let umbrella = other_task(&fx, "Umbrella");
+        let set_kind = |kind| {
+            fx.db
+                .apply_task_change(&umbrella, Actor::SYSTEM, |row| {
+                    row.kind = kind;
+                    ((), true)
+                })
+                .expect("kind");
+        };
+        set_kind(TaskKind::Epic);
+        fx.db
+            .add_task_link(&fx.task, LinkKind::Parent, &umbrella, None, Actor::SYSTEM)
+            .expect("link");
+        assert!(fx.db.delete_task(&fx.task, Actor::SYSTEM).expect("delete"));
+        set_kind(TaskKind::Task);
+        restore(&fx);
+        assert!(links_of(&fx.db, &fx.task).is_empty());
+        assert!(links_of(&fx.db, &umbrella).is_empty());
+    }
+
+    #[test]
+    fn a_binned_tasks_links_should_block_nothing_while_it_is_in_the_bin() {
+        let fx = fixture();
+        let blocked = other_task(&fx, "Blocked");
+        fx.db
+            .add_task_link(&blocked, LinkKind::BlockedBy, &fx.task, None, Actor::SYSTEM)
+            .expect("link");
+        assert!(fx.db.delete_task(&fx.task, Actor::SYSTEM).expect("delete"));
+        let row = fx.db.task(&blocked).expect("read").expect("task");
+        assert!(row.links.is_empty());
+        assert!(links_of(&fx.db, &blocked).is_empty());
+        assert!(
+            mmap_get(&fx.db.db, LINKS_BY_TARGET, &fx.task)
+                .expect("index")
+                .is_empty()
+        );
     }
 }

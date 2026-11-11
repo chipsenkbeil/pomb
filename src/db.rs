@@ -1129,7 +1129,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 86;
+pub const SCHEMA_VERSION: u64 = 87;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1222,6 +1222,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "c4f0a082c10bab22b28d6094c470648980f407c4f5e66ac344589136f56b6856",
     "f3d7f7aed30f557c41f67dd66ed057aa03376248d236e76e6d9b5036812be920",
     "24ee231d8c67c647a37a4e24a3e2e07e91c7ba5c866650736f47709fbce7187d",
+    "40c381ec575e90f7c7b249f90ffc5cd57df0a36a4074058d4a840fcaf69e01ed",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -16421,11 +16422,11 @@ mod schema_fingerprint_tests {
 
     use super::*;
     use crate::models::{
-        AgentRoleGrantRow, AgentRoleRow, Avatar, AvatarKind, BoardEventRow, BoardMemberRow,
-        BoardRole, BreakActivity, DiskLimits, FieldColumn, InviteRow, LimitGroup, NotificationRow,
-        OutboxRow, OwnerHolder, ParentToken, PruneSettings, PruneStatus, QuestionChoice, Quotas,
-        RateLimits, RegistrationMode, Responsible, SeatVerdict, SpentBookmark, SubtaskTemplate,
-        TimeFormat, TimerMode, WebhookEvent, WeekStart,
+        AgentRoleGrantRow, AgentRoleRow, Avatar, AvatarKind, BinLink, BoardEventRow,
+        BoardMemberRow, BoardRole, BreakActivity, DiskLimits, FieldColumn, InviteRow, LimitGroup,
+        NotificationRow, OutboxRow, OwnerHolder, ParentToken, PruneSettings, PruneStatus,
+        QuestionChoice, Quotas, RateLimits, RegistrationMode, Responsible, SeatVerdict,
+        SpentBookmark, SubtaskTemplate, TimeFormat, TimerMode, WebhookEvent, WeekStart,
     };
     use crate::permissions::StandardKey;
 
@@ -16729,6 +16730,7 @@ mod schema_fingerprint_tests {
             shape::<ApiTokenRecord>("ApiTokenRecord"),
             shape::<BackupSettings>("BackupSettings"),
             shape::<BackupStatus>("BackupStatus"),
+            shape::<BinLink>("BinLink"),
             shape::<BinRow>("BinRow"),
             shape::<BoardAccess>("BoardAccess"),
             shape::<BoardEventRow>("BoardEventRow"),

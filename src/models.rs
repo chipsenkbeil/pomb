@@ -2995,6 +2995,18 @@ pub struct BinRow {
     pub deleted_by: String,
     /// Unix seconds the task was deleted.
     pub deleted_at: i64,
+    /// The links the task held and the links other tasks held to it when it was deleted.
+    #[serde(default)]
+    pub links: Vec<BinLink>,
+}
+
+/// A link a deleted task held or was the target of, kept for its restore.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinLink {
+    /// The task that held the link: the deleted task or the task that linked to it.
+    pub holder_id: String,
+    /// The link as the holder stored it.
+    pub link: TaskLink,
 }
 
 impl BinRow {
