@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use axum::http::StatusCode;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -5,10 +7,11 @@ use tower::ServiceExt;
 use super::board_history::{Filter, Order};
 use super::server::{passkey_mode, unthrottled_limits};
 use super::{load_history_page, router};
+use crate::auth::new_api_token_record;
 use crate::db::Db;
 use crate::models::{
-    AccountId, Actor, ActorKind, BIN_RETENTION_DAYS, HistoryKind, SECONDS_PER_DAY, TaskComment,
-    TaskEvent,
+    AccountId, Actor, ActorKind, AuthScope, BIN_RETENTION_DAYS, BoardAccess, HistoryKind,
+    SECONDS_PER_DAY, TaskComment, TaskEvent,
 };
 use crate::{AppState, BODY_LIMIT_BYTES};
 
@@ -64,6 +67,21 @@ async fn rows(fx: &Fixture, query: &str) -> Value {
     serde_json::from_str(&text).expect("json")
 }
 
+async fn send_as(fx: &Fixture, bearer: &str, uri: &str) -> (StatusCode, String) {
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("authorization", bearer)
+        .body(axum::body::Body::empty())
+        .expect("request");
+    let response = fx.app.clone().oneshot(request).await.expect("oneshot");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
+        .await
+        .expect("body");
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn details(page: &Value) -> Vec<String> {
     page["rows"]
         .as_array()
@@ -92,9 +110,13 @@ fn event(kind: HistoryKind, detail: &str, actor: &str, at: &str) -> TaskEvent {
 }
 
 fn task_with(fx: &Fixture, name: &str, history: Vec<TaskEvent>) -> String {
+    task_in(fx, &fx.column, name, history)
+}
+
+fn task_in(fx: &Fixture, column: &str, name: &str, history: Vec<TaskEvent>) -> String {
     let id = fx
         .db
-        .create_task(&fx.column, None, name, 1, None)
+        .create_task(column, None, name, 1, None)
         .expect("task");
     let owned = fx.db.account(&fx.user_id);
     let proof = owned.task(&id).expect("read").expect("task");
@@ -417,5 +439,110 @@ async fn history_page_should_offer_the_events_and_properties() {
         "value=\"moved\">Column",
     ] {
         assert!(html.contains(option), "{option}");
+    }
+}
+
+#[tokio::test]
+async fn board_history_should_hide_the_other_board_from_a_limited_token() {
+    let (_dir, fx) = fixture();
+    let kestrel = fx
+        .db
+        .create_board(&fx.user_id, "Kestrel Board")
+        .expect("board");
+    let staging = fx
+        .db
+        .create_column(&kestrel, "Staging Lane", None)
+        .expect("column");
+    let quarry = task_in(&fx, &staging, "Quarry Plan", Vec::new());
+    let mut created = event(
+        HistoryKind::Created,
+        "Task created in Staging Lane",
+        "ann",
+        "2026-10-10T10:00:00Z",
+    );
+    created.column_id = Some(staging.clone());
+    let mut moved = event(
+        HistoryKind::Moved,
+        "Moved from Staging Lane to Todo",
+        "bob",
+        "2026-10-20T10:00:00Z",
+    );
+    moved.column_id = Some(fx.column.clone());
+    moved.from = Some("Staging Lane".to_string());
+    moved.to = Some("Todo".to_string());
+    let linked = event(
+        HistoryKind::LinkAdded,
+        &format!("Added link related \"Quarry Plan\" ({quarry})"),
+        "ann",
+        "2026-10-26T10:00:00Z",
+    );
+    task_with(&fx, "Local Card", vec![created, moved, linked]);
+
+    let owner = details(&rows(&fx, "").await);
+    assert!(
+        owner.contains(&"Task created in Staging Lane".to_string()),
+        "{owner:?}"
+    );
+    assert!(
+        owner.contains(&"Moved from Staging Lane to Todo".to_string()),
+        "{owner:?}"
+    );
+    assert!(
+        owner.contains(&format!("Added link related \"Quarry Plan\" ({quarry})")),
+        "{owner:?}"
+    );
+
+    let (mut record, raw) = new_api_token_record(&fx.user_id, "one-board", AuthScope::Read, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+    let bearer = format!("Bearer {raw}");
+    let hidden = [
+        "Kestrel Board".to_string(),
+        "Staging Lane".to_string(),
+        "Quarry Plan".to_string(),
+        kestrel,
+        staging,
+        quarry,
+    ];
+
+    let uri = format!("/api/boards/{}/history", fx.board_id);
+    let (status, json) = send_as(&fx, &bearer, &uri).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    for name in &hidden {
+        assert!(!json.contains(name.as_str()), "{name} in {json}");
+    }
+    let page: Value = serde_json::from_str(&json).expect("json");
+    assert_eq!(page["rows"][0]["task"], "Local Card");
+    assert_eq!(
+        details(&page),
+        ["Moved from another board", "Created on another board"]
+    );
+
+    let uri = format!("/api/boards/{}/history?format=csv", fx.board_id);
+    let (status, csv) = send_as(&fx, &bearer, &uri).await;
+    assert_eq!(status, StatusCode::OK, "{csv}");
+    assert!(
+        csv.contains("\"Time\",\"User\",\"Task\",\"Event\""),
+        "{csv}"
+    );
+    assert!(csv.contains("Created on another board"), "{csv}");
+    for name in &hidden {
+        assert!(!csv.contains(name.as_str()), "{name} in {csv}");
+    }
+
+    let uri = format!("/api/boards/{}/history?format=xlsx", fx.board_id);
+    let (status, xlsx) = send_as(&fx, &bearer, &uri).await;
+    assert_eq!(status, StatusCode::OK, "{xlsx}");
+    assert!(xlsx.contains("Created on another board"), "{xlsx}");
+    for name in &hidden {
+        assert!(!xlsx.contains(name.as_str()), "{name} in {xlsx}");
+    }
+
+    for format in ["csv", "xlsx"] {
+        let uri = format!("/api/boards/{}/history?format={format}", fx.board_id);
+        let (status, text) = send(&fx, "GET", &uri).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(text.contains("Quarry Plan"), "{format}: {text}");
+        assert!(text.contains("Staging Lane"), "{format}: {text}");
     }
 }
