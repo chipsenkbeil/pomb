@@ -12480,6 +12480,26 @@ fn epic_has_open_children(count: usize) -> AppError {
     .with_code(ErrorCode::EpicHasOpenChildren)
 }
 
+/// Refuses a claim or an owner grab of an epic with a child that is not done yet.
+fn ensure_epic_claimable(account: &AccountDb, task: &OwnedTask) -> Result<(), AppError> {
+    if task.row().is_work() {
+        return Ok(());
+    }
+    let open = account.open_children(task).map_err(AppError::from)?;
+    if open == 0 {
+        return Ok(());
+    }
+    let still = if open == 1 {
+        "child is"
+    } else {
+        "children are"
+    };
+    Err(AppError::conflict(format!(
+        "an epic can be claimed once every child is done, and {open} {still} still open"
+    ))
+    .with_code(ErrorCode::EpicNotClaimable))
+}
+
 /// Returns the 409 for a full target column, naming time with units for an hours limit.
 fn column_wip_limit(held: WipHeld, limit: i64) -> AppError {
     WipRefused::Column { held, limit }.into()
@@ -12511,20 +12531,7 @@ async fn claim_task(
     let input: ClaimInput = parse_body(&headers, body).await?;
     let task = found(account.task(&id), "task not found")?;
     ensure_unlocked(&account, &user, task.board_id(), task.row())?;
-    if !task.row().is_work() {
-        let open = account.open_children(&task).map_err(AppError::from)?;
-        if open > 0 {
-            let still = if open == 1 {
-                "child is"
-            } else {
-                "children are"
-            };
-            return Err(AppError::conflict(format!(
-                "an epic can be claimed once every child is done, and {open} {still} still open"
-            ))
-            .with_code(ErrorCode::EpicNotClaimable));
-        }
-    }
+    ensure_epic_claimable(&account, &task)?;
     let claimant = input
         .claimant
         .as_deref()
@@ -12785,7 +12792,7 @@ fn owner_result(outcome: OwnerOutcome) -> Result<Json<OwnerView>, AppError> {
         (status = 400, description = "Missing name for a token, ttl_seconds outside 1..86400, a name over 200 characters, or a role over 40 characters"),
         (status = 403, description = "`take_over` sent with a token"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`owner_held`: another holder's live lease holds the task, and the request does not take over"),
+        (status = 409, description = "`owner_held`: another holder's live lease holds the task, and the request does not take over. `epic_not_claimable`: the task is an epic with a child that is not done yet, and the message gives the open-child count"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -12799,6 +12806,7 @@ async fn grab_owner(
     let input: GrabInput = parse_body(&headers, body).await?;
     let task = found(account.task(&id), "task not found")?;
     ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    ensure_epic_claimable(&account, &task)?;
     if input.take_over && user.kind != CredentialKind::Session {
         return Err(AppError::forbidden("only a signed-in member can take over"));
     }

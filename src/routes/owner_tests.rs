@@ -18,6 +18,7 @@ struct Fixture {
     tokens: [String; 2],
     column: String,
     other_column: String,
+    done_column: String,
 }
 
 const ALPHA: usize = 0;
@@ -33,6 +34,8 @@ impl Fixture {
         let board = db.create_board(&account, "Owner").expect("board");
         let column = db.create_column(&board, "Todo", None).expect("column");
         let other_column = db.create_column(&board, "Doing", None).expect("column");
+        let done_column = db.create_column(&board, "Done", None).expect("column");
+        db.set_column_done(&done_column, true).expect("done");
         let token = || {
             let (record, raw) = new_api_token_record(&account, "agent", AuthScope::Admin, None);
             db.create_api_token(&record).expect("token");
@@ -50,6 +53,7 @@ impl Fixture {
             tokens,
             column,
             other_column,
+            done_column,
         }
     }
 
@@ -102,9 +106,29 @@ impl Fixture {
 
     async fn task(&self) -> String {
         let body = json!({"column_id": self.column, "name": "Card"});
+        self.create(body).await
+    }
+
+    async fn create(&self, body: Value) -> String {
         let made = self.bearer(ALPHA, "POST", "/api/tasks", None, body).await;
         assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
         made.body["id"].as_str().expect("id").to_string()
+    }
+
+    async fn child_of(&self, epic: &str) -> String {
+        let child = self.task().await;
+        let body = json!({"kind": "parent", "target_id": epic});
+        let uri = format!("/api/tasks/{child}/links");
+        let linked = self.bearer(ALPHA, "POST", &uri, None, body).await;
+        assert_eq!(linked.status, StatusCode::OK, "{}", linked.body);
+        child
+    }
+
+    async fn finish(&self, task: &str) {
+        let body = json!({"column_id": self.done_column, "position": 0});
+        let uri = format!("/api/tasks/{task}/move");
+        let moved = self.bearer(ALPHA, "POST", &uri, None, body).await;
+        assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
     }
 
     async fn detail(&self, task: &str) -> Value {
@@ -615,4 +639,38 @@ async fn owner_claim_by_the_same_holder_should_keep_the_role_and_since() {
     let detail = fx.detail(&task).await;
     assert!(detail["owner"]["role"].is_null());
     assert_ne!(detail["owner"]["since"], grab.body["since"]);
+}
+
+#[tokio::test]
+async fn grabbing_an_epic_with_an_open_child_should_be_a_409_epic_not_claimable() {
+    let fx = Fixture::new();
+    let epic = fx
+        .create(json!({"column_id": fx.column, "name": "Epic", "kind": "epic"}))
+        .await;
+    let finished = fx.child_of(&epic).await;
+    fx.finish(&finished).await;
+    fx.child_of(&epic).await;
+
+    let refused = fx.grab(ALPHA, &epic, "builder", Some(60)).await;
+    assert_refused(&refused, StatusCode::CONFLICT, "epic_not_claimable");
+    assert_eq!(
+        refused.body["message"],
+        "an epic can be claimed once every child is done, and 1 child is still open"
+    );
+    let detail = fx.detail(&epic).await;
+    assert!(detail["owner"].is_null(), "{detail}");
+}
+
+#[tokio::test]
+async fn grabbing_an_epic_whose_children_are_done_should_be_granted() {
+    let fx = Fixture::new();
+    let epic = fx
+        .create(json!({"column_id": fx.column, "name": "Epic", "kind": "epic"}))
+        .await;
+    let child = fx.child_of(&epic).await;
+    fx.finish(&child).await;
+
+    let granted = fx.grab(ALPHA, &epic, "builder", Some(60)).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    assert_eq!(granted.body["holder"]["name"], "builder");
 }

@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "38"
+  version: "39"
 ---
 
 # Pomb
@@ -127,8 +127,8 @@ else the user. `POST /api/v1/auth/tokens/revoke-self` revokes your token and its
    `{"checked": true, "description_hash": "<task description_hash>"}`. On 409 reread and retry.
 6. Release with `POST /api/tasks/{id}/owner/release`, `If-Owner-Fence: N` and
    `{"name": "claude-code@<host>"}`, also on stop.
-7. An epic (`kind` `epic`) is claimed once every direct child is done. While a child is open, a claim is
-   a 409 `epic_not_claimable` and a move into a WIP-limited or Done column a 409 `epic_has_open_children`.
+7. An epic (`kind` `epic`) is claimed once every direct child is done. While a child is open, a claim or an
+   owner grab (`POST /api/tasks/{id}/owner`) is a 409 `epic_not_claimable` and a move into a WIP-limited or Done column a 409 `epic_has_open_children`.
    Make one with `POST /api/tasks`, `"kind": "epic"` and a `board_id` in place of `column_id`, or `PATCH`
    a task to `"kind": "epic"`. Link a child with `POST /api/tasks/{id}/links` on it and `{"kind": "parent", "target_id": "<epic>"}`, and any other parent is a 400 `not_epic`.
 8. `GET /api/boards/{id}/epics` shows progress. Finished children never close an epic: a lead token or
