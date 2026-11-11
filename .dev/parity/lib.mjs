@@ -181,8 +181,38 @@ async function resolveTasks(page, state, text) {
   return text;
 }
 
+// Requests in flight per page. Tracking starts at the first runSteps call, so
+// a request an earlier step started is still seen.
+const inFlight = new WeakMap();
+const trackRequests = (page) => {
+  if (!inFlight.has(page)) {
+    const pending = new Set();
+    const done = (req) => pending.delete(req);
+    page.on('request', (req) => pending.add(req));
+    page.on('requestfinished', done);
+    page.on('requestfailed', done);
+    inFlight.set(page, pending);
+  }
+  return inFlight.get(page);
+};
+
+// Wait until the page has no request in flight and stays that way for quietMs,
+// so a request the page starts only after another one ends (Take break's
+// chain) is caught too. Gives up after timeoutMs.
+const waitForRequests = async (page, quietMs = 100, timeoutMs = 5000) => {
+  const pending = trackRequests(page);
+  const deadline = Date.now() + timeoutMs;
+  let quietSince = Date.now();
+  while (Date.now() < deadline) {
+    if (pending.size > 0) quietSince = Date.now();
+    else if (Date.now() - quietSince >= quietMs) return;
+    await page.waitForTimeout(25);
+  }
+};
+
 // Replay a setup step list. Step kinds are documented in README.md.
 export async function runSteps(page, steps, state, baseUrl, ctxInfo) {
+  trackRequests(page);
   for (const raw of steps || []) {
     const step = JSON.parse(JSON.stringify(raw), (_, v) => sub(v, state));
     const [kind] = Object.keys(step);
@@ -277,8 +307,8 @@ export async function runSteps(page, steps, state, baseUrl, ctxInfo) {
         // the next step; the rest is one jump.
         {
           const slow = Math.min(arg, 5);
-          // Let in-flight status polls land before the clocks move.
-          await page.waitForTimeout(300);
+          // Let in-flight requests land before the clocks move.
+          await waitForRequests(page);
           if (arg > slow) {
             ctxInfo.clockMs += (arg - slow) * 1000;
             await setServerClock(state, ctxInfo.clockMs);
