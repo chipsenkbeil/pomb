@@ -1667,3 +1667,122 @@ async fn closed_epic_in_a_done_column_should_stay_a_met_blocker_whatever_its_chi
     let page = board_page(&fx).await;
     assert!(!epic_card(&page, &epic).contains("Open work"));
 }
+
+fn stamp_of(fx: &Fixture, id: &str) -> String {
+    let task = fx.db.task(id).expect("read").expect("task");
+    task.updated_at.expect("updated_at")
+}
+
+fn pause() {
+    std::thread::sleep(std::time::Duration::from_millis(5));
+}
+
+async fn done_epic_with_dependent(fx: &Fixture) -> (String, String) {
+    mark_done_column(fx, &fx.col_moves).await;
+    let epic = create(
+        fx,
+        json!({"column_id": fx.col_moves, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let waiting = create(fx, json!({"column_id": fx.col_todo, "name": "Waiting"})).await;
+    block_on(fx, &waiting, &epic).await;
+    (epic, waiting)
+}
+
+async fn open_child_of(fx: &Fixture, epic: &str) -> String {
+    let child = create(fx, json!({"column_id": fx.col_todo, "name": "Child"})).await;
+    adopt(fx, &child, epic).await;
+    child
+}
+
+#[tokio::test]
+async fn done_epic_dependents_should_be_stamped_when_a_child_opens() {
+    let (_dir, fx) = fixture();
+    let (epic, waiting) = done_epic_with_dependent(&fx).await;
+    let before = stamp_of(&fx, &waiting);
+    pause();
+    open_child_of(&fx, &epic).await;
+    assert!(is_blocked(&fx, &waiting).await);
+    assert!(stamp_of(&fx, &waiting) > before);
+}
+
+#[tokio::test]
+async fn done_epic_dependents_should_be_stamped_when_a_child_closes() {
+    let (_dir, fx) = fixture();
+    let (epic, waiting) = done_epic_with_dependent(&fx).await;
+    let child = open_child_of(&fx, &epic).await;
+    let before = stamp_of(&fx, &waiting);
+    pause();
+    move_to(&fx.app, &fx.cookie, &child, &fx.col_moves).await;
+    assert!(!is_blocked(&fx, &waiting).await);
+    assert!(stamp_of(&fx, &waiting) > before);
+}
+
+#[tokio::test]
+async fn done_epic_dependents_should_be_stamped_when_the_last_child_goes() {
+    let (_dir, fx) = fixture();
+    let (epic, waiting) = done_epic_with_dependent(&fx).await;
+    let child = open_child_of(&fx, &epic).await;
+    let before = stamp_of(&fx, &waiting);
+    pause();
+    let link = fx.db.task(&child).expect("read").expect("task").links[0]
+        .id
+        .clone();
+    let (status, gone) = call(
+        &fx,
+        "DELETE",
+        &format!("/api/tasks/{child}/links/{link}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{gone}");
+    assert!(!is_blocked(&fx, &waiting).await);
+    let unlinked = stamp_of(&fx, &waiting);
+    assert!(unlinked > before, "unlinking stamps the dependent");
+
+    let child = open_child_of(&fx, &epic).await;
+    let before = stamp_of(&fx, &waiting);
+    pause();
+    let (status, gone) = call(&fx, "DELETE", &format!("/api/tasks/{child}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{gone}");
+    assert!(!is_blocked(&fx, &waiting).await);
+    assert!(stamp_of(&fx, &waiting) > before, "deleting stamps it too");
+}
+
+#[tokio::test]
+async fn done_epic_dependents_should_stay_unstamped_when_open_state_is_unchanged() {
+    let (_dir, fx) = fixture();
+    let (epic, waiting) = done_epic_with_dependent(&fx).await;
+    let child = open_child_of(&fx, &epic).await;
+    let other = open_child_of(&fx, &epic).await;
+    let before = stamp_of(&fx, &waiting);
+    pause();
+    move_to(&fx.app, &fx.cookie, &child, &fx.col_limited).await;
+    move_to(&fx.app, &fx.cookie, &other, &fx.col_moves).await;
+    assert!(is_blocked(&fx, &waiting).await);
+    assert_eq!(stamp_of(&fx, &waiting), before);
+}
+
+#[tokio::test]
+async fn done_epic_dependents_should_be_stamped_when_the_last_open_child_moves_to_another_epic() {
+    let (_dir, fx) = fixture();
+    let (epic, waiting) = done_epic_with_dependent(&fx).await;
+    let child = open_child_of(&fx, &epic).await;
+    let other = create(
+        &fx,
+        json!({"column_id": fx.col_moves, "name": "Other", "kind": "epic"}),
+    )
+    .await;
+    let before = stamp_of(&fx, &waiting);
+    pause();
+    let (status, moved) = call(
+        &fx,
+        "PUT",
+        &format!("/api/tasks/{child}/umbrella"),
+        Some(json!({"target_id": other})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    assert!(!is_blocked(&fx, &waiting).await);
+    assert!(stamp_of(&fx, &waiting) > before);
+}

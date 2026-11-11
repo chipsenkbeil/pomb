@@ -3431,6 +3431,18 @@ enum RowWrite {
 /// Remove every link to a task in `deleted` from the tasks that hold one,
 /// and drop the deleted tasks' own index entries. Runs before the rows go.
 fn unlink_deleted_tasks(txn: &WriteTransaction, deleted: &[String]) -> DbResult<()> {
+    let epics: Vec<String> = parent_epics(txn, deleted)?
+        .into_iter()
+        .filter(|epic| !deleted.contains(epic))
+        .collect();
+    let mut before = blocked_before(txn, &epics)?;
+    before.retain(|id, _| !deleted.contains(id));
+    unlink_deleted_rows(txn, deleted)?;
+    bump_flipped(txn, &before)
+}
+
+/// Removes every link to a task in `deleted` and drops those tasks' own index entries.
+fn unlink_deleted_rows(txn: &WriteTransaction, deleted: &[String]) -> DbResult<()> {
     let mut tasks = txn.open_table(TASKS)?;
     let mut by_target = txn.open_multimap_table(LINKS_BY_TARGET)?;
     for id in deleted {
@@ -3509,6 +3521,39 @@ fn blocked_states(txn: &WriteTransaction, ids: &[String]) -> DbResult<HashMap<St
 /// Returns the `blocked` value of each task that depends on one of `targets`.
 fn blocked_before(txn: &WriteTransaction, targets: &[String]) -> DbResult<HashMap<String, bool>> {
     blocked_states(txn, &blocked_dependents(txn, targets)?)
+}
+
+/// Returns the epics that hold a `parent` link from any of `ids`, read inside a write
+/// transaction.
+fn parent_epics(txn: &WriteTransaction, ids: &[String]) -> DbResult<Vec<String>> {
+    let mut epics = Vec::new();
+    for id in ids {
+        let Some(task) = read_in::<TaskHead>(txn, TASKS, id)? else {
+            continue;
+        };
+        for link in task
+            .links
+            .iter()
+            .filter(|link| link.kind == LinkKind::Parent)
+        {
+            if !epics.contains(&link.target_id) {
+                epics.push(link.target_id.clone());
+            }
+        }
+    }
+    Ok(epics)
+}
+
+/// Returns the `blocked` value of each task that depends on one of `ids` or on an epic one of
+/// them is a child of, to catch a done epic's dependents flipping when a child opens or closes.
+fn blocked_around(txn: &WriteTransaction, ids: &[String]) -> DbResult<HashMap<String, bool>> {
+    let mut targets = ids.to_vec();
+    for epic in parent_epics(txn, ids)? {
+        if !targets.contains(&epic) {
+            targets.push(epic);
+        }
+    }
+    blocked_before(txn, &targets)
 }
 
 /// Returns true when a `blocked_by` link among `links` names a task that is still open, read inside
@@ -7560,7 +7605,7 @@ impl Db {
         let txn = self.db.begin_write()?;
         let before = if patch.is_done.is_some() {
             let in_column = txn_mmap_get(&txn, TASKS_BY_COLUMN, id)?;
-            blocked_before(&txn, &in_column)?
+            blocked_around(&txn, &in_column)?
         } else {
             HashMap::new()
         };
@@ -9961,6 +10006,11 @@ impl Db {
             LinkKind::Child => (target_id, LinkKind::Parent, task_id),
             other => (task_id, other, target_id),
         };
+        let before = if stored_kind == LinkKind::Parent {
+            blocked_before(txn, &[stored_target.to_string()])?
+        } else {
+            HashMap::new()
+        };
         let as_requested = |link: &TaskLink| TaskLink {
             kind,
             target_id: target_id.to_string(),
@@ -10036,6 +10086,7 @@ impl Db {
             link
         };
         mmap_insert(txn, LINKS_BY_TARGET, stored_target, holder_id)?;
+        bump_flipped(txn, &before)?;
         Ok(LinkAddOutcome::Added(as_requested(&link)))
     }
 
@@ -10049,6 +10100,9 @@ impl Db {
         actor: Actor<'_>,
     ) -> DbResult<UmbrellaChange> {
         let txn = self.db.begin_write()?;
+        let mut epics = parent_epics(&txn, &[task_id.to_string()])?;
+        epics.push(umbrella_id.to_string());
+        let before = blocked_before(&txn, &epics)?;
         let link = {
             let mut tbl = txn.open_table(TASKS)?;
             let (Some(mut task), Some(umbrella)) =
@@ -10104,6 +10158,7 @@ impl Db {
             link
         };
         mmap_insert(&txn, LINKS_BY_TARGET, umbrella_id, task_id)?;
+        bump_flipped(&txn, &before)?;
         txn.commit()?;
         Ok(UmbrellaChange::Changed(link))
     }
@@ -10261,6 +10316,7 @@ impl Db {
     ) -> DbResult<LinkDeleteOutcome> {
         let mut holders = vec![task_id.to_string()];
         holders.extend(txn_mmap_get(txn, LINKS_BY_TARGET, task_id)?);
+        let before = blocked_around(txn, &[task_id.to_string()])?;
         let mut found = false;
         {
             let mut tbl = txn.open_table(TASKS)?;
@@ -10299,6 +10355,7 @@ impl Db {
         if !found {
             return Ok(LinkDeleteOutcome::NotFound);
         }
+        bump_flipped(txn, &before)?;
         Ok(LinkDeleteOutcome::Deleted)
     }
 
@@ -12013,7 +12070,7 @@ impl Db {
         };
         let cell_changed =
             column_id != old_column_id || new_swimlane_id.as_deref() != old_swimlane_id.as_deref();
-        let before = blocked_before(txn, &[id.to_string()])?;
+        let before = blocked_around(txn, &[id.to_string()])?;
 
         // Custom field values only travel to a board that defines the same
         // key and accepts the value.
