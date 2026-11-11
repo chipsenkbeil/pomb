@@ -6007,12 +6007,26 @@ async fn device_approval_should_skip_unknown_board_names_and_grant_the_rest() {
 
 #[tokio::test]
 async fn device_approval_should_refuse_a_request_whose_board_names_match_none() {
-    let (_, page, whoami) = approve_asked(json!({"boards": ["No such board"]}), "").await;
-    assert!(whoami.is_none());
+    let (_dir, fx) = fixture();
+    let (status, started, _) = start_device_with(&fx, json!({"boards": ["No such board"]})).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let device_code = started["device_code"].as_str().expect("device_code");
+    let user_code = started["user_code"].as_str().expect("user_code");
+    let (status, page) = form_post(
+        &fx,
+        As::Admin,
+        "/device/approve",
+        &format!("user_code={user_code}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{page}");
     assert!(
-        page.contains("None of the boards the request names"),
+        page.contains("None of the boards the request names is a board of yours."),
         "{page}"
     );
+    let (status, body) = poll_device(&fx, device_code).await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
+    assert_eq!(body, "authorization_pending");
 }
 
 #[tokio::test]
