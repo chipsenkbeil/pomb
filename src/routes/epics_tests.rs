@@ -7,7 +7,7 @@ use super::test_support::{TEST_BODY_4_MIB_BYTES, held_disk, make_plain, move_to}
 use super::{EPIC_TEMPLATE, router};
 use crate::AppState;
 use crate::db::Db;
-use crate::models::AccountId;
+use crate::models::{AccountId, HistoryKind};
 
 struct Fixture {
     db: Db,
@@ -1819,4 +1819,27 @@ async fn done_epic_dependents_should_be_stamped_when_a_restored_child_reopens_it
     assert_eq!(status, StatusCode::OK, "{back}");
     assert!(is_blocked(&fx, &waiting).await);
     assert!(stamp_of(&fx, &waiting) > before);
+}
+
+#[tokio::test]
+async fn kind_changed_detail_should_name_the_json_kind() {
+    let (_dir, fx) = fixture();
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let (status, made) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{card}"),
+        Some(json!({"kind": "epic"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let kind = made["kind"].as_str().expect("kind");
+    let row = fx.db.task(&card).expect("read").expect("task");
+    let details: Vec<String> = row
+        .history
+        .iter()
+        .filter(|event| event.kind == HistoryKind::KindChanged)
+        .map(|event| event.detail.clone())
+        .collect();
+    assert_eq!(details, [format!("Changed the kind to {kind}")]);
 }

@@ -5708,6 +5708,19 @@ mod history_kind_tests {
 }
 
 #[cfg(test)]
+mod task_kind_tests {
+    use super::*;
+
+    #[test]
+    fn task_kind_json_names_should_match_as_str() {
+        for kind in [TaskKind::Task, TaskKind::Epic] {
+            let json = serde_json::to_string(&kind).expect("serialise");
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+        }
+    }
+}
+
+#[cfg(test)]
 mod entry_kind_tests {
     use super::*;
 
