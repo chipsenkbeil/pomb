@@ -5947,6 +5947,23 @@ mod responsible_tests {
         let bare = serde_json::json!({"kind": "member"});
         assert!(serde_json::from_value::<Responsible>(bare).is_err());
     }
+
+    #[test]
+    fn member_cap_should_refuse_51_distinct_members() {
+        let members =
+            |count: usize| -> Vec<String> { (0..count).map(|n| format!("user-{n}")).collect() };
+        let mut row = task(&[], None);
+        row.member_ids = members(51);
+        assert_eq!(
+            row.check_caps(None),
+            Err(TooLong {
+                field: "member_ids",
+                cap: Cap::Items(50),
+            })
+        );
+        row.member_ids = members(50);
+        assert_eq!(row.check_caps(None), Ok(()));
+    }
 }
 
 #[cfg(test)]
