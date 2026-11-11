@@ -867,6 +867,30 @@ fn openapi_should_list_agentctl_paths_and_schemas() {
     );
 }
 
+#[test]
+fn task_detail_openapi_schema_should_list_seats() {
+    let json = ApiDoc::openapi().to_json().expect("spec serializes");
+    let spec: Value = serde_json::from_str(&json).expect("valid json");
+    let seats = &spec["components"]["schemas"]["TaskDetail"]["properties"]["seats"];
+    assert_eq!(seats["type"], "array", "TaskDetail.seats is an array");
+    assert_eq!(
+        seats["items"]["$ref"], "#/components/schemas/Seat",
+        "TaskDetail.seats items reference Seat"
+    );
+    let seat = &spec["components"]["schemas"]["Seat"]["properties"];
+    for field in [
+        "name",
+        "role",
+        "holder",
+        "lease_expires_at",
+        "idle",
+        "verdict",
+        "revision",
+    ] {
+        assert!(seat.get(field).is_some(), "Seat lacks {field}");
+    }
+}
+
 #[tokio::test]
 async fn patch_metadata_should_merge_top_level_keys_delete_nulls_and_clear() {
     let (_dir, fx) = fixture();
