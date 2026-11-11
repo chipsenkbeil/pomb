@@ -11942,6 +11942,8 @@ struct TaskDetail {
     /// The owner with its lease state and fence, or null when the task never had one. A lapsed or
     /// released lease keeps the owner, with `live` false.
     owner: Option<OwnerView>,
+    /// The card's seats in the order the board lists them, each with its holder, lease and answer.
+    seats: Vec<Seat>,
     /// Custom field values by key.
     #[schema(value_type = Object)]
     fields: serde_json::Map<String, serde_json::Value>,
@@ -12077,6 +12079,7 @@ impl TaskDetail {
             links,
             blocked,
             fields: task.fields,
+            seats: task.seats,
         })
     }
 }

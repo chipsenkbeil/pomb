@@ -240,3 +240,38 @@ async fn seat_with_unknown_role_is_refused() {
         .expect("board");
     assert!(board.row().seats.is_empty());
 }
+
+#[tokio::test]
+async fn task_detail_should_list_the_card_seats() {
+    let (_dir, fx) = fixture();
+    let (status, body) = call(
+        &fx,
+        "PUT",
+        &format!("/api/boards/{}/seats", fx.board_id),
+        Some(json!({"seats": [
+            {"name": "code", "role": "reviewer"},
+            {"name": "verify", "role": "verifier"},
+        ]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let task = fx
+        .db
+        .create_task(&fx.column_id, None, "Detail", 1, None)
+        .expect("task");
+    let (status, body) = call(&fx, "GET", &format!("/api/tasks/{task}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let seats = body["seats"].as_array().expect("seats array");
+    assert_eq!(seats.len(), 2, "{body}");
+    for (seat, (name, role)) in seats
+        .iter()
+        .zip([("code", "reviewer"), ("verify", "verifier")])
+    {
+        assert_eq!(seat["name"], name);
+        assert_eq!(seat["role"], role);
+        assert!(seat["holder"].is_null(), "{seat}");
+        assert!(seat["lease_expires_at"].is_null(), "{seat}");
+        assert!(seat["verdict"].is_null(), "{seat}");
+        assert!(seat["revision"].is_null(), "{seat}");
+    }
+}
