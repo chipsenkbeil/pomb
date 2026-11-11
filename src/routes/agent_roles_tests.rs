@@ -2700,6 +2700,36 @@ async fn settings_should_list_roles_with_boards_and_live_tokens() {
 }
 
 #[tokio::test]
+async fn settings_should_show_the_boards_of_a_role_token_limited_to_some_boards() {
+    let fx = Fixture::new();
+    let other = fx.db.create_board(&fx.alice, "Other").expect("board");
+    let role = fx.create(ALICE, "implementer").await;
+    let role_id = role["id"].as_str().expect("id").to_string();
+    for board in [&fx.boards[ALICE], &other] {
+        assert!(
+            fx.db
+                .grant_agent_role(fx.alice.as_str(), &role_id, board)
+                .expect("grant")
+        );
+    }
+    let first = fx.boards[ALICE].clone();
+    issue_on(&fx, &role, "on-first", &[&first]);
+    issue_on(&fx, &role, "on-both", &[&first, &other]);
+
+    let html = settings_html(&fx).await;
+    let pane = roles_pane(&html);
+
+    assert!(pane.contains(&format!("data-boards=\"{first}\"")), "{pane}");
+    let mut both = [first.as_str(), other.as_str()];
+    both.sort();
+    assert!(
+        pane.contains(&format!("data-boards=\"{}\"", both.join(","))),
+        "{pane}"
+    );
+    assert!(!pane.contains("data-boards=\"all\""), "{pane}");
+}
+
+#[tokio::test]
 async fn settings_role_edit_should_save_the_template() {
     let fx = Fixture::new();
     let role = fx.create(ALICE, "planner").await;
