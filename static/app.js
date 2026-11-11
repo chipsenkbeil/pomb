@@ -15405,9 +15405,7 @@
     };
 
     const isRefusal = (err) => !!err && err.status >= 400 && err.status < 500 && ![401, 403, 408, 429].includes(err.status);
-    const importLegacyBookmarks = (key, post, storage, toast) => {
-      let pending;
-      try { pending = legacyBookmarkBodies(storage.getItem(key)); } catch (e) { return Promise.resolve(); }
+    const importLegacyBookmarks = (key, post, storage, toast, have = () => [], locks) => {
       let refused = 0;
       const keep = (rest) => {
         try {
@@ -15418,14 +15416,18 @@
       const finish = () => {
         if (refused) toast('Dropped ' + refused + (refused === 1 ? ' old bookmark' : ' old bookmarks') + ' the board refused.');
       };
-      const run = (i) => {
+      const run = (pending, i) => {
         if (i === pending.length) {
           keep([]);
           return finish();
         }
+        if (have().includes(pending[i].name)) {
+          keep(pending.slice(i + 1));
+          return run(pending, i + 1);
+        }
         return post(pending[i]).then(() => {
           keep(pending.slice(i + 1));
-          return run(i + 1);
+          return run(pending, i + 1);
         }, (err) => {
           if (!isRefusal(err)) {
             keep(pending.slice(i));
@@ -15433,10 +15435,15 @@
           }
           refused += 1;
           keep(pending.slice(i + 1));
-          return run(i + 1);
+          return run(pending, i + 1);
         });
       };
-      return run(0);
+      const locked = () => {
+        let pending;
+        try { pending = legacyBookmarkBodies(storage.getItem(key)); } catch (e) { return Promise.resolve(); }
+        return run(pending, 0);
+      };
+      return locks ? locks.request(key, locked) : locked();
     };
 
     const Bookmarks = {
@@ -15460,7 +15467,10 @@
           .catch((err) => { toast(err.message || 'Could not delete the bookmark.'); });
       },
       importLegacy() {
-        return importLegacyBookmarks(this.legacyKey(), (body) => this.post(body), window.localStorage, toast);
+        return importLegacyBookmarks(
+          this.legacyKey(), (body) => this.post(body), window.localStorage, toast,
+          () => this.list.map((b) => b.name), window.navigator.locks,
+        );
       },
       render() {
         const list = this.list;

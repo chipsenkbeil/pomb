@@ -135,6 +135,72 @@ testCase(async () => {
   }
 });
 
+const fakeLocks = () => {
+  const held = [];
+  let tail = Promise.resolve();
+  return {
+    held,
+    request: (name, fn) => {
+      held.push(name);
+      const run = tail.then(fn);
+      tail = run.catch(() => {});
+      return run;
+    },
+  };
+};
+const sharedStorage = (raw) => {
+  const map = { [HISTORY_KEY]: raw };
+  return {
+    getItem: (key) => (key in map ? map[key] : null),
+    setItem: (key, value) => { map[key] = value; },
+    removeItem: (key) => { delete map[key]; },
+  };
+};
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+testCase(async () => {
+  const storage = sharedStorage(legacyList(['A', 'B', 'C']));
+  const locks = fakeLocks();
+  const sent = [];
+  const post = (body) => tick().then(() => { sent.push(body.name); });
+  const { toast } = toaster();
+  await Promise.all([
+    BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast, () => [], locks),
+    BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast, () => [], locks),
+  ]);
+  check('history_bookmark_import_should_post_each_entry_once_across_tabs posts each entry once', sent, ['A', 'B', 'C']);
+  check('history_bookmark_import_should_post_each_entry_once_across_tabs locks the per-board name', locks.held, [HISTORY_KEY, HISTORY_KEY]);
+  check('history_bookmark_import_should_post_each_entry_once_across_tabs clears the key', storage.getItem(HISTORY_KEY), null);
+});
+
+testCase(async () => {
+  const storage = storageWith(legacyList(['A', 'B', 'C']));
+  const { sent, post } = replier([]);
+  const { seen, toast } = toaster();
+  await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast, () => ['A', 'C']);
+  check('history_bookmark_import_should_skip_entries_already_on_the_board posts only the missing entry', sent, ['B']);
+  check('history_bookmark_import_should_skip_entries_already_on_the_board drops the skipped entries', storage.getItem(HISTORY_KEY), null);
+  check('history_bookmark_import_should_skip_entries_already_on_the_board shows no toast', seen, []);
+});
+
+testCase(async () => {
+  const storage = storageWith(legacyList(['A', 'B']));
+  const { sent, post } = replier([{ status: 500 }]);
+  const { toast } = toaster();
+  await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast, () => ['A']);
+  check('history_bookmark_import_should_keep_an_entry_until_its_post_succeeds skips the known entry', sent, ['B']);
+  check('history_bookmark_import_should_keep_an_entry_until_its_post_succeeds keeps the failed entry', names(storage.getItem(HISTORY_KEY)), ['B']);
+});
+
+testCase(async () => {
+  const storage = storageWith(legacyList(['A']));
+  const { sent, post } = replier([]);
+  const { toast } = toaster();
+  await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast, () => [], undefined);
+  check('history_bookmark_import_should_run_without_navigator_locks posts the entry', sent, ['A']);
+  check('history_bookmark_import_should_run_without_navigator_locks clears the key', storage.getItem(HISTORY_KEY), null);
+});
+
 cases.reduce((chain, fn) => chain.then(fn), Promise.resolve()).then(() => {
   console.log('failures=' + failures);
   process.exit(failures ? 1 : 0);
