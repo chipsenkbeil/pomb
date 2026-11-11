@@ -8,7 +8,7 @@ use super::test_support::{Reply, call};
 use super::{history_actor, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::{ChildTokenRefusal, Db, MAX_AGENT_ROLES_PER_ACCOUNT, RoleTokenRefusal};
+use crate::db::{ChildTokenRefusal, Db, MAX_AGENT_ROLES_PER_ACCOUNT, RoleTokenRefusal, TokenEdit};
 use crate::models::{
     AccountId, AgentRoleRow, ApiTokenRecord, AuthScope, BoardAccess, BoardRole, HistoryKind,
 };
@@ -1166,6 +1166,59 @@ async fn template_change_should_not_reach_a_live_child() {
         permission_names(&next.body),
         BTreeSet::from(["boards.read", "tasks.read"].map(str::to_string))
     );
+}
+
+fn child_record(fx: &Fixture, name: &str) -> ApiTokenRecord {
+    fx.db
+        .list_account_api_tokens(&fx.alice)
+        .expect("list")
+        .into_iter()
+        .find(|token| token.name == name)
+        .expect("child")
+}
+
+#[tokio::test]
+async fn renaming_a_parent_token_should_leave_its_children_unchanged() {
+    let fx = Fixture::new();
+    let (parent, lead) = issuer_token(&fx, None, BoardAccess::All, None);
+    let body = json!({"name": "live", "permissions": ["tasks.read"]});
+    let made = issue_child(&fx, &lead, body).await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    let raw = made.body["raw_token"].as_str().expect("raw").to_string();
+    let before = child_record(&fx, "live");
+
+    let edit = TokenEdit {
+        name: Some("renamed lead".to_string()),
+    };
+    let renamed = fx
+        .db
+        .account(&fx.alice)
+        .edit_api_token(&parent.id, edit)
+        .expect("edit")
+        .expect("parent");
+    assert_eq!(renamed.name, "renamed lead");
+
+    let after = child_record(&fx, "live");
+    assert_eq!(after.permissions, before.permissions);
+    assert_eq!(after.boards, before.boards);
+    assert_eq!(after.expires_at, before.expires_at);
+    assert_eq!(after.child_lifetime_hours, before.child_lifetime_hours);
+    assert_eq!(after.parent_id, before.parent_id);
+    assert_eq!(
+        after.parent_name.as_deref(),
+        Some("lead"),
+        "the child keeps the parent's name from when it was issued"
+    );
+    assert_eq!(
+        permission_names(&whoami(&fx, &raw).await),
+        permission_names(&made.body),
+        "the child still authenticates with the same permissions"
+    );
+
+    let body = json!({"name": "later", "permissions": ["tasks.read"]});
+    let next = issue_child(&fx, &lead, body).await;
+    assert_eq!(next.status, StatusCode::OK, "{}", next.body);
+    assert_eq!(child_record(&fx, "live").parent_id, before.parent_id);
 }
 
 #[tokio::test]

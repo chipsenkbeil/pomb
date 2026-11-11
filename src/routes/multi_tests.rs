@@ -15,7 +15,7 @@ use super::test_support::{Reply, SoftAuthenticator, add_passkey, call, session_o
 use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
 use crate::auth::{
-    hash_invite_token, hash_session_token, new_api_token_record, normalize_user_code,
+    TokenGrant, hash_invite_token, hash_session_token, new_api_token_record, normalize_user_code,
 };
 use crate::db::{
     AccountAction, AdminActionOutcome, BootstrapToken, Db, DeviceGrant, MAX_PASSKEYS_PER_ACCOUNT,
@@ -23,8 +23,8 @@ use crate::db::{
 };
 use crate::models::{
     AccountId, AccountStatus, AuthScope, BoardAccess, BoardRole, DiskLimits, EntryKind,
-    InstanceMode, InstanceSettings, InviteRow, PruneSettings, Quotas, RateLimits, SECONDS_PER_DAY,
-    Settings,
+    InstanceMode, InstanceSettings, InviteRow, ParentToken, PruneSettings, Quotas, RateLimits,
+    SECONDS_PER_DAY, Settings,
 };
 
 /// Days since its last use for a board well past the default inactivity limit.
@@ -2017,6 +2017,65 @@ async fn unsuspend_should_allow_sign_in_and_make_the_same_token_work_again() {
     );
     let again = admin_action(&app, &fx.admin, &bob, "unsuspend").await;
     assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
+}
+
+/// Issues a child, named `child`, of the member's admin token and returns its raw token.
+fn member_child(fx: &Pair, bob: &AccountId) -> String {
+    let account = fx.instance.db.account(bob);
+    let parent = account
+        .list_api_tokens()
+        .expect("tokens")
+        .into_iter()
+        .find(|token| token.name == "agent")
+        .expect("parent");
+    let grant = TokenGrant {
+        scope: AuthScope::Work,
+        permissions: parent.permissions.clone(),
+        boards: parent.boards.clone(),
+        child_lifetime_hours: parent.child_lifetime_hours,
+    };
+    let parent = ParentToken {
+        id: parent.id,
+        name: parent.name,
+    };
+    let (_, raw) = account
+        .create_child_api_token(&parent, "child", grant, 1)
+        .expect("child")
+        .expect("child stored");
+    raw
+}
+
+#[tokio::test]
+async fn suspending_an_account_should_refuse_its_child_tokens() {
+    let fx = pair(None).await;
+    let app = fx.instance.app.clone();
+    let bob = fx.instance.account("bob");
+    mint_token(&app, &fx.member).await;
+    let child = format!("Bearer {}", member_child(&fx, &bob));
+    let auth = [("authorization", child.as_str())];
+    let before = call(&app, "GET", "/api/boards", &auth, None).await;
+    assert_eq!(before.status, StatusCode::OK, "{}", before.body);
+    let suspended = admin_action(&app, &fx.admin, &bob, "suspend").await;
+    assert_eq!(suspended.status, StatusCode::OK, "{}", suspended.body);
+    let held = call(&app, "GET", "/api/boards", &auth, None).await;
+    assert_eq!(held.status, StatusCode::UNAUTHORIZED, "{}", held.body);
+    assert_eq!(held.body["code"], "account_suspended", "{}", held.body);
+}
+
+#[tokio::test]
+async fn unsuspending_an_account_should_restore_its_child_token() {
+    let fx = pair(None).await;
+    let app = fx.instance.app.clone();
+    let bob = fx.instance.account("bob");
+    mint_token(&app, &fx.member).await;
+    let child = format!("Bearer {}", member_child(&fx, &bob));
+    let auth = [("authorization", child.as_str())];
+    let suspended = admin_action(&app, &fx.admin, &bob, "suspend").await;
+    assert_eq!(suspended.status, StatusCode::OK, "{}", suspended.body);
+    let lifted = admin_action(&app, &fx.admin, &bob, "unsuspend").await;
+    assert_eq!(lifted.status, StatusCode::OK, "{}", lifted.body);
+    let restored = call(&app, "GET", "/api/boards", &auth, None).await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.body);
 }
 
 #[tokio::test]
