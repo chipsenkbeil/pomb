@@ -3233,6 +3233,9 @@ impl PanelSeatState {
     }
 }
 
+/// What the side panel says of a hold that has no lease.
+const PANEL_NO_LEASE: &str = "No lease, stays until released";
+
 /// The owner group of the side panel.
 #[derive(Clone, Debug)]
 struct PanelOwner {
@@ -3263,6 +3266,8 @@ struct PanelSeat {
     state: PanelSeatState,
     /// The revision the holder sent with its verdict.
     revision: Option<String>,
+    /// What the hold says of itself, or none while the seat is open or holds a lease.
+    lease: Option<String>,
     /// The take button, or none to a viewer and to a holder at work.
     take: Option<PanelTake>,
 }
@@ -3346,7 +3351,7 @@ impl SidePanel {
             .map(|owner| match (&owner.lease_expires_at, live) {
                 (_, false) => "Lease lapsed".to_string(),
                 (Some(end), true) => format!("Until {}", format_datetime(end)),
-                (None, true) => "No end".to_string(),
+                (None, true) => PANEL_NO_LEASE.to_string(),
             });
         let owner_since = owner
             .as_ref()
@@ -3392,6 +3397,8 @@ impl SidePanel {
                 circle,
                 state,
                 revision: seat.revision.clone(),
+                lease: (seat.holder.is_some() && seat.lease_expires_at.is_none())
+                    .then(|| PANEL_NO_LEASE.to_string()),
                 take,
             });
         }

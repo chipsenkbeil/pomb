@@ -546,3 +546,44 @@ async fn panel_should_hide_drop_without_seats_manage() {
         "{html}"
     );
 }
+
+#[tokio::test]
+async fn panel_should_say_a_hold_with_no_lease_stays_until_released() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    fx.browse("POST", &format!("/api/tasks/{task}/owner"), Some(json!({})))
+        .await;
+    let reviewer = fx.token(None);
+    let take = format!("/api/tasks/{task}/seats/take");
+    let body = json!({"seat": "code", "name": "rev-bot", "ttl_seconds": 600});
+    fx.agent(&reviewer, &take, body).await;
+    let html = fx.modal(&task).await;
+    assert_eq!(
+        html.matches("No lease, stays until released").count(),
+        1,
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"id="modal-owner-lease">No lease, stays until released<"#),
+        "{html}"
+    );
+
+    fx.db
+        .apply_task_change(&task, Actor::SYSTEM, |row| {
+            let seat = row.seats.iter_mut().find(|seat| seat.name == "code");
+            seat.expect("seat").lease_expires_at = None;
+            ((), true)
+        })
+        .expect("change")
+        .expect("task");
+    let html = fx.modal(&task).await;
+    assert_eq!(
+        html.matches("No lease, stays until released").count(),
+        2,
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"tm-seat-lease">No lease, stays until released<"#),
+        "{html}"
+    );
+}

@@ -264,7 +264,7 @@
             <div class="tm-seat-rows" id="tm-seat-rows"{% if is_done && !panel.seats.is_empty() %} hidden{% endif %}>
             {% for seat in panel.seats %}<div class="tm-seat-row" data-seat-row="{{ seat.name }}">
               <span class="tm-row-label">{% if let Some(circle) = seat.circle %}{% call c::circle(circle, "seat") %}{% endif %}<span class="tm-seat-name">{{ seat.name }}</span> <span class="tm-seat-role">({{ seat.role }})</span></span>
-              <span class="tm-row-values"><span class="tm-seat-state">{{ seat.state.label() }}</span>{% if let Some(revision) = seat.revision %}<code class="tm-seat-revision tm-row-sub" title="{{ revision }}">at {{ revision }}</code>{% endif %}</span>
+              <span class="tm-row-values"><span class="tm-seat-state">{{ seat.state.label() }}</span>{% if let Some(revision) = seat.revision %}<code class="tm-seat-revision tm-row-sub" title="{{ revision }}">at {{ revision }}</code>{% endif %}{% if let Some(lease) = seat.lease %}<span class="tm-row-sub tm-seat-lease">{{ lease }}</span>{% endif %}</span>
               <span class="tm-row-actions">
               {% if let Some(take) = seat.take %}<button type="button" class="tm-side-btn" data-owner-act="seat-take" data-seat="{{ seat.name }}"{% if take.over %} data-over="1"{% endif %}{% if take.live_agent %} data-live-agent="1"{% endif %}>{{ take.label() }}</button>{% endif %}
               {% if panel.can_drop %}<button type="button" class="tm-side-btn" data-owner-act="seat-drop" data-seat="{{ seat.name }}">Drop</button>{% endif %}

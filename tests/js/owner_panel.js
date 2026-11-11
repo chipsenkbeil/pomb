@@ -92,6 +92,16 @@ async function main() {
     ['/api/tasks/t%201/owner/release', '7']);
 
   reset();
+  await runOwnerPanelAction(button({ 'data-owner-act': 'owner-take' }));
+  check('panel_should_send_no_lease_on_a_plain_take', [calls[0].path, calls[0].body],
+    ['/api/tasks/t%201/owner', '{"take_over":false}']);
+
+  reset();
+  await runOwnerPanelAction(button({ 'data-owner-act': 'seat-take', 'data-seat': 'code' }));
+  check('panel_should_send_no_lease_on_a_seat_take', [calls[0].path, calls[0].body],
+    ['/api/tasks/t%201/seats/take', '{"take_over":false,"seat":"code"}']);
+
+  reset();
   await runOwnerPanelAction(button({ 'data-owner-act': 'seat-add' }));
   await runOwnerPanelAction(button({ 'data-owner-act': 'seat-drop', 'data-seat': 'code review' }));
   check('panel_should_add_and_drop_a_seat_on_the_card', calls.map((c) => [c.path, c.method, c.body]),
