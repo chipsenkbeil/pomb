@@ -5091,6 +5091,53 @@
     });
   }
 
+  const fetchBoardEpics = (board) => {
+    return fetch('/api/boards/' + encodeURIComponent(board) + '/epics', {
+      headers: { 'Accept': 'application/json' },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((list) => (Array.isArray(list) ? list : null))
+      .catch(() => null);
+  };
+
+  const epicChoiceList = (epics, excludeId) => {
+    const barred = {};
+    if (excludeId) barred[excludeId] = true;
+    let grew = true;
+    while (grew) {
+      grew = false;
+      epics.forEach((e) => {
+        if (e.parent_id && barred[e.parent_id] && !barred[e.id]) {
+          barred[e.id] = true;
+          grew = true;
+        }
+      });
+    }
+    const open = epics.filter((e) => !e.closed && !barred[e.id]);
+    const openIds = {};
+    open.forEach((e) => { openIds[e.id] = true; });
+    const byParent = {};
+    const roots = [];
+    open.forEach((e) => {
+      if (e.parent_id && openIds[e.parent_id] && e.parent_id !== e.id) {
+        (byParent[e.parent_id] = byParent[e.parent_id] || []).push(e);
+      } else {
+        roots.push(e);
+      }
+    });
+    const choices = [];
+    const seen = {};
+    const walk = (epic, depth) => {
+      if (seen[epic.id]) return;
+      seen[epic.id] = true;
+      choices.push({ id: epic.id, name: epic.name, depth });
+      (byParent[epic.id] || []).forEach((child) => walk(child, depth + 1));
+    };
+    roots.forEach((epic) => walk(epic, 0));
+    open.forEach((epic) => walk(epic, 0));
+    return choices;
+  };
+
   function appendEpicChoices(container, choices, makeButton) {
     if (!choices.length) {
       var none = document.createElement('button');
@@ -5124,7 +5171,8 @@
       trigger.setAttribute('aria-expanded', 'false');
       return;
     }
-    BoardChrome.epicChoices(id).then(function (choices) {
+    const task = modalTaskBoard();
+    BoardChrome.epicChoices(id, task && task.id).then(function (choices) {
       if (!choices) { toast('Could not load epics.'); return; }
       list.textContent = '';
       appendEpicChoices(list, choices, function (label, epicId) {
@@ -18195,46 +18243,15 @@
         })
         .catch(function () { toast('Could not load epics.'); });
     },
-    epicChoices: function (excludeId) {
+    epicChoices: function (excludeId, otherBoard) {
       var self = this;
+      if (otherBoard && otherBoard !== boardId()) {
+        return fetchBoardEpics(otherBoard).then((list) => (list ? epicChoiceList(list, excludeId) : null));
+      }
       var ready = this.epicsLoaded ? Promise.resolve() : this.loadEpics();
       return ready.then(function () {
         if (!self.epicsLoaded) return null;
-        var barred = {};
-        if (excludeId) barred[excludeId] = true;
-        var grew = true;
-        while (grew) {
-          grew = false;
-          self.epics.forEach(function (e) {
-            if (e.parent_id && barred[e.parent_id] && !barred[e.id]) {
-              barred[e.id] = true;
-              grew = true;
-            }
-          });
-        }
-        var open = self.epics.filter(function (e) { return !e.closed && !barred[e.id]; });
-        var openIds = {};
-        open.forEach(function (e) { openIds[e.id] = true; });
-        var byParent = {};
-        var roots = [];
-        open.forEach(function (e) {
-          if (e.parent_id && openIds[e.parent_id] && e.parent_id !== e.id) {
-            (byParent[e.parent_id] = byParent[e.parent_id] || []).push(e);
-          } else {
-            roots.push(e);
-          }
-        });
-        var choices = [];
-        var seen = {};
-        function walk(epic, depth) {
-          if (seen[epic.id]) return;
-          seen[epic.id] = true;
-          choices.push({ id: epic.id, name: epic.name, depth: depth });
-          (byParent[epic.id] || []).forEach(function (child) { walk(child, depth + 1); });
-        }
-        roots.forEach(function (epic) { walk(epic, 0); });
-        open.forEach(function (epic) { walk(epic, 0); });
-        return choices;
+        return epicChoiceList(self.epics, excludeId);
       });
     },
     reopenEpic: function (id) {

@@ -21,6 +21,7 @@ function flush() {
 function response(ok, body) {
   return { ok: ok, text: function () { return Promise.resolve(body); } };
 }
+const jsonResponse = (ok, body) => ({ ok, json: () => Promise.resolve(body) });
 
 function element(tag) {
   var listeners = {};
@@ -48,6 +49,7 @@ function element(tag) {
 
 var epicHoverTried, hoveredAct, hideCount, trigger0;
 var calls, toasts, refreshed, reloads, menusClosed, replies, els, umbrellaLine, tmId, cardMenuCard, epicSubmenuLoading, opened;
+let pageBoard, taskModal;
 var window = {};
 var CARD_SUB_ICONS = {};
 var BoardChrome;
@@ -72,6 +74,8 @@ function reset() {
   cardMenuCard = null;
   epicSubmenuLoading = false;
   opened = [];
+  pageBoard = 'b1';
+  taskModal = null;
   TimerUI = { refreshTaskCard: function (id) { refreshed.push(id); } };
   window = { TimerUI: TimerUI, location: { reload: function () { reloads++; } } };
 }
@@ -80,6 +84,7 @@ var document = {
   getElementById: function (id) { return els[id] || null; },
   querySelector: function (sel) {
     if (sel === '[data-tm-act="' + CARD_ACT.ADD_TO_EPIC + '"]') return trigger0;
+    if (sel === '#modal-root .task-modal') return taskModal;
     return sel === '#modal-root .tm-umbrella-line' && umbrellaLine ? {} : null;
   },
   querySelectorAll: function () { return []; },
@@ -99,7 +104,7 @@ function openCardSubmenu(btn, build) {
   build(sub);
   opened.push(sub);
 }
-function boardId() { return 'b1'; }
+function boardId() { return pageBoard; }
 function hideCardSubmenu() { hideCount++; }
 
 eval(fn('  function linkError(message) {'));
@@ -110,8 +115,18 @@ const WIP_DECLINED = new Error('declined');
 eval(fn('  function epicRequest(path, method, body, verb) {'));
 eval(fn('  function epicLinkCall(taskId, epicId, hasParent) {'));
 eval(fn('  function addToEpic(taskId, epicId, hasParent, refresh) {'));
+const arrowConst = (name) => {
+  const head = '  const ' + name + ' = ';
+  const from = src.indexOf(head);
+  if (from < 0) throw new Error(name + ' not found');
+  const end = src.indexOf('\n  };\n', from) + '\n  };\n'.length;
+  return eval('(' + src.slice(from + head.length, end).trim().replace(/;$/, '') + ')');
+};
+const fetchBoardEpics = arrowConst('fetchBoardEpics');
+const epicChoiceList = arrowConst('epicChoiceList');
 eval(fn('  function appendEpicChoices(container, choices, makeButton) {'));
 eval(fn('  function addCardToEpic(card, epicId) {'));
+eval(fn('  function modalTaskBoard() {'));
 eval(fn('  function toggleModalEpicList(trigger) {'));
 eval(fn('    function cardSubmenuButton(label, subAct, extra) {', '    '));
 eval(fn('    function openEpicSubmenu(btn, task) {', '    '));
@@ -327,6 +342,48 @@ function trigger() {
   check('an empty board shows the disabled item in the submenu', opened.map(function (sub) {
     return sub.children.map(function (b) { return [b.label(), b.disabled]; });
   }), [[['No open epics', true]]]);
+
+  const labels = () => els['tm-epic-list'].children.map((b) => b.label());
+  const otherEpics = [epic('o1', 'Other epic'), epic('o2', 'Other kid', { parent_id: 'o1' }), epic('o3', 'Other closed', { closed: true })];
+
+  reset();
+  pageBoard = 'b1';
+  taskModal = { dataset: { boardId: 'b2', boardName: 'Other board' } };
+  BoardChrome.epics = [epic('p1', 'Page epic')];
+  BoardChrome.epicsLoaded = true;
+  replies.push(jsonResponse(true, otherEpics));
+  toggleModalEpicList(trigger());
+  await flush();
+  await flush();
+  check('modal_other_board_list: a task on another board lists that board open epics, nested, not the page board', [
+    calls.map((c) => c.path), labels(),
+  ], [['/api/boards/b2/epics'], ['Other epic', '↳ Other kid']]);
+  check('modal_other_board_keeps_page_epics: that fetch leaves BoardChrome.epics and epicsLoaded as the page left them', [
+    BoardChrome.epics.map((e) => e.id), BoardChrome.epicsLoaded,
+  ], [['p1'], true]);
+
+  reset();
+  pageBoard = null;
+  taskModal = { dataset: { boardId: 'b2', boardName: 'Other board' } };
+  BoardChrome.epics = [];
+  BoardChrome.epicsLoaded = false;
+  replies.push(jsonResponse(true, otherEpics));
+  toggleModalEpicList(trigger());
+  await flush();
+  await flush();
+  check('modal_no_board_page: with no board on the page, the modal loads the task board and shows no failure toast', [
+    calls.map((c) => c.path), toasts, labels(),
+  ], [['/api/boards/b2/epics'], [], ['Other epic', '↳ Other kid']]);
+
+  reset();
+  BoardChrome.epics = [epic('p1', 'Page epic')];
+  BoardChrome.epicsLoaded = true;
+  taskModal = { dataset: { boardId: 'b1', boardName: 'Page board' } };
+  toggleModalEpicList(trigger());
+  await flush();
+  check('modal_own_board_no_fetch: a task on the page board lists the loaded epics with no extra fetch', [
+    calls.length, labels(),
+  ], [0, ['Page epic']]);
 
   function hoverItem(act) {
     var item = {
