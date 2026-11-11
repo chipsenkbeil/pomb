@@ -304,21 +304,7 @@ async fn saving_the_settings_form_should_keep_the_muted_kinds() {
         Some(json!({"muted_notifications": ["task_moved"]})),
     )
     .await;
-    let cookie = format!(
-        "session={}",
-        fx.db.create_session(&fx.admin, "").expect("session")
-    );
-    let request = axum::http::Request::builder()
-        .method("POST")
-        .uri("/settings")
-        .header("cookie", cookie)
-        .header("host", "localhost")
-        .header("origin", "http://localhost")
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(axum::body::Body::from("pomodoro_minutes=30"))
-        .expect("request");
-    let response = fx.app.clone().oneshot(request).await.expect("oneshot");
-    assert!(response.status().is_redirection(), "{}", response.status());
+    post_settings_form(&fx, "pomodoro_minutes=30").await;
     let settings = fx.db.settings(&fx.admin).expect("settings");
     assert_eq!(settings.pomodoro_minutes, 30);
     assert_eq!(settings.muted_notifications, [NotificationKind::TaskMoved]);
