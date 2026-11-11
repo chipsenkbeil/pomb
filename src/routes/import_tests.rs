@@ -371,6 +371,12 @@ async fn import_should_answer_409_past_a_quota_and_write_nothing() {
     assert_eq!(fx.member_state(), before);
 }
 
+#[must_use]
+fn frozen_guard(probe: DiskProbe) -> DiskGuard {
+    let born = Instant::now();
+    DiskGuard::with_clock(probe, Path::new("."), Arc::new(move || born))
+}
+
 #[tokio::test]
 async fn import_should_be_stopped_by_a_full_disk_and_write_nothing() {
     let probe = DiskProbe {
@@ -378,7 +384,7 @@ async fn import_should_be_stopped_by_a_full_disk_and_write_nothing() {
         file: Arc::new(|| Ok((DiskLimits::DEFAULT_MAX_DATABASE_MIB as u64 + 1) * MIB)),
         free: Arc::new(|_| Ok(100_000 * MIB)),
     };
-    let fx = Fixture::with_disk(Some(DiskGuard::new(probe, Path::new("."))));
+    let fx = Fixture::with_disk(Some(frozen_guard(probe)));
     let archive = fx.archive().await;
     let before = fx.member_state();
 
@@ -409,7 +415,7 @@ fn spool_crossing_fixture() -> Fixture {
             Ok((floor + SPARE_MIB) * MIB - DISK_PER_SPOOLED_BYTE * spooled)
         }),
     };
-    let fx = Fixture::with_disk(Some(DiskGuard::new(probe, Path::new("."))));
+    let fx = Fixture::with_disk(Some(frozen_guard(probe)));
     let task = fx.db.board_tasks(&fx.board).expect("tasks")[0].id.clone();
     fx.db
         .add_attachment(
