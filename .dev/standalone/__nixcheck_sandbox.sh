@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # standalone: runs on test sandbox, where dev is absent
-# Hidden helper: inside the namespaces of nixcheck.sh, give /var/tmp a private mount, copy the
+# Hidden helper: inside the namespaces of dev nixcheck, give /var/tmp a private mount, copy the
 # allowed tools into it, hide /usr/bin/env and run the archived tests as the caller's own user.
 set -euo pipefail
 
