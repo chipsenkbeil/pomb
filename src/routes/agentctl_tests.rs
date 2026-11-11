@@ -11134,6 +11134,87 @@ async fn the_automatic_responsible_change_on_members_should_show_in_history() {
     assert_eq!(events[1], "Cleared the responsible");
 }
 
+#[tokio::test]
+async fn a_task_patch_should_store_a_repeated_member_once() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Twice"})).await;
+    let admin = fx.user_id.as_str();
+    let (status, task) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{id}"),
+        Some(json!({"member_ids": [admin, admin]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{task}");
+    assert_eq!(task["member_ids"], json!([admin]));
+}
+
+#[tokio::test]
+async fn a_subtask_patch_should_store_a_repeated_member_once() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Twice"})).await;
+    let sub = subtask_as(&fx, As::Admin, &id, "One").await;
+    let admin = fx.user_id.as_str();
+    let (status, body) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{id}/subtasks/{sub}"),
+        Some(json!({"member_ids": [admin, admin]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["member_ids"], json!([admin]));
+}
+
+#[tokio::test]
+async fn repeating_the_stored_member_on_a_subtask_should_write_no_members_history() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Twice"})).await;
+    let sub = subtask_as(&fx, As::Admin, &id, "One").await;
+    let admin = fx.user_id.as_str();
+    let uri = format!("/api/tasks/{id}/subtasks/{sub}");
+    call(&fx, "PATCH", &uri, Some(json!({"member_ids": [admin]}))).await;
+    assert_eq!(
+        count(&event_kinds(&fx, &id), HistoryKind::SubtaskMembersUpdated),
+        1
+    );
+
+    let body = json!({"member_ids": [admin, admin]});
+    let (status, body) = call(&fx, "PATCH", &uri, Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["member_ids"], json!([admin]));
+    assert_eq!(
+        count(&event_kinds(&fx, &id), HistoryKind::SubtaskMembersUpdated),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_member_list_naming_two_accounts_should_still_be_refused_as_unknown() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Two"})).await;
+    let sub = subtask_as(&fx, As::Admin, &id, "One").await;
+    let admin = fx.user_id.as_str();
+    let ids = json!([admin, "someone-else"]);
+    let (status, body) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{id}"),
+        Some(json!({"member_ids": ids})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{id}/subtasks/{sub}"),
+        Some(json!({"member_ids": ids})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
 /// Posts `body` to the token create route as the browser, and returns the reply.
 async fn mint(fx: &Fixture, body: Value) -> (StatusCode, Value) {
     call(fx, "POST", "/api/v1/auth/tokens", Some(body)).await

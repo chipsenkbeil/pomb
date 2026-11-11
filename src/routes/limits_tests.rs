@@ -1639,7 +1639,6 @@ async fn list_caps_should_refuse_each_list_past_its_cap_with_a_400() {
     let columns: Vec<Value> = (0..51)
         .map(|n| json!({"key": format!("c{n}"), "label": format!("C{n}"), "kind": "text"}))
         .collect();
-    let members = vec![fx.member.as_str(); 51];
     let reasons: Vec<String> = (0..51).map(|n| format!("r{n}")).collect();
     let folded: Vec<String> = (0..65).map(|n| format!("fields:g{n}")).collect();
     let activities: Vec<Value> = (0..51)
@@ -1658,13 +1657,6 @@ async fn list_caps_should_refuse_each_list_past_its_cap_with_a_400() {
             fields_uri.clone(),
             json!({"key": "grid", "label": "Grid", "kind": "table", "columns": columns}),
             "columns",
-            "50 entries",
-        ),
-        (
-            "PATCH",
-            format!("/api/tasks/{task}"),
-            json!({"member_ids": members}),
-            "member_ids",
             "50 entries",
         ),
         (

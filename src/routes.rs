@@ -10052,7 +10052,7 @@ async fn update_task(
                     task.points = points.map(round_estimate);
                 }
                 if let Some(member_ids) = &input.member_ids {
-                    task.set_members(member_ids.clone());
+                    task.set_members(unique_members(member_ids));
                 }
                 if let Some(requested) = &input.responsible {
                     task.responsible = match requested {
@@ -11414,6 +11414,18 @@ where
         ChangeOutcome::Refused(error) => Err(error),
         ChangeOutcome::NotFound => Err(AppError::not_found("task not found")),
     }
+}
+
+/// Returns `members` with each repeated id kept once, in first-seen order.
+#[must_use]
+fn unique_members(members: &[String]) -> Vec<String> {
+    let mut unique: Vec<String> = Vec::new();
+    for member in members {
+        if !unique.contains(member) {
+            unique.push(member.clone());
+        }
+    }
+    unique
 }
 
 /// Returns the members of a task after removing `remove` and then appending each of `add` it lacks.
@@ -13218,6 +13230,7 @@ async fn update_subtask(
         Some(_) => account.list_users().map_err(AppError::from)?,
         None => Vec::new(),
     };
+    let members = input.member_ids.as_deref().map(unique_members);
 
     // The edit and its history event are one write, and an unknown subtask writes nothing
     let updated = account
@@ -13239,12 +13252,11 @@ async fn update_subtask(
             if let Some(due) = requested_due.clone() {
                 sub.due_at = due;
             }
-            let members_event = input
-                .member_ids
+            let members_event = members
                 .as_ref()
                 .filter(|members| **members != sub.member_ids)
                 .map(|members| subtask_members_event(&sub.name, members, &users));
-            if let Some(members) = &input.member_ids {
+            if let Some(members) = &members {
                 sub.member_ids.clone_from(members);
             }
             let sub = sub.clone();
