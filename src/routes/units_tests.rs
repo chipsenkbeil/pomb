@@ -4,6 +4,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::move_to;
 use crate::db::Db;
 use crate::models::HistoryKind;
 use crate::{AppState, BODY_LIMIT_BYTES};
@@ -589,17 +590,6 @@ async fn put_config(fx: &Fixture, board: &str, body: Value) -> (StatusCode, Valu
     .await
 }
 
-async fn move_to(fx: &Fixture, task: &str, column: &str) {
-    let (status, moved) = call(
-        fx,
-        "POST",
-        &format!("/api/tasks/{task}/move"),
-        Some(json!({"column_id": column, "position": 0})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{moved}");
-}
-
 #[tokio::test]
 async fn a_task_moved_into_a_numbered_board_should_take_the_next_number_of_that_board() {
     let (_dir, fx) = fixture();
@@ -616,12 +606,12 @@ async fn a_task_moved_into_a_numbered_board_should_take_the_next_number_of_that_
     let id = new_task(&fx, "Mover").await;
     assert_eq!(number_of(&fx, &id).await, "PS-1");
 
-    move_to(&fx, &id, &numbered_column).await;
+    move_to(&fx.app, &fx.cookie, &id, &numbered_column).await;
     assert_eq!(number_of(&fx, &id).await, "QR-5");
     let (_, config) = put_config(&fx, &numbered, json!({})).await;
     assert_eq!(config["numbering"]["next"], 6, "{config}");
 
-    move_to(&fx, &id, &plain_column).await;
+    move_to(&fx.app, &fx.cookie, &id, &plain_column).await;
     assert_eq!(number_of(&fx, &id).await, "QR-5");
 }
 
@@ -825,7 +815,7 @@ async fn move_task_should_answer_a_conflict_when_the_target_numbering_has_no_num
     assert_eq!(status, StatusCode::OK, "{config}");
     put_numbering(&fx, json!({"name": "Product", "prefix": "PS"})).await;
     let first = new_task(&fx, "Mover").await;
-    move_to(&fx, &first, &full_column).await;
+    move_to(&fx.app, &fx.cookie, &first, &full_column).await;
     assert_eq!(number_of(&fx, &first).await, "QR-9007199254740991");
 
     let second = new_task(&fx, "Stuck").await;

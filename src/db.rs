@@ -3327,21 +3327,23 @@ fn child_ids_in(
 
 /// Returns how many children of `epic_id` sit in a column that is not a Done column, leaving out
 /// the children in `finishing`, which are about to move into a Done column.
-fn txn_open_children(
-    txn: &WriteTransaction,
-    epic_id: &str,
-    finishing: &[String],
-) -> DbResult<usize> {
-    let tasks = txn.open_table(TASKS)?;
+fn txn_open_children(txn: &impl Reads, epic_id: &str, finishing: &[String]) -> DbResult<usize> {
     let mut open = 0;
-    for child_id in child_ids_in(txn, &tasks, epic_id)? {
+    for child_id in index_in(txn, LINKS_BY_TARGET, epic_id)? {
         if finishing.contains(&child_id) {
             continue;
         }
-        let Some(child) = task_in(&tasks, &child_id)? else {
+        let Some(child) = read_in::<TaskHead>(txn, TASKS, &child_id)? else {
             continue;
         };
-        let column: Option<ColumnRow> = txn_read_one(txn, COLUMNS, &child.column_id)?;
+        if !child
+            .links
+            .iter()
+            .any(|link| link.kind == LinkKind::Parent && link.target_id == epic_id)
+        {
+            continue;
+        }
+        let column: Option<ColumnRow> = read_in(txn, COLUMNS, &child.column_id)?;
         if !column.is_some_and(|column| column.is_done) {
             open += 1;
         }
@@ -3509,8 +3511,9 @@ fn blocked_before(txn: &WriteTransaction, targets: &[String]) -> DbResult<HashMa
 }
 
 /// Returns true when a `blocked_by` link among `links` names a task that is still open, read inside
-/// an open transaction. A task is open when it sits in a column that is not done, unless it is a
-/// closed epic. `open` remembers, by task id, whether a named task is open, so each is read once.
+/// an open transaction. A task is open when it sits in a column that is not done, or is an epic in a
+/// done column with an open child, unless it is a closed epic. `open` remembers, by task id,
+/// whether a named task is open, so each is read once.
 fn links_blocked_in(
     txn: &impl Reads,
     links: &[TaskLink],
@@ -3520,12 +3523,18 @@ fn links_blocked_in(
         let is_open = match open.get(&link.target_id) {
             Some(is_open) => *is_open,
             None => {
-                let column = match read_in::<TaskColumn>(txn, TASKS, &link.target_id)? {
-                    Some(target) if target.kind == TaskKind::Epic && target.closed => None,
-                    Some(target) => read_in::<ColumnRow>(txn, COLUMNS, &target.column_id)?,
-                    None => None,
+                let is_open = match read_in::<TaskColumn>(txn, TASKS, &link.target_id)? {
+                    Some(target) if target.kind == TaskKind::Epic && target.closed => false,
+                    Some(target) => match read_in::<ColumnRow>(txn, COLUMNS, &target.column_id)? {
+                        Some(column) if !column.is_done => true,
+                        Some(_) => {
+                            target.kind == TaskKind::Epic
+                                && txn_open_children(txn, &link.target_id, &[])? > 0
+                        }
+                        None => false,
+                    },
+                    None => false,
                 };
-                let is_open = column.is_some_and(|column| !column.is_done);
                 open.insert(link.target_id.clone(), is_open);
                 is_open
             }

@@ -339,3 +339,15 @@ impl Fixture {
         tasks.into_iter().map(|task| task.name).collect()
     }
 }
+
+pub(crate) async fn move_to(app: &axum::Router, cookie: &str, task: &str, column: &str) {
+    let reply = call(
+        app,
+        "POST",
+        &format!("/api/tasks/{task}/move"),
+        &[("accept", "application/json"), ("cookie", cookie)],
+        Some(json!({"column_id": column, "position": 0})),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+}

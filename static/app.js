@@ -18310,6 +18310,12 @@
         row.appendChild(where);
       }
       row.appendChild(self.epicProgress(epic));
+      if (epic.open_work) {
+        const open = document.createElement('div');
+        open.className = 'epic-open';
+        open.textContent = 'Open work';
+        row.appendChild(open);
+      }
       return row;
     },
     LOCATE_MS: 2000,

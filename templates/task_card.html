@@ -45,6 +45,7 @@
   <div class="epic-card-progress">
     <span class="epic-card-bar" role="progressbar" aria-label="Children done" aria-valuemin="0" aria-valuemax="{{ task.children_total }}" aria-valuenow="{{ task.children_done }}"><span class="epic-card-fill" style="width:{% if task.children_total > 0 %}{{ task.children_done * 100 / task.children_total }}{% else %}0{% endif %}%"></span></span>
     <span class="{% if task.epic_ready() %}epic-card-ready{% else %}epic-card-line{% endif %}">{{ task.epic_line() }}</span>
+    {% if task.open_children > 0 %}<span class="epic-card-open">Open work</span>{% endif %}
   </div>
   {% endif %}
   {% if has_icon_content %}

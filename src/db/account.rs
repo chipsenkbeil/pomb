@@ -528,7 +528,7 @@ impl LinkReads {
     }
 
     /// Returns true when a `blocked_by` link among `links` names a task in a column that is not
-    /// done.
+    /// done, or an epic in a done column with an open child.
     pub fn blocked(&mut self, links: &[TaskLink]) -> DbResult<bool> {
         if matches!(self.access, BoardAccess::All) {
             return links_blocked_in(&self.txn, links, &mut self.open);

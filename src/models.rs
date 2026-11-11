@@ -1619,6 +1619,9 @@ pub struct TaskCard {
     /// Whether the task is a plain task or an epic.
     #[serde(default)]
     pub kind: TaskKind,
+    /// Whether someone closed the epic.
+    #[serde(default)]
+    pub closed: bool,
     /// Links this task holds: its `blocked_by` and `related` links.
     #[serde(default)]
     pub links: Vec<TaskLink>,
@@ -1722,6 +1725,7 @@ impl From<&TaskRow> for TaskCard {
             attachments: row.attachments.len(),
             cover_id: row.cover_id.clone(),
             kind: row.kind,
+            closed: row.closed,
             links: row.links.clone(),
             claim: row.claim.clone(),
             owner: row.owner.clone(),

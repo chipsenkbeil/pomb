@@ -2743,6 +2743,8 @@ struct TaskView {
     children_total: usize,
     /// Whether the task is a plain task or an epic, which a card draws as an epic card.
     kind: TaskKind,
+    /// How many children of an epic in a done column are still open, or zero.
+    open_children: usize,
     /// The pomodori the children's sizes add up to.
     children_size: i64,
     /// The size of an epic's own final-check list, or none while the list is empty.
@@ -3854,7 +3856,8 @@ impl TaskView {
         .map_or_else(String::new, |date| date.format("%Y-%m-%d").to_string())
     }
 
-    /// Returns whether a `blocked_by` target is not yet in the Done column.
+    /// Returns whether a `blocked_by` target is not yet in the Done column, or is an epic in one with
+    /// an open child.
     fn blocked(&self) -> bool {
         self.readiness == Readiness::Blocked
     }
@@ -4118,6 +4121,7 @@ impl TaskView {
             children_total: 0,
             kind: row.kind,
             children_size: 0,
+            open_children: 0,
             final_check: (row.kind == TaskKind::Epic && !row.subtasks.is_empty())
                 .then(|| Size::from_i64(row.size)),
             children: Vec::new(),
@@ -4244,6 +4248,9 @@ impl TaskView {
         // avatars resolve through the user list.
         if let Ok(Some(col)) = db.column(&row.column_id) {
             view.display = TaskCardDisplay::from_config_json(&col.row().config_json);
+            if row.kind == TaskKind::Epic && !row.closed && col.row().is_done {
+                view.open_children = view.children_total - view.children_done;
+            }
             if let (Some(due), Some(days)) = (row.due_at.as_deref(), view.display.due_within_days) {
                 view.due_state.in_window = DateTime::parse_from_rfc3339(due)
                     .map_or(true, |due| due <= Local::now() + Duration::days(days));
@@ -20172,6 +20179,8 @@ struct EpicProgress {
     children_total: usize,
     /// How many of those children sit in a done column right now.
     children_done: usize,
+    /// True when the epic sits in a done column, is not closed and has a child that is not done.
+    open_work: bool,
 }
 
 /// Lists the epics on a board with their progress: open epics by name, then closed ones by name.
@@ -20214,11 +20223,13 @@ async fn list_board_epics(
                 .map(|above| above.id.clone()),
             None => None,
         };
-        let column_name = account
-            .column(&head.column_id)
-            .map_err(AppError::from)?
+        let column = account.column(&head.column_id).map_err(AppError::from)?;
+        let column_name = column
+            .as_ref()
             .map(|column| column.row().name.clone())
             .unwrap_or_default();
+        let column_done = column.is_some_and(|column| column.row().is_done);
+        let children_done = children.iter().filter(|child| child.done).count();
         epics.push(EpicProgress {
             id: head.id,
             name: head.name,
@@ -20227,7 +20238,8 @@ async fn list_board_epics(
             column_id: head.column_id,
             column_name,
             children_total: children.len(),
-            children_done: children.iter().filter(|child| child.done).count(),
+            children_done,
+            open_work: !head.closed && column_done && children_done < children.len(),
         });
     }
     epics.sort_by(|a, b| {
@@ -29210,7 +29222,8 @@ link may target a task on another board, and its `board_id` is the other task's 
 
 Readiness. A task is `blocked` while any of its `blocked_by` targets is in a column that is not
 Done. A blocker in any Done column, whatever its name, no longer blocks, and neither does a closed
-epic, wherever its column is. Reopening the epic blocks its dependents again.
+epic, wherever its column is. An epic that is not closed blocks while any child is not Done, even in
+a Done column. Reopening the epic blocks its dependents again.
 
 `GET /api/boards/{id}/tasks?ready=true` lists the tasks that are not blocked. When a blocker
 enters or leaves a Done column, a column's `is_done` is toggled, an epic is closed or reopened or a

@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::make_plain;
+use super::test_support::{make_plain, move_to};
 use super::{EPIC_TEMPLATE, router};
 use crate::AppState;
 use crate::db::Db;
@@ -1528,4 +1528,142 @@ async fn an_epic_with_a_highlighted_label_should_show_its_stripe_flag_and_column
         head.contains("<span class=\"columnHeader-markCount\">1</span>"),
         "{head}"
     );
+}
+
+async fn mark_done_column(fx: &Fixture, column: &str) {
+    let (status, done) = call(
+        fx,
+        "PATCH",
+        &format!("/api/columns/{column}"),
+        Some(json!({"is_done": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+}
+
+async fn block_on(fx: &Fixture, dependent: &str, target: &str) {
+    let (status, linked) = call(
+        fx,
+        "POST",
+        &format!("/api/tasks/{dependent}/links"),
+        Some(json!({"kind": "blocked_by", "target_id": target})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+}
+
+async fn is_blocked(fx: &Fixture, id: &str) -> bool {
+    let (status, task) = call(fx, "GET", &format!("/api/tasks/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{task}");
+    task["blocked"].as_bool().expect("blocked")
+}
+
+async fn epic_entry(fx: &Fixture, epic: &str) -> Value {
+    let (status, epics) = call(
+        fx,
+        "GET",
+        &format!("/api/boards/{}/epics", fx.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{epics}");
+    epics
+        .as_array()
+        .expect("epics")
+        .iter()
+        .find(|entry| entry["id"] == epic)
+        .expect("epic entry")
+        .clone()
+}
+
+#[tokio::test]
+async fn epic_in_done_column_with_an_open_child_should_block_its_dependents() {
+    let (_dir, fx) = fixture();
+    mark_done_column(&fx, &fx.col_moves).await;
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_moves, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let waiting = create(&fx, json!({"column_id": fx.col_todo, "name": "Waiting"})).await;
+    block_on(&fx, &waiting, &epic).await;
+    assert!(
+        !is_blocked(&fx, &waiting).await,
+        "a Done epic with no child is met"
+    );
+
+    let child = create(&fx, json!({"column_id": fx.col_todo, "name": "Child"})).await;
+    adopt(&fx, &child, &epic).await;
+    assert!(
+        is_blocked(&fx, &waiting).await,
+        "an open child holds the dependent back"
+    );
+
+    move_to(&fx.app, &fx.cookie, &child, &fx.col_moves).await;
+    assert!(
+        !is_blocked(&fx, &waiting).await,
+        "the dependent is ready once the child is Done"
+    );
+}
+
+#[tokio::test]
+async fn epic_card_should_show_open_work_flag_in_a_done_column() {
+    let (_dir, fx) = fixture();
+    mark_done_column(&fx, &fx.col_moves).await;
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_moves, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let child = create(&fx, json!({"column_id": fx.col_todo, "name": "Child"})).await;
+    let page = board_page(&fx).await;
+    assert!(!epic_card(&page, &epic).contains("Open work"));
+
+    adopt(&fx, &child, &epic).await;
+    let page = board_page(&fx).await;
+    assert!(epic_card(&page, &epic).contains("Open work"));
+    assert_eq!(epic_entry(&fx, &epic).await["open_work"], true);
+
+    move_to(&fx.app, &fx.cookie, &child, &fx.col_moves).await;
+    let page = board_page(&fx).await;
+    assert!(!epic_card(&page, &epic).contains("Open work"));
+    assert_eq!(epic_entry(&fx, &epic).await["open_work"], false);
+}
+
+#[tokio::test]
+async fn epic_outside_a_done_column_should_show_no_open_work_flag() {
+    let (_dir, fx) = fixture();
+    mark_done_column(&fx, &fx.col_moves).await;
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let child = create(&fx, json!({"column_id": fx.col_todo, "name": "Child"})).await;
+    adopt(&fx, &child, &epic).await;
+    let page = board_page(&fx).await;
+    assert!(!epic_card(&page, &epic).contains("Open work"));
+    assert_eq!(epic_entry(&fx, &epic).await["open_work"], false);
+}
+
+#[tokio::test]
+async fn closed_epic_in_a_done_column_should_stay_a_met_blocker_whatever_its_children() {
+    let (_dir, fx) = fixture();
+    mark_done_column(&fx, &fx.col_moves).await;
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_moves, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let child = create(&fx, json!({"column_id": fx.col_todo, "name": "Child"})).await;
+    adopt(&fx, &child, &epic).await;
+    let waiting = create(&fx, json!({"column_id": fx.col_todo, "name": "Waiting"})).await;
+    block_on(&fx, &waiting, &epic).await;
+    assert!(is_blocked(&fx, &waiting).await);
+
+    let (status, closed) = call(&fx, "POST", &format!("/api/tasks/{epic}/close"), None).await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    assert!(!is_blocked(&fx, &waiting).await);
+    let page = board_page(&fx).await;
+    assert!(!epic_card(&page, &epic).contains("Open work"));
 }
