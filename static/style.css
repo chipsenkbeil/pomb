@@ -3024,7 +3024,6 @@ body.modal-open { overflow: hidden; }
 }
 .tm-description-text:hover { background: var(--black-04); }
 .tm-description-text:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.tm-description-empty { color: var(--muted); }
 
 html:not([data-md-view="raw"]) .tm-md-raw,
 html[data-md-view="raw"] .tm-md-rendered { display: none; }
