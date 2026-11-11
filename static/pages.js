@@ -2209,6 +2209,7 @@
     box.addEventListener('change', function () {
       var wanted = box.checked;
       error.hidden = true;
+      box.disabled = true;
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -2216,8 +2217,10 @@
         body: JSON.stringify({ bin_permanent_delete: wanted }),
       }).then(function (res) {
         if (!res.ok) throw new Error('save failed');
+        box.disabled = false;
       }).catch(function () {
         box.checked = !wanted;
+        box.disabled = false;
         error.textContent = 'Could not save the setting.';
         error.hidden = false;
       });
