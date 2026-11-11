@@ -617,6 +617,7 @@ fn spec_should_name_the_permission_each_operation_needs() {
             "/api/tasks/{id}/subtasks/template",
             "settings.write",
         ),
+        ("delete", "/api/subtasks/templates/{id}", "settings.write"),
         ("post", "/api/v1/auth/tokens/children", "tokens.issue"),
         ("get", "/api/v1/auth/tokens/children", "tokens.issue"),
         ("delete", "/api/v1/auth/tokens/children", "tokens.issue"),

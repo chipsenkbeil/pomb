@@ -6105,20 +6105,14 @@
       }
 
       function remove(doomed) {
-        fetch('/api/settings')
-          .then(function (res) { return res.ok ? res.json() : null; })
-          .then(function (fresh) {
-            if (!fresh) return null;
-            var rest = (fresh.subtask_templates || []).filter(function (template) { return template.id !== doomed.id; });
-            return api('/api/settings', 'PUT', { subtask_templates: rest });
-          })
-          .then(function (res) { return res && res.ok ? res.json() : null; })
-          .then(function (settings) {
-            if (!settings) { toast('Could not delete the template.'); return; }
-            templates = settings.subtask_templates || [];
+        api('/api/subtasks/templates/' + encodeURIComponent(doomed.id), 'DELETE')
+          .then((res) => (res.ok ? res.json() : null))
+          .then((rest) => {
+            if (!rest) { toast('Could not delete the template.'); return; }
+            templates = rest;
             render();
           })
-          .catch(function () { toast('Could not delete the template.'); });
+          .catch(() => { toast('Could not delete the template.'); });
       }
 
       function render() {

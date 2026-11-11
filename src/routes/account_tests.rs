@@ -2,6 +2,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
+use tokio::runtime::Handle;
 use tower::ServiceExt as _;
 
 use super::server::{passkey_mode, unthrottled_limits};
@@ -745,4 +746,78 @@ async fn spent_bookmarks_should_persist_and_refuse_past_the_cap() {
     assert_eq!(long.status, StatusCode::BAD_REQUEST, "{}", long.body);
     let kept = fx.send("GET", "/api/settings", None).await;
     assert_eq!(kept.body["spent_bookmarks"], expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settings_put_should_keep_a_template_saved_in_between() {
+    let fx = Fixture::new();
+    let task = fx.assigned_task();
+    fx.db.add_subtask(&task, "Step").expect("subtask");
+    let auth = format!("Bearer {}", fx.token);
+    let runtime = Handle::current();
+    let mut jobs = Vec::new();
+    for round in 0..8 {
+        let put_app = fx.app.clone();
+        let put_auth = auth.clone();
+        let put_runtime = runtime.clone();
+        jobs.push(std::thread::spawn(move || {
+            put_runtime.block_on(call(
+                &put_app,
+                "PUT",
+                "/api/settings",
+                &[("authorization", &put_auth)],
+                Some(json!({ "pomodoro_minutes": 20 + round })),
+            ))
+        }));
+        let save_app = fx.app.clone();
+        let save_auth = auth.clone();
+        let save_runtime = runtime.clone();
+        let uri = format!("/api/tasks/{task}/subtasks/template");
+        jobs.push(std::thread::spawn(move || {
+            save_runtime.block_on(call(
+                &save_app,
+                "POST",
+                &uri,
+                &[("authorization", &save_auth)],
+                Some(json!({ "name": format!("Template {round}") })),
+            ))
+        }));
+    }
+    for job in jobs {
+        let reply = job.join().expect("join");
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    }
+    let kept = fx.db.settings(&fx.admin).expect("settings");
+    assert_eq!(kept.subtask_templates.len(), 8);
+}
+
+#[tokio::test]
+async fn delete_subtask_template_should_remove_only_that_template() {
+    let fx = Fixture::new();
+    let task = fx.assigned_task();
+    fx.db.add_subtask(&task, "Step").expect("subtask");
+    let uri = format!("/api/tasks/{task}/subtasks/template");
+    let first = fx
+        .send("POST", &uri, Some(json!({ "name": "First" })))
+        .await;
+    let second = fx
+        .send("POST", &uri, Some(json!({ "name": "Second" })))
+        .await;
+    let id = first.body["id"].as_str().expect("id");
+    let removed = fx
+        .send("DELETE", &format!("/api/subtasks/templates/{id}"), None)
+        .await;
+    assert_eq!(removed.body, json!([second.body]));
+    let kept = fx.db.settings(&fx.admin).expect("settings");
+    assert_eq!(kept.subtask_templates.len(), 1);
+    assert_eq!(kept.subtask_templates[0].name, "Second");
+}
+
+#[tokio::test]
+async fn delete_subtask_template_should_answer_404_for_an_unknown_id() {
+    let fx = Fixture::new();
+    let missing = fx
+        .call("DELETE", "/api/subtasks/templates/nope", None)
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.body);
 }

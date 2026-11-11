@@ -942,6 +942,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         Permission::SettingsWrite,
     ),
     (
+        Method::DELETE,
+        "/api/subtasks/templates/:id",
+        Permission::SettingsWrite,
+    ),
+    (
         Method::POST,
         "/api/tasks/:id/subtasks/from-template",
         Permission::SubtasksEdit,
@@ -2307,6 +2312,11 @@ mod tests {
         (
             Method::POST,
             "/api/tasks/:id/subtasks/template",
+            AuthScope::Admin,
+        ),
+        (
+            Method::DELETE,
+            "/api/subtasks/templates/:id",
             AuthScope::Admin,
         ),
         (

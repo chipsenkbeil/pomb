@@ -837,15 +837,15 @@ impl AccountDb {
         self.db.set_avatar_image(&self.account, image)
     }
 
-    /// Stores the account's settings with `avatar` as its text avatar and deletes its uploaded
-    /// image.
-    pub fn update_settings_with_text_avatar(
+    /// Edits the account's settings with `edit` and stores them with `avatar` as its text avatar
+    /// in one write, deletes its uploaded image and returns what `edit` returns.
+    pub fn update_settings_with_text_avatar<R>(
         &self,
-        settings: &Settings,
         avatar: Avatar,
-    ) -> DbResult<()> {
+        edit: impl FnOnce(&mut Settings) -> R,
+    ) -> DbResult<R> {
         self.db
-            .update_settings_with_text_avatar(&self.account, settings, avatar)
+            .update_settings_with_text_avatar(&self.account, avatar, edit)
     }
 
     /// Stores the account's settings, leaving its avatar as stored.

@@ -175,6 +175,10 @@ pub fn router(state: AppState) -> Router {
             post(add_subtasks_from_template),
         )
         .route(
+            "/api/subtasks/templates/:id",
+            delete(delete_subtask_template),
+        )
+        .route(
             "/api/tasks/:id/links",
             post(create_task_link).get(list_task_links),
         )
@@ -957,6 +961,12 @@ const ROUTE_ACCESS: &[(Method, &str, Rc, Wr)] = {
             "/api/tasks/:id/subtasks/from-template",
             Rc::Task,
             Wr::Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/subtasks/templates/:id",
+            Rc::Account,
+            Wr::Exempt,
         ),
         (Method::POST, "/api/tasks/:id/links", Rc::Task, Wr::Grows),
         (Method::GET, "/api/tasks/:id/links", Rc::Task, Wr::No),
@@ -13691,6 +13701,38 @@ async fn save_subtask_template(
     Ok(Json(saved))
 }
 
+/// Removes one saved subtask template from the account settings and leaves the others. Writes
+/// account settings, so it needs the settings permission.
+#[utoipa::path(
+    delete,
+    path = "/api/subtasks/templates/{id}",
+    operation_id = "delete_subtask_template",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Subtask template id")),
+    responses(
+        (status = 200, description = "The templates that remain", body = Vec<SubtaskTemplate>),
+        (status = 404, description = "The account has no such template"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_subtask_template(
+    account: AccountDb,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<SubtaskTemplate>>, AppError> {
+    let remaining = account
+        .update_settings_with(|settings| {
+            let before = settings.subtask_templates.len();
+            settings
+                .subtask_templates
+                .retain(|template| template.id != id);
+            (settings.subtask_templates.len() < before).then(|| settings.subtask_templates.clone())
+        })
+        .map_err(AppError::from)?;
+    remaining
+        .map(Json)
+        .ok_or_else(|| AppError::not_found("template not found"))
+}
+
 /// The saved template to add to a task.
 #[derive(Deserialize, ToSchema)]
 struct AddSubtasksFromTemplateInput {
@@ -24763,7 +24805,6 @@ async fn settings_submit(
         }
     };
     let defaults = Settings::default();
-    let current = account.settings().map_err(AppError::from)?;
     let reasons: Vec<String> = form
         .interrupt_reasons
         .as_deref()
@@ -24773,51 +24814,26 @@ async fn settings_submit(
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect();
-    let settings = Settings {
-        pomodoro_minutes: form
-            .pomodoro_minutes
-            .map(|v| clamp_minutes(v, defaults.pomodoro_minutes))
-            .unwrap_or(current.pomodoro_minutes),
-        short_break_minutes: form
-            .short_break_minutes
-            .map(|v| clamp_minutes(v, defaults.short_break_minutes))
-            .unwrap_or(current.short_break_minutes),
-        long_break_minutes: form
-            .long_break_minutes
-            .map(|v| clamp_minutes(v, defaults.long_break_minutes))
-            .unwrap_or(current.long_break_minutes),
-        long_break_every: form
-            .long_break_every
-            .map(|v| v.clamp(1, 12))
-            .unwrap_or(current.long_break_every),
-        notifications_enabled: form.notifications_enabled.as_deref() == Some("on"),
-        interrupt_reasons: if reasons.is_empty() {
-            current.interrupt_reasons
-        } else {
-            reasons
-        },
-
-        // Preserved: edited via the Timer settings modal (PUT /api/settings)
-        ticking_mode: current.ticking_mode,
-        alarm_sound: current.alarm_sound,
-        alarm_volume: current.alarm_volume,
-        points_volume: current.points_volume,
-        sounds_enabled: current.sounds_enabled,
-        pip_enabled: current.pip_enabled,
-        break_activities: current.break_activities,
-        favorite_boards: current.favorite_boards,
-        modal_folded_groups: current.modal_folded_groups,
-        muted_notifications: current.muted_notifications,
-        subtask_templates: current.subtask_templates,
-        spent_bookmarks: current.spent_bookmarks,
-        full_name: current.full_name,
-        dismissed_hints: current.dismissed_hints,
-        show_tips: current.show_tips,
-        avatar: current.avatar,
-        time_format: current.time_format,
-        week_start: current.week_start,
-    };
-    account.update_settings(&settings).map_err(AppError::from)?;
+    account
+        .update_settings_with(|settings| {
+            if let Some(v) = form.pomodoro_minutes {
+                settings.pomodoro_minutes = clamp_minutes(v, defaults.pomodoro_minutes);
+            }
+            if let Some(v) = form.short_break_minutes {
+                settings.short_break_minutes = clamp_minutes(v, defaults.short_break_minutes);
+            }
+            if let Some(v) = form.long_break_minutes {
+                settings.long_break_minutes = clamp_minutes(v, defaults.long_break_minutes);
+            }
+            if let Some(v) = form.long_break_every {
+                settings.long_break_every = v.clamp(1, 12);
+            }
+            settings.notifications_enabled = form.notifications_enabled.as_deref() == Some("on");
+            if !reasons.is_empty() {
+                settings.interrupt_reasons = reasons;
+            }
+        })
+        .map_err(AppError::from)?;
     Ok(Redirect::to("/settings?saved=1").into_response())
 }
 
@@ -24962,10 +24978,75 @@ struct TextAvatar {
 async fn api_update_settings(
     account: AccountDb,
     Extension(_user): Extension<AuthUser>,
-    Json(patch): Json<SettingsUpdate>,
+    Json(mut patch): Json<SettingsUpdate>,
 ) -> Result<Json<Settings>, AppError> {
     let bad = |msg: &str| AppError::bad_request(msg);
-    let mut settings = account.settings().map_err(AppError::from)?;
+    if let Some(ref v) = patch.ticking_mode
+        && !matches!(v.as_str(), "always" | "timer_start" | "never")
+    {
+        return Err(bad("invalid ticking_mode"));
+    }
+    if let Some(ref v) = patch.alarm_sound
+        && !matches!(
+            v.as_str(),
+            "bell"
+                | "chime"
+                | "beeps"
+                | "blip"
+                | "glass"
+                | "microwave"
+                | "egg_timer"
+                | "grandpa_clock"
+                | "melodic"
+        )
+    {
+        return Err(bad("invalid alarm_sound"));
+    }
+    if let Some(ref hint) = patch.dismiss_hint
+        && !HINT_IDS.contains(&hint.as_str())
+    {
+        return Err(bad("invalid dismiss_hint"));
+    }
+    let text_avatar = match patch.avatar.take() {
+        Some(text) => {
+            for color in [&text.text_color, &text.background] {
+                if !color.is_empty() && !is_hex_color(color) {
+                    return Err(bad("avatar colours must be #rrggbb"));
+                }
+            }
+            Some(Avatar {
+                kind: AvatarKind::Text,
+                text: text.text.trim().to_string(),
+                text_color: text.text_color,
+                background: text.background,
+                image_version: 0,
+            })
+        }
+        None => None,
+    };
+    let apply = |stored: &mut Settings| {
+        let mut edited = stored.clone();
+        let applied = apply_settings_patch(&account, patch, &mut edited);
+        if applied.is_ok() {
+            *stored = edited;
+        }
+        applied
+    };
+    let written = match text_avatar {
+        Some(avatar) => account.update_settings_with_text_avatar(avatar, apply),
+        None => account.update_settings_with(apply),
+    };
+    written.map_err(AppError::from)??;
+    let settings = account.settings().map_err(AppError::from)?;
+    Ok(Json(without_hidden_favorites(&account, settings)?))
+}
+
+/// Applies the fields `patch` holds to `settings`, which the caller validated.
+fn apply_settings_patch(
+    account: &AccountDb,
+    patch: SettingsUpdate,
+    settings: &mut Settings,
+) -> Result<(), AppError> {
     let clamp_minutes = |v: u32| v.clamp(1, 180);
     if let Some(v) = patch.pomodoro_minutes {
         settings.pomodoro_minutes = clamp_minutes(v);
@@ -24979,18 +25060,11 @@ async fn api_update_settings(
     if let Some(v) = patch.long_break_every {
         settings.long_break_every = v.clamp(1, 12);
     }
-    if let Some(ref v) = patch.ticking_mode {
-        match v.as_str() {
-            "always" | "timer_start" | "never" => settings.ticking_mode = v.clone(),
-            _ => return Err(bad("invalid ticking_mode")),
-        }
+    if let Some(v) = patch.ticking_mode {
+        settings.ticking_mode = v;
     }
-    if let Some(ref v) = patch.alarm_sound {
-        match v.as_str() {
-            "bell" | "chime" | "beeps" | "blip" | "glass" | "microwave" | "egg_timer"
-            | "grandpa_clock" | "melodic" => settings.alarm_sound = v.clone(),
-            _ => return Err(bad("invalid alarm_sound")),
-        }
+    if let Some(v) = patch.alarm_sound {
+        settings.alarm_sound = v;
     }
     if let Some(v) = patch.alarm_volume {
         settings.alarm_volume = v.min(100);
@@ -25127,37 +25201,12 @@ async fn api_update_settings(
     if let Some(show) = patch.show_tips {
         settings.show_tips = show;
     }
-    let patched_avatar = patch.avatar.is_some();
-    if let Some(text) = patch.avatar {
-        for color in [&text.text_color, &text.background] {
-            if !color.is_empty() && !is_hex_color(color) {
-                return Err(bad("avatar colours must be #rrggbb"));
-            }
-        }
-        settings.avatar = Avatar {
-            kind: AvatarKind::Text,
-            text: text.text.trim().to_string(),
-            text_color: text.text_color,
-            background: text.background,
-            image_version: settings.avatar.image_version,
-        };
+    if let Some(hint) = patch.dismiss_hint
+        && !settings.dismissed_hints.contains(&hint)
+    {
+        settings.dismissed_hints.push(hint);
     }
-    if let Some(hint) = patch.dismiss_hint {
-        if !HINT_IDS.contains(&hint.as_str()) {
-            return Err(bad("invalid dismiss_hint"));
-        }
-        if !settings.dismissed_hints.contains(&hint) {
-            settings.dismissed_hints.push(hint);
-        }
-    }
-    if patched_avatar {
-        account
-            .update_settings_with_text_avatar(&settings, settings.avatar.clone())
-            .map_err(AppError::from)?;
-    } else {
-        account.update_settings(&settings).map_err(AppError::from)?;
-    }
-    Ok(Json(without_hidden_favorites(&account, settings)?))
+    Ok(())
 }
 
 /// Most bytes of an uploaded avatar image.
@@ -29649,6 +29698,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         create_subtask,
         delete_all_subtasks,
         save_subtask_template,
+        delete_subtask_template,
         add_subtasks_from_template,
         reorder_subtasks,
         create_task_link,

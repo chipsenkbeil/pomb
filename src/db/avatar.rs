@@ -2,7 +2,8 @@ use redb::{ReadableTable, WriteTransaction};
 
 use super::usage::{txn_count_usage, txn_refuse_over_bytes};
 use super::{
-    ACCOUNT_SETTINGS, AVATARS, Db, DbResult, txn_read_one, txn_refuse_stranded, write_one,
+    ACCOUNT_SETTINGS, AVATARS, Db, DbResult, settings_or_default, txn_read_one,
+    txn_refuse_stranded, write_one,
 };
 use crate::models::{AccountId, Avatar, AvatarKind, Settings};
 
@@ -40,19 +41,20 @@ impl Db {
         Ok(())
     }
 
-    /// Stores `settings` with `avatar` as the account's text avatar in one write, and deletes the
-    /// uploaded image, taking its bytes off the account. The avatar keeps the stored image
-    /// version, so a later upload never reuses a version a browser cached.
-    pub fn update_settings_with_text_avatar(
+    /// Edits `account`'s settings with `edit` and stores them with `avatar` as the text avatar in
+    /// one write, and deletes the uploaded image, taking its bytes off the account. The avatar
+    /// keeps the stored image version, so a later upload never reuses a version a browser cached.
+    pub fn update_settings_with_text_avatar<R>(
         &self,
         account: &AccountId,
-        settings: &Settings,
         avatar: Avatar,
-    ) -> DbResult<()> {
+        edit: impl FnOnce(&mut Settings) -> R,
+    ) -> DbResult<R> {
         let txn = self.db.begin_write()?;
         txn_refuse_stranded(&txn, account)?;
         let stored = txn_read_one::<Settings>(&txn, ACCOUNT_SETTINGS, account.as_str())?;
-        let mut settings = settings.clone();
+        let mut settings = settings_or_default(stored.clone());
+        let edited = edit(&mut settings);
         settings.avatar = Avatar {
             image_version: stored
                 .as_ref()
@@ -63,7 +65,7 @@ impl Db {
         write_one(&txn, ACCOUNT_SETTINGS, account.as_str(), &settings)?;
         txn_drop_avatar_image(&txn, account)?;
         txn.commit()?;
-        Ok(())
+        Ok(edited)
     }
 }
 
@@ -108,7 +110,7 @@ mod tests {
             text: "AB".to_string(),
             ..Avatar::default()
         };
-        db.update_settings_with_text_avatar(&account, &edited, text)
+        db.update_settings_with_text_avatar(&account, text, |settings| *settings = edited)
             .expect("the stored text past the cap stays savable");
 
         let kept = db.settings(&account).expect("settings");
