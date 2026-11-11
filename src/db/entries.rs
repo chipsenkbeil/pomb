@@ -178,8 +178,10 @@ mod tests {
     use chrono::{FixedOffset, Local};
 
     use super::*;
-    use crate::db::{EntryEdit, META, NewTimeEntry, SCHEMA_VERSION_KEY};
-    use crate::models::{Actor, EntryKind, InstanceMode, Quotas};
+    use crate::db::{
+        EntryEdit, MAX_TASK_ROW_BYTES, META, NewComment, NewTimeEntry, SCHEMA_VERSION_KEY,
+    };
+    use crate::models::{Actor, ActorKind, EntryKind, InstanceMode, Quotas};
 
     fn edit(started_at: &str) -> EntryEdit<'_> {
         EntryEdit {
@@ -399,5 +401,126 @@ mod tests {
         let db = Db::connect(path).expect("upgrade from version 15");
         assert_eq!(db.account_entries(&member).expect("all").len(), 2);
         assert_eq!(db.entries_today(&member, &Local).expect("today").len(), 1);
+    }
+
+    fn board_task(fx: &Fixture, name: &str) -> String {
+        let board = fx.db.create_board(&fx.admin, "Board").expect("board");
+        let column = fx.db.create_column(&board, "Todo", None).expect("column");
+        fx.db
+            .create_task(&column, None, name, 1, None)
+            .expect("task")
+    }
+
+    #[must_use]
+    fn row_bytes(db: &Db, task: &str) -> usize {
+        let row = db.task(task).expect("read").expect("task");
+        serde_json::to_vec(&row).expect("json").len()
+    }
+
+    #[must_use]
+    fn comment(body: &str) -> NewComment<'_> {
+        NewComment {
+            author: "bob",
+            body,
+            actor_kind: ActorKind::User,
+            token_name: None,
+            token_id: None,
+            kind: None,
+        }
+    }
+
+    fn fill_task_row(db: &Db, task: &str) {
+        const COMMENT_BYTES: usize = 5000;
+        db.add_comment(task, comment(""), Actor::SYSTEM, None)
+            .expect("first comment");
+        let before = row_bytes(db, task);
+        db.add_comment(task, comment(""), Actor::SYSTEM, None)
+            .expect("probe comment");
+        let overhead = row_bytes(db, task) - before;
+        while let Some(room) = MAX_TASK_ROW_BYTES.checked_sub(row_bytes(db, task) + overhead) {
+            let body = "c".repeat(room.min(COMMENT_BYTES));
+            if db
+                .add_comment(task, comment(&body), Actor::SYSTEM, None)
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
+
+    #[must_use]
+    fn timed<'a>(task_id: Option<&'a str>, note: &'a str) -> NewTimeEntry<'a> {
+        NewTimeEntry {
+            task_id,
+            started_at: "2026-11-11T09:00:00Z",
+            minutes: 5,
+            seconds: 300,
+            note,
+            kind: EntryKind::Manual,
+            interrupted: false,
+            interrupt_reason: None,
+            labels: &[],
+            created_by: "",
+            activity_id: None,
+            role: None,
+            token_name: None,
+            role_id: None,
+            role_name: None,
+        }
+    }
+
+    #[test]
+    fn log_task_time_should_store_no_entry_when_the_event_write_fails() {
+        let fx = fixture();
+        let task = board_task(&fx, "Full");
+        fill_task_row(&fx.db, &task);
+        let result = fx.db.log_task_time(
+            &fx.admin,
+            timed(Some(&task), ""),
+            "Logged time",
+            Actor::SYSTEM,
+        );
+        assert_eq!(refused_bound(result), Bound::TaskRowBytes);
+        assert!(fx.db.list_entries(&task).expect("entries").is_empty());
+    }
+
+    #[test]
+    fn update_entry_should_keep_the_entry_when_the_event_write_fails() {
+        let fx = fixture();
+        let full = board_task(&fx, "Full");
+        let other = board_task(&fx, "Other");
+        fill_task_row(&fx.db, &full);
+        let entry = fx
+            .db
+            .log_task_time(
+                &fx.admin,
+                timed(Some(&other), "before"),
+                "Logged time",
+                Actor::SYSTEM,
+            )
+            .expect("logged")
+            .expect("entry id");
+        let refusal = fx
+            .db
+            .update_entry(
+                &entry,
+                &full,
+                EntryEdit {
+                    seconds: 120,
+                    note: "after",
+                    started_at: "2026-11-11T10:00:00Z",
+                    labels: &[],
+                },
+                Actor::SYSTEM,
+            )
+            .expect_err("refused");
+        assert_eq!(
+            refusal.downcast_ref::<QuotaExceeded>().map(|r| r.bound),
+            Some(Bound::TaskRowBytes)
+        );
+        let kept = fx.db.entry(&entry).expect("read").expect("entry");
+        assert_eq!(kept.task_id, other);
+        assert_eq!(kept.note, "before");
+        assert_eq!(kept.minutes, 5);
     }
 }
