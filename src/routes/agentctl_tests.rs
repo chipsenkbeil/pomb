@@ -13717,6 +13717,31 @@ async fn a_child_should_be_refused_a_permission_or_board_its_parent_lacks() {
 }
 
 #[tokio::test]
+async fn child_for_a_missing_board_should_answer_like_an_unreachable_one() {
+    let (_dir, fx) = fixture();
+    let (other, _, _) = other_board(&fx);
+    let (_, parent) = assigned_token(&fx, AuthScope::Provision, &[&fx.board_id]);
+    let (_, everything) = token_record(&fx, "everything", AuthScope::Provision);
+
+    let missing = json!({"name": "x", "preset": "read", "boards": ["no-such-board"]});
+    let unreachable = json!({"name": "x", "preset": "read", "boards": [other]});
+    let (missing_status, missing_reply) = issue(&fx, &parent, missing).await;
+    let (unreachable_status, unreachable_reply) = issue(&fx, &parent, unreachable).await;
+    assert_eq!(missing_status, StatusCode::FORBIDDEN, "{missing_reply}");
+    assert_eq!(missing_status, unreachable_status);
+    assert_eq!(missing_reply, unreachable_reply);
+
+    let reachable = json!({"name": "ok", "preset": "read", "boards": [fx.board_id]});
+    let (status, reply) = issue(&fx, &parent, reachable).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+
+    let unknown = json!({"name": "x", "preset": "read", "boards": ["no-such-board"]});
+    let (status, reply) = issue(&fx, &everything, unknown).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+    assert_eq!(reply["message"], "unknown board: no-such-board");
+}
+
+#[tokio::test]
 async fn revoking_a_parent_should_make_every_child_answer_token_invalid() {
     let (_dir, fx) = fixture();
     let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);

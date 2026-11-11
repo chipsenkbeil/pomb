@@ -26793,8 +26793,8 @@ struct CreateChildTokenInput {
     request_body = CreateChildTokenInput,
     responses(
         (status = 200, description = "Created child token (raw_token shown once)", body = CreateTokenResponse),
-        (status = 400, description = "The name is invalid. Sending both `preset` and `permissions` is refused, with or without a `role_id`. Without a `role_id`, sending neither is refused. An unknown preset, permission or board is refused. Empty `boards` or `permissions` is refused. `unknown_role` means the account has no such role. `expires_in_hours` is refused when it is outside 1 to 8. `expires_in_hours` is refused when it is above the owner's limit for the caller's children. A `child_lifetime_hours` field is refused (only the browser sets it)."),
-        (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`. `forbidden`: the child asks for a permission or board the caller lacks. `forbidden`: the child asks for `tokens.issue` while the caller was itself issued. `forbidden`: the caller is not an API token. `exceeds_grant`: with a `role_id`, the child asks for a permission or board outside the role's template. `exceeds_grant`: the child's grants are cut to the caller's. `exceeds_grant`: the cut leaves none of the role's permissions beyond the required ones."),
+        (status = 400, description = "The name is invalid. Sending both `preset` and `permissions` is refused, with or without a `role_id`. Without a `role_id`, sending neither is refused. An unknown preset or permission is refused. An unknown board is refused when the caller holds every board. Empty `boards` or `permissions` is refused. `unknown_role` means the account has no such role. `expires_in_hours` is refused when it is outside 1 to 8. `expires_in_hours` is refused when it is above the owner's limit for the caller's children. A `child_lifetime_hours` field is refused (only the browser sets it)."),
+        (status = 403, description = "`permission_denied`: the caller lacks `tokens.issue`. `forbidden`: the child asks for a permission the caller lacks, or a board the caller cannot reach whether it exists or not. `forbidden`: the child asks for `tokens.issue` while the caller was itself issued. `forbidden`: the caller is not an API token. `exceeds_grant`: with a `role_id`, the child asks for a permission or board outside the role's template. `exceeds_grant`: the child's grants are cut to the caller's. `exceeds_grant`: the cut leaves none of the role's permissions beyond the required ones."),
         (status = 409, description = "Another token of the account has the name, whatever its letter case"),
         (status = 429, description = "`rate_limited`: the caller mints children faster than 20 at once and then one every 2 seconds, so wait the `Retry-After` seconds"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -26841,11 +26841,18 @@ async fn create_child_token(
                     extra.name()
                 )));
             }
-            let boards = submitted_boards(&account, input.boards.unwrap_or_default())?;
+            let requested = input.boards.unwrap_or_default();
+            let unreachable = || {
+                AppError::forbidden("the child asks for a board the calling token does not reach")
+            };
+            if let BoardsInput::Only(ids) = &requested
+                && ids.iter().any(|id| !user.boards().allows(id))
+            {
+                return Err(unreachable());
+            }
+            let boards = submitted_boards(&account, requested)?;
             if !boards.within(user.boards()) {
-                return Err(AppError::forbidden(
-                    "the child asks for a board the calling token does not reach",
-                ));
+                return Err(unreachable());
             }
             (scope, permissions, boards)
         }
