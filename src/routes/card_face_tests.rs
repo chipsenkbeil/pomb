@@ -314,6 +314,66 @@ async fn panel_should_show_owner_and_reviewer_rows() {
 }
 
 #[tokio::test]
+async fn panel_should_label_waiting_and_lapsed_seats() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    fx.browse("POST", &format!("/api/tasks/{task}/owner"), Some(json!({})))
+        .await;
+    let reviewer = fx.token(None);
+    let take = format!("/api/tasks/{task}/seats/take");
+    let body = json!({"seat": "code", "name": "rev-bot", "ttl_seconds": 600});
+    fx.agent(&reviewer, &take, body).await;
+
+    fx.db
+        .apply_task_change(&task, Actor::SYSTEM, |row| {
+            let seat = row.seats.iter_mut().find(|seat| seat.name == "code");
+            seat.expect("seat").idle = true;
+            ((), true)
+        })
+        .expect("change")
+        .expect("task");
+    let html = fx.modal(&task).await;
+    assert!(html.contains("tm-seat-state\">Waiting<"), "{html}");
+    assert!(!html.contains("tm-seat-state\">Lapsed<"), "{html}");
+
+    fx.db
+        .apply_task_change(&task, Actor::SYSTEM, |row| {
+            let seat = row.seats.iter_mut().find(|seat| seat.name == "code");
+            let seat = seat.expect("seat");
+            seat.idle = false;
+            seat.lease_expires_at = Some("2020-01-01T00:00:00+00:00".to_string());
+            ((), true)
+        })
+        .expect("change")
+        .expect("task");
+    let html = fx.modal(&task).await;
+    assert!(html.contains("tm-seat-state\">Lapsed<"), "{html}");
+    assert!(!html.contains("tm-seat-state\">Waiting<"), "{html}");
+    assert!(
+        html.contains(r#"data-owner-act="seat-take" data-seat="code">Take</button>"#),
+        "{html}"
+    );
+}
+
+#[tokio::test]
+async fn panel_should_hide_the_add_seat_form_from_a_viewer() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let viewer = fx.db.create_user("viewer").expect("viewer");
+    let (record, raw) = new_api_token_record(&viewer, "viewer", AuthScope::Work, None);
+    fx.db.create_api_token(&record).expect("token");
+    let members = format!("/api/boards/{}/members", fx.board);
+    let body = json!({"username": "viewer", "role": "viewer"});
+    fx.browse("PUT", &members, Some(body)).await;
+
+    let html = fx.modal_as(&raw, &task).await;
+    assert!(!html.contains(r#"data-owner-act="seat-add""#), "{html}");
+    assert!(html.contains("data-seat-row="), "{html}");
+    let owner = fx.modal(&task).await;
+    assert!(owner.contains(r#"data-owner-act="seat-add""#), "{owner}");
+}
+
+#[tokio::test]
 async fn panel_should_offer_a_plain_take_for_a_lapsed_owner() {
     let fx = Fixture::new();
     let task = fx.task().await;
