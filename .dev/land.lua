@@ -1,13 +1,13 @@
 --[[
 positional
 flags: --card
-Apply a verified commit onto the remote's main and push it once lint and test pass on ci.
+Apply a verified commit onto the remote's main and push it once lint and test pass on ci, and nixcheck too for a change under tests/ or .dev/ or to a Cargo file.
 Usage: dev land <verified-commit> --card ID
 Steps, any failure aborts before the push:
 1. Fetch the remote of record. Refuse a commit that is not exactly one commit past its merge-base with <remote>/main, or that changes the package version in Cargo.toml or the pomb entry of Cargo.lock: only dev release bumps the version. Refuse a commit that adds a file under .dev/standalone unless the card has the standalone-ok label.
 2. Wait for the release lock .dev/release.lock to clear, up to POMB_LAND_WAIT_BOUND seconds (default 5400), polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) and saying who holds it. A lock whose pid is gone is removed. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>, first removing a clean land worktree left by an earlier attempt, and refusing when that worktree holds uncommitted changes. On gerrit the commit gets a Change-Id trailer when it has none.
 3. Refuse attribution trailers through __push_main --check, before any gate.
-4. Read the card's latest dev-check note from dev board show. When it has mode=run, passes the rows dev --remote lint and dev --remote test, and names the landed commit or one with the same git patch-id, skip the gates whether or not main moved since, and say so. Otherwise say why and run dev lint --remote, then dev test --remote, through __gate, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts.
+4. Read the card's latest dev-check note from dev board show. When it has mode=run, passes the rows dev --remote lint and dev --remote test, and names the landed commit or one with the same git patch-id, skip the gates whether or not main moved since, and say so. Otherwise say why and run dev lint --remote, then dev test --remote, through __gate, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts. When the commit changes a path under tests/ or .dev/ or a Cargo file, also run dev nixcheck --remote through __gate after test with the same drain retry, even when the card's dev-check let lint and test skip, since that note records only lint and test. Any other change runs no nixcheck gate.
 5. Push to main through __push_main, remove the land worktree, print the landed sha, note it on the card with dev board note and move the card to Release with dev board move. Then remove the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch. In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the bookmark of the same name. A worktree with uncommitted changes is kept, and the verb says why.
 6. A push refused because main moved on (exit 3) removes the worktree, fetches, and repeats steps 2 to 5 on the new main, 3 attempts in all. It never forces the push.
 The remote of record is forge.remote, else gerrit when that remote exists, else origin. A failed land leaves its worktree behind; the next land removes it when it is clean, and a worktree with uncommitted changes is removed by hand. A push refused a third time exits 1 with the worktree left behind, and so does any other push failure, which is not retried.
@@ -105,28 +105,37 @@ local function versions(dir, rev)
     return (cargo.manifest_version(manifest) or "") .. "\n" .. (cargo.lock_version(lockfile) or "")
 end
 
-local function added_files(repo, rev)
+local function listed_files(repo, rev, filter)
     local out, code = devos.capture(
-        git(
-            repo,
-            "diff-tree",
-            "-z",
-            "--no-commit-id",
-            "--name-only",
-            "-r",
-            "--diff-filter=A",
-            rev
-        ),
+        git(repo, "diff-tree", "-z", "--no-commit-id", "--name-only", "-r", filter, rev),
         QUIET
     )
     if code ~= 0 then
-        verb.die(("Could not list the files commit %s adds, so nothing landed."):format(rev))
+        verb.die(("Could not list the files commit %s changes, so nothing landed."):format(rev))
     end
     local found = {}
     for path in out:gmatch("([^%z]+)") do
         found[#found + 1] = path
     end
     return found
+end
+
+local function added_files(repo, rev)
+    return listed_files(repo, rev, "--diff-filter=A")
+end
+
+local function needs_nixcheck(repo, rev)
+    for _, path in ipairs(listed_files(repo, rev, "--diff-filter=ACDMRTUXB")) do
+        if
+            path:find("^tests/")
+            or path:find("^%.dev/")
+            or path:find("^Cargo%.%a+$")
+            or path:find("/Cargo%.%a+$")
+        then
+            return true
+        end
+    end
+    return false
 end
 
 local function card_labels(repo, card)
@@ -381,10 +390,11 @@ local function skip_reason(repo, card, cand)
     return nil, ("its latest dev-check commit %s is not this patch"):format(record.commit)
 end
 
-local function gates(wt, card, attempt)
+local function gates(opts)
+    local wt, card, attempt, names = opts.wt, opts.card, opts.attempt, opts.names
     local logs = assert(fs.mktemp({ prefix = "land-" .. card, dir = true }))
     say(("Attempt %s of %s, with logs in %s.\n"):format(attempt, ATTEMPTS, logs))
-    for _, gate in ipairs({ "lint", "test" }) do
+    for _, gate in ipairs(names) do
         say(("Running dev %s --remote.\n"):format(gate))
         local log = logs .. "/" .. gate .. ".log"
         local ran, code = drain.run({ gate = gate, log = log, say = say, run = function()
@@ -462,6 +472,8 @@ if standalone_problem then
     verb.die(("Commit %s %s, so nothing landed."):format(commit, standalone_problem))
 end
 
+local nixcheck = needs_nixcheck(repo, cand)
+
 local wt = repo .. "/.dev/worktrees/land-" .. card
 if fs.exists(wt) then
     if read_git(wt, "status", "--porcelain") ~= "" then
@@ -507,9 +519,14 @@ while true do
     end
     if verdict[1] then
         say(("The gates are skipped because %s.\n"):format(verdict[1]))
+        if nixcheck then
+            say("The nixcheck gate runs because the commit changes tests, .dev or a Cargo file.\n")
+            gates({ wt = wt, card = card, attempt = attempt, names = { "nixcheck" } })
+        end
     else
         say(("The gates run because %s.\n"):format(verdict[2]))
-        gates(wt, card, attempt)
+        local names = nixcheck and { "lint", "test", "nixcheck" } or { "lint", "test" }
+        gates({ wt = wt, card = card, attempt = attempt, names = names })
     end
     if release_running(repo) then
         say("A release took the land lock while the gates ran, so the commit is applied again once it is done.\n")
