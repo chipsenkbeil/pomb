@@ -24846,7 +24846,9 @@ async fn settings_submit(
             if let Some(v) = form.long_break_every {
                 settings.long_break_every = v.clamp(1, 12);
             }
-            settings.notifications_enabled = form.notifications_enabled.as_deref() == Some("on");
+            if let Some(v) = form.notifications_enabled.as_deref() {
+                settings.notifications_enabled = v == "on";
+            }
             if !reasons.is_empty() {
                 settings.interrupt_reasons = reasons;
             }

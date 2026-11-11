@@ -324,6 +324,62 @@ async fn saving_the_settings_form_should_keep_the_muted_kinds() {
     assert_eq!(settings.muted_notifications, [NotificationKind::TaskMoved]);
 }
 
+async fn post_settings_form(fx: &Fixture, form: &str) {
+    let cookie = browser_cookie(fx);
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/settings")
+        .header("cookie", cookie)
+        .header("host", "localhost")
+        .header("origin", "http://localhost")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(axum::body::Body::from(form.to_string()))
+        .expect("request");
+    let response = fx.app.clone().oneshot(request).await.expect("oneshot");
+    assert!(response.status().is_redirection(), "{}", response.status());
+}
+
+#[tokio::test]
+async fn a_settings_post_without_the_field_should_keep_notifications_on() {
+    let fx = Fixture::new();
+    post_settings_form(&fx, "pomodoro_minutes=30").await;
+    let settings = fx.db.settings(&fx.admin).expect("settings");
+    assert!(settings.notifications_enabled);
+    assert_eq!(settings.pomodoro_minutes, 30);
+}
+
+#[tokio::test]
+async fn a_settings_post_without_the_field_should_keep_notifications_off_when_off() {
+    let fx = Fixture::new();
+    fx.send(
+        "PUT",
+        "/api/settings",
+        Some(json!({"notifications_enabled": false})),
+    )
+    .await;
+    post_settings_form(&fx, "pomodoro_minutes=30").await;
+    let settings = fx.db.settings(&fx.admin).expect("settings");
+    assert!(!settings.notifications_enabled);
+    assert_eq!(settings.pomodoro_minutes, 30);
+}
+
+#[tokio::test]
+async fn a_settings_post_with_the_field_should_set_notifications() {
+    let fx = Fixture::new();
+    fx.send(
+        "PUT",
+        "/api/settings",
+        Some(json!({"notifications_enabled": false})),
+    )
+    .await;
+    post_settings_form(&fx, "notifications_enabled=on").await;
+    let settings = fx.db.settings(&fx.admin).expect("settings");
+    assert!(settings.notifications_enabled);
+    post_settings_form(&fx, "notifications_enabled=0").await;
+    let settings = fx.db.settings(&fx.admin).expect("settings");
+    assert!(!settings.notifications_enabled);
+}
+
 #[tokio::test]
 async fn muting_a_kind_should_stop_new_notifications_of_that_kind() {
     let fx = Fixture::new();
