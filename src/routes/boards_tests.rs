@@ -5,6 +5,7 @@ use tower::ServiceExt;
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use crate::db::{BOARD_COPY_TASK_CAP, ColumnPatch, ColumnWatch, Db};
+use crate::layouts::{Category, YOUR_BOARDS};
 use crate::models::{AccountId, Actor, BoardRole, Responsible, TaskRow};
 use crate::{AppState, BODY_LIMIT_BYTES};
 
@@ -542,4 +543,35 @@ async fn the_board_settings_form_post_should_answer_405() {
     let uri = format!("/b/{}/settings", fx.board_id);
     let (status, _) = send(&fx, "POST", &uri, json!({"name": "Renamed"})).await;
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn list_templates_should_report_category_and_columns() {
+    let (_dir, fx) = fixture();
+    let (status, listed) = send(&fx, "GET", "/api/templates", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let kanban = listed
+        .as_array()
+        .expect("list")
+        .iter()
+        .find(|item| item["name"] == Db::KANBAN_BASICS_TEMPLATE_NAME)
+        .expect("kanban basics");
+    assert_eq!(kanban["category"], Category::General.label());
+    assert_eq!(kanban["columns"], json!(["To-do", "In progress", "Done"]));
+
+    let saved = fx
+        .db
+        .save_board_as_template(&fx.owner, &fx.board_id, "Starter", "")
+        .expect("save")
+        .expect("board");
+    let (status, listed) = send(&fx, "GET", "/api/templates", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let entry = listed
+        .as_array()
+        .expect("list")
+        .iter()
+        .find(|item| item["id"] == saved.as_str())
+        .expect("saved template");
+    assert_eq!(entry["category"], YOUR_BOARDS);
+    assert_eq!(entry["columns"], json!([]));
 }
