@@ -4229,6 +4229,67 @@ async fn upload_should_report_a_second_file_with_the_same_name_and_other_bytes_a
 }
 
 #[tokio::test]
+async fn rename_should_refuse_a_name_another_attachment_holds() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let first = fx.upload(&task, "a.bin", vec![1; 32]).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let second = fx.upload(&task, "b.bin", vec![2; 32]).await;
+    assert_eq!(second.status, StatusCode::OK, "{}", second.body);
+    let first_id = first.body["id"].as_str().expect("id");
+    let second_id = second.body["id"].as_str().expect("id");
+    let refused = fx
+        .member(
+            "PATCH",
+            &format!("/api/tasks/{task}/attachments/{second_id}"),
+            Some(json!({"name": "a"})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.code.as_deref(), Some("duplicate_attachment"));
+    assert!(
+        refused.body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains(first_id)),
+        "{}",
+        refused.body
+    );
+    let row = fx.db.task(&task).expect("read").expect("task");
+    let names: Vec<&str> = row.attachments.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["a.bin", "b.bin"]);
+    assert!(history_details(&fx, &task, HistoryKind::AttachmentRenamed).is_empty());
+}
+
+#[tokio::test]
+async fn rename_should_keep_working_for_its_own_name_and_a_free_name() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let first = fx.upload(&task, "a.bin", vec![1; 32]).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let first_id = first.body["id"].as_str().expect("id");
+    let uri = format!("/api/tasks/{task}/attachments/{first_id}");
+    let own = fx.member("PATCH", &uri, Some(json!({"name": "a"}))).await;
+    assert_eq!(own.status, StatusCode::OK, "{}", own.body);
+    assert_eq!(own.body["name"], "a.bin");
+    let free = fx.member("PATCH", &uri, Some(json!({"name": "c"}))).await;
+    assert_eq!(free.status, StatusCode::OK, "{}", free.body);
+    assert_eq!(free.body["name"], "c.bin");
+    let (_, other) = fx.member_task();
+    let elsewhere = fx.upload(&other, "b.bin", vec![2; 32]).await;
+    assert_eq!(elsewhere.status, StatusCode::OK, "{}", elsewhere.body);
+    let elsewhere_id = elsewhere.body["id"].as_str().expect("id");
+    let shared = fx
+        .member(
+            "PATCH",
+            &format!("/api/tasks/{other}/attachments/{elsewhere_id}"),
+            Some(json!({"name": "c"})),
+        )
+        .await;
+    assert_eq!(shared.status, StatusCode::OK, "{}", shared.body);
+    assert_eq!(shared.body["name"], "c.bin");
+}
+
+#[tokio::test]
 async fn upload_should_name_the_existing_attachment_of_a_duplicate_multipart_file() {
     let fx = Fixture::multi();
     let (_, task) = fx.member_task();
