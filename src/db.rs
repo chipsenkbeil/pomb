@@ -4589,20 +4589,20 @@ fn txn_token_name_taken(
     except: Option<&str>,
 ) -> DbResult<bool> {
     let name = name.to_lowercase();
+    Ok(txn_account_tokens(txn, account)?
+        .iter()
+        .any(|token| except != Some(token.id.as_str()) && token.name.to_lowercase() == name))
+}
+
+/// Returns the tokens of `account`, live and suspended, inside an open write transaction.
+fn txn_account_tokens(txn: &WriteTransaction, account: &str) -> DbResult<Vec<ApiTokenRecord>> {
+    let mut tokens = Vec::new();
     for id in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, account)? {
-        if except == Some(id.as_str()) {
-            continue;
-        }
         for table in [API_TOKENS, SUSPENDED_TOKENS] {
-            let Some(token) = txn_read_one::<ApiTokenRecord>(txn, table, &id)? else {
-                continue;
-            };
-            if token.name.to_lowercase() == name {
-                return Ok(true);
-            }
+            tokens.extend(txn_read_one::<ApiTokenRecord>(txn, table, &id)?);
         }
     }
-    Ok(false)
+    Ok(tokens)
 }
 
 /// Deletes the expired issued tokens of `account`, live or suspended, with the tokens they
@@ -4613,13 +4613,9 @@ fn txn_remove_expired_issued_tokens(
     now: i64,
 ) -> DbResult<u64> {
     let mut removed = 0;
-    for id in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, account)? {
-        for table in [API_TOKENS, SUSPENDED_TOKENS] {
-            let expired = txn_read_one::<ApiTokenRecord>(txn, table, &id)?
-                .is_some_and(|token| token.parent_id.is_some() && token.is_expired(now));
-            if expired {
-                removed += txn_remove_token(txn, account, &id)?;
-            }
+    for token in txn_account_tokens(txn, account)? {
+        if token.parent_id.is_some() && token.is_expired(now) {
+            removed += txn_remove_token(txn, account, &token.id)?;
         }
     }
     Ok(removed)
@@ -4687,16 +4683,11 @@ fn txn_remove_token(txn: &WriteTransaction, account: &str, id: &str) -> DbResult
 /// Returns the ids of the tokens of `account`, live or suspended, that token `parent` issued,
 /// inside an open write transaction.
 fn txn_child_tokens(txn: &WriteTransaction, account: &str, parent: &str) -> DbResult<Vec<String>> {
-    let mut children = Vec::new();
-    for id in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, account)? {
-        for table in [API_TOKENS, SUSPENDED_TOKENS] {
-            let token = txn_read_one::<ApiTokenRecord>(txn, table, &id)?;
-            if token.is_some_and(|token| token.parent_id.as_deref() == Some(parent)) {
-                children.push(id.clone());
-            }
-        }
-    }
-    Ok(children)
+    Ok(txn_account_tokens(txn, account)?
+        .into_iter()
+        .filter(|token| token.parent_id.as_deref() == Some(parent))
+        .map(|token| token.id)
+        .collect())
 }
 
 /// Deletes every token of `account`, live or suspended, from [`API_TOKENS`], [`SUSPENDED_TOKENS`]
@@ -5232,13 +5223,10 @@ pub const MAX_TEMPLATE_ROW_BYTES: usize = 8_388_608;
 /// tokens made by hand, read inside that write's transaction. A token another token issued does
 /// not count.
 fn txn_token_cap_reached(txn: &WriteTransaction, account: &str) -> DbResult<Option<QuotaExceeded>> {
-    let mut held = 0;
-    for id in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, account)? {
-        for table in [API_TOKENS, SUSPENDED_TOKENS] {
-            let token = txn_read_one::<ApiTokenRecord>(txn, table, &id)?;
-            held += usize::from(token.is_some_and(|token| token.parent_id.is_none()));
-        }
-    }
+    let held = txn_account_tokens(txn, account)?
+        .iter()
+        .filter(|token| token.parent_id.is_none())
+        .count();
     Ok(
         (held >= MAX_API_TOKENS_PER_ACCOUNT).then_some(QuotaExceeded {
             bound: Bound::ApiTokens,
