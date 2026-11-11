@@ -4253,6 +4253,31 @@ async fn rename_should_refuse_a_name_another_attachment_holds() {
 }
 
 #[tokio::test]
+async fn rename_attachment_should_write_nothing_for_a_missing_task_or_attachment() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let first = fx.upload(&task, "a.bin", vec![1; 32]).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let first_id = first.body["id"].as_str().expect("id");
+    let before = fx.db.task(&task).expect("read").expect("task");
+    let before = serde_json::to_vec(&before).expect("json");
+    let missing_attachment = fx
+        .db
+        .rename_attachment(&task, "no-such-attachment", "c", Actor::SYSTEM)
+        .expect("rename");
+    assert!(missing_attachment.is_none());
+    let missing_task = fx
+        .db
+        .rename_attachment("no-such-task", first_id, "c", Actor::SYSTEM)
+        .expect("rename");
+    assert!(missing_task.is_none());
+    let after = fx.db.task(&task).expect("read").expect("task");
+    let after = serde_json::to_vec(&after).expect("json");
+    assert_eq!(after, before);
+    assert!(history_details(&fx, &task, HistoryKind::AttachmentRenamed).is_empty());
+}
+
+#[tokio::test]
 async fn rename_should_keep_working_for_its_own_name_and_a_free_name() {
     let fx = Fixture::multi();
     let (_, task) = fx.member_task();
