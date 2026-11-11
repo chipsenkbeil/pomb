@@ -11165,6 +11165,33 @@ async fn a_subtask_patch_should_store_a_repeated_member_once() {
 }
 
 #[tokio::test]
+async fn subtask_create_should_store_a_repeated_member_once() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Twice"})).await;
+    let sub = subtask_as(&fx, As::Admin, &id, "One").await;
+    let admin = fx.user_id.as_str();
+    let (status, converted) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{id}/subtasks/{sub}/convert"),
+        Some(json!({"relation": "none", "member_ids": [admin, admin]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{converted}");
+    assert_eq!(converted["member_ids"], json!([admin]));
+
+    let other = subtask_as(&fx, As::Admin, &id, "Two").await;
+    let (status, body) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{id}/subtasks/{other}/convert"),
+        Some(json!({"relation": "none", "member_ids": [admin, "someone-else"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
 async fn repeating_the_stored_member_on_a_subtask_should_write_no_members_history() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Twice"})).await;

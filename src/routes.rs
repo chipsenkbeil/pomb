@@ -13417,7 +13417,7 @@ async fn convert_subtask(
     );
     row.due_at = sub.due_at.clone();
     row.labels = clean_labels(&input.labels);
-    row.set_members(input.member_ids.clone());
+    row.set_members(unique_members(&input.member_ids));
     for def in db.list_fields(&board_id).map_err(AppError::from)? {
         if let Some(default) = def.default.filter(|value| !value.is_null()) {
             row.fields.insert(def.key, default);
