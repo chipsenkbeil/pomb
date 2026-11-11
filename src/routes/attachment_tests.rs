@@ -6,14 +6,16 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use crate::db::Db;
-use crate::models::{HistoryKind, TaskAttachment};
+use crate::db::{AccountSlot, Db};
+use crate::models::{AccountId, HistoryKind, TaskAttachment};
 use crate::{AppState, BODY_LIMIT_BYTES};
 
 struct Fixture {
     _dir: tempfile::TempDir,
     app: axum::Router,
     db: Db,
+    state: AppState,
+    account: AccountId,
     cookie: String,
     task: String,
     column: String,
@@ -27,12 +29,14 @@ async fn fixture() -> Fixture {
     let session = db.create_session(&user, "").expect("session");
     let board = db.create_board(&user, "Files").expect("board");
     let column = db.create_column(&board, "Todo", None).expect("column");
-    let app =
-        router(AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()));
+    let state = AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits());
+    let app = router(state.clone());
     let mut fixture = Fixture {
         _dir: dir,
         app,
         db,
+        state,
+        account: user,
         cookie: format!("session={session}"),
         task: String::new(),
         column: column.clone(),
@@ -904,4 +908,24 @@ async fn listing_base64_should_hold_to_the_per_image_cap_and_the_total_budget() 
         .map(|a| a.get("data_base64").is_some())
         .collect();
     assert_eq!(has, [false, true, true, true, true, false], "{names:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn base64_list_should_answer_busy_while_download_slots_are_held() {
+    let fx = fixture().await;
+    let held = fx
+        .state
+        .account_slot(AccountSlot::Download, fx.account.as_str())
+        .acquire_many_owned(AppState::DOWNLOADS_PER_ACCOUNT_AT_ONCE as u32)
+        .await
+        .expect("slots");
+    let base64 = format!("{}?base64=true", fx.attachments());
+    let (status, body) = fx.call("GET", &base64, None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(body.contains("taking as many downloads"), "{body}");
+    let (status, body) = fx.call("GET", &fx.attachments(), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    drop(held);
+    let (status, body) = fx.call("GET", &base64, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
