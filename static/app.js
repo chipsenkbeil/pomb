@@ -13214,7 +13214,9 @@
         return r.text().then(function (text) {
           var message = text;
           try { message = JSON.parse(text).message || text; } catch (e) {}
-          throw new Error(message || ('HTTP ' + r.status));
+          const error = new Error(message || ('HTTP ' + r.status));
+          error.status = r.status;
+          throw error;
         });
       });
     }
@@ -15402,6 +15404,41 @@
       return bodies;
     };
 
+    const isRefusal = (err) => !!err && err.status >= 400 && err.status < 500 && ![401, 403, 408, 429].includes(err.status);
+    const importLegacyBookmarks = (key, post, storage, toast) => {
+      let pending;
+      try { pending = legacyBookmarkBodies(storage.getItem(key)); } catch (e) { return Promise.resolve(); }
+      let refused = 0;
+      const keep = (rest) => {
+        try {
+          if (rest.length) storage.setItem(key, JSON.stringify(rest));
+          else storage.removeItem(key);
+        } catch (e) {}
+      };
+      const finish = () => {
+        if (refused) toast('Dropped ' + refused + (refused === 1 ? ' old bookmark' : ' old bookmarks') + ' the board refused.');
+      };
+      const run = (i) => {
+        if (i === pending.length) {
+          keep([]);
+          return finish();
+        }
+        return post(pending[i]).then(() => {
+          keep(pending.slice(i + 1));
+          return run(i + 1);
+        }, (err) => {
+          if (!isRefusal(err)) {
+            keep(pending.slice(i));
+            return finish();
+          }
+          refused += 1;
+          keep(pending.slice(i + 1));
+          return run(i + 1);
+        });
+      };
+      return run(0);
+    };
+
     const Bookmarks = {
       list: [],
       legacyKey() { return 'pomb-history-bookmarks-' + boardId; },
@@ -15423,20 +15460,7 @@
           .catch((err) => { toast(err.message || 'Could not delete the bookmark.'); });
       },
       importLegacy() {
-        const key = this.legacyKey();
-        let pending;
-        try { pending = legacyBookmarkBodies(window.localStorage.getItem(key)); } catch (e) { return Promise.resolve(); }
-        const run = (i) => {
-          if (i === pending.length) {
-            try { window.localStorage.removeItem(key); } catch (e) {}
-            return Promise.resolve();
-          }
-          return this.post(pending[i]).then(() => {
-            try { window.localStorage.setItem(key, JSON.stringify(pending.slice(i + 1))); } catch (e) {}
-            return run(i + 1);
-          });
-        };
-        return run(0).catch(() => { toast('Could not move the old bookmarks to the board.'); });
+        return importLegacyBookmarks(this.legacyKey(), (body) => this.post(body), window.localStorage, toast);
       },
       render() {
         const list = this.list;
@@ -15511,7 +15535,7 @@
 
     return {
       init: init, periodRange: periodRange, queryString: queryString,
-      legacyBookmarkBodies: legacyBookmarkBodies,
+      legacyBookmarkBodies: legacyBookmarkBodies, importLegacyBookmarks: importLegacyBookmarks,
     };
   })();
 

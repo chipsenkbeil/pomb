@@ -52,5 +52,90 @@ check('history_bookmark_import_should_post_old_entries', BoardHistoryPage.legacy
 check('a broken old key imports nothing', BoardHistoryPage.legacyBookmarkBodies('{oops'), []);
 check('an old key that is not a list imports nothing', BoardHistoryPage.legacyBookmarkBodies('{"a":1}'), []);
 
-console.log('failures=' + failures);
-process.exit(failures ? 1 : 0);
+const HISTORY_KEY = 'pomb-history-bookmarks-b1';
+const legacyList = (names) => JSON.stringify(names.map((name) => ({ name, filters: {} })));
+const storageWith = (raw) => {
+  const map = { [HISTORY_KEY]: raw };
+  const writes = [];
+  return {
+    writes,
+    getItem: (key) => (key in map ? map[key] : null),
+    setItem: (key, value) => { writes.push(JSON.parse(value).map((b) => b.name)); map[key] = value; },
+    removeItem: (key) => { delete map[key]; },
+  };
+};
+const replier = (replies) => {
+  const sent = [];
+  const post = (body) => {
+    sent.push(body.name);
+    const reply = replies.shift();
+    return reply ? Promise.reject(reply) : Promise.resolve();
+  };
+  return { sent, post };
+};
+const toaster = () => {
+  const seen = [];
+  return { seen, toast: (message) => seen.push(message) };
+};
+const names = (raw) => JSON.parse(raw).map((b) => b.name);
+
+const cases = [];
+const testCase = (fn) => cases.push(fn);
+
+testCase(async () => {
+  const storage = storageWith(legacyList(['A', 'B', 'C']));
+  const { sent, post } = replier([{ status: 409 }, undefined, { status: 400 }]);
+  const { seen, toast } = toaster();
+  await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast);
+  check('history_bookmark_import_should_drop_refused_entries_and_toast_once posts every entry', sent, ['A', 'B', 'C']);
+  check('history_bookmark_import_should_drop_refused_entries_and_toast_once clears the refused entries', storage.getItem(HISTORY_KEY), null);
+  check('history_bookmark_import_should_drop_refused_entries_and_toast_once toasts once with the count', seen, ['Dropped 2 old bookmarks the board refused.']);
+});
+
+testCase(async () => {
+  const storage = storageWith(legacyList(['A', 'B', 'C']));
+  const { sent, post } = replier([undefined, new TypeError('Failed to fetch')]);
+  const { seen, toast } = toaster();
+  await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast);
+  check('history_bookmark_import_should_keep_entries_after_a_network_failure stops at the failed entry', sent, ['A', 'B']);
+  check('history_bookmark_import_should_keep_entries_after_a_network_failure keeps the failed and later entries', names(storage.getItem(HISTORY_KEY)), ['B', 'C']);
+  check('history_bookmark_import_should_keep_entries_after_a_network_failure shows no toast', seen, []);
+});
+
+testCase(async () => {
+  const storage = storageWith(legacyList(['A', 'B']));
+  const { sent, post } = replier([{ status: 500 }]);
+  const { seen, toast } = toaster();
+  await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast);
+  check('a 5xx keeps the failed entry for the next load', names(storage.getItem(HISTORY_KEY)), ['A', 'B']);
+  check('a 5xx shows no toast when nothing was refused', seen, []);
+  check('a 5xx stops the import', sent, ['A']);
+});
+
+testCase(async () => {
+  const storage = storageWith(legacyList(['A', 'B', 'C']));
+  const { sent, post } = replier([]);
+  const { seen, toast } = toaster();
+  await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast);
+  check('history_bookmark_import_should_post_in_order_and_clear_the_key_with_no_toast posts in order', sent, ['A', 'B', 'C']);
+  check('history_bookmark_import_should_post_in_order_and_clear_the_key_with_no_toast shrinks the key after each post', storage.writes, [['B', 'C'], ['C']]);
+  check('history_bookmark_import_should_post_in_order_and_clear_the_key_with_no_toast clears the key', storage.getItem(HISTORY_KEY), null);
+  check('history_bookmark_import_should_post_in_order_and_clear_the_key_with_no_toast shows no toast', seen, []);
+});
+
+testCase(async () => {
+  for (const status of [401, 403, 408, 429]) {
+    const storage = storageWith(legacyList(['A', 'B']));
+    const { sent, post } = replier([{ status }]);
+    const { seen, toast } = toaster();
+    await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast);
+    check('history_bookmark_import_should_keep_entries_on_session_and_rate_limit_replies keeps the entry after ' + status, names(storage.getItem(HISTORY_KEY)), ['A', 'B']);
+    check('history_bookmark_import_should_keep_entries_on_session_and_rate_limit_replies stops after ' + status, sent, ['A']);
+    check('history_bookmark_import_should_keep_entries_on_session_and_rate_limit_replies shows no toast after ' + status, seen, []);
+  }
+});
+
+cases.reduce((chain, fn) => chain.then(fn), Promise.resolve()).then(() => {
+  console.log('failures=' + failures);
+  process.exit(failures ? 1 : 0);
+});
