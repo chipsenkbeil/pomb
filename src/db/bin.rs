@@ -7,14 +7,14 @@ use super::usage::{OverQuota, txn_count_usage, txn_remove_entry, txn_store_entry
 use super::{
     BIN, BIN_BY_BOARD, BOARDS, COLUMNS, COLUMNS_BY_BOARD, Commit, Db, DbResult, ENTRIES_BY_TASK,
     SETTINGS, SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
-    WipCheck, index_in, mmap_insert, mmap_remove, push_column_event, push_event, read_in, read_one,
-    task_owner_in, txn_board_accounts, txn_board_task_count, txn_clear_timer_if, txn_mmap_get,
-    txn_read_one, txn_refuse_board_over_quota, txn_task_bytes, txn_wip_refusal,
+    USERS, WipCheck, index_in, mmap_insert, mmap_remove, push_column_event, push_event, read_in,
+    read_one, task_owner_in, txn_board_accounts, txn_board_task_count, txn_clear_timer_if,
+    txn_mmap_get, txn_read_one, txn_refuse_board_over_quota, txn_task_bytes, txn_wip_refusal,
     unlink_deleted_tasks, write_one,
 };
 use crate::models::{
     Actor, BIN_PERMANENT_DELETE_KEY, BinRow, BoardRow, ColorRow, ColumnRow, HistoryKind, Quota,
-    SECONDS_PER_DAY, SwimlaneRow, TaskAttachment, TaskRow,
+    SECONDS_PER_DAY, SwimlaneRow, TaskAttachment, TaskRow, UserRow,
 };
 
 /// Key of the Unix second the cleanup of the recycle bin last ran, in [`SETTINGS`].
@@ -358,6 +358,9 @@ impl Db {
         }
         mmap_insert(&txn, TASKS_BY_COLUMN, &column.id, id)?;
         for entry in &row.entries {
+            if read_in::<UserRow>(&txn, USERS, &entry.account_id)?.is_none() {
+                continue;
+            }
             txn_store_entry(&txn, entry, OverQuota::Allow)?;
             mmap_insert(&txn, ENTRIES_BY_TASK, id, &entry.id)?;
         }
@@ -440,4 +443,172 @@ fn attachment_ids_of(row: &BinRow) -> Vec<String> {
         .iter()
         .flat_map(|attachment| attachment.file_ids().map(str::to_string))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::db::usage::txn_recount_usage;
+    use crate::db::{ACCOUNT_USAGE, AccountDeleteOutcome, NewTimeEntry};
+    use crate::models::{AccountId, BoardRole, EntryKind, InstanceMode};
+
+    /// An open database with an admin who owns a task on a board and a member on that board.
+    struct Fixture {
+        /// Keeps the database directory alive.
+        _dir: TempDir,
+        /// The database.
+        db: Db,
+        /// The admin, who owns the board and the task.
+        admin: AccountId,
+        /// The member, who logs time on the task.
+        member: AccountId,
+        /// The task.
+        task: String,
+    }
+
+    fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("bin.redb").to_str().expect("utf8")).expect("db");
+        let admin = db.create_user("admin").expect("admin");
+        let member = db.create_user("bob").expect("member");
+        db.apply_mode(InstanceMode::Multi).expect("mode");
+        let board = db.create_board(&admin, "Board").expect("board");
+        let column = db.create_column(&board, "Todo", None).expect("column");
+        let task = db
+            .create_task(&column, None, "Task", 1, None)
+            .expect("task");
+        db.set_board_member(&board, "bob", BoardRole::Member)
+            .expect("join");
+        Fixture {
+            _dir: dir,
+            db,
+            admin,
+            member,
+            task,
+        }
+    }
+
+    /// Logs five minutes on `task` for `account` and returns the entry id.
+    fn log(db: &Db, task: &str, account: &AccountId) -> String {
+        db.create_entry_full(
+            account,
+            NewTimeEntry {
+                task_id: Some(task),
+                started_at: "2026-11-10T10:00:00+00:00",
+                minutes: 5,
+                seconds: 300,
+                note: "",
+                kind: EntryKind::Manual,
+                interrupted: false,
+                interrupt_reason: None,
+                labels: &[],
+                created_by: "",
+                activity_id: None,
+                role: None,
+                token_name: None,
+                role_id: None,
+                role_name: None,
+            },
+        )
+        .expect("entry")
+        .expect("task")
+    }
+
+    /// Returns the bytes `account` stores, as kept.
+    #[must_use]
+    fn stored(db: &Db, account: &AccountId) -> u64 {
+        db.stored_bytes_by_account()
+            .expect("usage")
+            .get(account.as_str())
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Returns what every account stores as counted from scratch, leaving the kept counts as
+    /// they were.
+    #[must_use]
+    fn recounted(db: &Db) -> HashMap<String, u64> {
+        let txn = db.db.begin_write().expect("write");
+        txn_recount_usage(&txn).expect("recount");
+        let mut usage = HashMap::new();
+        for item in txn
+            .open_table(ACCOUNT_USAGE)
+            .expect("table")
+            .iter()
+            .expect("iter")
+        {
+            let (account, bytes) = item.expect("row");
+            usage.insert(account.value().to_string(), bytes.value());
+        }
+        txn.abort().expect("abort");
+        usage
+    }
+
+    /// Asserts that the kept counts match a count from scratch, ignoring accounts at zero.
+    fn assert_counts_match(db: &Db) {
+        let mut kept = db.stored_bytes_by_account().expect("usage");
+        kept.retain(|_, bytes| *bytes > 0);
+        assert_eq!(kept, recounted(db));
+    }
+
+    /// Returns the sorted ids of the time entries on the task.
+    #[must_use]
+    fn entry_ids(db: &Db, task: &str) -> Vec<String> {
+        let mut ids: Vec<String> = db
+            .list_entries(task)
+            .expect("entries")
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Restores the deleted task as of now.
+    fn restore(fx: &Fixture) {
+        let outcome = fx
+            .db
+            .restore_task(
+                &fx.task,
+                Utc::now().timestamp(),
+                WipCheck::Force,
+                Actor::SYSTEM,
+            )
+            .expect("restore");
+        assert!(matches!(outcome, RestoreOutcome::Restored { .. }));
+    }
+
+    #[test]
+    fn restoring_should_drop_the_entries_of_a_deleted_account() {
+        let fx = fixture();
+        let kept = log(&fx.db, &fx.task, &fx.admin);
+        let dropped = log(&fx.db, &fx.task, &fx.member);
+        assert!(fx.db.delete_task(&fx.task, Actor::SYSTEM).expect("delete"));
+        assert!(matches!(
+            fx.db.delete_account(&fx.member).expect("delete account"),
+            AccountDeleteOutcome::Deleted { .. }
+        ));
+        restore(&fx);
+        assert_eq!(entry_ids(&fx.db, &fx.task), vec![kept]);
+        assert!(fx.db.entry(&dropped).expect("entry").is_none());
+        assert_eq!(stored(&fx.db, &fx.member), 0);
+        assert_counts_match(&fx.db);
+    }
+
+    #[test]
+    fn restoring_should_keep_the_entries_of_live_accounts() {
+        let fx = fixture();
+        let admin_entry = log(&fx.db, &fx.task, &fx.admin);
+        let member_entry = log(&fx.db, &fx.task, &fx.member);
+        assert!(fx.db.delete_task(&fx.task, Actor::SYSTEM).expect("delete"));
+        restore(&fx);
+        let mut expected = vec![admin_entry, member_entry];
+        expected.sort();
+        assert_eq!(entry_ids(&fx.db, &fx.task), expected);
+        assert!(stored(&fx.db, &fx.member) > 0);
+        assert_counts_match(&fx.db);
+    }
 }
