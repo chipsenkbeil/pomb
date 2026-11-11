@@ -25,6 +25,7 @@ use crate::models::{AccountId, Actor, ActorKind, AuthScope, DiskLimits};
 use crate::{AppState, Args, BODY_LIMIT_BYTES, Verb, routes};
 
 const BOARD: &str = "Pomb";
+const BACKLOG: &str = "Backlog";
 
 struct Server {
     _dir: tempfile::TempDir,
@@ -78,9 +79,7 @@ async fn start() -> Server {
             db.delete_board(&starter.id).expect("delete starter board");
         }
     }
-    let backlog = db
-        .create_column(&board_id, "Backlog", None)
-        .expect("column");
+    let backlog = db.create_column(&board_id, BACKLOG, None).expect("column");
     let doing = db.create_column(&board_id, "Doing", None).expect("column");
     let shipped = db
         .create_column(&board_id, "Shipped", None)
@@ -417,8 +416,8 @@ async fn board_ls_should_list_the_open_cards_in_aligned_columns() {
         short(&ids.review),
     );
     let expected = [
-        format!("{docs}  Backlog  2 Pomodori   docs      -    -        Write the docs"),
-        format!("{triage}  Backlog  unsized      -         -    -        Triage inbox"),
+        format!("{docs}  {BACKLOG}  2 Pomodori   docs      -    -        Write the docs"),
+        format!("{triage}  {BACKLOG}  unsized      -         -    -        Triage inbox"),
         format!("{client}  Doing    >3 Pomodori  cli,rust  1/2  agent-7  Build the client"),
         format!("{review}  Doing    3 Pomodori   review    -    agent-9  Review the diff"),
     ]
@@ -452,8 +451,8 @@ async fn board_ls_should_filter_by_column_label_and_size() {
     assert_eq!(
         server.output(ls(Some("BACKLOG"), None, None)).await,
         [
-            format!("{docs}  Backlog  2 Pomodori  docs  Write the docs"),
-            format!("{triage}  Backlog  unsized     -     Triage inbox"),
+            format!("{docs}  {BACKLOG}  2 Pomodori  docs  Write the docs"),
+            format!("{triage}  {BACKLOG}  unsized     -     Triage inbox"),
         ]
         .join("\n")
     );
@@ -467,11 +466,11 @@ async fn board_ls_should_filter_by_column_label_and_size() {
     );
     assert_eq!(
         server.output(ls(None, None, Some("2"))).await,
-        format!("{docs}  Backlog  2 Pomodori  docs  Write the docs")
+        format!("{docs}  {BACKLOG}  2 Pomodori  docs  Write the docs")
     );
     assert_eq!(
         server.output(ls(None, None, Some("UNSIZED"))).await,
-        format!("{triage}  Backlog  unsized  -  Triage inbox")
+        format!("{triage}  {BACKLOG}  unsized  -  Triage inbox")
     );
     assert_eq!(
         server
@@ -519,7 +518,7 @@ async fn board_ls_should_show_ticks_and_holders_only_when_a_listed_card_needs_th
     let neither = server.output(ls(None, Some("docs"), None)).await;
     assert_eq!(
         neither,
-        format!("{docs}  Backlog  2 Pomodori  docs  Write the docs")
+        format!("{docs}  {BACKLOG}  2 Pomodori  docs  Write the docs")
     );
 }
 
@@ -531,7 +530,7 @@ async fn board_ls_should_refuse_an_unknown_column_or_size_as_a_usage_error() {
         failure(server.run(ls(Some("nope"), None, None), Utc::now()).await),
         (
             2,
-            "unknown column nope, the columns are Backlog, Doing, Shipped".to_string()
+            format!("unknown column nope, the columns are {BACKLOG}, Doing, Shipped")
         )
     );
     assert_eq!(
@@ -735,7 +734,7 @@ async fn board_show_should_count_the_children_of_an_umbrella() {
     assert_eq!(
         server.output(show(&ids.docs)).await,
         format!(
-            "{}  Backlog  2 Pomodori  docs  Write the docs\nepic\nchildren: 1 of 2 done\n\nno description\n\nno comments",
+            "{}  {BACKLOG}  2 Pomodori  docs  Write the docs\nepic\nchildren: 1 of 2 done\n\nno description\n\nno comments",
             short(&ids.docs)
         )
     );
@@ -755,7 +754,7 @@ async fn board_show_should_name_an_open_epic() {
     assert_eq!(
         server.output(show(&ids.docs)).await,
         format!(
-            "{}  Backlog  2 Pomodori  docs  Write the docs\nepic\n\nno description\n\nno comments",
+            "{}  {BACKLOG}  2 Pomodori  docs  Write the docs\nepic\n\nno description\n\nno comments",
             short(&ids.docs)
         )
     );
@@ -778,7 +777,7 @@ async fn board_show_should_say_when_an_epic_is_closed() {
     assert_eq!(
         server.output(show(&ids.docs)).await,
         format!(
-            "{}  Backlog  2 Pomodori  docs  Write the docs\nepic, closed\n\nno description\n\nno comments",
+            "{}  {BACKLOG}  2 Pomodori  docs  Write the docs\nepic, closed\n\nno description\n\nno comments",
             short(&ids.docs)
         )
     );
@@ -791,7 +790,7 @@ async fn board_show_should_say_no_description_and_no_comments() {
     assert_eq!(
         server.output(show(&ids.triage)).await,
         format!(
-            "{}  Backlog  unsized  -  Triage inbox\n\nno description\n\nno comments",
+            "{}  {BACKLOG}  unsized  -  Triage inbox\n\nno description\n\nno comments",
             short(&ids.triage)
         )
     );
@@ -1050,7 +1049,7 @@ async fn board_add_should_file_a_card_in_the_named_or_first_column() {
         .write(add("Plain card", None, None, &[]))
         .await
         .expect("add");
-    assert!(first.ends_with(" to Backlog"), "{first}");
+    assert!(first.ends_with(&format!(" to {BACKLOG}")), "{first}");
     server
         .write(add("Sized card", Some("DOING"), Some("3+"), &["cli", "ui"]))
         .await
@@ -1061,7 +1060,7 @@ async fn board_add_should_file_a_card_in_the_named_or_first_column() {
         "{listing}"
     );
     let plain = server.output(ls(Some("backlog"), None, None)).await;
-    assert!(plain.contains("Backlog  1 Pomodoro"), "{plain}");
+    assert!(plain.contains(&format!("{BACKLOG}  1 Pomodoro")), "{plain}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
