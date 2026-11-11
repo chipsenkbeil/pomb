@@ -1786,3 +1786,34 @@ async fn done_epic_dependents_should_be_stamped_when_the_last_open_child_moves_t
     assert!(!is_blocked(&fx, &waiting).await);
     assert!(stamp_of(&fx, &waiting) > before);
 }
+
+#[tokio::test]
+async fn done_epic_dependents_should_be_stamped_when_a_restored_child_reopens_it() {
+    let (_dir, fx) = fixture();
+    let (epic, waiting) = done_epic_with_dependent(&fx).await;
+
+    let done = create(
+        &fx,
+        json!({"column_id": fx.col_moves, "name": "Done child"}),
+    )
+    .await;
+    adopt(&fx, &done, &epic).await;
+    let (status, gone) = call(&fx, "DELETE", &format!("/api/tasks/{done}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{gone}");
+    let before = stamp_of(&fx, &waiting);
+    let (status, back) = call(&fx, "POST", &format!("/api/bin/{done}/restore"), None).await;
+    assert_eq!(status, StatusCode::OK, "{back}");
+    assert!(!is_blocked(&fx, &waiting).await);
+    assert_eq!(stamp_of(&fx, &waiting), before);
+
+    let child = open_child_of(&fx, &epic).await;
+    let (status, gone) = call(&fx, "DELETE", &format!("/api/tasks/{child}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{gone}");
+    assert!(!is_blocked(&fx, &waiting).await);
+    let before = stamp_of(&fx, &waiting);
+    pause();
+    let (status, back) = call(&fx, "POST", &format!("/api/bin/{child}/restore"), None).await;
+    assert_eq!(status, StatusCode::OK, "{back}");
+    assert!(is_blocked(&fx, &waiting).await);
+    assert!(stamp_of(&fx, &waiting) > before);
+}

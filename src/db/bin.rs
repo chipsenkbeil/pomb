@@ -7,11 +7,11 @@ use super::usage::{OverQuota, txn_count_usage, txn_remove_entry, txn_store_entry
 use super::{
     BIN, BIN_BY_BOARD, BOARDS, COLUMNS, COLUMNS_BY_BOARD, Commit, Db, DbResult, ENTRIES_BY_TASK,
     LINKS_BY_TARGET, SETTINGS, SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS, TASKS_BY_COLUMN,
-    TIME_ENTRIES, USERS, WipCheck, blocked_by_reaches, index_in, link_event_detail, mmap_insert,
-    mmap_remove, parent_chain_reaches, push_column_event, push_event, read_in, read_one, task_in,
-    task_owner_in, txn_board_accounts, txn_board_task_count, txn_clear_timer_if, txn_mmap_get,
-    txn_read_one, txn_refuse_board_over_quota, txn_task_bytes, txn_wip_refusal,
-    unlink_deleted_tasks, write_one,
+    TIME_ENTRIES, USERS, WipCheck, blocked_before, blocked_by_reaches, bump_flipped, index_in,
+    link_event_detail, mmap_insert, mmap_remove, parent_chain_reaches, push_column_event,
+    push_event, read_in, read_one, task_in, task_owner_in, txn_board_accounts,
+    txn_board_task_count, txn_clear_timer_if, txn_mmap_get, txn_read_one,
+    txn_refuse_board_over_quota, txn_task_bytes, txn_wip_refusal, unlink_deleted_tasks, write_one,
 };
 use crate::models::{
     Actor, BIN_PERMANENT_DELETE_KEY, BinLink, BinRow, BoardRow, ColorRow, ColumnRow, HistoryKind,
@@ -386,6 +386,13 @@ impl Db {
         if now >= row.expires_at() {
             return Ok(RestoreOutcome::Expired);
         }
+        let epics: Vec<String> = row
+            .links
+            .iter()
+            .filter(|bin_link| bin_link.link.kind == LinkKind::Parent)
+            .map(|bin_link| bin_link.link.target_id.clone())
+            .collect();
+        let before = blocked_before(&txn, &epics)?;
         let old = read_in::<ColumnRow>(&txn, COLUMNS, &row.task.column_id)?
             .filter(|column| column.board_id == row.board_id);
         let column = match old {
@@ -462,6 +469,7 @@ impl Db {
         }
         mmap_insert(&txn, TASKS_BY_COLUMN, &column.id, id)?;
         restore_links_in(&txn, &row.links, actor)?;
+        bump_flipped(&txn, &before)?;
         for entry in &row.entries {
             if read_in::<UserRow>(&txn, USERS, &entry.account_id)?.is_none() {
                 continue;
