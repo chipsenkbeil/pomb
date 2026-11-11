@@ -3,6 +3,8 @@
 // failure:
 //   node tests/js/cumulative_flow.js static/app.js
 var src = require('fs').readFileSync(process.argv[2], 'utf8');
+const prelude = require('./support/report_prelude.js');
+const { fn } = prelude.extractors(src);
 var start = src.indexOf('  var CumulativeFlowPage = (function () {');
 var end = src.indexOf('\n  })();', start) + '\n  })();'.length;
 if (start < 0 || end < start) throw new Error('CumulativeFlowPage not found');
@@ -11,13 +13,9 @@ var document = {
   createElement: function () { return { style: {}, offsetWidth: 100, hidden: false }; },
 };
 function escapeHtml(s) { return String(s); }
-var accountPrefs = { hour12: true, weekStart: 1 };
-function inlineFn(start) {
-  var from = src.indexOf(start);
-  return src.slice(from, src.indexOf('\n  }\n', from) + '\n  }\n'.length);
-}
-eval(inlineFn('  function daysIntoWeek(d) {'));
-eval(inlineFn('  function clockText(d) {'));
+const accountPrefs = prelude.accountPrefs(1);
+eval(fn('  function daysIntoWeek(d) {'));
+eval(fn('  function clockText(d) {'));
 eval(src.slice(src.indexOf('  var ReportChart = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ReportChart = (function () {')) + '\n  })();'.length));
 eval(src.slice(src.indexOf('  var ColumnHistory = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ColumnHistory = (function () {')) + '\n  })();'.length));
 eval(src.slice(src.indexOf('  var ReportRange = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ReportRange = (function () {')) + '\n  })();'.length));

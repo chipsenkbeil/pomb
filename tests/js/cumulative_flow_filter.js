@@ -1,12 +1,8 @@
 var fs = require('fs');
 var src = fs.readFileSync(process.argv[2], 'utf8');
+const prelude = require('./support/report_prelude.js');
+const { block, fn } = prelude.extractors(src);
 const { isoDate } = require('../../static/pure.js');
-function block(start) {
-  var from = src.indexOf(start);
-  if (from < 0) throw new Error(start + ' not found');
-  var to = src.indexOf('\n  })();', from) + '\n  })();'.length;
-  return src.slice(from, to);
-}
 var page = {};
 var document = {
   getElementById: function (id) {
@@ -17,12 +13,7 @@ var document = {
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
-var accountPrefs = { hour12: true, weekStart: 1 };
-function fn(start) {
-  var from = src.indexOf(start);
-  if (from < 0) throw new Error(start + ' not found');
-  return src.slice(from, src.indexOf('\n  }\n', from) + '\n  }\n'.length);
-}
+const accountPrefs = prelude.accountPrefs(1);
 eval(fn('  function daysIntoWeek(d) {'));
 eval(fn('  function clockText(d) {'));
 eval(block('  var ReportChart = (function () {'));
