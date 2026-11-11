@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -9,9 +10,12 @@ use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{Reply, call, none_mode};
 use crate::auth::{hash_inbound_address, new_api_token_record};
-use crate::db::{AccountAction, AdminActionOutcome, Db, MAX_INBOUND_PER_BOARD, NewInbound};
+use crate::db::{
+    AccountAction, AdminActionOutcome, Db, MAX_INBOUND_PER_BOARD, NewInbound, OwnerChange,
+};
+use crate::disk::{DiskGuard, DiskProbe};
 use crate::limit::Limits;
-use crate::models::{AccountId, AuthScope, HistoryKind, TaskRow};
+use crate::models::{AccountId, AuthScope, BoardRole, HistoryKind, InstanceMode, TaskRow};
 use crate::{AppState, BODY_LIMIT_BYTES};
 
 struct Fixture {
@@ -31,6 +35,14 @@ impl Fixture {
     }
 
     fn with_limits(limits: Limits) -> Self {
+        Self::open(limits, None)
+    }
+
+    fn with_disk(disk: DiskGuard) -> Self {
+        Self::open(unthrottled_limits(), Some(disk))
+    }
+
+    fn open(limits: Limits, disk: Option<DiskGuard>) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("inbound.redb");
         let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
@@ -41,7 +53,12 @@ impl Fixture {
         db.create_api_token(&record).expect("token");
         let board = db.create_board(&admin, "Mail").expect("board");
         let column = db.create_column(&board, "Inbox", None).expect("column");
-        let app = router(AppState::new(db.clone(), None, passkey_mode()).with_limits(limits));
+        let state = AppState::new(db.clone(), None, passkey_mode()).with_limits(limits);
+        let state = match disk {
+            Some(disk) => state.with_disk(disk),
+            None => state,
+        };
+        let app = router(state);
         Self {
             _dir: dir,
             app,
@@ -538,6 +555,7 @@ async fn settings_tab_should_show_the_empty_state_and_not_the_unsupported_notice
 struct Sent {
     status: StatusCode,
     retry_after: Option<String>,
+    error_code: Option<String>,
     body: Value,
 }
 
@@ -563,6 +581,10 @@ async fn post_mail(
         .headers()
         .get("retry-after")
         .map(|value| value.to_str().expect("ascii").to_string());
+    let error_code = response
+        .headers()
+        .get("x-pomb-error-code")
+        .map(|value| value.to_str().expect("ascii").to_string());
     let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
         .await
         .expect("body");
@@ -571,6 +593,7 @@ async fn post_mail(
     Sent {
         status,
         retry_after,
+        error_code,
         body,
     }
 }
@@ -594,6 +617,16 @@ impl Fixture {
 
     fn tasks(&self) -> Vec<TaskRow> {
         self.db.board_tasks(&self.board).expect("tasks")
+    }
+
+    fn stored_address(&self) -> String {
+        let new = NewInbound {
+            board_id: self.board.clone(),
+            name: "Mail".to_string(),
+            prefix: String::new(),
+            column_id: self.column.clone(),
+        };
+        self.db.create_inbound(new).expect("address").address
     }
 }
 
@@ -951,4 +984,91 @@ async fn post_to_the_address_of_a_suspended_owner_should_look_missing() {
     assert_eq!(after.status, StatusCode::NOT_FOUND);
     assert_eq!(after.body, unknown.body);
     assert_eq!(fx.db.board_tasks(&board).expect("tasks").len(), 1);
+}
+
+#[tokio::test]
+async fn post_into_a_full_board_should_get_409() {
+    const LIMIT: u32 = 2;
+    let fx = Fixture::new();
+    fx.db.apply_mode(InstanceMode::Multi).expect("mode");
+    fx.db.create_user("bob").expect("member");
+    fx.db
+        .set_board_member(&fx.board, "bob", BoardRole::Member)
+        .expect("member");
+    let handed = fx
+        .db
+        .change_board_owner(&fx.board, &fx.admin, "bob")
+        .expect("owner");
+    assert!(matches!(handed, OwnerChange::Changed(_)));
+    fx.db
+        .update_instance_settings(|settings| settings.quotas.tasks_per_board = LIMIT)
+        .expect("quota");
+    for n in 0..LIMIT {
+        fx.db
+            .create_task(&fx.column, None, &format!("Task {n}"), 1, None)
+            .expect("task");
+    }
+    let address = fx.stored_address();
+    let before = fx.tasks().len();
+    let refused = post_json(
+        &fx.app,
+        &address,
+        &json!({"subject": "One too many", "text": "It fits nowhere."}),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.body["code"], "quota_exceeded");
+    assert_eq!(fx.tasks().len(), before);
+}
+
+#[tokio::test]
+async fn post_into_a_rule_guarded_column_should_get_422() {
+    let fx = Fixture::new();
+    let address = fx.issue().await;
+    let column = fx.column.clone();
+    let rules = json!({"column_rules": {"columns": {column: {"sections": ["Done when"]}}}});
+    fx.db
+        .set_board_config(&fx.board, rules.as_object().expect("object"))
+        .expect("rules");
+    let before = fx.tasks().len();
+    let refused = post_json(
+        &fx.app,
+        &address,
+        &json!({"subject": "Refused", "text": "No criteria here."}),
+    )
+    .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        refused.body
+    );
+    assert_eq!(refused.body["code"], "column_rule");
+    assert_eq!(fx.tasks().len(), before);
+}
+
+#[tokio::test]
+async fn post_while_the_disk_is_full_should_get_507() {
+    let probe = DiskProbe {
+        stored: Arc::new(|| Ok(1)),
+        file: Arc::new(|| Ok(1)),
+        free: Arc::new(|_| Ok(0)),
+    };
+    let fx = Fixture::with_disk(DiskGuard::new(probe, Path::new(".")));
+    let address = fx.stored_address();
+    let before = fx.tasks().len();
+    let refused = post_json(
+        &fx.app,
+        &address,
+        &json!({"subject": "Full", "text": "No room."}),
+    )
+    .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::INSUFFICIENT_STORAGE,
+        "{}",
+        refused.body
+    );
+    assert_eq!(refused.error_code.as_deref(), Some("storage_full"));
+    assert_eq!(fx.tasks().len(), before);
 }
