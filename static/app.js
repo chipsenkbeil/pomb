@@ -22110,7 +22110,7 @@
     },
 
     busy() {
-      return dragging || !!document.querySelector('#modal-root .task-modal, .dlg-overlay:not([hidden]), .addTask-overlay:not([hidden]), .menu-floating:not([hidden])');
+      return dragging || !!document.querySelector('#modal-root .task-modal, .dlg-overlay:not([hidden]), .addTask-overlay:not([hidden]), .menu-floating:not([hidden]), #finder:not([hidden])');
     },
 
     reloadWhenIdle() {

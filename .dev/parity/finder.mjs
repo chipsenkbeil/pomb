@@ -233,6 +233,8 @@ const columns = await serverApi(state, base, 'GET', `/api/boards/${board}/column
 const gone = await serverApi(state, base, 'POST', '/api/tasks', { column_id: columns.json[0].id, name: GONE_NAME });
 const goneId = gone.json?.id;
 check(Boolean(goneId), 'a probe card is created');
+await page.goto(`${base}/b/${board}`, { waitUntil: 'load' });
+await page.waitForSelector('.task-card');
 const live = first.items[0];
 const entryFor = (item, name) => ({
   task_id: item.task_id ?? item.id,
