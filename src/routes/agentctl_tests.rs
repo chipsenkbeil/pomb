@@ -3514,7 +3514,7 @@ async fn device_pairing_should_issue_a_named_revocable_token_once_after_approval
     assert_eq!(status, StatusCode::OK, "{body}");
     let issued: Value = serde_json::from_str(&body).expect("json");
     assert_eq!(issued["name"], "agentctl on laptop");
-    assert_eq!(issued["scopes"], json!(["read"]));
+    assert_eq!(issued["scope"], "read");
     let token = issued["token"].as_str().expect("token").to_string();
     assert!(token.starts_with("pomb_"));
     let (status, text) = poll_device(&fx, &other_code).await;
@@ -12577,6 +12577,33 @@ async fn lowering_the_permissions_of_a_device_request_should_persist_in_the_toke
 }
 
 #[tokio::test]
+async fn device_poll_should_name_a_scope_only_for_an_exact_preset() {
+    let (_dir, fx) = fixture();
+    let (status, _, device_code) = approve_request(
+        &fx,
+        json!({"permissions": ["boards.read", "tasks.create", "tasks.read"]}),
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (polled, _) = issued_grant(&fx, &device_code).await;
+    assert_eq!(polled["scope"], Value::Null);
+    let mut permissions: Vec<&str> = polled["permissions"]
+        .as_array()
+        .expect("permissions")
+        .iter()
+        .map(|name| name.as_str().expect("name"))
+        .collect();
+    permissions.sort_unstable();
+    assert_eq!(permissions, ["boards.read", "tasks.create", "tasks.read"]);
+
+    let (status, _, device_code) = approve_request(&fx, json!({"preset": "work"}), "").await;
+    assert_eq!(status, StatusCode::OK);
+    let (polled, _) = issued_grant(&fx, &device_code).await;
+    assert_eq!(polled["scope"], "work");
+}
+
+#[tokio::test]
 async fn picking_boards_for_a_device_request_should_persist_in_the_token() {
     let (_dir, fx) = fixture();
     let (status, _, device_code) = approve_request(
@@ -12609,7 +12636,7 @@ async fn a_device_client_using_an_old_scope_name_should_still_pair_with_that_pre
         .iter()
         .map(|permission| permission.name())
         .collect();
-    assert_eq!(polled["scopes"], json!(["work"]));
+    assert_eq!(polled["scope"], "work");
     assert_eq!(polled["permissions"], json!(names));
     assert_eq!(whoami["boards"], "all");
 

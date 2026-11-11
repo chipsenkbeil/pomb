@@ -5552,6 +5552,14 @@ impl AuthScope {
             .unwrap_or(Self::Read)
     }
 
+    /// Returns the scope whose preset holds exactly `permissions`, or [`None`] for any other set.
+    #[must_use]
+    pub fn exact_of(permissions: &BTreeSet<Permission>) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|scope| scope.permissions() == *permissions)
+    }
+
     /// Returns the scope names as a quoted list for messages, e.g. `["read", "work"]`.
     #[must_use]
     pub fn quoted_list() -> String {

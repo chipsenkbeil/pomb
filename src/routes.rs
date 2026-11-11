@@ -25590,7 +25590,9 @@ struct DeviceTokenResponse {
     /// The raw "pomb_..." token, returned once.
     token: String,
     name: String,
-    scopes: Vec<String>,
+    /// The preset the token holds exactly, or null when its permissions match no preset. Read
+    /// `permissions` for what the token can do.
+    scope: Option<&'static str>,
     /// The wire name of every permission the token holds.
     permissions: Vec<&'static str>,
 }
@@ -25819,7 +25821,7 @@ async fn poll_device_token(
         DevicePoll::Issued(record) => Ok(Json(DeviceTokenResponse {
             token: raw_token,
             name: record.name,
-            scopes: vec![record.scope.as_str().to_string()],
+            scope: AuthScope::exact_of(&record.permissions).map(AuthScope::as_str),
             permissions: record.permissions.iter().map(|p| p.name()).collect(),
         })),
         DevicePoll::Pending => Err(AppError::with_status(
