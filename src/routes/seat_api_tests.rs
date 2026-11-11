@@ -1,10 +1,11 @@
 use axum::http::StatusCode;
 use chrono::Utc;
 use serde_json::{Value, json};
+use utoipa::OpenApi;
 
-use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{Reply, call};
+use super::{ApiDoc, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -538,6 +539,19 @@ async fn take_task_seat_should_let_an_owner_whose_lease_lapsed_take_a_seat() {
 
     let taken = fx.take(OWNER, &task, "code", "builder").await;
     assert_eq!(taken.status, StatusCode::OK, "{}", taken.body);
+}
+
+#[test]
+fn seat_verdict_openapi_should_name_the_wire_values() {
+    let spec: Value =
+        serde_json::from_str(&ApiDoc::openapi().to_json().expect("json")).expect("spec");
+    let description = spec["paths"]["/api/tasks/{id}/seats/verdict"]["post"]["description"]
+        .as_str()
+        .expect("description");
+    for value in ["`approved`", "`changes_needed`"] {
+        assert!(description.contains(value), "{description}");
+    }
+    assert!(!description.contains("Changes needed"), "{description}");
 }
 
 #[tokio::test]

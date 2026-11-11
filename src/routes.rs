@@ -22468,7 +22468,7 @@ async fn take_task_seat(
 
 /// Records the verdict of a seat's holder.
 ///
-/// The verdict is Approved or Changes needed, with an optional
+/// The verdict is `approved` or `changes_needed`, with an optional
 /// revision that Pomb stores as sent. The seat then waits, its lease ends and the holder's name
 /// stays. Only the holder of a seat whose lease still holds may answer for it. Needs
 /// `seats.take`.
