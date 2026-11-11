@@ -26,6 +26,8 @@ use crate::{AppState, Args, BODY_LIMIT_BYTES, Verb, routes};
 
 const BOARD: &str = "Pomb";
 const BACKLOG: &str = "Backlog";
+const DOING: &str = "Doing";
+const SHIPPED: &str = "Shipped";
 
 struct Server {
     _dir: tempfile::TempDir,
@@ -80,10 +82,8 @@ async fn start() -> Server {
         }
     }
     let backlog = db.create_column(&board_id, BACKLOG, None).expect("column");
-    let doing = db.create_column(&board_id, "Doing", None).expect("column");
-    let shipped = db
-        .create_column(&board_id, "Shipped", None)
-        .expect("column");
+    let doing = db.create_column(&board_id, DOING, None).expect("column");
+    let shipped = db.create_column(&board_id, SHIPPED, None).expect("column");
     db.set_column_done(&shipped, true).expect("done column");
     let sign_in = SignIn::new(AuthChoice::Default, "127.0.0.1", None).expect("sign in");
     let state = AppState::new(db.clone(), None, sign_in);
@@ -418,8 +418,8 @@ async fn board_ls_should_list_the_open_cards_in_aligned_columns() {
     let expected = [
         format!("{docs}  {BACKLOG}  2 Pomodori   docs      -    -        Write the docs"),
         format!("{triage}  {BACKLOG}  unsized      -         -    -        Triage inbox"),
-        format!("{client}  Doing    >3 Pomodori  cli,rust  1/2  agent-7  Build the client"),
-        format!("{review}  Doing    3 Pomodori   review    -    agent-9  Review the diff"),
+        format!("{client}  {DOING}    >3 Pomodori  cli,rust  1/2  agent-7  Build the client"),
+        format!("{review}  {DOING}    3 Pomodori   review    -    agent-9  Review the diff"),
     ]
     .join("\n");
     assert_eq!(server.output(ls(None, None, None)).await, expected);
@@ -432,7 +432,7 @@ async fn board_ls_should_leave_out_a_done_column_unless_it_is_named() {
     let ship = short(&ids.ship);
     assert_eq!(
         server.output(ls(Some("shipped"), None, None)).await,
-        format!("{ship}  Shipped  1 Pomodoro  -  Ship the thing")
+        format!("{ship}  {SHIPPED}  1 Pomodoro  -  Ship the thing")
     );
     let all = server.output(ls(None, None, None)).await;
     assert!(!all.contains(ship), "{all}");
@@ -458,11 +458,11 @@ async fn board_ls_should_filter_by_column_label_and_size() {
     );
     assert_eq!(
         server.output(ls(None, Some("cli"), None)).await,
-        format!("{client}  Doing  >3 Pomodori  cli,rust  1/2  agent-7  Build the client")
+        format!("{client}  {DOING}  >3 Pomodori  cli,rust  1/2  agent-7  Build the client")
     );
     assert_eq!(
         server.output(ls(None, None, Some("3+"))).await,
-        format!("{client}  Doing  >3 Pomodori  cli,rust  1/2  agent-7  Build the client")
+        format!("{client}  {DOING}  >3 Pomodori  cli,rust  1/2  agent-7  Build the client")
     );
     assert_eq!(
         server.output(ls(None, None, Some("2"))).await,
@@ -476,7 +476,7 @@ async fn board_ls_should_filter_by_column_label_and_size() {
         server
             .output(ls(Some("doing"), Some("review"), Some("3")))
             .await,
-        format!("{review}  Doing  3 Pomodori  review  agent-9  Review the diff")
+        format!("{review}  {DOING}  3 Pomodori  review  agent-9  Review the diff")
     );
 }
 
@@ -503,8 +503,8 @@ async fn board_ls_should_show_ticks_and_holders_only_when_a_listed_card_needs_th
     assert_eq!(
         ticks_only.expect("output"),
         [
-            format!("{client}  Doing  >3 Pomodori  cli,rust  1/2  Build the client"),
-            format!("{review}  Doing  3 Pomodori   review    -    Review the diff"),
+            format!("{client}  {DOING}  >3 Pomodori  cli,rust  1/2  Build the client"),
+            format!("{review}  {DOING}  3 Pomodori   review    -    Review the diff"),
         ]
         .join("\n")
     );
@@ -512,7 +512,7 @@ async fn board_ls_should_show_ticks_and_holders_only_when_a_listed_card_needs_th
     let holders_only = server.output(ls(None, Some("review"), None)).await;
     assert_eq!(
         holders_only,
-        format!("{review}  Doing  3 Pomodori  review  agent-9  Review the diff")
+        format!("{review}  {DOING}  3 Pomodori  review  agent-9  Review the diff")
     );
 
     let neither = server.output(ls(None, Some("docs"), None)).await;
@@ -530,7 +530,7 @@ async fn board_ls_should_refuse_an_unknown_column_or_size_as_a_usage_error() {
         failure(server.run(ls(Some("nope"), None, None), Utc::now()).await),
         (
             2,
-            format!("unknown column nope, the columns are {BACKLOG}, Doing, Shipped")
+            format!("unknown column nope, the columns are {BACKLOG}, {DOING}, {SHIPPED}")
         )
     );
     assert_eq!(
@@ -663,7 +663,7 @@ async fn board_show_should_print_the_card_its_family_its_outcomes_and_its_commen
 
     let client = short(&ids.client);
     let expected = [
-        format!("{client}  Doing  >3 Pomodori  cli,rust  Build the client"),
+        format!("{client}  {DOING}  >3 Pomodori  cli,rust  Build the client"),
         format!("parent: {} Umbrella", short(&umbrella)),
         String::new(),
         "Read the env, then GET the board.".to_string(),
@@ -1056,7 +1056,7 @@ async fn board_add_should_file_a_card_in_the_named_or_first_column() {
         .expect("add");
     let listing = server.output(ls(Some("doing"), None, None)).await;
     assert!(
-        listing.contains("Doing  >3 Pomodori  cli,ui  Sized card"),
+        listing.contains(&format!("{DOING}  >3 Pomodori  cli,ui  Sized card")),
         "{listing}"
     );
     let plain = server.output(ls(Some("backlog"), None, None)).await;
@@ -1094,7 +1094,7 @@ async fn board_move_should_follow_a_renamed_column_without_a_client_change() {
     assert!(first.starts_with(short(&ids.docs)), "{listing}");
     let (code, text) = failure(server.write(move_to(short(&ids.docs), "Doing")).await);
     assert_eq!(code, 2);
-    assert!(text.contains("unknown column Doing"), "{text}");
+    assert!(text.contains(&format!("unknown column {DOING}")), "{text}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
