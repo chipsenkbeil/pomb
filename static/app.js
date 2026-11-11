@@ -3269,6 +3269,25 @@
     refreshModal();
   }
 
+  function showNewChildCard(epicId, childId) {
+    const epicCard = document.querySelector('.task-card[data-task-id="' + cssEscape(epicId) + '"]');
+    const list = epicCard ? epicCard.closest('.task-list') : null;
+    if (!list) return;
+    fetch('/api/tasks/' + encodeURIComponent(childId) + '/card', { headers: { 'Accept': 'text/html' }, credentials: 'same-origin' })
+      .then((res) => (res.ok ? res.text() : null))
+      .then((html) => {
+        if (!html) return;
+        const tpl = document.createElement('template');
+        tpl.innerHTML = html.trim();
+        const card = tpl.content.firstElementChild;
+        if (!card) return;
+        list.appendChild(card);
+        if (window.htmx) window.htmx.process(card);
+        updateColumnCount(list.dataset.columnId, 1, cardEstimateMinutes(card));
+      })
+      .catch(() => { /* the next board load shows the card */ });
+  }
+
   function unlinkChild(childId) {
     var id = modalTaskId();
     if (!id) return;
@@ -3302,6 +3321,7 @@
     addTaskLink(id, LinkKind.CHILD, targetId)
       .then(function () {
         modalTab = 'children';
+        if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(targetId);
         refreshAfterLinkChange();
       })
       .catch(function (err) { toast(linkFailure(err, 'Could not link the child.')); });
@@ -3346,6 +3366,7 @@
       .then(function () {
         newChildBusy = false;
         modalTab = 'children';
+        showNewChildCard(epicId, created.id);
         refreshAfterLinkChange();
       })
       .catch(function (err) {

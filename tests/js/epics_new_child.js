@@ -78,9 +78,33 @@ function reset(dataset) {
   wireNewChild(overlay);
 }
 
-var document = {
-  querySelector: function (sel) { return sel === '#modal-root .task-modal' ? modal : null; },
+let epicCard = null;
+let processed = [];
+let columnCounts = [];
+const document = {
+  querySelector: (sel) => {
+    if (sel === '#modal-root .task-modal') return modal;
+    if (sel === '.task-card[data-task-id="e1"]') return epicCard;
+    return null;
+  },
+  createElement: () => {
+    const tpl = { content: { firstElementChild: null } };
+    Object.defineProperty(tpl, 'innerHTML', {
+      set: (html) => {
+        const id = /data-task-id="([^"]*)"/.exec(html)[1];
+        const minutes = /data-estimate-minutes="([^"]*)"/.exec(html);
+        tpl.content.firstElementChild = { dataset: { taskId: id, estimateMinutes: minutes ? minutes[1] : undefined } };
+      },
+    });
+    return tpl;
+  },
 };
+const cssEscape = (value) => value;
+const window = { htmx: { process: (el) => processed.push(el) } };
+const updateColumnCount = (colId, delta, minutes) => columnCounts.push([colId, delta, minutes]);
+const cardEstimateMinutes = (card) => (card ? parseInt(card.dataset.estimateMinutes, 10) || 0 : 0);
+const modalTaskId = () => modal.dataset.taskId;
+const TimerUI = { refreshed: [], refreshTaskCard: (id) => TimerUI.refreshed.push(id) };
 function api(path, method, data) {
   return new Promise(function (resolve) {
     calls.push({ path: path, method: method, data: data });
@@ -92,11 +116,8 @@ const withWip = (send) => send(false);
 const withForce = (body) => body;
 function fetch(path, init) {
   return new Promise(function (resolve) {
-    calls.push({ path: path, method: init.method, data: JSON.parse(init.body), headers: init.headers });
-    var json = init.headers && init.headers.Accept === 'application/json';
-    pending.push(function (res) {
-      resolve(json || !res.ok ? res : response(true, '<li class="task-card" data-task-id="n1"></li>'));
-    });
+    calls.push({ path, method: init.method, data: init.body ? JSON.parse(init.body) : undefined, headers: init.headers });
+    pending.push(resolve);
   });
 }
 function toast(message) { toasts.push(message); }
@@ -107,6 +128,8 @@ eval(fn('  function linkFailure(err, fallback) {'));
 eval(fn('  function taskLinksUrl(taskId) {'));
 eval(fn('  function addTaskLink(taskId, kind, targetId) {'));
 eval(fn('  function closeNewChild(row, open) {'));
+eval(fn('  function showNewChildCard(epicId, childId) {'));
+eval(fn('  function pickChild(targetId) {'));
 eval(fn('  function createNewChild(row) {'));
 eval(fn('  function wireNewChild(overlay) {'));
 
@@ -218,6 +241,66 @@ eval(fn('  function wireNewChild(overlay) {'));
   check('a failed link does not retry the create', calls.length, 2);
   create.click();
   check('the busy flag is cleared after a failed link', calls.length, 3);
+
+  let list;
+  const withEpicCard = () => {
+    list = {
+      dataset: { columnId: 'c1' },
+      children: [],
+      appendChild: (el) => list.children.push(el),
+    };
+    epicCard = { closest: (sel) => (sel === '.task-list' ? list : null) };
+    processed = [];
+    columnCounts = [];
+  };
+  const createChildOnBoard = async () => {
+    reset();
+    open.click();
+    input.value = 'Retry rules';
+    create.click();
+    pending[0](response(true, '{"id":"n1"}'));
+    await flush();
+    await flush();
+    pending[1](response(true, ''));
+    await flush();
+    await flush();
+  };
+
+  withEpicCard();
+  await createChildOnBoard();
+  check('new_child_inserts_card fetches the child card', calls[2].path, '/api/tasks/n1/card');
+  pending[2](response(true, '<li class="task-card" data-task-id="n1" data-estimate-minutes="90"></li>'));
+  await flush();
+  await flush();
+  check('new_child_inserts_card appends to the epic card list', list.children.map((c) => c.dataset.taskId), ['n1']);
+  check('new_child_inserts_card processes the card with htmx', processed.length, 1);
+  check('new_child_inserts_card keeps the modal refresh', refreshes, 1);
+  check('new_child_counts_column adds one task and the estimate to the epic column', columnCounts, [['c1', 1, 90]]);
+
+  withEpicCard();
+  await createChildOnBoard();
+  pending[2](response(false, ''));
+  await flush();
+  await flush();
+  check('new_child_inserts_card inserts nothing when the card fetch fails', [list.children.length, columnCounts.length], [0, 0]);
+
+  reset();
+  withEpicCard();
+  TimerUI.refreshed = [];
+  pickChild('k1');
+  pending[0](response(true, ''));
+  await flush();
+  await flush();
+  check('add_existing_swaps_card refreshes the linked card', TimerUI.refreshed, ['k1']);
+  check('add_existing_swaps_card still refreshes the modal', refreshes, 1);
+
+  epicCard = null;
+  processed = [];
+  columnCounts = [];
+  await createChildOnBoard();
+  check('new_child_without_epic_card fetches no card', calls.length, 2);
+  check('new_child_without_epic_card inserts and counts nothing', [processed.length, columnCounts.length], [0, 0]);
+  check('new_child_without_epic_card still refreshes the modal without an error', [refreshes, toasts], [1, []]);
 
   console.log('failures=' + failures);
   if (failures) throw new Error(failures + ' new child check(s) failed');
