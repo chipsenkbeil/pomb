@@ -6,6 +6,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::held_disk;
 use crate::db::{AccountSlot, Db};
 use crate::models::{AccountId, HistoryKind, TaskAttachment};
 use crate::{AppState, BODY_LIMIT_BYTES};
@@ -29,7 +30,9 @@ async fn fixture() -> Fixture {
     let session = db.create_session(&user, "").expect("session");
     let board = db.create_board(&user, "Files").expect("board");
     let column = db.create_column(&board, "Todo", None).expect("column");
-    let state = AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits());
+    let state = AppState::new(db.clone(), None, passkey_mode())
+        .with_disk(held_disk(&db))
+        .with_limits(unthrottled_limits());
     let app = router(state.clone());
     let mut fixture = Fixture {
         _dir: dir,

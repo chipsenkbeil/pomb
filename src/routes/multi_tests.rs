@@ -11,7 +11,9 @@ use serde_json::{Value, json};
 
 use super::access_tests::{enroll, mint_token, seed};
 use super::server::{TEST_PUBLIC_URL, passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, SoftAuthenticator, add_passkey, call, session_of, sign_in};
+use super::test_support::{
+    Reply, SoftAuthenticator, add_passkey, call, held_disk, session_of, sign_in,
+};
 use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
 use crate::auth::{
@@ -170,6 +172,7 @@ fn multi_app(db: &Db, bootstrap: Option<&str>) -> (axum::Router, String) {
         .expect("relying party")
         .issue_setup_code();
     let state = AppState::new(db.clone(), bootstrap.and_then(BootstrapToken::new), sign_in)
+        .with_disk(held_disk(db))
         .with_mode(InstanceMode::Multi)
         .with_public_url(Some(TEST_PUBLIC_URL.to_string()))
         .with_limits(unthrottled_limits());
@@ -1519,7 +1522,11 @@ async fn single_mode_should_keep_the_multi_user_routes_closed() {
         .relying_party()
         .expect("relying party")
         .issue_setup_code();
-    let app = router(AppState::new(db, None, sign_in).with_limits(unthrottled_limits()));
+    let app = router(
+        AppState::new(db.clone(), None, sign_in)
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits()),
+    );
     let setup = enroll(
         &app,
         &mut SoftAuthenticator::new(61),

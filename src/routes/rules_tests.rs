@@ -8,6 +8,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::held_disk;
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{
@@ -122,6 +123,7 @@ impl Fixture {
                 BootstrapToken::new(BOOTSTRAP_TOKEN),
                 passkey_mode(),
             )
+            .with_disk(held_disk(&db))
             .with_limits(unthrottled_limits()),
         );
         Self {

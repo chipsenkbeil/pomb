@@ -6,6 +6,7 @@ use tower::ServiceExt;
 
 use super::board_history::{Filter, Order};
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::held_disk;
 use super::{load_history_page, router};
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -32,8 +33,11 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let session = db.create_session(&user_id, "").expect("session");
     let board_id = db.create_board(&user_id, "History").expect("board");
     let column = db.create_column(&board_id, "Todo", None).expect("column");
-    let app =
-        router(AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits()),
+    );
     let fixture = Fixture {
         app,
         db,

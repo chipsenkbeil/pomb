@@ -4,7 +4,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::TEST_BODY_4_MIB_BYTES;
+use super::test_support::{TEST_BODY_4_MIB_BYTES, held_disk};
 use crate::AppState;
 use crate::db::Db;
 use crate::models::{AccountId, Seat, SeatSlot};
@@ -26,8 +26,11 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let session = db.create_session(&user_id, "").expect("session");
     let board_id = db.create_board(&user_id, "Seats").expect("board");
     let column_id = db.create_column(&board_id, "Todo", None).expect("column");
-    let app =
-        router(AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits()),
+    );
     let fixture = Fixture {
         db,
         user_id,

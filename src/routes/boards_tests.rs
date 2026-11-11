@@ -4,6 +4,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::held_disk;
 use crate::db::{BOARD_COPY_TASK_CAP, ColumnPatch, ColumnWatch, Db};
 use crate::layouts::{Category, YOUR_BOARDS};
 use crate::models::{AccountId, Actor, BoardRole, Responsible, TaskRow};
@@ -31,8 +32,11 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
         .create_column(&board_id, "Doing", Some(3))
         .expect("column");
     db.create_swimlane(&board_id, "Team").expect("lane");
-    let app =
-        router(AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits()),
+    );
     let fixture = Fixture {
         app,
         db,

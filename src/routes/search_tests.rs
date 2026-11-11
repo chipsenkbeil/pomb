@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call};
+use super::test_support::{Reply, call, held_disk};
 use super::{SEARCH_BUDGET_SECS, router, run_search};
 use crate::AppState;
 use crate::auth::new_api_token_record;
@@ -32,7 +32,9 @@ impl Fixture {
         let (record, token) = new_api_token_record(&admin, "admin", AuthScope::Admin, None);
         db.create_api_token(&record).expect("token");
         let app = router(
-            AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()),
+            AppState::new(db.clone(), None, passkey_mode())
+                .with_disk(held_disk(&db))
+                .with_limits(unthrottled_limits()),
         );
         Self {
             _dir: dir,

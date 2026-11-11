@@ -4,7 +4,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::TEST_BODY_4_MIB_BYTES;
+use super::test_support::{TEST_BODY_4_MIB_BYTES, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -55,8 +55,11 @@ fn fixture() -> Fixture {
     let done = db
         .create_column(&board_id, "Shipped", None)
         .expect("column");
-    let app =
-        router(AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits()),
+    );
     Fixture {
         _dir: dir,
         db,

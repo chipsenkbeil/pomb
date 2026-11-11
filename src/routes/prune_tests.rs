@@ -7,7 +7,7 @@ use tempfile::TempDir;
 use super::multi_tests::admin_settings;
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call};
+use super::test_support::{Reply, call, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -59,6 +59,7 @@ impl Fixture {
         let (record, raw) = new_api_token_record(&member, "agent", AuthScope::Admin, None);
         db.create_api_token(&record).expect("token");
         let state = AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
             .with_mode(InstanceMode::Multi)
             .with_limits(unthrottled_limits());
         Self {

@@ -8,7 +8,7 @@ use tower::ServiceExt;
 
 use super::multi_tests::admin_settings;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, SoftAuthenticator, add_passkey, call, session_of};
+use super::test_support::{Reply, SoftAuthenticator, add_passkey, call, held_disk, session_of};
 use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
 use crate::auth::{PENDING_ROUTES, new_api_token_record, required_permission, required_role};
@@ -487,7 +487,7 @@ pub(crate) async fn seeded() -> Seeded {
     let (a_cookie, b_cookie) = (cookie(&a), cookie(&b));
     let (a_token_id, a_token) = seed_token(&db, &a, "Alice agent");
     let (b_token_id, b_token) = seed_token(&db, &b, "Bob agent");
-    let app = router(AppState::new(db.clone(), None, passkey_mode()));
+    let app = router(AppState::new(db.clone(), None, passkey_mode()).with_disk(held_disk(&db)));
     let a_passkey = seed_passkey(&app, &db, &a, &a_cookie, 7, "Alice laptop").await;
     let b_passkey = seed_passkey(&app, &db, &b, &b_cookie, 8, "Bob laptop").await;
     drop(app);
@@ -570,6 +570,7 @@ async fn registered() -> Seeded {
         .expect("relying party")
         .issue_setup_code();
     let state = AppState::new(db.clone(), None, sign_in)
+        .with_disk(held_disk(&db))
         .with_mode(InstanceMode::Multi)
         .with_limits(unthrottled_limits());
     let app = router(state);
@@ -667,6 +668,7 @@ pub(crate) fn open(seeded: &Seeded) -> Accounts {
     crate::db::AttachmentFiles::copy_beside(&seeded.path, &path);
     let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
     let state = AppState::new(db.clone(), None, passkey_mode())
+        .with_disk(held_disk(&db))
         .with_mode(seeded.mode)
         .with_limits(unthrottled_limits());
     Accounts {
@@ -2593,6 +2595,7 @@ async fn ownerless_credentials_should_act_as_the_owner_after_setup() {
         new_api_token_record(&AccountId::ownerless(), "early", AuthScope::Admin, None);
     db.create_api_token(&record).expect("token");
     let state = AppState::new(db.clone(), BootstrapToken::new(BOOTSTRAP), passkey_mode())
+        .with_disk(held_disk(&db))
         .with_limits(unthrottled_limits());
     let app = router(state);
     let (status, text) = send(&app, Who::Token(&early), &Method::GET, "/api/boards", None).await;

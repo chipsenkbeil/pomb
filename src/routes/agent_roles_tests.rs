@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call};
+use super::test_support::{Reply, call, held_disk};
 use super::{history_actor, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
@@ -66,7 +66,9 @@ impl Fixture {
             db.create_board(&bob, "Bob").expect("board"),
         ];
         let app = router(
-            AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()),
+            AppState::new(db.clone(), None, passkey_mode())
+                .with_disk(held_disk(&db))
+                .with_limits(unthrottled_limits()),
         );
         Self {
             _dir: dir,

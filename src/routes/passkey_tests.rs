@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use super::router;
 use super::server::{TEST_PUBLIC_URL, passkey_mode};
 use super::test_support::{
-    Reply, SoftAuthenticator, add_passkey, call, none_mode, session_of, sign_in,
+    Reply, SoftAuthenticator, add_passkey, call, held_disk, none_mode, session_of, sign_in,
 };
 use crate::AppState;
 use crate::auth::{SESSION_MAX_AGE_SECONDS, new_api_token_record};
@@ -38,7 +38,10 @@ fn passkey_app(db: Db) -> (axum::Router, String) {
         .relying_party()
         .expect("relying party")
         .issue_setup_code();
-    (router(AppState::new(db, None, sign_in)), code)
+    (
+        router(AppState::new(db.clone(), None, sign_in).with_disk(held_disk(&db))),
+        code,
+    )
 }
 
 async fn set_up(
@@ -680,7 +683,7 @@ fn uuid_bytes(id: &str) -> Vec<u8> {
 #[tokio::test]
 async fn none_mode_should_treat_a_cookieless_browser_as_the_owner() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db.clone(), None, none_mode(None)));
+    let app = router(AppState::new(db.clone(), None, none_mode(None)).with_disk(held_disk(&db)));
     let me = whoami(&app, &[("host", "127.0.0.1:3000")]).await;
     assert_eq!(me.status, StatusCode::OK);
     assert_eq!(me.body["kind"], "session");
@@ -716,7 +719,7 @@ async fn none_mode_should_still_check_bearer_tokens() {
     let (record, raw) =
         new_api_token_record(&AccountId::ownerless(), "reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
-    let app = router(AppState::new(db, None, none_mode(None)));
+    let app = router(AppState::new(db.clone(), None, none_mode(None)).with_disk(held_disk(&db)));
 
     for header in [
         "Bearer pomb_wrong",
@@ -768,7 +771,7 @@ async fn none_mode_should_still_check_bearer_tokens() {
 #[tokio::test]
 async fn none_mode_should_refuse_a_cross_site_write() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db.clone(), None, none_mode(None)));
+    let app = router(AppState::new(db.clone(), None, none_mode(None)).with_disk(held_disk(&db)));
     for headers in [
         [("sec-fetch-site", "cross-site"), ("host", "127.0.0.1:3000")],
         [
@@ -793,7 +796,7 @@ async fn none_mode_should_refuse_a_cross_site_write() {
 #[tokio::test]
 async fn none_mode_should_refuse_a_host_that_is_not_its_own() {
     let (_dir, db) = open_db();
-    let bare = router(AppState::new(db.clone(), None, none_mode(None)));
+    let bare = router(AppState::new(db.clone(), None, none_mode(None)).with_disk(held_disk(&db)));
     let rebound = whoami(&bare, &[("host", "evil.example")]).await;
     assert_eq!(rebound.status, StatusCode::FORBIDDEN);
     assert_eq!(rebound.body["code"], "forbidden");
@@ -804,7 +807,9 @@ async fn none_mode_should_refuse_a_host_that_is_not_its_own() {
             "{host}"
         );
     }
-    let public = router(AppState::new(db, None, none_mode(Some(TEST_PUBLIC_URL))));
+    let public = router(
+        AppState::new(db.clone(), None, none_mode(Some(TEST_PUBLIC_URL))).with_disk(held_disk(&db)),
+    );
     assert_eq!(
         whoami(&public, &[("host", "pomb.test")]).await.status,
         StatusCode::OK
@@ -818,7 +823,9 @@ async fn none_mode_should_refuse_a_host_that_is_not_its_own() {
 #[tokio::test]
 async fn none_mode_should_send_login_setup_and_logout_home() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None, none_mode(Some(TEST_PUBLIC_URL))));
+    let app = router(
+        AppState::new(db.clone(), None, none_mode(Some(TEST_PUBLIC_URL))).with_disk(held_disk(&db)),
+    );
     for (method, uri) in [("GET", "/login"), ("GET", "/setup"), ("POST", "/logout")] {
         let reply = call(&app, method, uri, &[], None).await;
         assert_eq!(reply.status, StatusCode::SEE_OTHER, "{method} {uri}");
@@ -895,11 +902,9 @@ async fn recovery_should_add_a_passkey_without_sign_in_that_works_with_passkeys(
     let mut lost = SoftAuthenticator::new(7);
     set_up(&first_app, &code, &mut lost, json!({ "username": "chip" })).await;
 
-    let open_app = router(AppState::new(
-        db.clone(),
-        None,
-        none_mode(Some(TEST_PUBLIC_URL)),
-    ));
+    let open_app = router(
+        AppState::new(db.clone(), None, none_mode(Some(TEST_PUBLIC_URL))).with_disk(held_disk(&db)),
+    );
     let settings = call(&open_app, "GET", "/settings", &[], None).await;
     assert!(
         settings
@@ -945,7 +950,7 @@ async fn setup_should_need_the_setup_code_and_spend_it() {
     let sign_in = passkey_mode();
     let relying_party = sign_in.relying_party().expect("relying party").clone();
     let stale = relying_party.issue_setup_code();
-    let app = router(AppState::new(other.clone(), None, sign_in));
+    let app = router(AppState::new(other.clone(), None, sign_in).with_disk(held_disk(&other)));
     let mut second = SoftAuthenticator::new(8);
     let used = set_up(&app, &stale, &mut second, json!({})).await;
     assert_eq!(used.status, StatusCode::OK, "{}", used.body);

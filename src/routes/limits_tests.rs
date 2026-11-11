@@ -22,7 +22,7 @@ use tower::ServiceExt;
 
 use super::server::{passkey_mode, unthrottled_limits};
 use super::slot::SEND_SECS;
-use super::test_support::{Reply, call};
+use super::test_support::{Reply, call, held_disk};
 use super::{
     AppError, REQUEST_TIMEOUT_SECS, ROUTE_ACCESS, SLOW_REQUEST_TIMEOUT_SECS, Writes, router,
 };
@@ -3284,7 +3284,9 @@ async fn upload_should_answer_busy_while_two_uploads_hold_every_slot() {
     let task = db
         .create_task(&column, None, "Task", 1, None)
         .expect("task");
-    let state = AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits());
+    let state = AppState::new(db.clone(), None, passkey_mode())
+        .with_disk(held_disk(&db))
+        .with_limits(unthrottled_limits());
     let slots = state.uploads.clone();
     let app = router(state);
     let bearer = format!("Bearer {raw}");
@@ -3427,7 +3429,8 @@ async fn responses_should_require_https_behind_an_https_public_url() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = Db::connect(dir.path().join("hsts.redb").to_str().expect("utf8")).expect("db");
         let app = router(
-            AppState::new(db, None, passkey_mode())
+            AppState::new(db.clone(), None, passkey_mode())
+                .with_disk(held_disk(&db))
                 .with_limits(unthrottled_limits())
                 .with_public_url(Some(public_url.to_string())),
         );
@@ -4020,7 +4023,9 @@ async fn unread_downloads_should_hold_their_slots_until_dropped() {
         )
         .expect("attach")
         .expect("task");
-    let state = AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits());
+    let state = AppState::new(db.clone(), None, passkey_mode())
+        .with_disk(held_disk(&db))
+        .with_limits(unthrottled_limits());
     let others = state
         .downloads
         .clone()
@@ -4503,10 +4508,19 @@ async fn uploads_should_hold_one_slot_per_account_after_the_owner_check() {
     assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
 }
 
+#[test]
+fn held_disk_should_never_read_stale() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("held.redb");
+    let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+    let guard = held_disk(&db);
+    assert!(guard.latest().is_some_and(|sample| !sample.stale));
+}
+
 #[tokio::test]
 async fn task_rows_should_stop_growing_at_one_mib_with_a_409() {
     const COMMENT_BYTES: usize = 5000;
-    let fx = Fixture::multi();
+    let fx = Fixture::new(InstanceMode::Multi, unthrottled_limits(), held_disk);
     let (_, task) = fx.member_task();
     let body = "c".repeat(COMMENT_BYTES);
     let comment = NewComment {

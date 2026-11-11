@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call};
+use super::test_support::{Reply, call, held_disk};
 use super::{REQUEST_TIMEOUT_SECS, router};
 use crate::auth::new_api_token_record;
 use crate::db::{Db, NewTaskPlacement, WipCheck};
@@ -80,6 +80,7 @@ impl Fixture {
         let todo = db.create_column(&board, "Todo", None).expect("column");
         let done = db.create_column(&board, "Done", None).expect("column");
         let state = AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
             .with_mode(InstanceMode::Multi)
             .with_limits(limits);
         Self {

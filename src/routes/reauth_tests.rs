@@ -8,7 +8,9 @@ use super::access_tests::mint_token;
 use super::multi_tests::{Instance, finish, pair, recovery_code, start};
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, SoftAuthenticator, add_passkey, call, session_of, sign_in};
+use super::test_support::{
+    Reply, SoftAuthenticator, add_passkey, call, held_disk, session_of, sign_in,
+};
 use crate::auth::REAUTH_WINDOW_SECS;
 use crate::db::Db;
 use crate::passkey::MAX_CEREMONIES_PER_NETWORK;
@@ -369,7 +371,11 @@ fn single_server() -> (tempfile::TempDir, axum::Router, String) {
     let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
     let admin = db.ensure_owner("admin").expect("admin");
     let session = db.create_session(&admin.account_id(), "").expect("session");
-    let app = router(AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits()),
+    );
     (dir, app, format!("session={session}"))
 }
 

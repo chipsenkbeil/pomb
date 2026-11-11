@@ -8,7 +8,7 @@ use tower::ServiceExt;
 use utoipa::OpenApi;
 
 use super::server::passkey_mode;
-use super::test_support::{make_epic, make_plain, named_standard_role};
+use super::test_support::{held_disk, make_epic, make_plain, named_standard_role};
 use super::{ApiDoc, DeviceApproveForm, device_grant, router};
 use crate::auth::new_api_token_record;
 use crate::db::{
@@ -58,6 +58,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let fixture = Fixture {
         app: router(
             AppState::new(db.clone(), None, passkey_mode())
+                .with_disk(held_disk(&db))
                 .with_limits(super::server::unthrottled_limits()),
         ),
         db,
@@ -6641,6 +6642,7 @@ async fn every_history_event_should_name_the_token_and_cookie_and_bootstrap_even
             BootstrapToken::new(BOOTSTRAP),
             passkey_mode(),
         )
+        .with_disk(held_disk(&fx.db))
         .with_limits(super::server::unthrottled_limits()),
     );
     let response = bootstrap_app
@@ -8496,7 +8498,8 @@ async fn whoami_should_show_all_for_the_session_and_every_board_tokens() {
         fx.db.clone(),
         BootstrapToken::new("pomb_whoami_grant_bootstrap"),
         passkey_mode(),
-    );
+    )
+    .with_disk(held_disk(&fx.db));
     let response = router(state)
         .oneshot(
             axum::http::Request::builder()
@@ -11586,7 +11589,8 @@ async fn inspect_should_refuse_the_bootstrap_token() {
         fx.db.clone(),
         BootstrapToken::new(BOOTSTRAP),
         passkey_mode(),
-    );
+    )
+    .with_disk(held_disk(&fx.db));
     let response = router(state)
         .oneshot(
             axum::http::Request::builder()

@@ -8,7 +8,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, none_mode};
+use super::test_support::{Reply, call, held_disk, none_mode};
 use crate::auth::{hash_inbound_address, new_api_token_record};
 use crate::db::{
     AccountAction, AdminActionOutcome, Db, MAX_INBOUND_PER_BOARD, NewInbound, OwnerChange,
@@ -56,7 +56,7 @@ impl Fixture {
         let state = AppState::new(db.clone(), None, passkey_mode()).with_limits(limits);
         let state = match disk {
             Some(disk) => state.with_disk(disk),
-            None => state,
+            None => state.with_disk(held_disk(&db)),
         };
         let app = router(state);
         Self {
@@ -502,8 +502,9 @@ impl Browser {
         let owner = db.ensure_owner("owner").expect("owner").account_id();
         let board = db.create_board(&owner, "Mail").expect("board");
         let column = db.create_column(&board, "Inbox", None).expect("column");
-        let state =
-            AppState::new(db.clone(), None, none_mode(None)).with_limits(unthrottled_limits());
+        let state = AppState::new(db.clone(), None, none_mode(None))
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits());
         Self {
             _dir: dir,
             app: router(state),

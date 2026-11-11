@@ -5,7 +5,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call};
+use super::test_support::{Reply, call, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -40,6 +40,7 @@ impl Fixture {
         let spare = db.create_board(&admin, "Spare").expect("board");
         db.create_column(&spare, "Todo", None).expect("column");
         let state = AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
             .with_mode(InstanceMode::Multi)
             .with_limits(unthrottled_limits());
         Self {

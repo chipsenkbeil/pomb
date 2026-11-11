@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::router;
+use super::test_support::held_disk;
 use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
 use crate::csrf::REFUSED_BODY;
 use crate::db::Db;
@@ -63,7 +64,7 @@ fn open_db(dir: &std::path::Path) -> Db {
 fn state_for(db: Db) -> AppState {
     let sign_in =
         SignIn::new(AuthChoice::Chosen(AuthMode::None), "127.0.0.1", None).expect("none mode");
-    AppState::new(db, None, sign_in)
+    AppState::new(db.clone(), None, sign_in).with_disk(held_disk(&db))
 }
 
 fn app_for(db: Db) -> axum::Router {
@@ -181,11 +182,13 @@ async fn failed_back_up_now_should_show_the_error_and_keep_serving() {
     let dir = tempfile::tempdir().expect("tempdir");
     let occupied = dir.path().join("occupied");
     std::fs::write(&occupied, "a file").expect("file");
+    let db = open_db(dir.path());
     let state = AppState::new(
-        open_db(dir.path()),
+        db.clone(),
         None,
         SignIn::new(AuthChoice::Chosen(AuthMode::None), "127.0.0.1", None).expect("none mode"),
     )
+    .with_disk(held_disk(&db))
     .with_backup_dir(occupied.join("backups"));
     let app = router(state);
 

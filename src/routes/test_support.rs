@@ -1,3 +1,7 @@
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
+
 use axum::http::StatusCode;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -12,6 +16,7 @@ use super::server::{TEST_PUBLIC_URL, passkey_mode, unthrottled_limits};
 use crate::api_error::ErrorCode;
 use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
 use crate::db::Db;
+use crate::disk::{DiskGuard, DiskProbe};
 use crate::models::{AccountId, Actor, AuthScope, TaskKind};
 use crate::permissions::{STANDARD_ROLES, StandardRole};
 use crate::{AppState, BODY_LIMIT_BYTES};
@@ -269,6 +274,12 @@ pub(crate) struct Fixture {
     token: String,
 }
 
+/// Returns a disk guard over `db` whose clock never moves, so its measurement never goes stale.
+pub(crate) fn held_disk(db: &Db) -> DiskGuard {
+    let born = Instant::now();
+    DiskGuard::with_clock(DiskProbe::of(db), Path::new("."), Arc::new(move || born))
+}
+
 impl Fixture {
     pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -278,7 +289,9 @@ impl Fixture {
         let (record, token) = new_api_token_record(&admin, "admin", AuthScope::Admin, None);
         db.create_api_token(&record).expect("token");
         let app = router(
-            AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()),
+            AppState::new(db.clone(), None, passkey_mode())
+                .with_disk(held_disk(&db))
+                .with_limits(unthrottled_limits()),
         );
         Self {
             _dir: dir,

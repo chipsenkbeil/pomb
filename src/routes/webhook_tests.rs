@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, none_mode};
+use super::test_support::{Reply, call, held_disk, none_mode};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{Db, MAX_WEBHOOKS_PER_BOARD, NewWebhook};
@@ -40,7 +40,9 @@ impl Fixture {
         let board = db.create_board(&admin, "Hooks").expect("board");
         let column = db.create_column(&board, "Todo", None).expect("column");
         let app = router(
-            AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()),
+            AppState::new(db.clone(), None, passkey_mode())
+                .with_disk(held_disk(&db))
+                .with_limits(unthrottled_limits()),
         );
         Self {
             _dir: dir,
@@ -792,8 +794,9 @@ impl Browser {
         db.create_api_token(&record).expect("token");
         let board = db.create_board(&owner, "Hooks").expect("board");
         let column = db.create_column(&board, "Todo", None).expect("column");
-        let mut state =
-            AppState::new(db.clone(), None, none_mode(None)).with_limits(unthrottled_limits());
+        let mut state = AppState::new(db.clone(), None, none_mode(None))
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits());
         if let Some(prober) = prober {
             state = state.with_prober(prober);
         }

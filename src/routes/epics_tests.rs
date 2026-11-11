@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{TEST_BODY_4_MIB_BYTES, make_plain, move_to};
+use super::test_support::{TEST_BODY_4_MIB_BYTES, held_disk, make_plain, move_to};
 use super::{EPIC_TEMPLATE, router};
 use crate::AppState;
 use crate::db::Db;
@@ -38,8 +38,11 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
         .expect("column");
     let lane_a = db.create_swimlane(&board_id, "A").expect("lane");
     let lane_b = db.create_swimlane(&board_id, "B").expect("lane");
-    let app =
-        router(AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits()),
+    );
     let user_id = user_id.clone();
     let fixture = Fixture {
         db,

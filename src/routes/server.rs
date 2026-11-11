@@ -10,6 +10,7 @@ use tower::ServiceExt;
 use utoipa::OpenApi;
 
 use super::docs::{SKILL, operations, render_api_reference};
+use super::test_support::held_disk;
 use super::{ApiDoc, router};
 use crate::AppState;
 use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
@@ -92,7 +93,8 @@ async fn start_device(app: &axum::Router, host: &str) -> Value {
 #[tokio::test]
 async fn device_start_should_use_the_public_url_whatever_the_host_header_says() {
     let (_dir, db) = open_db();
-    let state = AppState::new(db, None, passkey_mode())
+    let state = AppState::new(db.clone(), None, passkey_mode())
+        .with_disk(held_disk(&db))
         .with_public_url(Some("https://pomb.example.com".to_string()));
     let app = router(state);
 
@@ -106,7 +108,7 @@ async fn device_start_should_use_the_public_url_whatever_the_host_header_says() 
 #[tokio::test]
 async fn device_start_should_follow_the_host_header_without_a_public_url() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None, passkey_mode()));
+    let app = router(AppState::new(db.clone(), None, passkey_mode()).with_disk(held_disk(&db)));
 
     let started = start_device(&app, "pomb.test:3350").await;
     assert_eq!(started["verification_url"], "http://pomb.test:3350/device");
@@ -117,13 +119,14 @@ async fn openapi_should_list_the_public_url_as_its_server() {
     let (_dir, db) = open_db();
     let app = router(
         AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
             .with_public_url(Some("https://a.test".to_string())),
     );
     let (status, spec) = send(&app, "GET", "/api/v1/openapi.json", "evil.example", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(spec["servers"], json!([{"url": "https://a.test"}]));
 
-    let app = router(AppState::new(db, None, passkey_mode()));
+    let app = router(AppState::new(db.clone(), None, passkey_mode()).with_disk(held_disk(&db)));
     let (_, spec) = send(&app, "GET", "/api/v1/openapi.json", "evil.example", None).await;
     assert_eq!(spec.get("servers"), None);
 }
@@ -131,7 +134,7 @@ async fn openapi_should_list_the_public_url_as_its_server() {
 #[tokio::test]
 async fn api_reference_should_be_public_markdown_rendered_from_the_spec() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None, passkey_mode()));
+    let app = router(AppState::new(db.clone(), None, passkey_mode()).with_disk(held_disk(&db)));
     let request = axum::http::Request::builder()
         .uri("/docs/api.md")
         .body(axum::body::Body::empty())
@@ -155,7 +158,7 @@ const PAGE_BODY_MAX_BYTES: usize = 8 * 1024 * 1024;
 #[tokio::test]
 async fn api_page_should_be_public_html_that_lists_every_operation_with_search() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None, passkey_mode()));
+    let app = router(AppState::new(db.clone(), None, passkey_mode()).with_disk(held_disk(&db)));
     let request = axum::http::Request::builder()
         .uri("/docs")
         .body(axum::body::Body::empty())
@@ -211,6 +214,7 @@ async fn llms_txt_should_link_under_the_public_url_or_the_request_host() {
     let (_dir, db) = open_db();
     let public = router(
         AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
             .with_public_url(Some("https://a.test".to_string())),
     );
     let (status, text) = send(&public, "GET", "/llms.txt", "evil.example", None).await;
@@ -222,7 +226,7 @@ async fn llms_txt_should_link_under_the_public_url_or_the_request_host() {
         "{text}"
     );
 
-    let app = router(AppState::new(db, None, passkey_mode()));
+    let app = router(AppState::new(db.clone(), None, passkey_mode()).with_disk(held_disk(&db)));
     let (_, text) = send(&app, "GET", "/llms.txt", "pomb.test:3350", None).await;
     let text = text.as_str().expect("plain text");
     assert!(
@@ -245,7 +249,11 @@ async fn poll_token(app: &axum::Router, body: Value) -> (StatusCode, Value) {
 #[tokio::test]
 async fn device_poll_should_answer_credential_less_callers_with_json_codes() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits()),
+    );
 
     let (status, body) = poll_token(&app, json!({})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -278,7 +286,11 @@ async fn device_poll_should_answer_credential_less_callers_with_json_codes() {
 #[tokio::test]
 async fn credential_less_api_errors_should_be_json_and_cookie_errors_plain_text() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits()),
+    );
 
     let (status, body) = send(
         &app,
@@ -320,7 +332,7 @@ async fn credential_less_api_errors_should_be_json_and_cookie_errors_plain_text(
 #[tokio::test]
 async fn skill_should_be_served_as_markdown_with_its_version() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None, passkey_mode()));
+    let app = router(AppState::new(db.clone(), None, passkey_mode()).with_disk(held_disk(&db)));
     let (status, skill) = send(&app, "GET", "/skill.md", "pomb.test", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(skill, Value::String(SKILL.to_string()));
@@ -350,7 +362,7 @@ async fn bearer_gets_should_write_last_used_at_at_most_once_a_minute() {
     let (_dir, db) = open_db();
     let (record, raw) = new_api_token_record(&admin(&db), "reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
-    let app = router(AppState::new(db.clone(), None, passkey_mode()));
+    let app = router(AppState::new(db.clone(), None, passkey_mode()).with_disk(held_disk(&db)));
     let stored = || {
         db.list_api_tokens()
             .expect("tokens")
@@ -484,7 +496,11 @@ async fn bearer_should_get_429_with_retry_after_on_the_101st_request_in_a_second
     db.create_api_token(&first).expect("token");
     db.create_api_token(&second).expect("token");
     let clock = ManualClock::new();
-    let app = router(AppState::new(db, None, passkey_mode()).with_limits(clock.limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(clock.limits()),
+    );
 
     for _ in 0..BURST {
         assert_eq!(whoami(&app, &first_raw).await.status, StatusCode::OK);
@@ -507,7 +523,11 @@ async fn mint_rate_should_answer_429() {
     let (lead, lead_raw) = new_api_token_record(&admin(&db), "lead", AuthScope::Provision, None);
     db.create_api_token(&lead).expect("token");
     let clock = ManualClock::new();
-    let app = router(AppState::new(db, None, passkey_mode()).with_limits(clock.limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(clock.limits()),
+    );
     let [(name, value)] = bearer(&lead_raw);
     let mint = |n: u32| {
         let body = json!({"name": format!("kid-{n}"), "preset": "read"}).to_string();
@@ -553,7 +573,11 @@ async fn bootstrap_token_should_be_limited_on_its_own_bucket() {
     db.create_api_token(&record).expect("token");
     let bootstrap = BootstrapToken::new("boot-secret");
     let clock = ManualClock::new();
-    let app = router(AppState::new(db, bootstrap, passkey_mode()).with_limits(clock.limits()));
+    let app = router(
+        AppState::new(db.clone(), bootstrap, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(clock.limits()),
+    );
 
     for _ in 0..BURST {
         assert_eq!(whoami(&app, "boot-secret").await.status, StatusCode::OK);
@@ -571,8 +595,11 @@ async fn session_should_stay_served_past_the_bearer_burst() {
     let user = db.owner().expect("lookup").expect("admin");
     let session = db.create_session(&user.account_id(), "").expect("session");
     let cookie = format!("session={session}");
-    let app =
-        router(AppState::new(db, None, passkey_mode()).with_limits(ManualClock::new().limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(ManualClock::new().limits()),
+    );
     let get = || async {
         let headers = [("cookie", cookie.as_str())];
         send_as(&app, "GET", "/api/v1/auth/tokens", &headers, None, "").await
@@ -600,8 +627,11 @@ async fn start_device_from(app: &axum::Router, peer: &str) -> Sent {
 #[tokio::test]
 async fn device_start_should_cap_pending_requests_per_client_network() {
     let (_dir, db) = open_db();
-    let app =
-        router(AppState::new(db, None, passkey_mode()).with_limits(ManualClock::new().limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(ManualClock::new().limits()),
+    );
 
     for n in 0..Db::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK {
         let sent = start_device_from(&app, &format!("2001:db8:0:1::{n}")).await;
@@ -619,7 +649,8 @@ async fn device_start_should_cap_pending_requests_per_client_network() {
 /// Returns a server that trusts `trust` to name each request's client.
 fn trusting(db: Db, trust: TrustProxy) -> axum::Router {
     router(
-        AppState::new(db, None, passkey_mode())
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
             .with_limits(ManualClock::new().limits())
             .with_trust_proxy(trust),
     )
@@ -743,8 +774,11 @@ async fn none_mode_should_count_the_peer_whatever_the_headers_say() {
 #[tokio::test]
 async fn sign_in_should_refuse_the_eleventh_post_from_one_ip_in_a_minute() {
     let (_dir, db) = open_db();
-    let app =
-        router(AppState::new(db, None, passkey_mode()).with_limits(ManualClock::new().limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(ManualClock::new().limits()),
+    );
     let post = || {
         send_as(
             &app,

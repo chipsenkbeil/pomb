@@ -4,6 +4,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::held_disk;
 use crate::auth::new_api_token_record;
 use crate::db::{Db, RestoreOutcome, WipCheck};
 use crate::models::{
@@ -33,8 +34,11 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
         .create_column(&board_id, "Shipped", None)
         .expect("column");
     db.set_column_done(&col_done, true).expect("set done");
-    let app =
-        router(AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits()),
+    );
     let fixture = Fixture {
         app,
         db,

@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 use super::access_tests::{Payload, Seeded, Who, open, payload, seeded, send, uri};
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, make_epic};
+use super::test_support::{Reply, call, held_disk, make_epic};
 use super::{ROUTE_ACCESS, RouteClass, route_class, router};
 use crate::AppState;
 use crate::auth::{ROUTE_PERMISSIONS, new_api_token_record, required_role};
@@ -57,7 +57,9 @@ impl Fixture {
         };
         let tokens = [token(&alice), token(&bob), token(&carol), token(&dave)];
         let app = router(
-            AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()),
+            AppState::new(db.clone(), None, passkey_mode())
+                .with_disk(held_disk(&db))
+                .with_limits(unthrottled_limits()),
         );
         Self {
             _dir: dir,

@@ -4,6 +4,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::held_disk;
 use crate::db::Db;
 use crate::models::{AccountId, ActiveTimer, HistoryKind, TimerMode};
 use crate::{AppState, BODY_LIMIT_BYTES};
@@ -26,8 +27,11 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let board_id = db.create_board(&user_id, "First").expect("board");
     let column = db.create_column(&board_id, "Todo", None).expect("column");
     db.create_swimlane(&board_id, "Main").expect("lane");
-    let app =
-        router(AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits()));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits()),
+    );
     let fixture = Fixture {
         app,
         db,
