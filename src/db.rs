@@ -11148,13 +11148,13 @@ impl Db {
             let Some((mut task, held)) = current else {
                 return Ok(None);
             };
-            let Some(attachment) = task.attachments.iter().find(|a| a.id == attachment_id) else {
+            let Some(index) = task.attachments.iter().position(|a| a.id == attachment_id) else {
                 return Ok(None);
             };
-            let renamed = if attachment.url.is_some() {
+            let renamed = if task.attachments[index].url.is_some() {
                 name.to_string()
             } else {
-                TaskAttachment::keep_extension(&attachment.name, name)
+                TaskAttachment::keep_extension(&task.attachments[index].name, name)
             };
             TextCap::ATTACHMENT_NAME.check(&renamed)?;
             let others: Vec<TaskAttachment> = task
@@ -11166,10 +11166,7 @@ impl Db {
             if let Some(duplicate) = DuplicateAttachment::among(&others, &renamed, None) {
                 return Err(Box::new(duplicate));
             }
-            let Some(attachment) = task.attachments.iter_mut().find(|a| a.id == attachment_id)
-            else {
-                return Ok(None);
-            };
+            let attachment = &mut task.attachments[index];
             let detail = format!("Renamed \"{}\" to \"{renamed}\"", attachment.name);
             attachment.name = renamed;
             let updated = attachment.clone();
