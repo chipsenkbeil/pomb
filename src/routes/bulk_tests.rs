@@ -1449,3 +1449,78 @@ async fn bulk_dry_run_should_not_return_the_none_text_for_a_real_value_spelled_n
     assert_eq!(reply.body["tasks"][0]["before"], "(none)");
     assert_eq!(reply.body["tasks"][0]["after"], "(none), other");
 }
+
+async fn epic_with_child(fx: &Fixture, column: &str) -> (String, String) {
+    let epic = fx.epic(column, "epic").await;
+    let child = fx.task(column, "child").await;
+    fx.db
+        .add_task_link(&child, LinkKind::Parent, &epic, None, Actor::SYSTEM)
+        .expect("link");
+    (epic, child)
+}
+
+#[tokio::test]
+async fn a_bulk_epic_move_should_pass_with_the_children_first() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo", "Done"]);
+    fx.db.set_column_done(&columns[1], true).expect("done");
+    let (epic, child) = epic_with_child(&fx, &columns[0]).await;
+
+    let body = json!({
+        "task_ids": [child, epic],
+        "action": "move",
+        "column_id": columns[1],
+        "position": 0,
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(fx.cell(&board, &columns[1]), ["child", "epic"]);
+    assert!(fx.cell(&board, &columns[0]).is_empty());
+}
+
+#[tokio::test]
+async fn a_bulk_epic_move_should_pass_with_the_epic_first() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo", "Done"]);
+    fx.db.set_column_done(&columns[1], true).expect("done");
+    let (epic, child) = epic_with_child(&fx, &columns[0]).await;
+
+    let body = json!({
+        "task_ids": [epic, child],
+        "action": "move",
+        "column_id": columns[1],
+        "position": 0,
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(fx.cell(&board, &columns[1]), ["epic", "child"]);
+    assert!(fx.cell(&board, &columns[0]).is_empty());
+}
+
+#[tokio::test]
+async fn a_bulk_epic_move_should_refuse_a_child_left_out() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo", "Done"]);
+    fx.db.set_column_done(&columns[1], true).expect("done");
+    let (epic, child) = epic_with_child(&fx, &columns[0]).await;
+
+    let body = json!({
+        "task_ids": [epic],
+        "action": "move",
+        "column_id": columns[1],
+        "position": 0,
+    });
+    let reply = fx.bulk(&board, body).await;
+
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
+    assert_eq!(
+        reply.body["code"], "epic_has_open_children",
+        "{}",
+        reply.body
+    );
+    assert!(fx.cell(&board, &columns[1]).is_empty());
+    assert_eq!(fx.row(&epic).column_id, columns[0]);
+    assert_eq!(fx.row(&child).column_id, columns[0]);
+}
