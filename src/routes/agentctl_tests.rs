@@ -8,7 +8,7 @@ use tower::ServiceExt;
 use utoipa::OpenApi;
 
 use super::server::passkey_mode;
-use super::test_support::{make_epic, make_plain};
+use super::test_support::{make_epic, make_plain, named_standard_role};
 use super::{ApiDoc, DeviceApproveForm, device_grant, router};
 use crate::auth::new_api_token_record;
 use crate::db::{
@@ -19,7 +19,7 @@ use crate::models::{
     DeviceAuthStatus, FieldDefRow, FieldKind, FieldOwner, HistoryKind, SECONDS_PER_DAY,
     SECONDS_PER_HOUR, TimeEntryRow, TimerMode,
 };
-use crate::permissions::{Permission, STANDARD_ROLES};
+use crate::permissions::Permission;
 use crate::{AppState, BODY_LIMIT_BYTES, markdown};
 
 struct Fixture {
@@ -3366,10 +3366,7 @@ async fn device_pairing_should_start_without_auth_and_validate_input() {
 }
 
 fn standard_role_permission_names(name: &str) -> String {
-    STANDARD_ROLES
-        .iter()
-        .find(|role| role.name == name)
-        .expect("standard role")
+    named_standard_role(name)
         .permissions()
         .iter()
         .map(|permission| permission.name())
@@ -14780,11 +14777,7 @@ async fn subtasks_check_should_be_needed_only_for_ticking() {
 
 async fn assert_standard_role_follows(name: &str) {
     let (_dir, fx) = fixture();
-    let role = STANDARD_ROLES
-        .iter()
-        .find(|role| role.name == name)
-        .expect("standard role");
-    let permissions = role.permissions();
+    let permissions = named_standard_role(name).permissions();
     let held: Vec<&str> = permissions
         .iter()
         .map(|permission| permission.name())

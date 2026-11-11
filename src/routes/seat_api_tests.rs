@@ -4,13 +4,13 @@ use serde_json::{Value, json};
 use utoipa::OpenApi;
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call};
+use super::test_support::{Reply, call, named_standard_role};
 use super::{ApiDoc, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
 use crate::models::{AccountId, Actor, AuthScope, Seat, SeatSlot, SeatVerdict};
-use crate::permissions::{Permission, STANDARD_ROLES};
+use crate::permissions::Permission;
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -102,10 +102,7 @@ impl Fixture {
     }
 
     fn role_token(&self, role: &str) -> String {
-        let standard = STANDARD_ROLES
-            .iter()
-            .find(|standard| standard.name == role)
-            .expect("standard role");
+        let standard = named_standard_role(role);
         let (mut record, raw) = new_api_token_record(&self.account, role, AuthScope::Work, None);
         record.permissions = standard.permissions();
         self.db.create_api_token(&record).expect("token");
@@ -560,10 +557,7 @@ async fn ask_again_should_work_for_the_owner_with_tasks_claim_alone() {
     let task = fx.task().await;
     let implementer = fx.role_token("implementer");
     assert!(
-        !STANDARD_ROLES
-            .iter()
-            .find(|standard| standard.name == "implementer")
-            .expect("implementer")
+        !named_standard_role("implementer")
             .permissions()
             .contains(&Permission::TasksEdit)
     );

@@ -13,6 +13,7 @@ use crate::api_error::ErrorCode;
 use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
 use crate::db::Db;
 use crate::models::{AccountId, Actor, AuthScope, TaskKind};
+use crate::permissions::{STANDARD_ROLES, StandardRole};
 use crate::{AppState, BODY_LIMIT_BYTES};
 
 const RP_ID: &str = "pomb.test";
@@ -353,4 +354,11 @@ pub(crate) async fn move_to(app: &axum::Router, cookie: &str, task: &str, column
     )
     .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+}
+
+pub(crate) fn named_standard_role(name: &str) -> &'static StandardRole {
+    STANDARD_ROLES
+        .iter()
+        .find(|standard| standard.name == name)
+        .expect("standard role")
 }
