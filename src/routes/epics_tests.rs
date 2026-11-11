@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{make_plain, move_to};
+use super::test_support::{TEST_BODY_4_MIB_BYTES, make_plain, move_to};
 use super::{EPIC_TEMPLATE, router};
 use crate::AppState;
 use crate::db::Db;
@@ -76,7 +76,7 @@ async fn call(fx: &Fixture, method: &str, uri: &str, body: Option<Value>) -> (St
         .await
         .expect("oneshot");
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+    let bytes = axum::body::to_bytes(response.into_body(), TEST_BODY_4_MIB_BYTES)
         .await
         .expect("body");
     let text = String::from_utf8_lossy(&bytes).into_owned();
@@ -1085,7 +1085,7 @@ async fn post_task(fx: &Fixture, accept: Option<&str>) -> (StatusCode, String) {
         .await
         .expect("oneshot");
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+    let bytes = axum::body::to_bytes(response.into_body(), TEST_BODY_4_MIB_BYTES)
         .await
         .expect("body");
     (status, String::from_utf8_lossy(&bytes).into_owned())

@@ -30311,6 +30311,9 @@ mod tests {
     use super::docs::SKILL_VERSION;
     use super::local_time::{LocalTime, Shape};
     use super::server::passkey_mode;
+    use super::test_support::{
+        TEST_ATTACHMENT_3_MIB_BYTES, TEST_BODY_4_MIB_BYTES, TEST_BODY_16_MIB_BYTES,
+    };
     use super::{
         ApiDoc, AvatarView, BandView, BoardDeleteTemplate, BoardLayout, BoardTemplate, Build,
         COMPLETION_GRACE_SECS, CellView, ColorView, ColumnHead, CommentReaction,
@@ -33047,7 +33050,7 @@ mod tests {
             .await
             .expect("oneshot");
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024)
+        let bytes = axum::body::to_bytes(response.into_body(), TEST_BODY_16_MIB_BYTES)
             .await
             .expect("body");
         (status, String::from_utf8_lossy(&bytes).into_owned())
@@ -33226,7 +33229,7 @@ mod tests {
         );
         let max = Db::MAX_JSON_ATTACHMENT_BYTES as usize;
         for (size, expected) in [
-            (3 * 1024 * 1024, axum::http::StatusCode::OK),
+            (TEST_ATTACHMENT_3_MIB_BYTES, axum::http::StatusCode::OK),
             (max, axum::http::StatusCode::OK),
             (max + 1, axum::http::StatusCode::BAD_REQUEST),
         ] {
@@ -35003,7 +35006,7 @@ mod tests {
             .await
             .expect("oneshot");
         assert_eq!(response.status(), axum::http::StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+        let body = axum::body::to_bytes(response.into_body(), TEST_BODY_4_MIB_BYTES)
             .await
             .expect("body");
         let html = String::from_utf8(body.to_vec()).expect("utf8");
@@ -35177,7 +35180,7 @@ mod tests {
                 .await
                 .expect("oneshot");
             assert_eq!(response.status(), axum::http::StatusCode::OK, "{path}");
-            let body = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            let body = axum::body::to_bytes(response.into_body(), TEST_BODY_4_MIB_BYTES)
                 .await
                 .expect("body");
             let html = String::from_utf8(body.to_vec()).expect("utf8");

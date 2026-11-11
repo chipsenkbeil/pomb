@@ -4,6 +4,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
+use super::test_support::TEST_BODY_4_MIB_BYTES;
 use crate::AppState;
 use crate::db::Db;
 use crate::models::{AccountId, Seat, SeatSlot};
@@ -58,7 +59,7 @@ async fn call(fx: &Fixture, method: &str, uri: &str, body: Option<Value>) -> (St
         .await
         .expect("oneshot");
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+    let bytes = axum::body::to_bytes(response.into_body(), TEST_BODY_4_MIB_BYTES)
         .await
         .expect("body");
     let text = String::from_utf8_lossy(&bytes).into_owned();

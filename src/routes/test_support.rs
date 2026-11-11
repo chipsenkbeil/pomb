@@ -19,6 +19,9 @@ const RP_ID: &str = "pomb.test";
 const FLAG_USER_PRESENT: u8 = 0x01;
 const FLAG_USER_VERIFIED: u8 = 0x04;
 const FLAG_ATTESTED_DATA: u8 = 0x40;
+pub(crate) const TEST_ATTACHMENT_3_MIB_BYTES: usize = 3 * 1024 * 1024;
+pub(crate) const TEST_BODY_4_MIB_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const TEST_BODY_16_MIB_BYTES: usize = 16 * 1024 * 1024;
 
 /// A software authenticator holding one P-256 passkey, which speaks WebAuthn's JSON the way the
 /// browser script sends it.
