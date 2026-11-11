@@ -4,7 +4,7 @@
 # Usage: __publish_release.sh <branch|tag> <ref-name> <sha>
 set -euo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 ref_type="${1:?ref type}"
 ref_name="${2:?ref name}"
