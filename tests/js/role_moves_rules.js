@@ -58,6 +58,7 @@ var form = node('', {}, {}, [
   role('r2', [move('c1', false, [check('br-target', 'c2', true)])]),
 ]);
 
+form.requestSubmit = () => { form.listeners.submit({ preventDefault: () => {} }); };
 var elements = {
   'br-form': form,
   'br-error': node('', {}, {}),
@@ -108,5 +109,20 @@ if (sent.length) {
   expect('Save rules sends the limited role moves only', body.role_moves, { r1: { c1: ['c2'] } });
 }
 expect('Save rules stops the browser submitting the form', prevented, 1);
+
+elements['br-standard'].listeners.click();
+expect('Restore standard moves sends one more request', sent.length, 2);
+if (sent.length === 2) {
+  const restored = JSON.parse(sent[1].options.body);
+  expect('Restore standard moves PUTs the board rules', [sent[1].options.method, sent[1].url], ['PUT', '/api/boards/b1/rules']);
+  expect('restore_standard_moves_omits_role_moves', Object.keys(restored), ['locked_labels', 'columns']);
+  expect('Restore standard moves sends the same columns as the save', restored.columns, JSON.parse(sent[0].options.body).columns);
+}
+
+form.listeners.submit({ preventDefault: () => {} });
+expect('A plain submit after a restore sends one more request', sent.length, 3);
+if (sent.length === 3) {
+  expect('A plain submit after a restore still sends role_moves', Object.keys(JSON.parse(sent[2].options.body)), ['locked_labels', 'columns', 'role_moves']);
+}
 
 process.exit(failures ? 1 : 0);
