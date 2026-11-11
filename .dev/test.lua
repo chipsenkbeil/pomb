@@ -13,14 +13,22 @@ for _, arg in ipairs(ctx.args) do
     argv[#argv + 1] = arg
 end
 
-local code = devos.run(argv, { cwd = ctx.root }) or 1
-if code ~= 0 then
+local function step(cmd)
+    local code = devos.run(cmd, { cwd = ctx.root }) or 1
+    if code ~= 0 then
+        return code
+    end
+    return nil
+end
+
+local code = step(argv)
+if code then
     return code
 end
 
 if #ctx.args == 0 then
-    code = devos.run({ "cargo", "test", "--doc", "--all-features" }, { cwd = ctx.root }) or 1
-    if code ~= 0 then
+    code = step({ "cargo", "test", "--doc", "--all-features" })
+    if code then
         return code
     end
 end
@@ -31,8 +39,8 @@ if not names then
 end
 for _, name in ipairs(names) do
     if name:sub(1, 1) ~= "." and name:match("%.js$") then
-        code = devos.run({ "node", "tests/js/" .. name, "static/app.js" }, { cwd = ctx.root }) or 1
-        if code ~= 0 then
+        code = step({ "node", "tests/js/" .. name, "static/app.js" })
+        if code then
             return code
         end
     end
