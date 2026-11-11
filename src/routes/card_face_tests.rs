@@ -122,6 +122,20 @@ impl Fixture {
         html.as_str().expect("html").to_string()
     }
 
+    async fn modal_as(&self, raw: &str, task: &str) -> String {
+        let bearer = format!("Bearer {raw}");
+        let reply = call(
+            &self.app,
+            "GET",
+            &format!("/api/tasks/{task}/modal"),
+            &[("authorization", bearer.as_str())],
+            None,
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        reply.body.as_str().expect("html").to_string()
+    }
+
     async fn face(&self, task: &str) -> String {
         let html = self
             .browse("GET", &format!("/api/tasks/{task}/card"), None)
@@ -453,4 +467,20 @@ async fn panel_should_omit_reviewers_without_seats() {
     assert_eq!(html.matches("data-seat-row=").count(), 0, "{html}");
     assert!(!html.contains("data-seats-fold"), "{html}");
     assert!(html.contains(r#"data-owner-act="seat-add""#), "{html}");
+}
+
+#[tokio::test]
+async fn panel_should_hide_drop_without_seats_manage() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let reviewer = fx.token(Some("reviewer"));
+    let html = fx.modal_as(&reviewer, &task).await;
+    assert_eq!(html.matches("data-seat-row=").count(), 2, "{html}");
+    assert!(!html.contains(r#"data-owner-act="seat-drop""#), "{html}");
+
+    let html = fx.modal(&task).await;
+    assert!(
+        html.contains(r#"data-owner-act="seat-drop" data-seat="code""#),
+        "{html}"
+    );
 }
