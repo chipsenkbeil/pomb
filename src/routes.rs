@@ -19892,6 +19892,8 @@ struct TaskSummary {
     /// Path that opens the card in the browser, `/t/{id}`.
     url: String,
     name: String,
+    /// The task's number such as `PS-1`, or null when it was created without numbering.
+    number: Option<String>,
     column_id: String,
     swimlane_id: Option<String>,
     /// Sort order within the task's column and swimlane cell.
@@ -19931,6 +19933,7 @@ impl TaskSummary {
             url: task_url(&task.id),
             id: task.id,
             name: task.name,
+            number: task.number,
             column_id: task.column_id,
             swimlane_id: task.swimlane_id,
             position: task.position,

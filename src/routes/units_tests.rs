@@ -498,6 +498,41 @@ async fn a_number_should_show_on_the_card_the_modal_the_api_and_the_export() {
 }
 
 #[tokio::test]
+async fn board_task_list_should_carry_the_task_number() {
+    let (_dir, fx) = fixture();
+    let before = new_task(&fx, "Before").await;
+    put_numbering(&fx, json!({"name": "Product", "prefix": "PS"})).await;
+    let numbered = new_task(&fx, "Ship it").await;
+
+    let (status, list) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{}/tasks", fx.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let items = list["items"].as_array().expect("items");
+    let listed = |id: &str| -> Value {
+        items
+            .iter()
+            .find(|item| item["id"] == id)
+            .expect("listed")
+            .get("number")
+            .expect("number key")
+            .clone()
+    };
+    assert!(listed(&before).is_null(), "{list}");
+    assert_eq!(listed(&numbered), "PS-1", "{list}");
+    assert_eq!(listed(&numbered), number_of(&fx, &numbered).await);
+
+    let (status, spec) = call(&fx, "GET", "/api/v1/openapi.json", None).await;
+    assert_eq!(status, StatusCode::OK, "{spec}");
+    let summary = &spec["components"]["schemas"]["TaskSummary"]["properties"];
+    assert!(summary["number"].is_object(), "{spec}");
+}
+
+#[tokio::test]
 async fn editing_the_prefix_or_deleting_should_leave_existing_numbers_alone() {
     let (_dir, fx) = fixture();
     put_numbering(&fx, json!({"name": "Product", "prefix": "PS"})).await;
