@@ -14879,6 +14879,7 @@ mod schema_version_tests {
     }
 
     /// Every row of `table` as JSON, keyed by id.
+    #[must_use]
     fn rows_of(
         path: &str,
         table: TableDefinition<'_, &str, &[u8]>,
@@ -15637,12 +15638,9 @@ mod schema_version_tests {
         (dir, path, ids)
     }
 
+    #[must_use]
     fn links_delete_held(path: &str, key: &str) -> bool {
-        rows_of(path, API_TOKENS)[key]["permissions"]
-            .as_array()
-            .expect("permissions")
-            .iter()
-            .any(|name| name == "links.delete")
+        holds_named(path, API_TOKENS, key, "links.delete")
     }
 
     #[test]
