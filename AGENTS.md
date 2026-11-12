@@ -90,7 +90,12 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
   (`/api/v1/account/delete`) and auth sessions (`/api/v1/auth/sessions`) are browser-only on
   purpose: a token that could approve its own pairing, refresh its session proof, replace the
   recovery code, delete the account or end sessions would defeat the passkey check, so a Bearer
-  request gets 403 `session_required`. Only the owner edits, renames or deletes an agent role, in the browser. A
+  request gets 403 `session_required`. A root Admin preset token of the admin account lists and creates invites
+  (GET and POST /api/v1/admin/invites) and lists and approves pending accounts (GET
+  /api/v1/admin/accounts, POST /api/v1/admin/accounts/:id/approve) over Bearer; revoking an
+  invite, suspend, unsuspend, delete account and the admin settings stay browser-only, and a
+  Lead token, a child token or a member token gets 403.
+  Only the owner edits, renames or deletes an agent role, in the browser. A
   Bearer token only creates the standard roles the account lacks and grants or revokes a role on
   boards it holds. A token acts as a role when it is issued from the Settings form or by device
   approval, or as the child of a token holding `tokens.issue` made with `role_id`. A token edit
