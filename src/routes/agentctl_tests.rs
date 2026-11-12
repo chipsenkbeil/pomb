@@ -6113,11 +6113,14 @@ async fn device_approval_should_refuse_a_request_whose_board_names_match_none() 
     assert_eq!(body, "authorization_pending");
 }
 
-async fn refused_approval(
-    fx: &Fixture,
-    boards: Value,
-    form: &str,
-) -> (StatusCode, String, StatusCode, String) {
+struct RefusedApproval {
+    approve_status: StatusCode,
+    page: String,
+    poll_status: StatusCode,
+    body: String,
+}
+
+async fn refused_approval(fx: &Fixture, boards: Value, form: &str) -> RefusedApproval {
     let (status, started, _) = start_device_with(fx, json!({"boards": boards})).await;
     assert_eq!(status, StatusCode::OK, "{started}");
     let device_code = started["device_code"].as_str().expect("device_code");
@@ -6126,11 +6129,16 @@ async fn refused_approval(
         fx,
         As::Admin,
         "/device/approve",
-        &format!("user_code={user_code}{form}"),
+        &format!("user_code={user_code}&{form}"),
     )
     .await;
     let (poll_status, body) = poll_device(fx, device_code).await;
-    (approve_status, page, poll_status, body)
+    RefusedApproval {
+        approve_status,
+        page,
+        poll_status,
+        body,
+    }
 }
 
 #[tokio::test]
@@ -6144,31 +6152,58 @@ async fn device_approval_should_refuse_a_joined_board_the_approver_does_not_own(
         .set_board_member(&joined, "admin", BoardRole::Member)
         .expect("join");
 
-    let (status, page, poll_status, body) = refused_approval(
+    let refused = refused_approval(
         &fx,
         json!(["Agentctl", "Joined"]),
-        &format!("&boards={joined}"),
+        &format!("boards={joined}"),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{page}");
-    assert!(page.contains("Choose boards of your account."), "{page}");
+    assert_eq!(
+        refused.approve_status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        refused.page
+    );
+    assert!(
+        refused.page.contains("Choose boards of your account."),
+        "{}",
+        refused.page
+    );
 
     // Check the device is still pending, with no token issued
-    assert_eq!(poll_status, StatusCode::PRECONDITION_REQUIRED, "{body}");
-    assert_eq!(body, "authorization_pending");
+    assert_eq!(
+        refused.poll_status,
+        StatusCode::PRECONDITION_REQUIRED,
+        "{}",
+        refused.body
+    );
+    assert_eq!(refused.body, "authorization_pending");
 }
 
 #[tokio::test]
 async fn device_approval_should_refuse_a_missing_board_with_the_same_answer() {
     let (_dir, fx) = fixture();
-    let (status, page, poll_status, body) =
-        refused_approval(&fx, json!(["Agentctl"]), "&boards=no-such-board").await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{page}");
-    assert!(page.contains("Choose boards of your account."), "{page}");
+    let refused = refused_approval(&fx, json!(["Agentctl"]), "boards=no-such-board").await;
+    assert_eq!(
+        refused.approve_status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        refused.page
+    );
+    assert!(
+        refused.page.contains("Choose boards of your account."),
+        "{}",
+        refused.page
+    );
 
     // Check the device is still pending, with no token issued
-    assert_eq!(poll_status, StatusCode::PRECONDITION_REQUIRED, "{body}");
-    assert_eq!(body, "authorization_pending");
+    assert_eq!(
+        refused.poll_status,
+        StatusCode::PRECONDITION_REQUIRED,
+        "{}",
+        refused.body
+    );
+    assert_eq!(refused.body, "authorization_pending");
 }
 
 #[tokio::test]
