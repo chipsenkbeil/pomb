@@ -67,6 +67,14 @@
   };
   importLocalPrefs();
 
+  const DARK_COOKIE_MAX_AGE_SECS = 31536000;
+  const syncDarkCookie = (on) => {
+    document.cookie = on
+      ? `pomb-dark=1; Path=/; SameSite=Lax; Max-Age=${DARK_COOKIE_MAX_AGE_SECS}`
+      : 'pomb-dark=; Path=/; SameSite=Lax; Max-Age=0';
+  };
+  if (document.querySelector('.board-wrap')) syncDarkCookie(document.body.classList.contains('dark'));
+
   function daysIntoWeek(d) {
     return (d.getDay() - accountPrefs.weekStart + 7) % 7;
   }
@@ -19796,6 +19804,7 @@
     toggleDark: function () {
       var on = !document.body.classList.contains('dark');
       document.body.classList.toggle('dark', on);
+      syncDarkCookie(on);
       this.setPref('dark', on);
       // KF-353: keep the menu's toggle switch in sync.
       var item = document.querySelector('#board-menu [data-bm="dark"]');

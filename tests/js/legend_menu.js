@@ -38,6 +38,7 @@ var document = {
 };
 var window = { location: { reload: function () { reloads++; } } };
 var MENU_KEEPS_OPEN;
+var syncDarkCookie = function () {};
 eval(slice('  var MENU_KEEPS_OPEN =', '  var BoardChrome ='));
 var chrome = {
   setPref: function (k, on) { prefs[k] = on; },

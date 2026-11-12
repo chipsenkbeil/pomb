@@ -23,7 +23,7 @@ use axum::extract::{
 };
 use axum::http::header::{
     ACCEPT, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_SECURITY_POLICY,
-    CONTENT_TYPE, REFERRER_POLICY, SET_COOKIE, STRICT_TRANSPORT_SECURITY, VARY,
+    CONTENT_TYPE, COOKIE, REFERRER_POLICY, SET_COOKIE, STRICT_TRANSPORT_SECURITY, VARY,
     X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::request::Parts;
@@ -5344,6 +5344,8 @@ struct TaskCardTemplate {
 struct LoginTemplate {
     /// Whether the page links to account recovery, which multi mode offers.
     recovery: bool,
+    /// Whether the `pomb-dark` cookie asks for the dark body class.
+    dark: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -6420,7 +6422,11 @@ fn shell_chrome(state: &AppState, db: &AccountDb, username: &str) -> Result<Shel
 
 /// Serves the passkey sign-in page under `--auth passkey`. Without sign-in it sends the browser
 /// home, and before the first passkey exists it sends it to setup.
-async fn login_page(State(state): State<AppState>, public: PublicDb) -> Result<Response, AppError> {
+async fn login_page(
+    State(state): State<AppState>,
+    public: PublicDb,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
     if state.sign_in.mode() == AuthMode::None {
         return Ok(Redirect::to("/").into_response());
     }
@@ -6429,8 +6435,19 @@ async fn login_page(State(state): State<AppState>, public: PublicDb) -> Result<R
     }
     Ok(LoginTemplate {
         recovery: state.is_multi(),
+        dark: dark_cookie_set(&headers),
     }
     .into_response())
+}
+
+/// Returns whether the `pomb-dark` display cookie holds `1`.
+fn dark_cookie_set(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|cookies| cookies.split(';'))
+        .any(|part| part.trim() == "pomb-dark=1")
 }
 
 async fn logout(State(state): State<AppState>, public: PublicDb, headers: HeaderMap) -> Response {

@@ -986,3 +986,33 @@ async fn setup_should_need_the_code_even_with_a_session_cookie() {
     assert_eq!(setup.status, StatusCode::OK, "{}", setup.body);
     assert_eq!(owner_passkeys(&db).len(), 1);
 }
+
+#[tokio::test]
+async fn login_page_should_render_dark_from_the_dark_cookie() {
+    let (_dir, db) = open_db();
+    let (app, code) = passkey_app(db);
+    let mut authenticator = SoftAuthenticator::new(7);
+    let setup = set_up(
+        &app,
+        &code,
+        &mut authenticator,
+        json!({ "username": "chip" }),
+    )
+    .await;
+    assert_eq!(setup.status, StatusCode::OK, "{}", setup.body);
+
+    // Without the cookie the page renders light
+    let html = |reply: &Reply| reply.body.as_str().expect("html").to_string();
+    let plain = call(&app, "GET", "/login", &[], None).await;
+    assert_eq!(plain.status, StatusCode::OK);
+    assert!(!html(&plain).contains("<body class"));
+
+    // A cookie holding 1 adds the dark body class
+    let headers = [("cookie", "a=b; pomb-dark=1")];
+    let dark = call(&app, "GET", "/login", &headers, None).await;
+    assert!(html(&dark).contains("<body class=\"dark\">"));
+
+    // A cookie holding 0 stays light
+    let off = call(&app, "GET", "/login", &[("cookie", "pomb-dark=0")], None).await;
+    assert!(!html(&off).contains("<body class"));
+}
