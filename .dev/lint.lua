@@ -3,7 +3,7 @@ Run the Rust lint set over the project.
 Cargo fmt, clippy, ast-grep, cargo-sort and cargo-deny run first, then the manifest and source
 checks. Every failed check is named at the end, and the exit code is non-zero when any failed.
 ]]
-local devos = require("dev.os")
+local dev_os = require("dev.os")
 local fs = require("dev.fs")
 local lintset = require("lintset")
 local verb = require("dev.verb")
@@ -47,7 +47,7 @@ local function pattern(name, regex, message)
 end
 
 local function yq(...)
-    local out = devos.capture({ "yq", ... }, { cwd = root })
+    local out = dev_os.capture({ "yq", ... }, { cwd = root })
     return (out:gsub("\n+$", ""))
 end
 
@@ -282,7 +282,7 @@ local function check_unsafe()
     end
 end
 
-if devos.run({ "cargo", "+nightly", "fmt", "--version" }, { cwd = root, stdout = "null", stderr = "null" }) == 0 then
+if dev_os.run({ "cargo", "+nightly", "fmt", "--version" }, { cwd = root, stdout = "null", stderr = "null" }) == 0 then
     lint:check("cargo fmt", { "cargo", "+nightly", "fmt", "--check" })
 else
     lint:missing("nightly rustfmt", "rustup toolchain install nightly --component rustfmt", "cargo fmt")
@@ -386,6 +386,8 @@ if lint:have("rg", "brew install ripgrep", "unsafe") and lint:have("yq", "brew i
     check_unsafe()
 end
 
+lint:standalone()
+
 -- --- project-specific checks below ---
 
 local json = require("dev.json")
@@ -427,7 +429,7 @@ if lint:have("ast-grep", "brew install ast-grep", "ast-grep scan") then
 end
 
 local function script_hits(name, message, argv)
-    local code = devos.run(argv, { cwd = root })
+    local code = dev_os.run(argv, { cwd = root })
     if code == 0 then
         lint:fail(name, message)
     elseif code ~= 1 then
@@ -474,7 +476,7 @@ local function check_c_build_tools()
     }
     local tools = { "cc", "cmake", "pkg%-config", "bindgen" }
     for _, target in ipairs(targets) do
-        local tree, code = devos.capture({
+        local tree, code = dev_os.capture({
             "cargo",
             "tree",
             "--locked",
@@ -502,9 +504,9 @@ local function check_c_build_tools()
 end
 
 local function tracked_files()
-    local out, code = devos.capture({ "git", "ls-files", "-z" }, { cwd = root, stderr = "null" })
+    local out, code = dev_os.capture({ "git", "ls-files", "-z" }, { cwd = root, stderr = "null" })
     if code ~= 0 then
-        out = devos.capture(
+        out = dev_os.capture(
             { "rg", "--files", "-0", "--hidden", "-g", "!.git", "-g", "!target" },
             { cwd = root }
         )
@@ -553,12 +555,12 @@ local function check_private_details()
         for index = first, math.min(first + PRIVACY_CHUNK - 1, #files) do
             argv[#argv + 1] = files[index]
         end
-        hits = hits .. devos.capture(argv, { cwd = root, stderr = "null" })
+        hits = hits .. dev_os.capture(argv, { cwd = root, stderr = "null" })
     end
-    hits = devos.capture_input({ "rg", "-v", PRIVACY_SAFE }, hits, { cwd = root })
+    hits = dev_os.capture_input({ "rg", "-v", PRIVACY_SAFE }, hits, { cwd = root })
     local allow = allowed_patterns()
     if allow then
-        hits = devos.capture_input(allow, hits, { cwd = root })
+        hits = dev_os.capture_input(allow, hits, { cwd = root })
     end
     if hits ~= "" then
         lint:fail(name, (hits:gsub("\n+$", "")))

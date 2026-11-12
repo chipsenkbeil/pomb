@@ -498,7 +498,7 @@ canvas.stroke(&shape, true, false);
 
 ### 25. Keep items private by default
 
-Reach for `pub(crate)` sparingly. Never use pub(super), `pub(self)` or
+Reach for `pub(crate)` sparingly. Never use `pub(super)`, `pub(self)` or
 `pub(in path)`. Control access with module visibility and root re-exports, and
 use `pub(crate)` for an item that other modules of the crate need. Expose
 plain-data fields as `pub` and keep invariant-bearing fields private on the

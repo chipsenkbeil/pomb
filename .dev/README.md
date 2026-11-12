@@ -14,7 +14,7 @@ topics and `dev help <topic>` prints one. The project's own topics are the
 `-h` after a verb prints its description, usage and flags. `--help` after a
 verb prints the long form.
 
-Six global flags work before a `--` on every verb:
+Seven global flags work before a `--` on every verb:
 
 - `-v` or `--verbose`: print each command before it runs
 - `-vv`: also trace every line of dev and of each bash script it runs
@@ -22,6 +22,7 @@ Six global flags work before a `--` on every verb:
 - `--local`: run here, whatever `[remote] default` says
 - `--detach`: with `--remote`, start the job and return
 - `-C DIR`: run as if dev started in `DIR`
+- `--agent NAME`: export `DEV_AGENT=NAME` to the command
 
 A command with a ci job runs remote by default. `DEV_REMOTE=0` or `--local`
 runs it here, and `--local` with `--remote` is a usage error.
