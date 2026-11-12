@@ -479,6 +479,7 @@
             data-wip-unit="{{ col.limit_unit.as_str() }}"
             {% if let Some(group) = col.group %}data-group-id="{{ group.id }}" data-group-limit="{{ group.limit }}"{% endif %}
             data-is-done="{% if col.is_done %}1{% else %}0{% endif %}"
+            data-clears-blockers="{% if col.clears_blockers %}1{% else %}0{% endif %}"
             data-is-blocked="{% if col.is_blocked %}1{% else %}0{% endif %}"
             data-stage="{{ col.stage }}"
             data-collapsed="{% if col.collapsed %}1{% else %}0{% endif %}"
@@ -922,6 +923,9 @@
     </div>
     <div class="dlg-checks">
       <label class="check-label"><input type="checkbox" id="ec-collapsed"> Collapsed</label>
+      <label class="check-label check-label-stacked"><input type="checkbox" id="ec-clears-blockers">
+        <span><strong>Clears blockers</strong><span class="check-sub">Cards blocked by a card here count as unblocked</span></span>
+      </label>
       <label class="check-label check-label-stacked"><input type="checkbox" id="ec-blocked">
         <span><strong>Blocked column</strong><span class="check-sub">Cards with a posted question move here</span></span>
       </label>

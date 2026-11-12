@@ -259,6 +259,7 @@ mod tests {
             former_names: Vec::new(),
             watchers: Vec::new(),
             stage: None,
+            clears_blockers: false,
         };
         let file_id = uuid::Uuid::new_v4().to_string();
         let mut row = Db::new_task_row("column", None, "Task", 1, None);
@@ -397,6 +398,7 @@ mod tests {
                 former_names: Vec::new(),
                 watchers: Vec::new(),
                 stage: None,
+                clears_blockers: false,
             }],
             swimlanes: Vec::new(),
             fields: Vec::new(),

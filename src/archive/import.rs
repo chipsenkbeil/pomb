@@ -581,6 +581,7 @@ impl Builder<'_> {
                 stage: column
                     .stage
                     .unwrap_or_else(|| ColumnStage::from_legacy_name(&column.name)),
+                clears_blockers: false,
             });
         }
         Ok(rows)

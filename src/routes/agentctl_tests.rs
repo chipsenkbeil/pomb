@@ -1112,6 +1112,90 @@ async fn blocked_by_link_should_block_until_the_target_reaches_a_done_column() {
     );
 }
 
+const CLEARING_COLUMN: &str = "Clearing";
+const PLAIN_COLUMN: &str = "Plain";
+
+/// Creates a plain column on the fixture board through the API and returns its id.
+async fn create_plain_column(fx: &Fixture, name: &str) -> String {
+    let body = json!({"board_id": fx.board_id, "name": name});
+    let (status, created) = call(fx, "POST", "/api/columns", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    created["id"].as_str().expect("id").to_string()
+}
+
+#[tokio::test]
+async fn blocker_in_clears_blockers_column_should_count_as_met() {
+    let (_dir, fx) = fixture();
+    let release = create_plain_column(&fx, CLEARING_COLUMN).await;
+    let patch = json!({"clears_blockers": true});
+    let (status, _) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/columns/{release}"),
+        Some(patch),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+    let b = create(&fx, json!({"column_id": release, "name": "B"})).await;
+    link(&fx, &a, "blocked_by", &b).await;
+    assert!(
+        !blocked(&fx, &a).await,
+        "a blocker in a clears_blockers column is met"
+    );
+}
+
+#[tokio::test]
+async fn blocker_in_a_plain_column_should_still_block() {
+    let (_dir, fx) = fixture();
+    let verify = create_plain_column(&fx, PLAIN_COLUMN).await;
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+    let b = create(&fx, json!({"column_id": verify, "name": "B"})).await;
+    link(&fx, &a, "blocked_by", &b).await;
+    assert!(blocked(&fx, &a).await);
+}
+
+#[tokio::test]
+async fn patch_column_should_toggle_clears_blockers() {
+    let (_dir, fx) = fixture();
+
+    // A task blocked by one in a column that does not clear blockers
+    let release = create_plain_column(&fx, CLEARING_COLUMN).await;
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+    let b = create(&fx, json!({"column_id": release, "name": "B"})).await;
+    link(&fx, &a, "blocked_by", &b).await;
+    assert!(blocked(&fx, &a).await);
+
+    // The column list reads the flag back
+    let uri = format!("/api/columns/{release}");
+    let flag = |columns: &Value| {
+        columns
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|column| column["id"] == release.as_str())
+            .expect("column")["clears_blockers"]
+            .clone()
+    };
+    let list_uri = format!("/api/boards/{}/columns", fx.board_id);
+    let (_, columns) = call(&fx, "GET", &list_uri, None).await;
+    assert_eq!(flag(&columns), json!(false));
+
+    // Setting the flag unblocks the dependent
+    let (status, _) = call(&fx, "PATCH", &uri, Some(json!({"clears_blockers": true}))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!blocked(&fx, &a).await, "setting the flag unblocks");
+    let (_, columns) = call(&fx, "GET", &list_uri, None).await;
+    assert_eq!(flag(&columns), json!(true));
+
+    // Clearing the flag blocks the dependent again
+    let (status, _) = call(&fx, "PATCH", &uri, Some(json!({"clears_blockers": false}))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(blocked(&fx, &a).await, "clearing the flag blocks again");
+    let (_, columns) = call(&fx, "GET", &list_uri, None).await;
+    assert_eq!(flag(&columns), json!(false));
+}
+
 #[tokio::test]
 async fn blocks_link_should_be_stored_as_blocked_by_on_the_target() {
     let (_dir, fx) = fixture();

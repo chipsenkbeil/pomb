@@ -1129,7 +1129,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 91;
+pub const SCHEMA_VERSION: u64 = 92;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1227,6 +1227,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "fe82c030edb6636bdbb41d42b57bc159caa5110cf870a05b5669f1c15e9ef454",
     "fe82c030edb6636bdbb41d42b57bc159caa5110cf870a05b5669f1c15e9ef454",
     "85fcffcce6c320cfe75fa9430345995d95f36b96cae143314bb5c3d6501999c8",
+    "b8ee38bfa29f6aec24252d7f8440cbfbdb8cfe2f26e1b3243f898d7c0eaed996",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -3647,9 +3648,9 @@ fn blocked_around(txn: &WriteTransaction, ids: &[String]) -> DbResult<HashMap<St
 }
 
 /// Returns true when a `blocked_by` link among `links` names a task that is still open, read inside
-/// an open transaction. A task is open when it sits in a column that is not done, or is an epic in a
-/// done column with an open child, unless it is a closed epic. `open` remembers, by task id,
-/// whether a named task is open, so each is read once.
+/// an open transaction. A task is open when it sits in a column that is neither done nor flagged
+/// `clears_blockers`, or is an epic in such a column with an open child, unless it is a closed
+/// epic. `open` remembers, by task id, whether a named task is open, so each is read once.
 fn links_blocked_in(
     txn: &impl Reads,
     links: &[TaskLink],
@@ -3662,7 +3663,7 @@ fn links_blocked_in(
                 let is_open = match read_in::<TaskColumn>(txn, TASKS, &link.target_id)? {
                     Some(target) if target.kind == TaskKind::Epic && target.closed => false,
                     Some(target) => match read_in::<ColumnRow>(txn, COLUMNS, &target.column_id)? {
-                        Some(column) if !column.is_done => true,
+                        Some(column) if !column.is_done && !column.clears_blockers => true,
                         Some(_) => {
                             target.kind == TaskKind::Epic
                                 && txn_open_children(txn, &link.target_id, &[])? > 0
@@ -5753,6 +5754,7 @@ fn txn_insert_column(
         former_names: Vec::new(),
         watchers: Vec::new(),
         stage,
+        clears_blockers: false,
     };
     txn_store_owned(txn, COLUMNS, &id, &row, over)?;
     mmap_insert(txn, COLUMNS_BY_BOARD, board_id, &id)?;
@@ -6190,6 +6192,8 @@ pub struct ColumnPatch<'a> {
     /// `Some(None)` clears the WIP limit.
     pub wip_limit: Option<Option<i64>>,
     pub is_done: Option<bool>,
+    /// Whether a card in the column counts as met for the cards it blocks.
+    pub clears_blockers: Option<bool>,
     /// `Some(None)` clears the stage.
     pub stage: Option<Option<ColumnStage>>,
     /// Whether the column is its board's Blocked column, where `false` clears the board's Blocked
@@ -7722,12 +7726,13 @@ impl Db {
         Ok(id)
     }
 
-    /// Applies every field of `patch` in one transaction. Toggling `is_done` stamps `updated_at`,
-    /// in the same transaction, on every task whose `blocked` value flips, and re-stamps
-    /// `completed_at` on the column's tasks to match. Returns false when the column is unknown.
+    /// Applies every field of `patch` in one transaction. Toggling `is_done` or `clears_blockers`
+    /// stamps `updated_at`, in the same transaction, on every task whose `blocked` value flips, and
+    /// re-stamps `completed_at` on the column's tasks to match. Returns false when the column is
+    /// unknown.
     pub fn update_column(&self, id: &str, patch: &ColumnPatch<'_>) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
-        let before = if patch.is_done.is_some() {
+        let before = if patch.is_done.is_some() || patch.clears_blockers.is_some() {
             let in_column = txn_mmap_get(&txn, TASKS_BY_COLUMN, id)?;
             blocked_around(&txn, &in_column)?
         } else {
@@ -7750,6 +7755,9 @@ impl Db {
             if let Some(is_done) = patch.is_done {
                 column.is_done = is_done;
                 restamp = Some(is_done);
+            }
+            if let Some(clears_blockers) = patch.clears_blockers {
+                column.clears_blockers = clears_blockers;
             }
             if let Some(stage) = patch.stage {
                 column.stage = stage;

@@ -784,6 +784,10 @@ pub struct ColumnRow {
     /// instead of the name. None for a column that stands in for none.
     #[serde(default)]
     pub stage: Option<ColumnStage>,
+    /// Whether a card in this column counts as met for the cards it blocks, as one in a Done
+    /// column does. False for rows written before the field existed.
+    #[serde(default)]
+    pub clears_blockers: bool,
 }
 
 /// What a WIP limit counts: tasks, or their estimated hours.

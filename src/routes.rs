@@ -4897,6 +4897,8 @@ struct ColumnHead {
     /// overdue task(s)" indicator.
     overdue_count: usize,
     is_done: bool,
+    /// Whether a card here counts as met for the cards it blocks.
+    clears_blockers: bool,
     /// The stage the column stands in for, in the form the Edit column dialog's select holds.
     stage: String,
     /// Whether this is the board's Blocked column.
@@ -5065,6 +5067,10 @@ struct BoardMemberInput {
 /// One board column in `GET /api/boards/:id/columns` and `GET /api/boards/:id`: `{ "id", "name",
 /// "wip_limit", "limit_unit", "is_done", "is_blocked" }` (Move-task dialog board switcher).
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one column state the API lists"
+)]
 struct ColumnListItem {
     id: String,
     name: String,
@@ -5074,6 +5080,8 @@ struct ColumnListItem {
     limit_unit: LimitUnit,
     /// Whether tasks moved here count as Done.
     is_done: bool,
+    /// Whether a card here counts as met for the cards it blocks, as one in a Done column does.
+    clears_blockers: bool,
     /// The step of the pull model the column stands in for, or null for none.
     stage: Option<ColumnStage>,
     /// Whether this is the board's Blocked column, where a posted question moves its card.
@@ -5999,6 +6007,7 @@ fn board_template(
                     }),
                 overdue_count,
                 is_done: col.is_done,
+                clears_blockers: col.clears_blockers,
                 stage: col
                     .stage
                     .map(ColumnStage::key)
@@ -17996,6 +18005,9 @@ struct UpdateColumnInput {
     #[serde(default, deserialize_with = "de_opt_opt")]
     wip_limit: Option<Option<i64>>,
     is_done: Option<bool>,
+    /// Whether a card in the column counts as met for the cards it blocks, as one in a Done column
+    /// does. Flipping it flips which dependents show as blocked. Absent leaves it unchanged.
+    clears_blockers: Option<bool>,
     /// The step of the pull model the column stands in for, which the standard role moves read in
     /// place of its name. One of `in_progress`, `review`, `verify`, `release` or `ready`. Explicit
     /// JSON null clears it and absent leaves it unchanged.
@@ -18021,9 +18033,10 @@ struct UpdateColumnInput {
     config_json: Option<String>,
 }
 
-/// Renames a column, sets or clears its WIP limit, flips its done flag, sets or clears its stage,
-/// makes it or stops it being the board's Blocked column, and updates its description, collapsed
-/// state, the calling account's watch and settings bag.
+/// Renames a column, sets or clears its WIP limit, flips its done flag, flips whether its cards
+/// clear the cards they block, sets or clears its stage, makes it or stops it being the board's
+/// Blocked column, and updates its description, collapsed state, the calling account's watch and
+/// settings bag.
 #[utoipa::path(
     patch,
     path = "/api/columns/{id}",
@@ -18052,6 +18065,7 @@ async fn update_column(
     let reshapes = input.name.is_some()
         || input.wip_limit.is_some()
         || input.is_done.is_some()
+        || input.clears_blockers.is_some()
         || input.stage.is_some()
         || input.is_blocked.is_some()
         || input.description.is_some()
@@ -18079,6 +18093,7 @@ async fn update_column(
         name,
         wip_limit: input.wip_limit,
         is_done: input.is_done,
+        clears_blockers: input.clears_blockers,
         stage: input.stage,
         is_blocked: input.is_blocked,
         description: input.description.as_deref().map(str::trim),
@@ -19912,6 +19927,7 @@ fn board_columns(db: &AccountDb, board_id: &str) -> Result<Vec<ColumnListItem>, 
             name: column.name,
             wip_limit: column.wip_limit,
             is_done: column.is_done,
+            clears_blockers: column.clears_blockers,
             stage: column.stage,
         })
         .collect();
@@ -32565,6 +32581,7 @@ mod tests {
             former_names: Vec::new(),
             watchers: Vec::new(),
             stage: None,
+            clears_blockers: false,
         }];
         let swimlanes = vec![SwimlaneRow {
             id: "s1".into(),
@@ -32721,6 +32738,7 @@ mod tests {
             former_names: Vec::new(),
             watchers: Vec::new(),
             stage: None,
+            clears_blockers: false,
         }];
         let tasks = vec![
             feed_task(
@@ -32871,6 +32889,7 @@ mod tests {
                 group: None,
                 overdue_count: usize::from(i == 1),
                 is_done: i == 4,
+                clears_blockers: false,
                 is_blocked: false,
                 watched: false,
                 stage: String::new(),
