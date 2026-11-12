@@ -15732,6 +15732,7 @@ mod schema_version_tests {
         let account = AccountId::ownerless();
         let mut held = lead_role_permissions();
         held.remove(&Permission::LinksDelete);
+        held.remove(&Permission::TasksRead);
         let (role, suspended) = {
             let db = Db::connect(&path).expect("connect");
             let role = db
