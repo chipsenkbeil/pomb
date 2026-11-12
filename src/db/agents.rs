@@ -314,10 +314,12 @@ impl Db {
         Ok(true)
     }
 
-    /// Creates each standard role `account` lacks from [`STANDARD_ROLES`], leaves every role it
-    /// holds as it is, and grants every board in `boards` to all six, in one transaction. Returns
-    /// [`None`], storing nothing, when a board is not one the account owns. A role count past
-    /// [`MAX_AGENT_ROLES_PER_ACCOUNT`] is refused with [`QuotaExceeded`].
+    /// Creates each standard role `account` lacks a keyed role for, from [`STANDARD_ROLES`], leaves
+    /// every role it holds as it is, and grants every board in `boards` to all six, in one
+    /// transaction. A custom role that holds a standard name stays as it is, and the keyed role is
+    /// named with " (standard)" added. Returns [`None`], storing nothing, when a board is not one
+    /// the account owns. A role count past [`MAX_AGENT_ROLES_PER_ACCOUNT`] is refused with
+    /// [`QuotaExceeded`].
     pub fn ensure_standard_roles(
         &self,
         account: &str,
@@ -340,13 +342,7 @@ impl Db {
         let mut roles = Vec::new();
         let mut created = Vec::new();
         for standard in STANDARD_ROLES {
-            let found = held
-                .iter()
-                .find(|role| role.standard == Some(standard.key))
-                .or_else(|| {
-                    held.iter()
-                        .find(|role| role.standard.is_none() && role.name == standard.name)
-                });
+            let found = held.iter().find(|role| role.standard == Some(standard.key));
             if let Some(role) = found {
                 roles.push(role.clone());
                 continue;
@@ -358,10 +354,16 @@ impl Db {
                 }));
             }
             count += 1;
+            let name = if held.iter().any(|role| role.name == standard.name) {
+                format!("{} (standard)", standard.name)
+            } else {
+                standard.name.to_string()
+            };
+            txn_refuse_taken_name(&txn, account, &name, None)?;
             let role = AgentRoleRow {
                 id: Uuid::new_v4().to_string(),
                 account_id: account.to_string(),
-                name: standard.name.to_string(),
+                name,
                 permissions: standard.permissions(),
                 created_at: now,
                 updated_at: now,
@@ -442,5 +444,66 @@ impl Db {
         mmap_remove(&txn, AGENT_ROLES_BY_ACCOUNT, account, role_id)?;
         txn.commit()?;
         Ok(Some(removed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_standard_roles_should_leave_a_custom_role_with_a_standard_name_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let account = db.create_user("owner").expect("account");
+        for role in db.list_agent_roles(account.as_str()).expect("roles") {
+            db.delete_agent_role(account.as_str(), &role.id)
+                .expect("delete");
+        }
+        let held = BTreeSet::from([Permission::TasksRead, Permission::TasksEdit]);
+        let custom = db
+            .create_agent_role(account.as_str(), "reviewer", held.clone())
+            .expect("custom");
+        let key = STANDARD_ROLES
+            .iter()
+            .find(|standard| standard.name == "reviewer")
+            .expect("reviewer")
+            .key;
+
+        let standard = db
+            .ensure_standard_roles(account.as_str(), &[])
+            .expect("ensure")
+            .expect("account");
+        assert_eq!(standard.roles.len(), STANDARD_ROLES.len());
+        assert_eq!(standard.created.len(), STANDARD_ROLES.len());
+        assert!(
+            standard
+                .created
+                .contains(&"reviewer (standard)".to_string())
+        );
+        assert!(standard.roles.iter().all(|role| role.id != custom.id));
+        let keyed = standard
+            .roles
+            .iter()
+            .find(|role| role.standard == Some(key))
+            .expect("keyed reviewer");
+        assert_eq!(keyed.name, "reviewer (standard)");
+
+        let listed = db.list_agent_roles(account.as_str()).expect("roles");
+        let kept = listed
+            .iter()
+            .find(|role| role.id == custom.id)
+            .expect("custom role");
+        assert_eq!(kept.name, "reviewer");
+        assert_eq!(kept.permissions, held);
+        assert!(kept.standard.is_none());
+
+        let again = db
+            .ensure_standard_roles(account.as_str(), &[])
+            .expect("ensure again")
+            .expect("account");
+        assert!(again.created.is_empty());
+        assert!(again.roles.iter().any(|role| role.id == keyed.id));
     }
 }

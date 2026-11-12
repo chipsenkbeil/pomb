@@ -877,7 +877,7 @@ async fn standard_roles_should_refuse_past_the_role_quota_and_write_nothing() {
 }
 
 #[tokio::test]
-async fn standard_roles_should_reuse_roles_that_hold_a_standard_name() {
+async fn standard_roles_should_leave_custom_roles_with_standard_names_alone() {
     let fx = Fixture::new();
     for name in ["planner", "lead"] {
         fx.db
@@ -887,13 +887,25 @@ async fn standard_roles_should_reuse_roles_that_hold_a_standard_name() {
     let body = json!({"boards": [fx.boards[ALICE]]});
     let reply = fx.bearer(ALICE, "POST", STANDARD, Some(body)).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    assert_eq!(names_of(&reply.body, "roles"), STANDARD_NAMES);
-    assert_eq!(
-        names_of(&reply.body, "created"),
-        ["implementer", "reviewer", "verifier", "release"]
-    );
-    assert_eq!(reply.body["roles"][0]["permissions"], json!(["tasks.read"]));
+    let named = [
+        "planner (standard)",
+        "implementer",
+        "reviewer",
+        "verifier",
+        "release",
+        "lead (standard)",
+    ];
+    assert_eq!(names_of(&reply.body, "roles"), named);
+    assert_eq!(names_of(&reply.body, "created"), named);
     assert_eq!(reply.body["roles"][0]["boards"], json!([fx.boards[ALICE]]));
+    let listed = fx.bearer(ALICE, "GET", "/api/v1/agent-roles", None).await;
+    let listed = listed.body.as_array().expect("list");
+    assert_eq!(listed.len(), 8);
+    let read_only = listed
+        .iter()
+        .filter(|role| role["permissions"] == json!(["tasks.read"]))
+        .count();
+    assert_eq!(read_only, 2);
 }
 
 fn read_perms() -> BTreeSet<Permission> {
