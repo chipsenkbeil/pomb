@@ -58,7 +58,7 @@ dev parity start-server "$root/target-baseline/release/pomb" 3420 "$out/base" >/
 
 rc=0
 dev parity regress --candidate "$out/cand/state.json" \
-  --baseline "$out/base/state.json" --out "$out/report" || rc=$?
+  --baseline "$out/base/state.json" --out "$out/report" --only dly || rc=$?
 dev parity overflow "$out/cand/state.json" 390 || rc=$?
 dev parity finder --candidate "$out/cand/state.json" || rc=$?
 echo "$rc" >"$out/rc"

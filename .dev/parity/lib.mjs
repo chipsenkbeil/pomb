@@ -307,6 +307,27 @@ export async function runSteps(page, steps, state, baseUrl, ctxInfo) {
       case 'localStorage':
         await page.evaluate(([k, v]) => localStorage.setItem(k, v), arg);
         break;
+      case 'delayStart': {
+        const t0 = Date.now();
+        await page.route('**/api/timer/start', async (route) => {
+          const body = route.request().postData() || '';
+          if (!body.includes('break')) return route.continue();
+          console.log(`ROUTE ${baseUrl} start ${body} held ${arg}ms at +${Date.now() - t0}`);
+          await new Promise((r) => setTimeout(r, arg));
+          console.log(`ROUTE ${baseUrl} start released at +${Date.now() - t0}`);
+          return route.continue();
+        });
+        break;
+      }
+      case 'logClock': {
+        const txt = await page.evaluate(() => {
+          const c = document.querySelector('#timer-popup .timer-clock');
+          const p = document.getElementById('timer-popup');
+          return `${c ? c.textContent.trim() : 'none'} popupHidden=${p ? p.hidden : 'nopopup'}`;
+        });
+        console.log(`CLOCK ${baseUrl} ${arg} ${txt}`);
+        break;
+      }
       default:
         throw new Error(`unknown step ${kind}`);
     }

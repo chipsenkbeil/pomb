@@ -1,0 +1,549 @@
+{
+  "entries": [
+    {
+      "id": "dly-short-0",
+      "viewport": {
+        "width": 1440,
+        "height": 612
+      },
+      "clock": "controlled",
+      "setup": [
+        {
+          "goto": "/b/{vt}"
+        },
+        {
+          "delayStart": 0
+        },
+        {
+          "api": [
+            "POST",
+            "/api/timer/start",
+            {
+              "task_id": "{task:vt:Task Beta}",
+              "mode": "pomodoro"
+            }
+          ]
+        },
+        {
+          "reload": 1
+        },
+        {
+          "click": "#timer-pill"
+        },
+        {
+          "waitFor": "#timer-popup"
+        },
+        {
+          "advance": 1501
+        },
+        {
+          "click": "#tp-take-break"
+        },
+        {
+          "waitFor": "#tp-break-start"
+        },
+        {
+          "advance": 2
+        },
+        {
+          "logClock": "end"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "logClock": "late"
+        }
+      ]
+    },
+    {
+      "id": "dly-short-400",
+      "viewport": {
+        "width": 1440,
+        "height": 612
+      },
+      "clock": "controlled",
+      "setup": [
+        {
+          "goto": "/b/{vt}"
+        },
+        {
+          "delayStart": 400
+        },
+        {
+          "api": [
+            "POST",
+            "/api/timer/start",
+            {
+              "task_id": "{task:vt:Task Beta}",
+              "mode": "pomodoro"
+            }
+          ]
+        },
+        {
+          "reload": 1
+        },
+        {
+          "click": "#timer-pill"
+        },
+        {
+          "waitFor": "#timer-popup"
+        },
+        {
+          "advance": 1501
+        },
+        {
+          "click": "#tp-take-break"
+        },
+        {
+          "waitFor": "#tp-break-start"
+        },
+        {
+          "advance": 2
+        },
+        {
+          "logClock": "end"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "logClock": "late"
+        }
+      ]
+    },
+    {
+      "id": "dly-short-800",
+      "viewport": {
+        "width": 1440,
+        "height": 612
+      },
+      "clock": "controlled",
+      "setup": [
+        {
+          "goto": "/b/{vt}"
+        },
+        {
+          "delayStart": 800
+        },
+        {
+          "api": [
+            "POST",
+            "/api/timer/start",
+            {
+              "task_id": "{task:vt:Task Beta}",
+              "mode": "pomodoro"
+            }
+          ]
+        },
+        {
+          "reload": 1
+        },
+        {
+          "click": "#timer-pill"
+        },
+        {
+          "waitFor": "#timer-popup"
+        },
+        {
+          "advance": 1501
+        },
+        {
+          "click": "#tp-take-break"
+        },
+        {
+          "waitFor": "#tp-break-start"
+        },
+        {
+          "advance": 2
+        },
+        {
+          "logClock": "end"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "logClock": "late"
+        }
+      ]
+    },
+    {
+      "id": "dly-short-1300",
+      "viewport": {
+        "width": 1440,
+        "height": 612
+      },
+      "clock": "controlled",
+      "setup": [
+        {
+          "goto": "/b/{vt}"
+        },
+        {
+          "delayStart": 1300
+        },
+        {
+          "api": [
+            "POST",
+            "/api/timer/start",
+            {
+              "task_id": "{task:vt:Task Beta}",
+              "mode": "pomodoro"
+            }
+          ]
+        },
+        {
+          "reload": 1
+        },
+        {
+          "click": "#timer-pill"
+        },
+        {
+          "waitFor": "#timer-popup"
+        },
+        {
+          "advance": 1501
+        },
+        {
+          "click": "#tp-take-break"
+        },
+        {
+          "waitFor": "#tp-break-start"
+        },
+        {
+          "advance": 2
+        },
+        {
+          "logClock": "end"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "logClock": "late"
+        }
+      ]
+    },
+    {
+      "id": "dly-short-2000",
+      "viewport": {
+        "width": 1440,
+        "height": 612
+      },
+      "clock": "controlled",
+      "setup": [
+        {
+          "goto": "/b/{vt}"
+        },
+        {
+          "delayStart": 2000
+        },
+        {
+          "api": [
+            "POST",
+            "/api/timer/start",
+            {
+              "task_id": "{task:vt:Task Beta}",
+              "mode": "pomodoro"
+            }
+          ]
+        },
+        {
+          "reload": 1
+        },
+        {
+          "click": "#timer-pill"
+        },
+        {
+          "waitFor": "#timer-popup"
+        },
+        {
+          "advance": 1501
+        },
+        {
+          "click": "#tp-take-break"
+        },
+        {
+          "waitFor": "#tp-break-start"
+        },
+        {
+          "advance": 2
+        },
+        {
+          "logClock": "end"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "logClock": "late"
+        }
+      ]
+    },
+    {
+      "id": "dly-panel-0",
+      "viewport": {
+        "width": 1440,
+        "height": 612
+      },
+      "clock": "controlled",
+      "setup": [
+        {
+          "goto": "/b/{vt}"
+        },
+        {
+          "delayStart": 0
+        },
+        {
+          "api": [
+            "POST",
+            "/api/timer/start",
+            {
+              "task_id": "{task:vt:Task Beta}",
+              "mode": "pomodoro"
+            }
+          ]
+        },
+        {
+          "reload": 1
+        },
+        {
+          "click": "#timer-pill"
+        },
+        {
+          "waitFor": "#timer-popup"
+        },
+        {
+          "advance": 1501
+        },
+        {
+          "click": "#tp-take-break"
+        },
+        {
+          "advance": 2
+        },
+        {
+          "logClock": "end"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "logClock": "late"
+        }
+      ]
+    },
+    {
+      "id": "dly-panel-400",
+      "viewport": {
+        "width": 1440,
+        "height": 612
+      },
+      "clock": "controlled",
+      "setup": [
+        {
+          "goto": "/b/{vt}"
+        },
+        {
+          "delayStart": 400
+        },
+        {
+          "api": [
+            "POST",
+            "/api/timer/start",
+            {
+              "task_id": "{task:vt:Task Beta}",
+              "mode": "pomodoro"
+            }
+          ]
+        },
+        {
+          "reload": 1
+        },
+        {
+          "click": "#timer-pill"
+        },
+        {
+          "waitFor": "#timer-popup"
+        },
+        {
+          "advance": 1501
+        },
+        {
+          "click": "#tp-take-break"
+        },
+        {
+          "advance": 2
+        },
+        {
+          "logClock": "end"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "logClock": "late"
+        }
+      ]
+    },
+    {
+      "id": "dly-panel-800",
+      "viewport": {
+        "width": 1440,
+        "height": 612
+      },
+      "clock": "controlled",
+      "setup": [
+        {
+          "goto": "/b/{vt}"
+        },
+        {
+          "delayStart": 800
+        },
+        {
+          "api": [
+            "POST",
+            "/api/timer/start",
+            {
+              "task_id": "{task:vt:Task Beta}",
+              "mode": "pomodoro"
+            }
+          ]
+        },
+        {
+          "reload": 1
+        },
+        {
+          "click": "#timer-pill"
+        },
+        {
+          "waitFor": "#timer-popup"
+        },
+        {
+          "advance": 1501
+        },
+        {
+          "click": "#tp-take-break"
+        },
+        {
+          "advance": 2
+        },
+        {
+          "logClock": "end"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "logClock": "late"
+        }
+      ]
+    },
+    {
+      "id": "dly-panel-1300",
+      "viewport": {
+        "width": 1440,
+        "height": 612
+      },
+      "clock": "controlled",
+      "setup": [
+        {
+          "goto": "/b/{vt}"
+        },
+        {
+          "delayStart": 1300
+        },
+        {
+          "api": [
+            "POST",
+            "/api/timer/start",
+            {
+              "task_id": "{task:vt:Task Beta}",
+              "mode": "pomodoro"
+            }
+          ]
+        },
+        {
+          "reload": 1
+        },
+        {
+          "click": "#timer-pill"
+        },
+        {
+          "waitFor": "#timer-popup"
+        },
+        {
+          "advance": 1501
+        },
+        {
+          "click": "#tp-take-break"
+        },
+        {
+          "advance": 2
+        },
+        {
+          "logClock": "end"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "logClock": "late"
+        }
+      ]
+    },
+    {
+      "id": "dly-panel-2000",
+      "viewport": {
+        "width": 1440,
+        "height": 612
+      },
+      "clock": "controlled",
+      "setup": [
+        {
+          "goto": "/b/{vt}"
+        },
+        {
+          "delayStart": 2000
+        },
+        {
+          "api": [
+            "POST",
+            "/api/timer/start",
+            {
+              "task_id": "{task:vt:Task Beta}",
+              "mode": "pomodoro"
+            }
+          ]
+        },
+        {
+          "reload": 1
+        },
+        {
+          "click": "#timer-pill"
+        },
+        {
+          "waitFor": "#timer-popup"
+        },
+        {
+          "advance": 1501
+        },
+        {
+          "click": "#tp-take-break"
+        },
+        {
+          "advance": 2
+        },
+        {
+          "logClock": "end"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "logClock": "late"
+        }
+      ]
+    }
+  ]
+}
