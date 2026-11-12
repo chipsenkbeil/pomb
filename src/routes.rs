@@ -335,7 +335,7 @@ pub fn router(state: AppState) -> Router {
             get(get_label_settings).put(update_label_settings),
         )
         .route("/api/boards/:id/columns", get(list_board_columns))
-        .route("/api/boards/:id/bin", get(list_bin))
+        .route("/api/boards/:id/bin", get(list_bin).delete(empty_bin))
         .route("/api/bin/:id", delete(purge_binned_task))
         .route("/api/bin/:id/restore", post(restore_task))
         .route("/api/boards/:id/tasks", get(list_board_tasks))
@@ -1278,6 +1278,7 @@ const ROUTE_ACCESS: &[(Method, &str, Rc, Wr)] = {
             Wr::Exempt,
         ),
         (Method::GET, "/api/boards/:id/bin", Rc::Board, Wr::No),
+        (Method::DELETE, "/api/boards/:id/bin", Rc::Board, Wr::Exempt),
         (Method::DELETE, "/api/bin/:id", Rc::Entity, Wr::Exempt),
         (Method::POST, "/api/bin/:id/restore", Rc::Entity, Wr::Grows),
         (Method::GET, "/api/boards/:id/tasks", Rc::Board, Wr::No),
@@ -11829,6 +11830,42 @@ async fn list_bin(
         permanent_delete: board.row().config_bool(BIN_PERMANENT_DELETE_KEY),
         tasks,
     }))
+}
+
+/// What emptying a board's recycle bin deleted.
+#[derive(serde::Serialize, ToSchema)]
+struct BinEmptied {
+    /// How many tasks it deleted for good.
+    deleted: u64,
+}
+
+/// Deletes every task in the board's recycle bin for good, with its time entries and attachments,
+/// and frees the stored bytes they used. The board's `bin_permanent_delete` config does not
+/// matter. A task that carries a locking label refuses the whole call and nothing is deleted.
+#[utoipa::path(
+    delete,
+    path = "/api/boards/{id}/bin",
+    operation_id = "empty_bin",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "The bin is empty", body = BinEmptied),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 403, description = "`permission_denied`: the token lacks `bin.empty`, or `card_locked`: a task in the bin carries a locking label"),
+        (status = 404, description = "Board not found"),
+    ),
+)]
+async fn empty_bin(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<BinEmptied>, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    for row in account.binned_tasks(&board).map_err(AppError::from)? {
+        ensure_unlocked(&account, &user, &id, &row.task)?;
+    }
+    let deleted = account.purge_board_bin(&board).map_err(AppError::from)?;
+    Ok(Json(BinEmptied { deleted }))
 }
 
 /// Deletes a task from the recycle bin for good, with its time entries and attachments, when the
@@ -29916,6 +29953,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         list_boards,
         list_board_columns,
         list_bin,
+        empty_bin,
         purge_binned_task,
         restore_task,
         get_board_detail,

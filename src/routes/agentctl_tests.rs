@@ -8567,7 +8567,7 @@ async fn whoami_should_show_all_for_the_session_and_every_board_tokens() {
         .as_array()
         .expect("list")
         .iter()
-        .filter(|name| **name != "tasks.edit_locked")
+        .filter(|name| **name != "tasks.edit_locked" && **name != "bin.empty")
         .cloned()
         .collect();
     assert_eq!(bootstrap["permissions"], Value::Array(without_grant_only));

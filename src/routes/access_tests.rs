@@ -21,6 +21,7 @@ use crate::models::{
     FieldOwner, InstanceMode, LinkKind, ReportBookmark, Seat, SeatSlot, SubtaskTemplate,
     WebhookEvent,
 };
+use crate::permissions::Permission;
 
 /// Largest response body a test reads.
 const MAX_BODY_BYTES: usize = 16 << 20;
@@ -444,9 +445,11 @@ pub(crate) struct Seeded {
     pending_cookie: Option<String>,
 }
 
-/// Mints an admin-scope API token named `name` for `account` and returns its id and raw value.
+/// Mints an admin-scope API token named `name` for `account`, with the grant-only `bin.empty` too,
+/// and returns its id and raw value.
 fn seed_token(db: &Db, account: &AccountId, name: &str) -> (String, String) {
-    let (record, raw) = new_api_token_record(account, name, AuthScope::Admin, None);
+    let (mut record, raw) = new_api_token_record(account, name, AuthScope::Admin, None);
+    record.permissions.insert(Permission::BinEmpty);
     db.create_api_token(&record).expect("token");
     (record.id, raw)
 }
@@ -1904,7 +1907,7 @@ struct Assigned {
     seeded: Seeded,
     /// A's rows on the two boards the token is assigned.
     granted: Ids,
-    /// The raw token, which holds every permission.
+    /// The raw token, which holds every permission and `bin.empty` too.
     token: String,
 }
 
@@ -1915,6 +1918,7 @@ async fn assigned() -> Assigned {
     let mut granted = seed(&db, &seeded.a, "Granted", String::new(), String::new());
     granted.handle = "bob".to_string();
     let (mut record, token) = new_api_token_record(&seeded.a, "Scoped", AuthScope::Admin, None);
+    record.permissions.insert(Permission::BinEmpty);
     record.boards = BoardAccess::Only(BTreeSet::from([
         granted.board.clone(),
         granted.board2.clone(),

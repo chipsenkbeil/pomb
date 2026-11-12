@@ -533,6 +533,12 @@ impl Db {
         Ok(rows.len() as u64)
     }
 
+    /// Deletes every task in the recycle bin of board `board_id` for good, their files with them,
+    /// whatever the board's `bin_permanent_delete` config says. Returns how many it deleted.
+    pub fn purge_board_bin(&self, board_id: &str) -> DbResult<u64> {
+        self.purge_bin_where(|_, row| Ok(row.board_id == board_id))
+    }
+
     /// Deletes for good the deleted tasks that waited [`crate::models::BIN_RETENTION_DAYS`] in the bin, when
     /// the cleanup has not run for a day before `now`. Returns how many it deleted, [`None`]
     /// when it was not due.

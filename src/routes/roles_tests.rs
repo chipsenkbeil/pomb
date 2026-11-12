@@ -1754,6 +1754,12 @@ const ROLE_TABLE: &[(Method, &str, BoardRole, [u16; 3])] = &[
     ),
     (
         Method::DELETE,
+        "/api/boards/:id/bin",
+        BoardRole::Member,
+        [200, 200, 403],
+    ),
+    (
+        Method::DELETE,
         "/api/bin/:id",
         BoardRole::Owner,
         [200, 403, 403],

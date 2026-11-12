@@ -127,6 +127,7 @@ catalog! {
     TasksClaim, "tasks.claim", "tasks", Work, "Claim a task, renew or release the claim, and watch the task.";
     TasksBin, "tasks.bin", "tasks", Lead, "Move a task to the recycle bin.";
     TasksDelete, "tasks.delete", "tasks", Admin, "Delete a task from the recycle bin for good.";
+    BinEmpty, "bin.empty", "bin", Grant, "Empty a board's recycle bin, which deletes every task in it for good and frees the space they use, and which no preset holds.";
     SubtasksEdit, "subtasks.edit", "subtasks", Work, "Create, rename, assign, reorder and set the due date of subtasks.";
     SubtasksCheck, "subtasks.check", "subtasks", Work, "Tick and untick subtasks.";
     SubtasksDelete, "subtasks.delete", "subtasks", Lead, "Delete any subtask, whoever created it, and turn a subtask into a task.";
@@ -341,7 +342,7 @@ mod tests {
 
     use super::*;
 
-    const NAMES: [&str; 59] = [
+    const NAMES: [&str; 60] = [
         "boards.read",
         "boards.create",
         "boards.configure",
@@ -375,6 +376,7 @@ mod tests {
         "tasks.claim",
         "tasks.bin",
         "tasks.delete",
+        "bin.empty",
         "subtasks.edit",
         "subtasks.check",
         "subtasks.delete",
@@ -436,8 +438,18 @@ mod tests {
     }
 
     #[test]
-    fn admin_should_hold_every_permission_except_the_grant_only_one() {
-        assert_eq!(held(Preset::Admin).len(), Permission::ALL.len() - 1);
+    fn admin_should_hold_every_permission_except_the_grant_only_ones() {
+        assert_eq!(held(Preset::Admin).len(), Permission::ALL.len() - 2);
+    }
+
+    #[test]
+    fn bin_empty_should_be_held_by_no_preset() {
+        assert_eq!(Permission::BinEmpty.lowest_preset(), None);
+        for preset in Preset::ALL {
+            assert!(!preset.contains(Permission::BinEmpty));
+            assert!(!preset.permissions().contains(&Permission::BinEmpty));
+        }
+        assert_eq!(Permission::named("bin.empty"), Some(Permission::BinEmpty));
     }
 
     #[test]

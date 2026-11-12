@@ -1129,7 +1129,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 90;
+pub const SCHEMA_VERSION: u64 = 91;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1226,6 +1226,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "62fd2fa52d85a62be89a86e55f30d7376e60b169cf04f5b86ddfdd00d1d2030b",
     "fe82c030edb6636bdbb41d42b57bc159caa5110cf870a05b5669f1c15e9ef454",
     "fe82c030edb6636bdbb41d42b57bc159caa5110cf870a05b5669f1c15e9ef454",
+    "85fcffcce6c320cfe75fa9430345995d95f36b96cae143314bb5c3d6501999c8",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -3180,6 +3181,8 @@ fn task_board_in(txn: &impl Reads, id: &str) -> DbResult<Option<String>> {
 pub struct BoardUse {
     /// Bytes of the board's task rows and their attachment files.
     pub bytes: u64,
+    /// The part of `bytes` that the board's recycle bin holds.
+    pub binned: u64,
     /// Bytes of the board's largest attachment file.
     pub largest_file: u64,
 }
@@ -3211,7 +3214,9 @@ fn board_use_in(txn: &impl Reads, board_id: &str) -> DbResult<BoardUse> {
     }
     for task_id in index_in(txn, BIN_BY_BOARD, board_id)? {
         if let Some(binned) = read_in::<BinRow>(txn, BIN, &task_id)? {
+            let before = held.bytes;
             held.add_task(&binned.task)?;
+            held.binned += held.bytes - before;
         }
     }
     Ok(held)
@@ -3228,9 +3233,17 @@ fn txn_refuse_board_over_bytes(txn: &impl Reads, board_id: &str, added: u64) -> 
         return Ok(());
     };
     let limit = quotas.limit(Quota::StoredMibPerBoard);
-    let after = board_use_in(txn, board_id)?.bytes.saturating_add(added);
-    if after > u64::from(limit) * MIB {
-        return Err(Box::new(QuotaExceeded::of(Quota::StoredMibPerBoard, limit)));
+    let held = board_use_in(txn, board_id)?;
+    if held.bytes.saturating_add(added) > u64::from(limit) * MIB {
+        let bound = if held.binned > 0 {
+            Bound::BoardBytesWithBin
+        } else {
+            Bound::Quota(Quota::StoredMibPerBoard)
+        };
+        return Err(Box::new(QuotaExceeded {
+            bound,
+            limit: u64::from(limit),
+        }));
     }
     Ok(())
 }
@@ -5047,6 +5060,8 @@ pub enum Bound {
     InboundPerBoard,
     /// The agent roles one account may hold, [`MAX_AGENT_ROLES_PER_ACCOUNT`].
     AgentRoles,
+    /// The MiB one board may store when its recycle bin holds some of them.
+    BoardBytesWithBin,
 }
 
 impl Bound {
@@ -5075,6 +5090,9 @@ impl Bound {
             Self::WebhooksPerBoard => "webhooks per board",
             Self::InboundPerBoard => "inbound addresses per board",
             Self::AgentRoles => "agent roles per account",
+            Self::BoardBytesWithBin => {
+                "MiB stored per board, and the deleted tasks in its recycle bin keep their files until it is emptied"
+            }
         }
     }
 }

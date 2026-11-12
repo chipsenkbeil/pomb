@@ -919,6 +919,7 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (Method::PATCH, "/api/tasks/:id", Permission::TasksEdit),
     (Method::DELETE, "/api/tasks/:id", Permission::TasksBin),
     (Method::GET, "/api/boards/:id/bin", Permission::TasksRead),
+    (Method::DELETE, "/api/boards/:id/bin", Permission::BinEmpty),
     (Method::DELETE, "/api/bin/:id", Permission::TasksDelete),
     (Method::POST, "/api/bin/:id/restore", Permission::TasksEdit),
     (Method::GET, "/api/tasks/:id/card", Permission::TasksRead),
@@ -1772,8 +1773,9 @@ fn opens_route(
 
 /// Returns the lowest role on a board that a route accepts, where HEAD counts as GET. A read
 /// takes a viewer, except the owner's settings pages and the secret calendar feed. A write to a
-/// task, a time entry or the timer takes a member, and a write to the board's own shape or its
-/// members takes the owner, and so does emptying the recycle bin. A member may remove itself, so leaving a board takes a viewer. A
+/// task, a time entry or the timer takes a member, and so does emptying the recycle bin, and a
+/// write to the board's own shape or its members takes the owner, and so does deleting one task
+/// from the recycle bin. A member may remove itself, so leaving a board takes a viewer. A
 /// route [`ROUTE_PERMISSIONS`] does not list takes the owner.
 #[must_use]
 pub fn required_role(method: &Method, matched_path: &str) -> BoardRole {
@@ -1809,6 +1811,7 @@ pub fn required_role(method: &Method, matched_path: &str) -> BoardRole {
         .iter()
         .any(|prefix| pattern.starts_with(prefix))
         || pattern == "/api/bin/:id/restore"
+        || pattern == "/api/boards/:id/bin"
         || pattern == "/api/boards/:id/tasks/bulk";
     if member_write {
         BoardRole::Member
@@ -1832,6 +1835,7 @@ pub fn session_token_from_headers(headers: &HeaderMap) -> Option<String> {
 fn browser_user(account: UserRow) -> AuthUser {
     let mut permissions = Preset::Admin.permissions();
     permissions.insert(Permission::TasksEditLocked);
+    permissions.insert(Permission::BinEmpty);
     AuthUser {
         account_id: account.account_id(),
         handle: account.username.clone(),
@@ -2801,6 +2805,9 @@ mod tests {
         for (method, path) in registered_routes() {
             let verb = Method::from_bytes(method.as_bytes()).expect("method name");
             let permission = required_permission(&verb, &path).expect("listed route");
+            if permission.lowest_preset().is_none() {
+                continue;
+            }
             let old = old_required_scope(&verb, &path);
             for (preset, scope) in Preset::ALL.iter().zip(AuthScope::ALL) {
                 let reaches = preset.contains(permission);

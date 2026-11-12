@@ -10,6 +10,7 @@ use crate::db::{Db, RestoreOutcome, WipCheck};
 use crate::models::{
     AccountId, Actor, AuthScope, BIN_RETENTION_DAYS, HistoryKind, SECONDS_PER_DAY,
 };
+use crate::permissions::Permission;
 use crate::{AppState, BODY_LIMIT_BYTES};
 
 struct Fixture {
@@ -787,4 +788,61 @@ async fn a_token_should_not_restore_or_purge_a_binned_task_with_a_locking_label(
     }
     let (status, body) = call(&fx, "POST", &restore, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+fn emptying_token(fx: &Fixture) -> String {
+    let (mut record, raw) = new_api_token_record(&fx.user_id, "emptier", AuthScope::Admin, None);
+    record.permissions.insert(Permission::BinEmpty);
+    fx.db.create_api_token(&record).expect("token");
+    raw
+}
+
+#[tokio::test]
+async fn bin_empty_should_be_held_by_no_preset() {
+    let (_dir, fx) = fixture();
+    let id = task_in(&fx, &fx.col_todo, "Binned");
+    call(&fx, "DELETE", &format!("/api/tasks/{id}"), None).await;
+    let uri = format!("/api/boards/{}/bin", fx.board_id);
+    for scope in AuthScope::ALL {
+        let token = work_token(&fx, scope);
+        let (status, text) = send(&fx, Some(&token), "DELETE", &uri, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{}: {text}", scope.as_str());
+        let body: Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["code"], "permission_denied", "{text}");
+        assert_eq!(body["permission"], "bin.empty", "{text}");
+    }
+    let (_, bin) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(bin["tasks"].as_array().map(Vec::len), Some(1));
+}
+
+#[tokio::test]
+async fn bin_empty_should_refuse_a_locked_task() {
+    let (_dir, fx) = fixture();
+    let plain = task_in(&fx, &fx.col_todo, "Plain");
+    let (status, created) = call(
+        &fx,
+        "POST",
+        "/api/tasks",
+        Some(json!({"column_id": fx.col_todo, "name": "Held", "labels": ["needs:human"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let locked = created["id"].as_str().expect("id").to_string();
+    for id in [&plain, &locked] {
+        call(&fx, "DELETE", &format!("/api/tasks/{id}"), None).await;
+    }
+    let uri = format!("/api/boards/{}/bin", fx.board_id);
+
+    let token = emptying_token(&fx);
+    let (status, text) = send(&fx, Some(&token), "DELETE", &uri, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert!(text.contains("card_locked"), "{text}");
+    let (_, bin) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(bin["tasks"].as_array().map(Vec::len), Some(2), "{bin}");
+
+    let (status, emptied) = call(&fx, "DELETE", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{emptied}");
+    assert_eq!(emptied["deleted"], 2);
+    let (_, bin) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(bin["tasks"], json!([]));
 }

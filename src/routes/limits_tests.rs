@@ -4380,6 +4380,109 @@ async fn upload_should_count_a_binned_task_against_its_board_limit() {
 }
 
 #[tokio::test]
+async fn quota_refusal_should_name_the_bin_when_it_holds_bytes() {
+    const LIMIT_MIB: u32 = 1;
+    const FILE_BYTES: usize = 600 * 1024;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_board: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (column, task) = fx.member_task();
+    let other = fx
+        .db
+        .create_task(&column, None, "Other", 1, None)
+        .expect("task");
+    let first = fx.upload(&task, "a.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let full = fx.upload(&other, "b.bin", vec![2; FILE_BYTES]).await;
+    assert_quota(&full, Quota::StoredMibPerBoard, LIMIT_MIB);
+    let message = full.body["message"].as_str().expect("message");
+    assert!(!message.contains("recycle bin"), "{message}");
+
+    let deleted = fx
+        .member("DELETE", &format!("/api/tasks/{task}"), None)
+        .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+    let full = fx.upload(&other, "b.bin", vec![2; FILE_BYTES]).await;
+    assert_eq!(full.status, StatusCode::CONFLICT, "{}", full.body);
+    assert_eq!(full.code.as_deref(), Some("quota_exceeded"));
+    let message = full.body["message"].as_str().expect("message");
+    assert!(message.contains("recycle bin"), "{message}");
+    assert!(message.contains("until it is emptied"), "{message}");
+}
+
+#[tokio::test]
+async fn bin_empty_should_free_the_binned_bytes() {
+    const LIMIT_MIB: u32 = 1;
+    const FILE_BYTES: usize = 600 * 1024;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_board: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (column, task) = fx.member_task();
+    let board = fx.db.task_board_id(&task).expect("read").expect("board");
+    let other = fx
+        .db
+        .create_task(&column, None, "Other", 1, None)
+        .expect("task");
+    let first = fx.upload(&task, "a.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let deleted = fx
+        .member("DELETE", &format!("/api/tasks/{task}"), None)
+        .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+    let full = fx.upload(&other, "b.bin", vec![2; FILE_BYTES]).await;
+    assert_eq!(
+        full.code.as_deref(),
+        Some("quota_exceeded"),
+        "{}",
+        full.body
+    );
+
+    let (mut record, raw) = new_api_token_record(&fx.member, "emptier", AuthScope::Admin, None);
+    record.permissions.insert(Permission::BinEmpty);
+    fx.db.create_api_token(&record).expect("token");
+    let bearer = format!("Bearer {raw}");
+    let auth = [("authorization", bearer.as_str())];
+    let emptied = call(
+        &fx.app,
+        "DELETE",
+        &format!("/api/boards/{board}/bin"),
+        &auth,
+        None,
+    )
+    .await;
+    assert_eq!(emptied.status, StatusCode::OK, "{}", emptied.body);
+    assert_eq!(emptied.body["deleted"], 1);
+
+    let fits = fx.upload(&other, "b.bin", vec![2; FILE_BYTES]).await;
+    assert_eq!(fits.status, StatusCode::OK, "{}", fits.body);
+}
+
+#[tokio::test]
+async fn task_delete_should_stay_open_on_a_full_disk() {
+    let fx = Fixture::probed(probe(OVERSIZED_MIB, ROOMY_MIB));
+    let (_, task) = fx.member_task();
+    let refused = fx
+        .member(
+            "PATCH",
+            &format!("/api/tasks/{task}"),
+            Some(json!({"name": "Renamed"})),
+        )
+        .await;
+    assert_storage_full(&refused);
+    let deleted = fx
+        .member("DELETE", &format!("/api/tasks/{task}"), None)
+        .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+    assert!(fx.db.task(&task).expect("read").is_none());
+}
+
+#[tokio::test]
 async fn upload_should_report_a_rerun_on_a_task_at_its_limit_as_a_duplicate() {
     let fx = Fixture::multi();
     fx.set_quotas(Quotas {

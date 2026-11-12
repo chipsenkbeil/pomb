@@ -1858,6 +1858,11 @@ impl AccountDb {
         self.db.purge_binned_task(binned.id())
     }
 
+    /// Deletes every task in the recycle bin of `board` for good. Returns how many it deleted.
+    pub fn purge_board_bin(&self, board: &OwnedBoard) -> DbResult<u64> {
+        self.db.purge_board_bin(&board.row().id)
+    }
+
     /// Puts a deleted task back as of `now` in Unix seconds.
     pub fn restore_task(
         &self,
