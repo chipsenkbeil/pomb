@@ -137,7 +137,7 @@ use crate::models::{
     custom_color_value, format_minutes, is_custom_color, lighter_hex, normalize_hex,
     standard_color, text_contrast,
 };
-use crate::permissions::{Permission, Preset, STANDARD_ROLES};
+use crate::permissions::{Permission, Preset, STANDARD_ROLES, StandardKey};
 use crate::rules;
 use crate::webhook::{Prober, is_public_address};
 
@@ -1129,7 +1129,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 92;
+pub const SCHEMA_VERSION: u64 = 93;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1227,6 +1227,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "fe82c030edb6636bdbb41d42b57bc159caa5110cf870a05b5669f1c15e9ef454",
     "fe82c030edb6636bdbb41d42b57bc159caa5110cf870a05b5669f1c15e9ef454",
     "85fcffcce6c320cfe75fa9430345995d95f36b96cae143314bb5c3d6501999c8",
+    "b8ee38bfa29f6aec24252d7f8440cbfbdb8cfe2f26e1b3243f898d7c0eaed996",
     "b8ee38bfa29f6aec24252d7f8440cbfbdb8cfe2f26e1b3243f898d7c0eaed996",
 ];
 
@@ -1445,6 +1446,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 90) {
         grant_webhooks_manage(txn)?;
     }
+    if from.is_none_or(|version| version < 93) {
+        grant_links_delete(txn)?;
+    }
     Ok(())
 }
 
@@ -1464,6 +1468,46 @@ fn grant_webhooks_manage(txn: &WriteTransaction) -> DbResult<()> {
                 return false;
             };
             if !rest.is_subset(&held) || !held.insert(Permission::WebhooksManage) {
+                return false;
+            }
+            let Ok(granted) = serde_json::to_value(held) else {
+                return false;
+            };
+            row.insert("permissions".to_string(), granted);
+            true
+        })?;
+    }
+    Ok(())
+}
+
+/// Gives `links.delete` to every stored token and device request issued as a lead role, and to
+/// every one that holds exactly the lead preset without it, so the lead tokens made before it
+/// joined the preset work again. A token with any other set keeps it.
+fn grant_links_delete(txn: &WriteTransaction) -> DbResult<()> {
+    let mut old = Preset::Lead.permissions();
+    old.remove(&Permission::LinksDelete);
+    let lead_key = serde_json::json!(StandardKey::Lead);
+    let mut lead_roles = BTreeSet::new();
+    rewrite_rows(txn, AGENT_ROLES, |id, role| {
+        if role.get("standard") == Some(&lead_key) {
+            lead_roles.insert(id.to_owned());
+        }
+        false
+    })?;
+    for table in TOKEN_TABLES {
+        rewrite_rows(txn, table, |_, row| {
+            let Some(mut held) = row
+                .get("permissions")
+                .cloned()
+                .and_then(|value| serde_json::from_value::<BTreeSet<Permission>>(value).ok())
+            else {
+                return false;
+            };
+            let lead_role = row
+                .get("role_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| lead_roles.contains(id));
+            if !(lead_role || held == old) || !held.insert(Permission::LinksDelete) {
                 return false;
             }
             let Ok(granted) = serde_json::to_value(held) else {
@@ -15494,6 +15538,101 @@ mod schema_version_tests {
         stamp(&path, 89);
         drop(Db::connect(&path).expect("open version 89 again"));
         assert_eq!(first, rows_of(&path, API_TOKENS));
+    }
+
+    /// A version-92 file holding a lead-role token, a token at the lead preset, a token short of one
+    /// lead permission, and an admin token, all without `links.delete`, plus its path and keys.
+    fn version_92_file_without_links_delete() -> (tempfile::TempDir, String, [String; 4]) {
+        let (dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let (lead_role, ids) = {
+            let db = Db::connect(&path).expect("connect");
+            let role = db
+                .create_agent_role(
+                    account.as_str(),
+                    "chief",
+                    BTreeSet::from([Permission::TasksRead]),
+                )
+                .expect("role");
+            let make = |scope: AuthScope| {
+                let (record, _) = new_api_token_record(&account, "t", scope, None);
+                db.create_api_token(&record).expect("token");
+                record.id
+            };
+            (
+                role.id,
+                [
+                    make(AuthScope::Work),
+                    make(AuthScope::Provision),
+                    make(AuthScope::Provision),
+                    make(AuthScope::Admin),
+                ],
+            )
+        };
+        edit_raw(&path, AGENT_ROLES, &lead_role, |object| {
+            object.insert("standard".to_string(), serde_json::json!("lead"));
+        });
+        edit_raw(&path, API_TOKENS, &ids[0], |object| {
+            object.insert("role_id".to_string(), serde_json::json!(lead_role));
+        });
+        for (id, names) in [
+            (&ids[0], &["links.delete"][..]),
+            (&ids[1], &["links.delete"]),
+            (&ids[2], &["links.delete", "labels.manage"]),
+            (&ids[3], &["links.delete"]),
+        ] {
+            edit_raw(&path, API_TOKENS, id, |object| {
+                let held = object["permissions"].as_array_mut().expect("permissions");
+                held.retain(|name| !names.iter().any(|dropped| name == dropped));
+            });
+        }
+        stamp(&path, 92);
+        (dir, path, ids)
+    }
+
+    fn links_delete_held(path: &str, key: &str) -> bool {
+        rows_of(path, API_TOKENS)[key]["permissions"]
+            .as_array()
+            .expect("permissions")
+            .iter()
+            .any(|name| name == "links.delete")
+    }
+
+    #[test]
+    fn open_should_give_lead_role_tokens_links_delete() {
+        let (_dir, path, ids) = version_92_file_without_links_delete();
+        assert!(!links_delete_held(&path, &ids[0]));
+
+        drop(Db::connect(&path).expect("open version 92"));
+        assert!(links_delete_held(&path, &ids[0]));
+    }
+
+    #[test]
+    fn open_should_give_the_old_lead_preset_links_delete_and_leave_other_sets() {
+        let (_dir, path, ids) = version_92_file_without_links_delete();
+
+        drop(Db::connect(&path).expect("open version 92"));
+        assert!(links_delete_held(&path, &ids[1]));
+        assert!(!links_delete_held(&path, &ids[2]));
+        assert!(!links_delete_held(&path, &ids[3]));
+    }
+
+    #[test]
+    fn open_should_not_change_links_delete_tokens_on_a_second_open() {
+        let (_dir, path, ids) = version_92_file_without_links_delete();
+        drop(Db::connect(&path).expect("open version 92"));
+        let first = rows_of(&path, API_TOKENS);
+
+        for id in &ids[..2] {
+            edit_raw(&path, API_TOKENS, id, |object| {
+                let held = object["permissions"].as_array_mut().expect("permissions");
+                held.retain(|name| name != "links.delete");
+            });
+        }
+        let stripped = rows_of(&path, API_TOKENS);
+        drop(Db::connect(&path).expect("open version 93"));
+        assert_eq!(stripped, rows_of(&path, API_TOKENS));
+        assert_ne!(first, stripped);
     }
 
     mod grant_standard_roles_seats_take {
