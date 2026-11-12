@@ -137,7 +137,7 @@ use crate::models::{
     custom_color_value, format_minutes, is_custom_color, lighter_hex, normalize_hex,
     standard_color, text_contrast,
 };
-use crate::permissions::{Permission, STANDARD_ROLES};
+use crate::permissions::{Permission, Preset, STANDARD_ROLES};
 use crate::rules;
 use crate::webhook::{Prober, is_public_address};
 
@@ -1129,7 +1129,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 89;
+pub const SCHEMA_VERSION: u64 = 90;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1224,6 +1224,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "24ee231d8c67c647a37a4e24a3e2e07e91c7ba5c866650736f47709fbce7187d",
     "40c381ec575e90f7c7b249f90ffc5cd57df0a36a4074058d4a840fcaf69e01ed",
     "62fd2fa52d85a62be89a86e55f30d7376e60b169cf04f5b86ddfdd00d1d2030b",
+    "fe82c030edb6636bdbb41d42b57bc159caa5110cf870a05b5669f1c15e9ef454",
     "fe82c030edb6636bdbb41d42b57bc159caa5110cf870a05b5669f1c15e9ef454",
 ];
 
@@ -1438,6 +1439,37 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     }
     if from.is_none_or(|version| version < 88) {
         split_settings_reads(txn, &[AGENT_ROLES])?;
+    }
+    if from.is_none_or(|version| version < 90) {
+        grant_webhooks_manage(txn)?;
+    }
+    Ok(())
+}
+
+/// Gives `webhooks.manage` to every stored token and device request that holds every other
+/// permission of the admin preset, so the admin tokens made before it joined the preset work
+/// again. A token short of any other admin permission keeps its set.
+fn grant_webhooks_manage(txn: &WriteTransaction) -> DbResult<()> {
+    let mut rest = Preset::Admin.permissions();
+    rest.remove(&Permission::WebhooksManage);
+    for table in TOKEN_TABLES {
+        rewrite_rows(txn, table, |_, row| {
+            let Some(mut held) = row
+                .get("permissions")
+                .cloned()
+                .and_then(|value| serde_json::from_value::<BTreeSet<Permission>>(value).ok())
+            else {
+                return false;
+            };
+            if !rest.is_subset(&held) || !held.insert(Permission::WebhooksManage) {
+                return false;
+            }
+            let Ok(granted) = serde_json::to_value(held) else {
+                return false;
+            };
+            row.insert("permissions".to_string(), granted);
+            true
+        })?;
     }
     Ok(())
 }
@@ -14927,10 +14959,9 @@ mod schema_version_tests {
     }
 
     /// An admin-preset token made before `webhooks.manage` joined the preset gains `labels.manage`
-    /// on the upgrade and still lacks `webhooks.manage`.
+    /// and `webhooks.manage` on the upgrade.
     #[test]
-    fn version_50_file_should_grant_label_management_to_an_admin_token_without_webhook_management()
-    {
+    fn version_50_file_should_grant_label_and_webhook_management_to_an_admin_token() {
         let (_dir, path) = temp_path();
         let account = AccountId::ownerless();
         let id = {
@@ -14952,7 +14983,7 @@ mod schema_version_tests {
             .expect("read")
             .expect("row");
         assert!(token.permissions.contains(&Permission::LabelsManage));
-        assert!(!token.permissions.contains(&Permission::WebhooksManage));
+        assert!(token.permissions.contains(&Permission::WebhooksManage));
     }
 
     /// A version-57 file's tokens at the lead or admin preset gain `epics.manage`, and a custom set
@@ -15390,6 +15421,53 @@ mod schema_version_tests {
         drop(Db::connect(&path).expect("open version 87 again"));
         assert_eq!(first.0, rows_of(&path, API_TOKENS));
         assert_eq!(first.1, rows_of(&path, AGENT_ROLES));
+    }
+
+    #[test]
+    fn open_should_give_older_admin_tokens_webhooks_manage_once() {
+        let held = |path: &str, key: &str| -> BTreeSet<String> {
+            rows_of(path, API_TOKENS)[key]["permissions"]
+                .as_array()
+                .expect("permissions")
+                .iter()
+                .map(|name| name.as_str().expect("name").to_owned())
+                .collect()
+        };
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let (admin, short, work) = {
+            let db = Db::connect(&path).expect("connect");
+            let make = |scope: AuthScope| {
+                let (record, _) = new_api_token_record(&account, "t", scope, None);
+                db.create_api_token(&record).expect("token");
+                record.id
+            };
+            (
+                make(AuthScope::Admin),
+                make(AuthScope::Admin),
+                make(AuthScope::Work),
+            )
+        };
+        let strip = |key: &str, names: &[&str]| {
+            edit_raw(&path, API_TOKENS, key, |object| {
+                let held = object["permissions"].as_array_mut().expect("permissions");
+                held.retain(|name| !names.iter().any(|dropped| name == dropped));
+            });
+        };
+        strip(&admin, &["webhooks.manage"]);
+        strip(&short, &["webhooks.manage", "labels.manage"]);
+        strip(&work, &["webhooks.manage"]);
+        stamp(&path, 89);
+
+        drop(Db::connect(&path).expect("open version 89"));
+        assert!(held(&path, &admin).contains("webhooks.manage"));
+        assert!(!held(&path, &short).contains("webhooks.manage"));
+        assert!(!held(&path, &work).contains("webhooks.manage"));
+
+        let first = rows_of(&path, API_TOKENS);
+        stamp(&path, 89);
+        drop(Db::connect(&path).expect("open version 89 again"));
+        assert_eq!(first, rows_of(&path, API_TOKENS));
     }
 
     mod grant_standard_roles_seats_take {

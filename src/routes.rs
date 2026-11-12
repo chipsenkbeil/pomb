@@ -29543,6 +29543,10 @@ A token holds a set of permissions, and `GET /api/v1/auth/permissions` lists eve
 its group, description and the presets that hold it. `GET /api/v1/auth/whoami` lists what the
 calling credential holds. Every token reaches both routes, whatever it holds.
 
+A token keeps the permissions it was created with. An existing token never gains a permission a
+later release adds to its preset, so a new permission needs a new token. While Pomb is
+pre-stable, a release may update stored tokens once, when it first opens the data.
+
 The `work` preset holds exactly these permissions, in catalog order: `boards.read`, `seats.take`,
 `tasks.read`, `tasks.create`, `tasks.edit`, `tasks.move`, `tasks.claim`, `subtasks.edit`,
 `subtasks.check`, `links.write`, `comments.read`, `comments.write`, `attachments.read`,
