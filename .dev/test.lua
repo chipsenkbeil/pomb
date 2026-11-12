@@ -2,6 +2,8 @@
 positional
 Run the test suite. nextest skips doctests, so they get their own step.
 Arguments go to nextest (`dev test -- -j 1 module`), doctests run only when there are none, each tests/js script runs with node against static/app.js, and every .dev/tests/*_test.lua runs last, arguments or not.
+nextest runs with `INSTA_UPDATE=new`, so a failed run prints the path and text
+of each pending `.snap.new` file.
 ]]
 local devos = require("dev.os")
 local fs = require("dev.fs")
@@ -21,8 +23,36 @@ local function step(cmd)
     return nil
 end
 
-local code = step(argv)
-if code then
+local function print_pending_snapshots()
+    local found = devos.capture({
+        "find",
+        ".",
+        "-path",
+        "./target",
+        "-prune",
+        "-o",
+        "-name",
+        "*.snap.new",
+        "-type",
+        "f",
+        "-print",
+    }, { cwd = ctx.root, stderr = "null" })
+    local paths = {}
+    for path in found:gmatch("[^\n]+") do
+        paths[#paths + 1] = path
+    end
+    table.sort(paths)
+    for _, path in ipairs(paths) do
+        local file = assert(io.open(ctx.root .. "/" .. path, "rb"))
+        local text = file:read("*a")
+        file:close()
+        verb.say("pending snapshot " .. path .. "\n" .. text)
+    end
+end
+
+local code = devos.run(argv, { cwd = ctx.root, env = { INSTA_UPDATE = "new" } }) or 1
+if code ~= 0 then
+    print_pending_snapshots()
     return code
 end
 

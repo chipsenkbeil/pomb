@@ -1,5 +1,7 @@
 # Rust style
 
+Rule numbers are permanent IDs, and a new rule takes the next free number.
+
 This guide states how Rust is written here, one numbered rule per section with
 an example. The lint set that `dev init` installs enforces the mechanical rules,
 and each rule names its check on a `Lint:` line or says `Review` when a reviewer
@@ -15,6 +17,7 @@ checks it. A project adds its own rules under the `## This project` section that
 | Inline `//` comment | present tense, "we" welcome | Capitalized | no |
 | `// NOTE:` and `// TODO:` | marker, then a sentence | Capitalized | no |
 | Error `Display` message | phrase | lowercase | no |
+| Person-facing message | full sentences, no semicolon | Capitalized | yes |
 | Rustdoc section | `# Examples`, `# Errors`, `# Panics`, `# Safety` | h1 | |
 
 ## Comments
@@ -24,10 +27,12 @@ Make the code say it first, and comment only what the code cannot say.
 ### 1. Restructure instead of writing a long comment
 
 Restructure the code when a `//` comment runs to three or more consecutive lines
-of solid prose. Never split a paragraph into bullets to get under the limit. A
-long doc comment is fine.
+of solid prose. A bare comment line ends a run, and each paragraph counts on
+its own. Lint fails a run of seven or more lines and a reviewer judges a run
+of three to six lines. Never split a paragraph into bullets to get under the
+limit. A long doc comment is fine.
 
-Lint: `lint.lua` comment runs, which passes a run that holds a numbered list item
+Lint: `lint.lua` comment runs, which fails a run of seven or more lines, warns from three and passes a run that holds a numbered list item
 
 ```rust
 // Good
@@ -59,6 +64,8 @@ let fonts = Fonts::load_from_dir(&config.font_dir)?;
 A `//` one-liner starts with a capital, reads in the present tense and has no
 trailing period. "We" is welcome. `dev fmt` removes the period from a one-liner and
 leaves a multi-line run, a doc comment and an ellipsis alone.
+
+Line comments wrap at 100 columns, rustfmt's default width.
 
 Lint: `lint.lua` comment periods
 
@@ -110,7 +117,8 @@ config.apply_env_overrides();
 ### 6. Head each block of a long function with one intent line
 
 Give each block of a multi-block function one comment line saying what it is
-for.
+for. A test function with several blocks takes one intent line per block, like
+any other function.
 
 Review
 
@@ -180,6 +188,11 @@ imperative.
 
 Rust docs follow std's third person even though Lua doc summaries are
 imperative.
+
+A failure variant's doc opens with a noun phrase saying what failed, as std does ("The socket closed before..."), never with a "When" clause.
+
+A const or field doc is a noun phrase ("Maximum size of ..."), never a verb
+phrase such as "Sets the ..." or "Represents the ...".
 
 Review
 
@@ -268,13 +281,22 @@ A public module that is a real API surface gets a `//!` essay with at least one
 `#` section, as `std::io` has. Any other `pub mod` gets one `///` line at its
 declaration. A private module and a `#[cfg(test)]` module get nothing.
 
+A module doc never names the code it was ported from, whether a file in
+another repo, an archive or an older implementation. That pointer rots like
+any other pointer to code elsewhere.
+
 Lint: `lint.lua` module docs, which flags a `//!` block under four lines
 
 ```rust
+// Good
 /// Contains constants associated with different path formats.
 pub mod constants;
 
 mod parser;
+
+// Bad
+//! Ported from the love2d original in `old/path.lua`.
+pub mod constants;
 ```
 
 ## Naming
@@ -302,13 +324,13 @@ PascalCase.
 In a single crate every type is re-exported at the root, so the prefix is the
 namespace and `clippy::module_name_repetitions` stays off.
 
-A type that never reaches the crate root (private, or `pub(crate)` used
-only inside its module) is named for its role in its own
-file, with no module prefix: `wire.rs` holds `WireTask` and `WireComment`
-(agentctl `src/board/pomb/wire.rs:115`). The prefix keeps a name
-unambiguous at the root, and a type that stays in its file never meets another
-there. Once a type is re-exported at the root, the module-path prefix applies
-and it takes the full path (`BoardPomb`).
+A type that never reaches the crate root (private, or `pub(crate)` used only
+inside its module) is named for its role in its own file, with no module
+prefix: `wire.rs` holds `WireTask` and `WireComment` (agentctl
+`src/board/pomb/wire.rs:115`). The prefix keeps a name unambiguous at the root,
+and a type that stays in its file never meets another there. Once a type is
+re-exported at the root, the module-path prefix applies and it takes the full
+path (`BoardPomb`).
 
 Review
 
@@ -434,6 +456,10 @@ pub fn connect(
 Accept the generic form so the caller never writes `Some(...)` or a clone at
 the call site.
 
+Keep a plain `Option<T>` where callers commonly pass None. Take
+`impl Into<Option<T>>` only for a parameter callers almost always set, as
+`connect_timeout` is.
+
 Review
 
 ```rust
@@ -447,6 +473,12 @@ builder.connect_timeout(Duration::from_secs(5));
 
 // Bad, with an `Option<Duration>` parameter
 builder.connect_timeout(Some(Duration::from_secs(5)));
+
+// Good, a parameter callers commonly pass `None` for stays `Option<T>`
+pub fn with_title(self, title: Option<&str>) -> Self;
+
+// Bad
+pub fn with_title(self, title: impl Into<Option<&str>>) -> Self;
 ```
 
 ### 24. Pass a mode as an enum, never as booleans
@@ -466,16 +498,33 @@ canvas.stroke(&shape, true, false);
 
 ### 25. Keep items private by default
 
-Reach for `pub(crate)` sparingly. Expose plain-data fields as `pub` and keep
-invariant-bearing fields private on the same type.
+Reach for `pub(crate)` sparingly. Never use pub(super), `pub(self)` or
+`pub(in path)`. Control access with module visibility and root re-exports, and
+use `pub(crate)` for an item that other modules of the crate need. Expose
+plain-data fields as `pub` and keep invariant-bearing fields private on the
+same type.
 
 Review
 
 ```rust
+// Good
 pub struct Page {
     pub id: PageId,
     pub title: String,
     objects: Arc<RwLock<Vec<Object>>>,
+}
+
+pub(crate) fn render(page: &Page) -> String {
+    String::new()
+}
+
+fn escape(text: &str) -> String {
+    String::new()
+}
+
+// Bad
+pub(super) fn render(page: &Page) -> String {
+    String::new()
 }
 ```
 
@@ -495,9 +544,11 @@ pub trait Encoding: private::Sealed {
 }
 ```
 
-### 27. Use a leading underscore only to discard a value
+### 27. Use a leading underscore only to discard a value or hold a guard for its drop
 
 An underscore marks a value nothing reads, never a private name.
+
+A guard held for its drop binds to an underscore-prefixed name such as `_guard`, never a bare `_`, which drops it at once.
 
 Review
 
@@ -583,13 +634,13 @@ fn prompt(feedback: PasswordFeedback) -> Result<String> {
 fn prompt(feedback: super::PasswordFeedback) -> Result<String> {
 ```
 
-### 96. Put a `#[cfg]`-gated import inside the item it serves
+### 96. Put an import behind `#[cfg]` inside the item it serves
 
-A `#[cfg(...)]`-gated import goes in the gated `mod`, the gated function's
-body, or a gated block inside a function, never at the top level of a file.
-rustfmt never moves an import between scopes, so the attribute stays on the
-right import. A gated `pub use` or `pub(crate) use` re-export stays at the top
-level.
+Put an import behind `#[cfg(...)]` inside the item it serves: a `mod`, a
+function body, or a cfg block inside a function body. Never put it at the top
+level of a file. rustfmt never moves an import between scopes, so the attribute
+stays on the right import. A `pub use` or `pub(crate) use` re-export behind
+`#[cfg(...)]` stays at the top level.
 
 Lint: `lint.lua` cfg imports
 
@@ -613,7 +664,6 @@ fn spawn(command: &mut Command) -> io::Result<()> {
 
         command.creation_flags(DETACHED_PROCESS);
     }
-    command.spawn()?;
     Ok(())
 }
 
@@ -898,6 +948,8 @@ return Err(io::Error::other("missing header"));
 Give a derived `Display` a `#[display("...")]` string on every variant, or the
 variant prints as its bare name.
 
+An error's `Display` text stays lowercase with no period in every case, and the screen or CLI layer that shows it to a person turns it into a full sentence.
+
 Review
 
 ```rust
@@ -1102,6 +1154,10 @@ Mark a method that reads like in-place mutation (`with_*`, `to_*`, builder
 setters), a pure function whose result is the only reason to call it, and a
 type whose silent drop loses something. Never mark a unit function or one whose
 return type is already `must_use`.
+A private pure helper carries `must_use` on the same terms as a public one,
+with no visibility exemption. A pure test helper in `tests/` or a
+`#[cfg(test)]` module carries `must_use` like any private pure helper, under
+the same two exceptions.
 
 Lint: `clippy::return_self_not_must_use`, `double_must_use`, `must_use_unit`.
 The rest is Review.
@@ -1174,6 +1230,7 @@ pub trait Transport {
 ## Tests
 
 A test name reads as a sentence, and a test runs against the real thing.
+Test code takes board column names from shared constants, never literals.
 
 ### 65. Put unit tests at the bottom of the file
 
@@ -1190,9 +1247,10 @@ mod tests {
 
 ### 66. Name a test in the `should` form, never `test_`
 
-Write `<subject>_should_<behavior>` in the top-level `tests` module and
-`should_<behavior>` in a per-function submodule, at whatever length the behavior
-needs.
+Write `<subject>_should_<behavior>` in the top-level `tests` module, at whatever
+length the behavior needs. A bare `should_<behavior>` name is right
+wherever the enclosing module or file names the subject, such as a
+per-function submodule, a topic module or a `*_tests.rs` file.
 
 Lint: ast-grep `test-fn-prefix` for the `test_` prefix. The `should` form is
 Review.
@@ -1215,7 +1273,8 @@ fn test_join_checked() {
 ### 67. Run integration tests against real infrastructure
 
 Put integration tests per crate under `tests/` and drive real servers, files and
-processes, never mocks.
+processes, never mocks. The rule covers integration tests only, and
+in-memory fakes are fine in unit tests.
 
 Review
 
@@ -1457,6 +1516,8 @@ channel = "1.90.0"
 
 Suppress with a local `#[expect(lint, reason = "...")]`, never a bare
 `#[allow]`. An `#[expect]` errors once the lint stops firing.
+
+A temporary `expect(dead_code)` is banned, and the caller lands in the same change as the code it calls.
 
 Lint: `clippy::allow_attributes`, `allow_attributes_without_reason`
 
