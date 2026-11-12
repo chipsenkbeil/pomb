@@ -9477,17 +9477,34 @@ struct UpdateTaskInput {
 impl UpdateTaskInput {
     /// Reports whether the patch sets labels and nothing else.
     fn only_labels(&self) -> bool {
+        self.sets_labels() && self.size.is_none() && self.color_id.is_none() && self.sets_no_other()
+    }
+
+    /// Reports whether the patch sets the size or its colour and nothing else.
+    fn only_size(&self) -> bool {
+        (self.size.is_some() || self.color_id.is_some())
+            && !self.sets_labels()
+            && self.sets_no_other()
+    }
+
+    /// Reports whether the patch sets labels, whole or by addition or removal.
+    fn sets_labels(&self) -> bool {
+        self.labels.is_some() || self.labels_add.is_some() || self.labels_remove.is_some()
+    }
+
+    /// Reports whether the patch sets none of the fields besides labels, size and its colour.
+    fn sets_no_other(&self) -> bool {
         let Self {
             name,
             description,
-            size,
-            color_id,
+            size: _,
+            color_id: _,
             member_ids,
             responsible,
             grouping_date,
-            labels,
-            labels_add,
-            labels_remove,
+            labels: _,
+            labels_add: _,
+            labels_remove: _,
             due_at,
             due_repeat,
             due_done,
@@ -9501,11 +9518,8 @@ impl UpdateTaskInput {
             kind,
             unlink_children,
         } = self;
-        (labels.is_some() || labels_add.is_some() || labels_remove.is_some())
-            && name.is_none()
+        name.is_none()
             && description.is_none()
-            && size.is_none()
-            && color_id.is_none()
             && member_ids.is_none()
             && responsible.is_none()
             && grouping_date.is_none()
@@ -9817,7 +9831,7 @@ fn update_history(
     responses(
         (status = 200, description = "Updated task detail", body = TaskDetail),
         (status = 400, description = "Invalid input, including `kind` naming the kind the task already has and `unlink_children` true without `kind` `task`"),
-        (status = 403, description = "`permission_denied`: `kind` `task` needs `epics.manage`. `card_locked`: the task carries a locking label"),
+        (status = 403, description = "`permission_denied`: `kind` `task` needs `epics.manage`. `card_locked`: the task carries a locking label and the token lacks `tasks.edit_locked`, unless the patch sets only the size or its colour"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`stale_fence`: a live claim holds another fence. `epic_has_children`: `kind` `task` on an epic that has children, without `unlink_children`. `claim_held`: `kind` `epic` on a task with a live claim, without that claim's `If-Claim-Fence`"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -9843,15 +9857,17 @@ async fn update_task(
     let owned = found(db.task(&id), "task not found")?;
     let rules = board_rules(db, owned.board_id())?;
     let only_labels = input.only_labels();
-    let unlocks = only_labels && {
-        let after = patched_labels(
-            &owned.row().labels,
-            input.labels.as_deref().map(clean_labels),
-            input.labels_add.as_deref().map(clean_labels).as_deref(),
-            input.labels_remove.as_deref().map(clean_labels).as_deref(),
-        );
-        !rules.locks(&after)
-    };
+    let only_size = input.only_size();
+    let unlocks = only_size
+        || (only_labels && {
+            let after = patched_labels(
+                &owned.row().labels,
+                input.labels.as_deref().map(clean_labels),
+                input.labels_add.as_deref().map(clean_labels).as_deref(),
+                input.labels_remove.as_deref().map(clean_labels).as_deref(),
+            );
+            !rules.locks(&after)
+        });
     if !unlocks {
         ensure_unlocked(db, &user, owned.board_id(), owned.row())?;
     }
@@ -9973,7 +9989,8 @@ async fn update_task(
                 if !task.fence_allows(fence) {
                     return Err(stale_fence());
                 }
-                if !user.has(Permission::TasksEditLocked) && rules.locks(&task.labels) {
+                if !only_size && !user.has(Permission::TasksEditLocked) && rules.locks(&task.labels)
+                {
                     let after = patched_labels(
                         &task.labels,
                         labels.clone(),
@@ -10465,7 +10482,7 @@ struct MoveTaskInput {
     responses(
         (status = 200, description = "Moved task detail", body = TaskDetail),
         (status = 400, description = "Unknown column"),
-        (status = 403, description = "`role_move_forbidden`: the token was issued as a role and the board's column rules do not let that role move a task out of its column into this one. `permission_denied`: the task is an epic, the move crosses a Done column boundary and the token lacks `epics.manage`. `card_locked`: the task carries a locking label"),
+        (status = 403, description = "`role_move_forbidden`: the token was issued as a role and the board's column rules do not let that role move a task out of its column into this one. `permission_denied`: the task is an epic, the move crosses a Done column boundary and the token lacks `epics.manage`. `card_locked`: the task carries a locking label and the token lacks `tasks.edit_locked`, unless the move stays in the task's column and swimlane"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit, or held/limit time for an hours limit), or the limit group of the column is full (n/limit). `stale_fence`: a live claim holds another fence. `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column. Without a code: the target board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -10494,7 +10511,13 @@ async fn move_task(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::bad_request("unknown column"))?;
     let to_name = to_column.row().name.clone();
-    ensure_unlocked(db, &user, before.board_id(), before.row())?;
+    let reorders = before.row().column_id == to_column.row().id
+        && input.swimlane_id.as_deref().is_none_or(|lane| {
+            lane.is_empty() || before.row().swimlane_id.as_deref() == Some(lane)
+        });
+    if !reorders {
+        ensure_unlocked(db, &user, before.board_id(), before.row())?;
+    }
     ensure_epic_close_allowed(
         &user,
         before.row(),

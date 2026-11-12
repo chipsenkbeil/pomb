@@ -824,7 +824,7 @@ mod locked {
             (
                 "POST",
                 format!("{task}/move"),
-                Body::Json(json!({"column_id": fx.backlog, "position": 0})),
+                Body::Json(json!({"column_id": fx.ready, "position": 0})),
             ),
             ("DELETE", task.clone(), Body::Empty),
             (
@@ -1527,6 +1527,55 @@ mod locked {
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn token_should_reorder_a_locked_task_within_its_column() {
+        let fx = Fixture::new();
+        let id = fx.locked_task().await;
+        let uri = format!("/api/tasks/{id}/move");
+        let body = json!({"column_id": fx.backlog, "position": 0});
+        let (status, text) = fx.json(Who::Token, "POST", &uri, body).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn token_should_set_the_size_of_a_locked_task() {
+        let fx = Fixture::new();
+        let id = fx.locked_task().await;
+        let uri = format!("/api/tasks/{id}");
+        let (status, text) = fx.json(Who::Token, "PATCH", &uri, json!({"size": 3})).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let after = fx.db.task(&id).expect("read").expect("task");
+        assert_eq!(after.labels, ["needs:human"]);
+    }
+
+    #[tokio::test]
+    async fn token_should_be_refused_other_edits_to_a_locked_task() {
+        let fx = Fixture::new();
+        let id = fx.locked_task().await;
+        let writes = [
+            (
+                "POST",
+                format!("/api/tasks/{id}/move"),
+                json!({"column_id": fx.ready, "position": 0}),
+            ),
+            (
+                "PATCH",
+                format!("/api/tasks/{id}"),
+                json!({"name": "Renamed"}),
+            ),
+            (
+                "PATCH",
+                format!("/api/tasks/{id}"),
+                json!({"size": 3, "name": "Renamed"}),
+            ),
+        ];
+        for (method, uri, body) in writes {
+            let (status, text) = fx.json(Who::Token, method, &uri, body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
+            assert_eq!(parse(&text)["code"], "card_locked", "{method} {uri}");
+        }
     }
 
     #[tokio::test]

@@ -123,7 +123,7 @@ catalog! {
     TasksCreate, "tasks.create", "tasks", Work, "Create a task or an epic, and turn a subtask into a task.";
     TasksEdit, "tasks.edit", "tasks", Work, "Update a task, tick the boxes in its description, close and reopen an epic, bulk update and restore tasks.";
     TasksMove, "tasks.move", "tasks", Work, "Move a task to another column or position.";
-    TasksEditLocked, "tasks.edit_locked", "tasks", Grant, "Move, edit and comment on a task that carries a locking label, which no preset holds.";
+    TasksEditLocked, "tasks.edit_locked", "tasks", Grant, "Move, edit and comment on a task that carries a locking label, which no preset holds. Without it a token still sizes such a task and reorders it within its column.";
     TasksClaim, "tasks.claim", "tasks", Work, "Claim a task, renew or release the claim, and watch the task.";
     TasksBin, "tasks.bin", "tasks", Lead, "Move a task to the recycle bin.";
     TasksDelete, "tasks.delete", "tasks", Admin, "Delete a task from the recycle bin for good.";
