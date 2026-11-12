@@ -49,21 +49,38 @@ impl Server {
     /// startup line.
     fn start(db_path: &str) -> Self {
         let mut child = spawn_server(db_path);
-        let mut stdout = startup_lines(&mut child);
-        let mut line = String::new();
-        let port = loop {
-            line.clear();
-            let read = stdout.read_line(&mut line).expect("read child stdout");
-            assert!(read > 0, "pomb exited before listening");
-            if let Some(rest) = line.strip_prefix("pomb listening on http://127.0.0.1:") {
-                let port = rest.split_whitespace().next().expect("port");
-                break port.parse().expect("numeric port");
-            }
-        };
-        Server {
+        let stdout = startup_lines(&mut child);
+        let mut server = Server {
             child,
-            port,
+            port: 0,
             stdout,
+        };
+        let prefix = "pomb listening on http://127.0.0.1:";
+        let seen = server.wait_for_line(prefix);
+        let line = seen.last().expect("listening line");
+        let rest = line.strip_prefix(prefix).expect("listening line");
+        server.port = rest
+            .split_whitespace()
+            .next()
+            .expect("port")
+            .parse()
+            .expect("numeric port");
+        server
+    }
+
+    /// Reads stdout lines until one starts with `prefix`. Returns every line
+    /// read, the matching one last.
+    fn wait_for_line(&mut self, prefix: &str) -> Vec<String> {
+        let mut seen = Vec::new();
+        loop {
+            let mut line = String::new();
+            let read = self.stdout.read_line(&mut line).expect("read child stdout");
+            assert!(read > 0, "pomb exited before printing {prefix:?}");
+            let matched = line.starts_with(prefix);
+            seen.push(line);
+            if matched {
+                return seen;
+            }
         }
     }
 
@@ -223,15 +240,7 @@ fn second_signal_should_drop_open_requests_at_once() {
 
     // Wait until the drain begins
     server.signal("-TERM");
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let read = server.stdout.read_line(&mut line).expect("read stdout");
-        assert!(read > 0, "pomb exited before it began to drain");
-        if line.starts_with("pomb: shutting down") {
-            break;
-        }
-    }
+    server.wait_for_line("pomb: shutting down");
 
     // Send the second signal and time the exit
     let second = Instant::now();
@@ -253,25 +262,17 @@ fn sigterm_during_startup_should_leave_a_cleanly_closed_database() {
     let path = dir.path().join("pomb.redb");
     let path = path.to_str().expect("utf8 path");
     let mut child = spawn_server(path);
-    let mut stdout = startup_lines(&mut child);
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let read = stdout.read_line(&mut line).expect("read child stdout");
-        assert!(read > 0, "pomb exited before opening the database");
-        assert!(
-            !line.starts_with("pomb listening"),
-            "no startup marker before listening"
-        );
-        if line.starts_with("pomb: opening database") {
-            break;
-        }
-    }
+    let stdout = startup_lines(&mut child);
     let mut server = Server {
         child,
         port: 0,
         stdout,
     };
+    let seen = server.wait_for_line("pomb: opening database");
+    assert!(
+        !seen.iter().any(|line| line.starts_with("pomb listening")),
+        "no startup marker before listening"
+    );
     let (status, log) = server.signal_and_wait("-TERM", Duration::from_secs(30));
     assert!(status.success(), "exit status: {status}\n{log}");
     assert!(
