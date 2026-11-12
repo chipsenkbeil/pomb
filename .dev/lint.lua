@@ -595,9 +595,13 @@ local site_scripts = lint:files({
     ".dev/standalone/setup.sh",
     ".dev/standalone/pomb-update",
     ".dev/standalone/__publish_release.sh",
+    ".dev/site/decoys.sh",
+    ".dev/site/restage.sh",
+    ".dev/site/setup-code.sh",
+    ".dev/site/status.sh",
 })
 if lint:have("shellcheck", "brew install shellcheck", "shellcheck") then
-    lint:check("shellcheck", lintset.with_files({ "shellcheck", "-x" }, site_scripts))
+    lint:check("shellcheck", lintset.with_files({ "shellcheck", "-x", "-s", "bash" }, site_scripts))
 end
 if lint:have("shfmt", "brew install shfmt", "shfmt") then
     lint:check("shfmt", lintset.with_files({ "shfmt", "-d", "-i", "2", "-ci" }, site_scripts))

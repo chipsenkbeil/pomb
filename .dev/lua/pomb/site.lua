@@ -144,4 +144,16 @@ function M.dir(ctx)
     return ctx.root .. "/.dev/site"
 end
 
+---Read a remote script from the site folder, and exit 1 when it cannot be read.
+---@param ctx dev.Ctx the verb's context
+---@param name string script name without its `.sh` suffix
+---@return string script the script text, sent to the box unchanged
+function M.read_script(ctx, name)
+    local text, why = fs.read(M.dir(ctx) .. "/" .. name .. ".sh")
+    if not text then
+        verb.die(why)
+    end
+    return text
+end
+
 return M
