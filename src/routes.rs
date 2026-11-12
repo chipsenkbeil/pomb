@@ -27499,7 +27499,7 @@ fn submitted_template(names: &[String]) -> Result<BTreeSet<Permission>, AppError
     Ok(permissions)
 }
 
-/// Lists the agent roles of the account, by name. Needs `settings.read`.
+/// Lists the agent roles of the account, by name. Needs `roles.read`.
 #[utoipa::path(
     get,
     path = "/api/v1/agent-roles",
@@ -27519,7 +27519,7 @@ async fn list_agent_roles(account: AccountDb) -> Result<Json<Vec<AgentRoleView>>
         .map(Json)
 }
 
-/// Shows one agent role of the account. Needs `settings.read`.
+/// Shows one agent role of the account. Needs `roles.read`.
 #[utoipa::path(
     get,
     path = "/api/v1/agent-roles/{id}",
@@ -28788,7 +28788,7 @@ struct UnreadView {
 /// made a member of a task. A task it is a member of or watches got a comment, moved or was
 /// deleted. A column was renamed or deleted, or a board was deleted. Only changes made with an API
 /// token notify, and the account's own changes in the browser never do. An account sees only its
-/// own notifications, and keeps its newest 500. Needs `settings.read`.
+/// own notifications, and keeps its newest 500. Needs `notifications.read`.
 #[utoipa::path(
     get,
     path = "/api/notifications",
@@ -29547,7 +29547,8 @@ calling credential holds. Every token reaches both routes, whatever it holds.
 The `work` preset holds exactly these permissions, in catalog order: `boards.read`, `seats.take`,
 `tasks.read`, `tasks.create`, `tasks.edit`, `tasks.move`, `tasks.claim`, `subtasks.edit`,
 `subtasks.check`, `links.write`, `comments.read`, `comments.write`, `attachments.read`,
-`attachments.write`, `time.read`, `time.write`, `settings.read`.
+`attachments.write`, `time.read`, `time.write`, `settings.read`, `notifications.read`,
+`roles.read`.
 
 `POST /api/v1/auth/tokens` takes one of `scopes`, a `preset` or a custom set of `permissions`, plus
 `boards`, and `POST /api/v1/auth/tokens/inspect` shows what a token of the account holds. Both need

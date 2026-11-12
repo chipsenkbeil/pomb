@@ -1129,7 +1129,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 87;
+pub const SCHEMA_VERSION: u64 = 88;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1223,6 +1223,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "f3d7f7aed30f557c41f67dd66ed057aa03376248d236e76e6d9b5036812be920",
     "24ee231d8c67c647a37a4e24a3e2e07e91c7ba5c866650736f47709fbce7187d",
     "40c381ec575e90f7c7b249f90ffc5cd57df0a36a4074058d4a840fcaf69e01ed",
+    "62fd2fa52d85a62be89a86e55f30d7376e60b169cf04f5b86ddfdd00d1d2030b",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1362,6 +1363,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 62) {
         split_write_permissions(txn)?;
     }
+    if from.is_none_or(|version| version < 88) {
+        split_settings_reads(txn, &TOKEN_TABLES)?;
+    }
     let mut added = Vec::new();
     if from.is_none_or(|version| version < 41) {
         added.extend([
@@ -1430,6 +1434,46 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     }
     if from.is_none_or(|version| version < 81) {
         assign_role_keys(txn)?;
+    }
+    if from.is_none_or(|version| version < 88) {
+        split_settings_reads(txn, &[AGENT_ROLES])?;
+    }
+    Ok(())
+}
+
+/// The tables whose rows hold a permission set a token acts with.
+const TOKEN_TABLES: [Rows; 3] = [API_TOKENS, SUSPENDED_TOKENS, DEVICE_AUTHS];
+
+/// The permissions split out of `settings.read` in version 88.
+const SETTINGS_READ_SPLIT: [Permission; 2] = [Permission::RolesRead, Permission::NotificationsRead];
+
+/// Gives every row of `tables` that holds `settings.read` the permissions split out of it, so
+/// no stored token or role loses a read.
+fn split_settings_reads(txn: &WriteTransaction, tables: &[Rows]) -> DbResult<()> {
+    for &table in tables {
+        rewrite_rows(txn, table, |_, row| {
+            let Some(held) = row
+                .get_mut("permissions")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                return false;
+            };
+            if !held
+                .iter()
+                .any(|name| *name == Permission::SettingsRead.name())
+            {
+                return false;
+            }
+            let mut changed = false;
+            for permission in SETTINGS_READ_SPLIT {
+                let name = serde_json::Value::from(permission.name());
+                if !held.contains(&name) {
+                    held.push(name);
+                    changed = true;
+                }
+            }
+            changed
+        })?;
     }
     Ok(())
 }
@@ -15246,7 +15290,11 @@ mod schema_version_tests {
                 .filter(|permission| {
                     !matches!(
                         permission,
-                        Permission::SeatsManage | Permission::SeatsTake | Permission::LinksDelete
+                        Permission::SeatsManage
+                            | Permission::SeatsTake
+                            | Permission::LinksDelete
+                            | Permission::NotificationsRead
+                            | Permission::RolesRead
                     )
                 })
                 .collect();
@@ -15276,9 +15324,71 @@ mod schema_version_tests {
         };
         let mut widened = held(&[]);
         widened.extend(LEAD_ROLE_V73_ADDED);
+        widened.extend(SETTINGS_READ_SPLIT);
+        let mut split_edited = edited.clone();
+        split_edited.extend(SETTINGS_READ_SPLIT);
+        let mut split_other = held(&[]);
+        split_other.extend(SETTINGS_READ_SPLIT);
         assert_eq!(role(&untouched).permissions, widened);
-        assert_eq!(role(&owned).permissions, edited);
-        assert_eq!(role(&other).permissions, held(&[]));
+        assert_eq!(role(&owned).permissions, split_edited);
+        assert_eq!(role(&other).permissions, split_other);
+    }
+
+    #[test]
+    fn open_should_add_roles_read_and_notifications_read_once() {
+        let split = ["roles.read", "notifications.read"];
+        let names = |row: &serde_json::Value| -> BTreeSet<String> {
+            row["permissions"]
+                .as_array()
+                .expect("permissions")
+                .iter()
+                .map(|name| name.as_str().expect("name").to_owned())
+                .collect()
+        };
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let (reader, other, role) = {
+            let db = Db::connect(&path).expect("connect");
+            let make = |held: &[Permission]| {
+                let (mut record, _) = new_api_token_record(&account, "t", AuthScope::Read, None);
+                record.permissions = held.iter().copied().collect();
+                db.create_api_token(&record).expect("token");
+                record.id
+            };
+            let reader = make(&[Permission::BoardsRead, Permission::SettingsRead]);
+            let other = make(&[Permission::BoardsRead, Permission::TasksRead]);
+            let role = db
+                .create_agent_role("a", "lead", lead_role_permissions())
+                .expect("lead")
+                .id;
+            (reader, other, role)
+        };
+        let strip = |table: Rows, key: &str| {
+            edit_raw(&path, table, key, |object| {
+                let held = object["permissions"].as_array_mut().expect("permissions");
+                held.retain(|name| !split.iter().any(|dropped| name == dropped));
+            });
+        };
+        strip(API_TOKENS, &reader);
+        strip(API_TOKENS, &other);
+        strip(AGENT_ROLES, &role);
+        stamp(&path, 87);
+
+        drop(Db::connect(&path).expect("open version 87"));
+        let opened = |table: Rows, key: &str| rows_of(&path, table)[key].clone();
+        let gained = |row: &serde_json::Value| {
+            let held = names(row);
+            split.iter().all(|name| held.contains(*name))
+        };
+        assert!(gained(&opened(API_TOKENS, &reader)));
+        assert!(gained(&opened(AGENT_ROLES, &role)));
+        assert!(!names(&opened(API_TOKENS, &other)).contains("roles.read"));
+
+        let first = (rows_of(&path, API_TOKENS), rows_of(&path, AGENT_ROLES));
+        stamp(&path, 87);
+        drop(Db::connect(&path).expect("open version 87 again"));
+        assert_eq!(first.0, rows_of(&path, API_TOKENS));
+        assert_eq!(first.1, rows_of(&path, AGENT_ROLES));
     }
 
     mod grant_standard_roles_seats_take {

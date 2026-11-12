@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use axum::Router;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
@@ -409,10 +411,10 @@ async fn muting_a_kind_should_stop_new_notifications_of_that_kind() {
 }
 
 #[tokio::test]
-async fn a_token_without_settings_read_should_be_refused_notifications() {
+async fn a_token_without_notifications_read_should_be_refused_notifications() {
     let fx = Fixture::new();
     let (mut record, raw) = new_api_token_record(&fx.admin, "narrow", AuthScope::Admin, None);
-    record.permissions.remove(&Permission::SettingsRead);
+    record.permissions.remove(&Permission::NotificationsRead);
     fx.db.create_api_token(&record).expect("token");
     let auth = format!("Bearer {raw}");
     let reply = call(
@@ -425,7 +427,30 @@ async fn a_token_without_settings_read_should_be_refused_notifications() {
     .await;
     assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
     assert_eq!(reply.body["code"], "permission_denied", "{}", reply.body);
-    assert_eq!(reply.body["permission"], "settings.read", "{}", reply.body);
+    assert_eq!(
+        reply.body["permission"], "notifications.read",
+        "{}",
+        reply.body
+    );
+}
+
+#[tokio::test]
+async fn notifications_read_should_list_notifications_without_settings_read() {
+    let fx = Fixture::new();
+    let task = fx.unfollowed("Assign me");
+    fx.send(
+        "PATCH",
+        &format!("/api/tasks/{task}"),
+        Some(json!({"member_ids": [fx.admin.as_str()]})),
+    )
+    .await;
+    let (mut record, raw) = new_api_token_record(&fx.admin, "narrow", AuthScope::Admin, None);
+    record.permissions =
+        Permission::with_required(&BTreeSet::from([Permission::NotificationsRead]));
+    fx.db.create_api_token(&record).expect("token");
+    let reply = over_bearer(&fx, &raw, "GET", "/api/notifications").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["items"].as_array().expect("items").len(), 1);
 }
 
 fn seeded_token(fx: &Fixture, scope: AuthScope) -> String {

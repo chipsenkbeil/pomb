@@ -889,7 +889,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (Method::GET, "/device", Permission::SettingsRead),
     (Method::GET, "/api/tasks", Permission::TasksRead),
     (Method::GET, "/api/search", Permission::TasksRead),
-    (Method::GET, "/api/notifications", Permission::SettingsRead),
+    (
+        Method::GET,
+        "/api/notifications",
+        Permission::NotificationsRead,
+    ),
     (
         Method::POST,
         "/api/notifications/read",
@@ -1460,11 +1464,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/boards/:id/colors/copy-from",
         Permission::ColorsCopy,
     ),
-    (Method::GET, "/api/v1/agent-roles", Permission::SettingsRead),
+    (Method::GET, "/api/v1/agent-roles", Permission::RolesRead),
     (
         Method::GET,
         "/api/v1/agent-roles/:id",
-        Permission::SettingsRead,
+        Permission::RolesRead,
     ),
     (
         Method::POST,

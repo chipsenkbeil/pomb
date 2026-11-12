@@ -247,6 +247,48 @@ async fn agent_role_patch_should_refuse_a_bearer_token() {
     assert_eq!(roles.body.as_array().expect("list").len(), 1);
 }
 
+fn narrow_token(fx: &Fixture, held: &[Permission]) -> String {
+    let (mut record, raw) = new_api_token_record(&fx.alice, "narrow", AuthScope::Admin, None);
+    record.permissions = Permission::with_required(&held.iter().copied().collect());
+    fx.db.create_api_token(&record).expect("token");
+    format!("Bearer {raw}")
+}
+
+async fn read_with(fx: &Fixture, auth: &str, uri: &str) -> Reply {
+    call(&fx.app, "GET", uri, &[("authorization", auth)], None).await
+}
+
+#[tokio::test]
+async fn roles_read_should_list_roles_without_settings_read() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let id = role["id"].as_str().expect("id");
+    let auth = narrow_token(&fx, &[Permission::RolesRead]);
+    let listed = read_with(&fx, &auth, "/api/v1/agent-roles").await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    assert_eq!(listed.body.as_array().expect("list").len(), 1);
+    let shown = read_with(&fx, &auth, &format!("/api/v1/agent-roles/{id}")).await;
+    assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
+    assert_eq!(shown.body["id"], id);
+}
+
+#[tokio::test]
+async fn settings_read_alone_should_not_read_roles_or_notifications() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let id = role["id"].as_str().expect("id");
+    let auth = narrow_token(&fx, &[Permission::SettingsRead]);
+    for (uri, permission) in [
+        ("/api/v1/agent-roles".to_string(), "roles.read"),
+        (format!("/api/v1/agent-roles/{id}"), "roles.read"),
+        ("/api/notifications".to_string(), "notifications.read"),
+    ] {
+        let reply = read_with(&fx, &auth, &uri).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{uri}: {}", reply.body);
+        assert_eq!(reply.body["permission"], permission, "{uri}");
+    }
+}
+
 #[tokio::test]
 async fn board_delete_should_drop_role_grants() {
     let fx = Fixture::new();

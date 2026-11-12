@@ -134,6 +134,8 @@ catalog! {
     TimeDelete, "time.delete", "time", Admin, "Delete a time entry.";
     SettingsRead, "settings.read", "settings", Read, "Read the account settings.";
     SettingsWrite, "settings.write", "settings", Admin, "Change the account settings.";
+    NotificationsRead, "notifications.read", "notifications", Read, "Read the account's notifications.";
+    RolesRead, "roles.read", "roles", Read, "List the agent roles and read one.";
     FeedsManage, "feeds.manage", "feeds", Admin, "List, create and delete a board's calendar feeds.";
     WebhooksManage, "webhooks.manage", "webhooks", Admin, "List, create, change and delete a board's webhooks, which send its events to other servers.";
     InboundManage, "inbound.manage", "inbound", Admin, "List, create, rotate and delete a board's inbound addresses, which turn forwarded mail into tasks.";
@@ -309,6 +311,8 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
             Permission::TimeWrite,
             Permission::ColumnsEdit,
             Permission::SettingsRead,
+            Permission::NotificationsRead,
+            Permission::RolesRead,
             Permission::TokensIssue,
             Permission::RolesGrant,
             Permission::SeatsManage,
@@ -323,7 +327,7 @@ mod tests {
 
     use super::*;
 
-    const NAMES: [&str; 56] = [
+    const NAMES: [&str; 58] = [
         "boards.read",
         "boards.create",
         "boards.configure",
@@ -375,6 +379,8 @@ mod tests {
         "time.delete",
         "settings.read",
         "settings.write",
+        "notifications.read",
+        "roles.read",
         "feeds.manage",
         "webhooks.manage",
         "inbound.manage",
@@ -436,7 +442,29 @@ mod tests {
             .filter(|name| name.ends_with(".read"))
             .collect();
         assert_eq!(held(Preset::Read), reads);
-        assert_eq!(reads.len(), 6);
+        assert_eq!(reads.len(), 8);
+    }
+
+    #[test]
+    fn read_preset_and_standard_roles_should_hold_roles_read_and_notifications_read() {
+        let split = [Permission::RolesRead, Permission::NotificationsRead];
+        for preset in Preset::ALL {
+            assert!(split.iter().all(|permission| preset.contains(*permission)));
+        }
+        for role in STANDARD_ROLES {
+            let held = role.permissions();
+            let reads_settings = held.contains(&Permission::SettingsRead);
+            assert!(
+                split.iter().all(|permission| held.contains(permission)) == reads_settings,
+                "{}",
+                role.name
+            );
+        }
+        assert!(
+            STANDARD_ROLES
+                .iter()
+                .any(|role| role.permissions().contains(&Permission::SettingsRead))
+        );
     }
 
     #[test]
@@ -635,6 +663,8 @@ mod tests {
                     "time.write",
                     "columns.edit",
                     "settings.read",
+                    "notifications.read",
+                    "roles.read",
                     "tokens.issue",
                     "roles.grant",
                     "seats.manage",
