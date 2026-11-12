@@ -2659,3 +2659,19 @@ async fn member_token_time_should_store_the_member_handle() {
         "{admin_entries:?}"
     );
 }
+
+#[tokio::test]
+async fn bearer_token_should_not_replace_recovery_code_or_delete_account() {
+    let fx = pair(None).await;
+    let app = &fx.instance.app;
+    let bearer = format!("Bearer {}", mint_token(app, &fx.member).await);
+    for (uri, body) in [
+        ("/api/v1/account/recovery-code", None),
+        ("/api/v1/account/delete", Some(json!({"handle": "bob"}))),
+    ] {
+        let refused = call(app, "POST", uri, &[("authorization", &bearer)], body).await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{uri}");
+        assert_eq!(refused.body["code"], "session_required", "{uri}");
+    }
+    assert_eq!(whoami(app, &fx.member).await.status, StatusCode::OK);
+}

@@ -85,7 +85,12 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
   lists and revokes its own children over Bearer, and no other token's children. Any token, with no permission, revokes
   itself and every token it issued with `POST /api/v1/auth/tokens/revoke-self` over Bearer, and
   a browser session is refused there. A token never
-  adds a passkey. Only the owner edits, renames or deletes an agent role, in the browser. A
+  adds a passkey. Device approval (`/device`, `/device/approve`, `/device/deny`), reauth
+  (`/api/v1/auth/reauth`), recovery codes (`/api/v1/account/recovery-code`), account deletion
+  (`/api/v1/account/delete`) and auth sessions (`/api/v1/auth/sessions`) are browser-only on
+  purpose: a token that could approve its own pairing, refresh its session proof, replace the
+  recovery code, delete the account or end sessions would defeat the passkey check, so a Bearer
+  request gets 403 `session_required`. Only the owner edits, renames or deletes an agent role, in the browser. A
   Bearer token only creates the standard roles the account lacks and grants or revokes a role on
   boards it holds. A token acts as a role when it is issued from the Settings form or by device
   approval, or as the child of a token holding `tokens.issue` made with `role_id`. A token edit

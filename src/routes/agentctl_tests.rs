@@ -15083,3 +15083,25 @@ async fn move_should_keep_the_count_message_for_a_count_column() {
         (StatusCode::CONFLICT, "column WIP limit reached (1/1)")
     );
 }
+
+#[tokio::test]
+async fn bearer_token_should_not_list_or_end_sessions() {
+    let (_dir, fx) = fixture();
+    let (_, admin) = token_record(&fx, "admin", AuthScope::Admin);
+    let (status, text) = request(&fx, As::Admin, "GET", "/api/v1/auth/sessions", None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let sessions = serde_json::from_str::<Value>(&text).expect("json");
+    let id = sessions[0]["id"].as_str().expect("session id").to_string();
+    for (method, uri) in [
+        ("GET", "/api/v1/auth/sessions".to_string()),
+        ("DELETE", format!("/api/v1/auth/sessions/{id}")),
+    ] {
+        let (status, text) = request(&fx, As::Bearer(&admin), method, &uri, None, true).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json")["code"],
+            "session_required",
+            "{method} {uri}"
+        );
+    }
+}
