@@ -797,6 +797,29 @@ async fn search_should_rank_a_bare_hex_word_that_matches_an_id_above_text() {
         fx.names(&word).await,
         ["Quiet card", &format!("Notes {word}")]
     );
-    assert_eq!(fx.names(&format!("{word} in:title")).await.len(), 2);
     assert_eq!(fx.names(&format!("{word} is:open")).await.len(), 1);
+}
+
+#[tokio::test]
+async fn search_should_skip_the_id_match_under_in() {
+    let Seeded { fx, plans, .. } = seeded().await;
+    let columns = fx.db.list_columns(&plans).expect("columns");
+    let target = fx
+        .task(json!({"column_id": columns[2].id, "name": "Quiet card"}))
+        .await;
+    let word = target[..8].to_string();
+    fx.task(json!({"column_id": columns[0].id, "name": format!("Notes {word}")}))
+        .await;
+    assert_eq!(
+        fx.names(&format!("{word} in:title")).await,
+        [format!("Notes {word}")]
+    );
+    assert_eq!(
+        fx.names(&format!("id:{word} in:title")).await,
+        ["Quiet card"]
+    );
+    assert_eq!(
+        fx.names(&format!("id:{word} in:description")).await,
+        ["Quiet card"]
+    );
 }

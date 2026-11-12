@@ -239,6 +239,8 @@ impl Word {
 pub struct Query {
     /// The fields the text terms search.
     fields: Vec<Field>,
+    /// Whether an `in:` term named the fields, which stops a bare word matching a task by id.
+    narrowed: bool,
     /// The filters, all of which apply.
     conditions: Vec<Condition>,
     /// The text terms, all of which apply.
@@ -319,12 +321,14 @@ impl Query {
         }
         let mut query = Self {
             fields: Vec::new(),
+            narrowed: false,
             conditions: Vec::new(),
             words: Vec::new(),
         };
         for term in &terms {
             query.add_term(term)?;
         }
+        query.narrowed = !query.fields.is_empty();
         if query.fields.is_empty() {
             query.fields = Field::ALL.to_vec();
         }
@@ -535,7 +539,7 @@ impl Query {
                     locate(&word.needle, &segment.chars).map(|located| (segment, located))
                 })
                 .min_by_key(|(segment, located)| (segment.field, located.gaps, located.start));
-            let id_match = word.matches_id(&task.id);
+            let id_match = !self.narrowed && word.matches_id(&task.id);
             by_id |= id_match;
             match best {
                 Some(best) => bests.push(best),

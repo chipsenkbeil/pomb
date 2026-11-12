@@ -8923,7 +8923,8 @@ struct SearchPage {
 /// before a word, a phrase or a filter excludes the cards that satisfy it, as in `-label:bug`,
 /// `-is:done` and `-draft`. Each exclusion applies on its own, so `-label:bug -label:wip` drops a
 /// card that has either label, and `in:` cannot be excluded. A bare word of at least 6 hex digits
-/// also matches a task whose id starts with it, so pasting `24350646` finds that card. A term with
+/// also matches a task whose id starts with it, so pasting `24350646` finds that card, unless the
+/// query holds an `in:` term, which limits the text terms to the fields it names. A term with
 /// an unknown key, or a value its key does not accept, such as an `id:` shorter than 6
 /// characters, answers 400 `invalid_request` naming the term, and so does a blank `q`.
 ///
