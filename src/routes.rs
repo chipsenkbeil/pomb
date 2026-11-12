@@ -78,12 +78,12 @@ use crate::db::{
     OwnedBoard, OwnedColumn, OwnedTask, OwnerChange, OwnerOutcome, PaletteStrandsColor,
     PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuestionGuard, QuestionMove,
     QuestionWrite, QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked,
-    RoleDenied, RoleTokenRefusal, SessionEndOutcome, SessionListing, SessionRefused, SessionToken,
-    SettingsDb, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome,
-    TaskContext, TemplateDeleteOutcome, TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart,
-    UmbrellaRef, WebhookColumnMissing, WebhookPatch, WipCheck, WipHeld, WipRefused, carry_fields,
-    clean_labels, labels_event, local_day, merge_metadata, push_change_event, push_column_event,
-    push_event, round_estimate,
+    RoleDenied, RoleTokenRefusal, RootAdminDb, SessionEndOutcome, SessionListing, SessionRefused,
+    SessionToken, SettingsDb, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
+    SwimlaneUpdateOutcome, TaskContext, TemplateDeleteOutcome, TokenEdit, TokenNameTaken,
+    UmbrellaChange, UmbrellaPart, UmbrellaRef, WebhookColumnMissing, WebhookPatch, WipCheck,
+    WipHeld, WipRefused, carry_fields, clean_labels, labels_event, local_day, merge_metadata,
+    push_change_event, push_column_event, push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -842,8 +842,9 @@ enum RouteClass {
     AccountSession,
     /// Instance administration, which needs the admin's browser session.
     Admin,
-    /// Instance settings, which need the admin's browser session or a token of the admin account
-    /// that holds `settings.write`.
+    /// Instance settings, the invite routes and the sign-up approval routes, which need the admin's
+    /// browser session or a token of the admin account: one that holds `settings.write` for the
+    /// backups, a root Admin preset token for the invites and approvals.
     Instance,
     /// No credential: sign-in, setup, device pairing for the client, the calendar feed and docs.
     Public,
@@ -1678,15 +1679,20 @@ const ROUTE_ACCESS: &[(Method, &str, Rc, Wr)] = {
             Rc::AccountSession,
             Wr::Exempt,
         ),
-        (Method::GET, "/api/v1/admin/invites", Rc::Admin, Wr::No),
-        (Method::POST, "/api/v1/admin/invites", Rc::Admin, Wr::Exempt),
+        (Method::GET, "/api/v1/admin/invites", Rc::Instance, Wr::No),
+        (
+            Method::POST,
+            "/api/v1/admin/invites",
+            Rc::Instance,
+            Wr::Exempt,
+        ),
         (
             Method::DELETE,
             "/api/v1/admin/invites/:id",
             Rc::Admin,
             Wr::Exempt,
         ),
-        (Method::GET, "/api/v1/admin/accounts", Rc::Admin, Wr::No),
+        (Method::GET, "/api/v1/admin/accounts", Rc::Instance, Wr::No),
         (
             Method::DELETE,
             "/api/v1/admin/accounts/:id",
@@ -1696,7 +1702,7 @@ const ROUTE_ACCESS: &[(Method, &str, Rc, Wr)] = {
         (
             Method::POST,
             "/api/v1/admin/accounts/:id/approve",
-            Rc::Admin,
+            Rc::Instance,
             Wr::Exempt,
         ),
         (
@@ -7733,20 +7739,19 @@ struct CreatedInviteView {
     responses(
         (status = 200, description = "The invite and its link, shown once", body = CreatedInviteView),
         (status = 400, description = "`expires_in_days` outside 1 to 30"),
-        (status = 403, description = "`forbidden` for a member, or `session_required` for a Bearer token"),
+        (status = 403, description = "`permission_denied` for a member, a token below the Admin preset or a child token"),
         (status = 404, description = "The server runs in single mode"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn create_invite(
     State(state): State<AppState>,
-    instance: InstanceDb,
+    admin: RootAdminDb,
     Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreatedInviteView>, AppError> {
     require_multi_mode(&state)?;
-    require_cookie_auth(&user)?;
     let input: CreateInviteInput = parse_body(&headers, body).await?;
     let days = input.expires_in_days.unwrap_or(DEFAULT_INVITE_DAYS);
     if !(1..=MAX_INVITE_DAYS).contains(&days) {
@@ -7762,7 +7767,8 @@ async fn create_invite(
         created_at: now,
         expires_at: now + days * SECONDS_PER_DAY,
     };
-    instance
+    admin
+        .instance()
         .create_invite(&auth::hash_invite_token(&token), &row, now)
         .map_err(AppError::from)?;
     Ok(Json(CreatedInviteView {
@@ -7779,20 +7785,18 @@ async fn create_invite(
     tag = "Accounts",
     responses(
         (status = 200, description = "Unused invites", body = Vec<InviteView>),
-        (status = 403, description = "`forbidden` for a member, or `session_required` for a Bearer token"),
+        (status = 403, description = "`permission_denied` for a member, a token below the Admin preset or a child token"),
         (status = 404, description = "The server runs in single mode"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn list_invites(
     State(state): State<AppState>,
-    instance: InstanceDb,
-    Extension(user): Extension<AuthUser>,
+    admin: RootAdminDb,
 ) -> Result<Json<Vec<InviteView>>, AppError> {
     require_multi_mode(&state)?;
-    require_cookie_auth(&user)?;
     Ok(Json(
-        live_invites(&instance)?
+        live_invites(admin.instance())?
             .iter()
             .map(InviteView::from)
             .collect(),
@@ -7891,18 +7895,20 @@ fn require_admin_session(state: &AppState, user: &AuthUser) -> Result<(), AppErr
     tag = "Accounts",
     responses(
         (status = 200, description = "Every account", body = Vec<AccountView>),
-        (status = 403, description = "`forbidden` for a member, or `session_required` for a Bearer token"),
+        (status = 403, description = "`permission_denied` for a member, a token below the Admin preset or a child token"),
         (status = 404, description = "The server runs in single mode"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn list_accounts(
     State(state): State<AppState>,
-    instance: InstanceDb,
-    Extension(user): Extension<AuthUser>,
+    admin: RootAdminDb,
 ) -> Result<Json<Vec<AccountView>>, AppError> {
-    require_admin_session(&state, &user)?;
-    let summaries = instance.account_summaries().map_err(AppError::from)?;
+    require_multi_mode(&state)?;
+    let summaries = admin
+        .instance()
+        .account_summaries()
+        .map_err(AppError::from)?;
     Ok(Json(summaries.into_iter().map(AccountView::from).collect()))
 }
 
@@ -7916,6 +7922,16 @@ fn account_action(
     action: AccountAction,
 ) -> Result<Json<AccountView>, AppError> {
     require_admin_session(state, user)?;
+    apply_account_action(instance, id, action)
+}
+
+/// Applies an admin action on account `id` and answers with the account's new view, or with why
+/// it was refused.
+fn apply_account_action(
+    instance: &InstanceDb,
+    id: &str,
+    action: AccountAction,
+) -> Result<Json<AccountView>, AppError> {
     let outcome = instance
         .apply_account_action(id, action)
         .map_err(AppError::from)?;
@@ -7953,7 +7969,7 @@ fn admin_refusal(outcome: &AdminActionOutcome) -> Result<(), AppError> {
     params(("id" = String, Path, description = "Account id")),
     responses(
         (status = 200, description = "The approved account", body = AccountView),
-        (status = 403, description = "`forbidden` for a member or for the admin's own account, or `session_required` for a Bearer token"),
+        (status = 403, description = "`permission_denied` for a member, a token below the Admin preset or a child token"),
         (status = 404, description = "No account has that id, or the server runs in single mode"),
         (status = 409, description = "`conflict`: the account is not pending"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -7961,11 +7977,11 @@ fn admin_refusal(outcome: &AdminActionOutcome) -> Result<(), AppError> {
 )]
 async fn approve_account(
     State(state): State<AppState>,
-    instance: InstanceDb,
-    Extension(user): Extension<AuthUser>,
+    admin: RootAdminDb,
     Path(id): Path<String>,
 ) -> Result<Json<AccountView>, AppError> {
-    account_action(&state, &instance, &user, &id, AccountAction::Approve)
+    require_multi_mode(&state)?;
+    apply_account_action(admin.instance(), &id, AccountAction::Approve)
 }
 
 /// Suspends an active member account. In the same transaction its sessions end and its tokens are
@@ -29738,8 +29754,12 @@ account's API tokens and every other passkey, ends every session the account had
 approved device requests, counts what it revoked and shows a new code. A wrong handle and a wrong
 code both answer 400 `invalid_recovery`. Deleting an account needs its handle typed out, and one
 transaction removes everything it owns. The admin's account answers 409
-`admin_has_accounts` while other accounts exist. Every operation that changes an account or an
-invite needs the browser session (403 `session_required` for a Bearer token). Backups copy the
+`admin_has_accounts` while other accounts exist. A root Admin preset token of the admin
+account lists and creates invites and lists and approves pending accounts over Bearer, and a
+member, a Lead token, a child token or any token below the Admin preset gets 403
+`permission_denied`. Every other operation that changes an account or an invite, which is
+revoking an invite, suspending, unsuspending and deleting an account and saving the admin
+settings, needs the browser session (403 `session_required` for a Bearer token). Backups copy the
 whole database file, so whoever runs the server can read every account's data."#;
 
 /// Concept prose for the `Backups` tag.

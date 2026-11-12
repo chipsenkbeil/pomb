@@ -18,7 +18,9 @@ A map of the code. Update it in the same change that adds, moves or removes a mo
   routes reach data through: `AccountDb` (one account's rows, by `Owned*` proofs), `InstanceDb`
   (instance settings, invites and the account list, no board content),
   `SettingsDb`, which wraps it for the four backup routes and which an Admin preset token of the
-  admin account reaches too, and `PublicDb` (sign-in, setup, invite
+  admin account reaches too, `RootAdminDb`, which wraps it for the invite and sign-up approval
+  routes and which only a root Admin preset token of the admin account reaches besides its
+  browser session, and `PublicDb` (sign-in, setup, invite
   registration, recovery, device pairing, the calendar feed). `src/db/membership.rs` holds the
   instance mode, invites, registration and its approval, suspension, recovery codes and account
   deletion, `src/db/sharing.rs` the accounts that joined a board they do not own: the table `board_members` (keyed `<board id>|<account id>`, one `BoardMemberRow` with a viewer or member `BoardRole`) and the multimaps `members_by_board` and `boards_by_member`, which board and account deletion keep in step, while the board's `owner_id` still names its owner (handing a board over moves that id, the board's counted bytes and its place in `boards_by_owner` in one transaction), `src/db/bin.rs` the recycle bin (deleted tasks, whole, until restored or purged after 30 days), `src/db/activity.rs` when each account was last seen and each board last used, and

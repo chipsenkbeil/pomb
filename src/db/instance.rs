@@ -8,10 +8,10 @@ use super::{
     no_signed_in_account,
 };
 use crate::api_error::{ErrorCode, coded_response, permission_denied};
-use crate::auth::AuthUser;
+use crate::auth::{AuthUser, CredentialKind};
 use crate::backup::{Backups, RunError};
 use crate::models::{
-    AccountRole, BackupSettings, BackupStatus, InstanceSettings, InviteRow, PruneStatus,
+    AccountRole, AuthScope, BackupSettings, BackupStatus, InstanceSettings, InviteRow, PruneStatus,
     UnnamedFiles,
 };
 use crate::permissions::Permission;
@@ -66,6 +66,42 @@ impl FromRequestParts<AppState> for SettingsDb {
             return Err(no_signed_in_account());
         };
         if user.role == AccountRole::Admin && user.has(Permission::SettingsWrite) {
+            Ok(Self(InstanceDb {
+                db: state.db.clone(),
+            }))
+        } else {
+            Err(permission_denied(Permission::SettingsWrite))
+        }
+    }
+}
+
+/// The instance handle for the invite and sign-up approval routes: the admin's browser session or
+/// a root Admin preset token of the admin account, never the bootstrap token. A member, a token
+/// below the Admin preset and a child token get a 403 `permission_denied`.
+#[derive(Clone, Debug)]
+pub struct RootAdminDb(InstanceDb);
+
+impl RootAdminDb {
+    /// Returns the instance handle the extractor checked.
+    #[must_use]
+    pub fn instance(&self) -> &InstanceDb {
+        &self.0
+    }
+}
+
+#[axum::async_trait]
+impl FromRequestParts<AppState> for RootAdminDb {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
+        let Some(user) = parts.extensions.get::<AuthUser>() else {
+            return Err(no_signed_in_account());
+        };
+        if user.role == AccountRole::Admin
+            && user.kind != CredentialKind::Bootstrap
+            && user.scope == AuthScope::Admin
+            && user.parent_token.is_none()
+        {
             Ok(Self(InstanceDb {
                 db: state.db.clone(),
             }))

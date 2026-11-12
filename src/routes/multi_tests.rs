@@ -32,9 +32,9 @@ use crate::models::{
 /// Days since its last use for a board well past the default inactivity limit.
 const PRUNED_LONG_AGO_DAYS: i64 = 365;
 
-/// Fewest Admin-class routes the member refusal test must cover: invites, accounts,
-/// settings and the admin page.
-const MIN_ADMIN_ROUTES: usize = 10;
+/// Fewest Admin-class routes the member refusal test must cover: invite revoke, account suspend,
+/// unsuspend and delete, settings and the admin page.
+const MIN_ADMIN_ROUTES: usize = 6;
 
 /// The bootstrap token the instances under test accept.
 const BOOTSTRAP: &str = "pomb_multi_bootstrap_token_for_tests";
@@ -2674,4 +2674,207 @@ async fn bearer_token_should_not_replace_recovery_code_or_delete_account() {
         assert_eq!(refused.body["code"], "session_required", "{uri}");
     }
     assert_eq!(whoami(app, &fx.member).await.status, StatusCode::OK);
+}
+
+/// Mints a token of the named `preset` in the browser session `cookie` and returns its secret.
+async fn mint_preset_token(app: &axum::Router, cookie: &str, preset: &str) -> String {
+    let minted = call(
+        app,
+        "POST",
+        "/api/v1/auth/tokens",
+        &[("cookie", cookie)],
+        Some(json!({"name": preset, "preset": preset})),
+    )
+    .await;
+    assert_eq!(minted.status, StatusCode::OK, "{}", minted.body);
+    minted.body["raw_token"]
+        .as_str()
+        .expect("raw token")
+        .to_string()
+}
+
+/// Mints a child of the root token `parent` that holds the settings permissions and returns its
+/// secret.
+async fn mint_settings_child(app: &axum::Router, parent: &str) -> String {
+    let bearer = format!("Bearer {parent}");
+    let minted = call(
+        app,
+        "POST",
+        "/api/v1/auth/tokens/children",
+        &[("authorization", &bearer)],
+        Some(json!({"name": "kid", "permissions": ["settings.read", "settings.write"]})),
+    )
+    .await;
+    assert_eq!(minted.status, StatusCode::OK, "{}", minted.body);
+    minted.body["raw_token"]
+        .as_str()
+        .expect("raw token")
+        .to_string()
+}
+
+#[tokio::test]
+async fn admin_preset_token_should_list_and_create_invites() {
+    let fx = pair(None).await;
+    let app = &fx.instance.app;
+    let bearer = format!(
+        "Bearer {}",
+        mint_preset_token(app, &fx.admin, "admin").await
+    );
+    let headers = [("authorization", bearer.as_str())];
+    let created = call(
+        app,
+        "POST",
+        "/api/v1/admin/invites",
+        &headers,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.body);
+    let id = created.body["invite"]["id"].as_str().expect("invite id");
+    let url = created.body["url"].as_str().expect("invite url");
+    assert!(url.contains("/signup/"), "{url}");
+    let listed = call(app, "GET", "/api/v1/admin/invites", &headers, None).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    let ids: Vec<&str> = listed
+        .body
+        .as_array()
+        .expect("invite list")
+        .iter()
+        .filter_map(|invite| invite["id"].as_str())
+        .collect();
+    assert!(ids.contains(&id), "{ids:?} lacks {id}");
+}
+
+#[tokio::test]
+async fn admin_preset_token_should_list_and_approve_pending_accounts() {
+    let Requested {
+        fx,
+        carol,
+        carol_id,
+    } = requested().await;
+    let app = &fx.instance.app;
+    let bearer = format!(
+        "Bearer {}",
+        mint_preset_token(app, &fx.admin, "admin").await
+    );
+    let headers = [("authorization", bearer.as_str())];
+    let listed = call(app, "GET", "/api/v1/admin/accounts", &headers, None).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    let pending = listed
+        .body
+        .as_array()
+        .expect("account list")
+        .iter()
+        .find(|account| account["id"] == carol_id.as_str())
+        .expect("carol is listed");
+    assert_eq!(pending["status"], "pending");
+    let uri = format!("/api/v1/admin/accounts/{}/approve", carol_id.as_str());
+    let approved = call(app, "POST", &uri, &headers, None).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    assert_eq!(approved.body["status"], "active");
+    assert_eq!(status_of(&fx.instance, &carol_id), AccountStatus::Active);
+    assert_eq!(get(app, "/api/boards", &carol).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admin_preset_token_should_be_refused_the_browser_only_admin_routes() {
+    let fx = pair(None).await;
+    let app = &fx.instance.app;
+    let bob = fx.instance.account("bob");
+    let bearer = format!(
+        "Bearer {}",
+        mint_preset_token(app, &fx.admin, "admin").await
+    );
+    let headers = [("authorization", bearer.as_str())];
+    let account = format!("/api/v1/admin/accounts/{}", bob.as_str());
+    let settings = admin_settings("request", InstanceSettings::DEFAULT_PENDING_CAP);
+    for (method, uri, body) in [
+        ("POST", format!("{account}/suspend"), None),
+        ("POST", format!("{account}/unsuspend"), None),
+        ("DELETE", account.clone(), None),
+        ("PUT", "/api/v1/admin/settings".to_string(), Some(settings)),
+        ("DELETE", "/api/v1/admin/invites/anything".to_string(), None),
+    ] {
+        let refused = call(app, method, &uri, &headers, body).await;
+        assert_eq!(
+            (refused.status, refused.code.as_deref()),
+            (StatusCode::FORBIDDEN, Some("session_required")),
+            "{method} {uri}: {}",
+            refused.body
+        );
+    }
+    assert_eq!(status_of(&fx.instance, &bob), AccountStatus::Active);
+}
+
+#[tokio::test]
+async fn lead_and_child_tokens_should_be_refused_the_invite_and_approval_routes() {
+    let Requested { fx, carol_id, .. } = requested().await;
+    let app = &fx.instance.app;
+    let root = mint_preset_token(app, &fx.admin, "admin").await;
+    let lead = mint_preset_token(app, &fx.admin, "lead").await;
+    let child = mint_settings_child(app, &root).await;
+    let member = mint_token(app, &fx.member).await;
+    let approve = format!("/api/v1/admin/accounts/{}/approve", carol_id.as_str());
+    for (who, secret) in [("lead", lead), ("child", child), ("member", member)] {
+        let bearer = format!("Bearer {secret}");
+        let headers = [("authorization", bearer.as_str())];
+        for (method, uri, body) in [
+            ("GET", "/api/v1/admin/invites", None),
+            ("POST", "/api/v1/admin/invites", Some(json!({}))),
+            ("GET", "/api/v1/admin/accounts", None),
+            ("POST", approve.as_str(), None),
+        ] {
+            let refused = call(app, method, uri, &headers, body).await;
+            assert_eq!(
+                refused.status,
+                StatusCode::FORBIDDEN,
+                "{who} {method} {uri}: {}",
+                refused.body
+            );
+        }
+    }
+    assert_eq!(status_of(&fx.instance, &carol_id), AccountStatus::Pending);
+}
+
+#[tokio::test]
+async fn openapi_should_name_the_admin_routes_a_token_takes_and_the_browser_only_ones() {
+    let fx = pair(None).await;
+    let spec = call(&fx.instance.app, "GET", "/api/v1/openapi.json", &[], None).await;
+    assert_eq!(spec.status, StatusCode::OK, "{}", spec.body);
+    let scheme = |method: &str, path: &str| {
+        let requirement = &spec.body["paths"][path][method]["security"][0];
+        requirement
+            .as_object()
+            .and_then(|map| map.keys().next().cloned())
+            .unwrap_or_default()
+    };
+    for (method, path) in [
+        ("get", "/api/v1/admin/invites"),
+        ("post", "/api/v1/admin/invites"),
+        ("get", "/api/v1/admin/accounts"),
+        ("post", "/api/v1/admin/accounts/{id}/approve"),
+    ] {
+        assert_eq!(scheme(method, path), "bearerAuth", "{method} {path}");
+    }
+    for (method, path) in [
+        ("delete", "/api/v1/admin/invites/{id}"),
+        ("post", "/api/v1/admin/accounts/{id}/suspend"),
+        ("post", "/api/v1/admin/accounts/{id}/unsuspend"),
+        ("delete", "/api/v1/admin/accounts/{id}"),
+        ("put", "/api/v1/admin/settings"),
+    ] {
+        assert_eq!(scheme(method, path), "cookieAuth", "{method} {path}");
+    }
+    let tags = spec.body["tags"].as_array().expect("tags");
+    let accounts = tags
+        .iter()
+        .find(|tag| tag["name"] == "Accounts")
+        .and_then(|tag| tag["description"].as_str())
+        .expect("Accounts tag");
+    assert!(
+        accounts
+            .replace('\n', " ")
+            .contains("root Admin preset token"),
+        "the Accounts prose names the token routes"
+    );
 }

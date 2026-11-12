@@ -206,10 +206,8 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
     assert_eq!(
         cookie_only,
         vec![
-            "approve_account",
             "create_agent_role",
             "create_api_token",
-            "create_invite",
             "delete_account",
             "delete_agent_role",
             "delete_member_account",
@@ -218,9 +216,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "get_api_token",
             "get_webhook_secret",
             "inspect_api_token",
-            "list_accounts",
             "list_api_tokens",
-            "list_invites",
             "list_passkeys",
             "list_sessions",
             "regenerate_recovery_code",
@@ -271,7 +267,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        34
+        30
     );
 }
 

@@ -85,7 +85,7 @@ pub use self::files::{AttachmentFiles, Incoming};
 pub use self::import::{BoardImport, FileImport, TaskImport};
 pub use self::inbound::{InboundColumnMissing, IssuedInbound, MAX_PREFIX_CHARS, NewInbound};
 use self::inbound::{txn_drop_inbound, txn_remove_inbound};
-pub use self::instance::{InstanceDb, SettingsDb};
+pub use self::instance::{InstanceDb, RootAdminDb, SettingsDb};
 pub use self::limit_groups::{ColumnMove, GroupWrite};
 use self::limit_groups::{
     txn_group_over_limit, txn_leave_limit_groups, txn_order_splits_group, txn_sort_groups,
