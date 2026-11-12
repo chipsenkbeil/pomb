@@ -1587,6 +1587,61 @@ mod locked {
     }
 
     #[tokio::test]
+    async fn locked_refusal_should_name_the_permission() {
+        let fx = Fixture::new();
+        let id = fx.locked_task().await;
+        let (status, text) = fx
+            .json(
+                Who::Token,
+                "PATCH",
+                &format!("/api/tasks/{id}"),
+                json!({"name": "Renamed"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        let body = parse(&text);
+        assert_eq!(body["code"], "card_locked", "{text}");
+        let message = body["message"].as_str().expect("message");
+        assert!(message.contains("tasks.edit_locked"), "{message}");
+        assert!(!message.contains("only the owner"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn locked_lane_refusal_should_name_the_permission() {
+        let fx = Fixture::new();
+        let (status, text) = fx
+            .create(
+                Who::Session,
+                &fx.backlog,
+                json!({"labels": ["needs:human"], "swimlane_id": fx.lane}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{text}");
+        let uri = format!("/api/swimlanes/{}", fx.lane);
+        let (status, text) = fx.call(Who::Token, "DELETE", &uri, Body::Empty).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        let body = parse(&text);
+        assert_eq!(body["code"], "card_locked", "{text}");
+        let message = body["message"].as_str().expect("message");
+        assert!(message.contains("tasks.edit_locked"), "{message}");
+        assert!(!message.contains("only the owner"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn locked_board_refusal_should_name_the_permission() {
+        let fx = Fixture::new();
+        fx.locked_task().await;
+        let uri = format!("/api/boards/{}", fx.board);
+        let (status, text) = fx.call(Who::Token, "DELETE", &uri, Body::Empty).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        let body = parse(&text);
+        assert_eq!(body["code"], "card_locked", "{text}");
+        let message = body["message"].as_str().expect("message");
+        assert!(message.contains("tasks.edit_locked"), "{message}");
+        assert!(!message.contains("only the owner"), "{message}");
+    }
+
+    #[tokio::test]
     async fn token_should_be_refused_other_edits_to_a_locked_task() {
         let fx = Fixture::new();
         let id = fx.locked_task().await;

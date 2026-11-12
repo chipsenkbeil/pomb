@@ -22975,7 +22975,7 @@ fn ensure_role_move_allowed(
 /// Returns the refusal of an API token's write to a task that carries a locking label.
 #[must_use]
 fn card_locked() -> AppError {
-    AppError::forbidden("this task carries a locking label, so only the owner can change it")
+    AppError::forbidden("this task carries a locking label, so the write needs tasks.edit_locked")
         .with_code(ErrorCode::CardLocked)
 }
 
@@ -23017,7 +23017,7 @@ fn ensure_lane_unlocked(
 ) -> Result<(), AppError> {
     if !user.has(Permission::TasksEditLocked) && has_locked_task(db, board_id, lane_id)? {
         return Err(AppError::forbidden(
-            "a task in the swimlane carries a locking label, so only the owner can change it",
+            "a task in the swimlane carries a locking label, so the write needs tasks.edit_locked",
         )
         .with_code(ErrorCode::CardLocked));
     }
@@ -23029,7 +23029,7 @@ fn ensure_lane_unlocked(
 fn ensure_board_unlocked(db: &AccountDb, user: &AuthUser, board_id: &str) -> Result<(), AppError> {
     if !user.has(Permission::TasksEditLocked) && has_locked_task(db, board_id, None)? {
         return Err(AppError::forbidden(
-            "a task on the board carries a locking label, so only the owner can change it",
+            "a task on the board carries a locking label, so the write needs tasks.edit_locked",
         )
         .with_code(ErrorCode::CardLocked));
     }
