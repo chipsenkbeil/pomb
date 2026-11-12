@@ -908,6 +908,27 @@ async fn standard_roles_should_leave_custom_roles_with_standard_names_alone() {
     assert_eq!(read_only, 2);
 }
 
+#[tokio::test]
+async fn ensure_standard_roles_should_refuse_a_double_name_clash() {
+    let fx = Fixture::new();
+    for name in ["reviewer", "reviewer (standard)"] {
+        fx.db
+            .create_agent_role(fx.alice.as_str(), name, read_perms())
+            .expect("role");
+    }
+    let body = json!({"boards": [fx.boards[ALICE]]});
+    let reply = fx.bearer(ALICE, "POST", STANDARD, Some(body)).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    let listed = fx.bearer(ALICE, "GET", "/api/v1/agent-roles", None).await;
+    let listed = listed.body.as_array().expect("list");
+    assert_eq!(listed.len(), 2);
+    assert!(
+        listed
+            .iter()
+            .all(|role| role["permissions"] == json!(["tasks.read"]) && role["boards"] == json!([]))
+    );
+}
+
 fn read_perms() -> BTreeSet<Permission> {
     BTreeSet::from([Permission::TasksRead])
 }

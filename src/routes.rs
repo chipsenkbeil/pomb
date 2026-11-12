@@ -27744,9 +27744,12 @@ fn held_board(account: &AccountDb, id: &str) -> Result<OwnedBoard, AppError> {
 
 /// Creates the standard roles the account lacks, from the fixed table of planner, implementer,
 /// reviewer, verifier, release and lead, and grants every listed board to all six. Needs
-/// `roles.grant`, which the lead preset holds. A role that
-/// exists keeps its template, and a repeat call changes nothing. Every board must be one the
-/// caller holds, or nothing is written. No other role is created or edited this way.
+/// `roles.grant`, which the lead preset holds. A role that exists keeps its template, and a
+/// repeat call changes nothing. A custom role that holds a standard name is kept, and the keyed
+/// role is named with " (standard)" added. When a custom role already holds the name a keyed
+/// role would take, such as `reviewer (standard)`, the call refuses with a 400 and writes
+/// nothing. Every board must be one the caller holds, or nothing is written. No other role is
+/// created or edited this way.
 #[utoipa::path(
     post,
     path = "/api/v1/agent-roles/standard",
@@ -27755,6 +27758,7 @@ fn held_board(account: &AccountDb, id: &str) -> Result<OwnedBoard, AppError> {
     request_body = StandardRolesInput,
     responses(
         (status = 200, description = "The six standard roles and the names this call created", body = StandardRolesView),
+        (status = 400, description = "A custom role already holds the name a keyed standard role would take, such as `reviewer (standard)`, and nothing was written"),
         (status = 403, description = "`permission_denied`: the caller lacks `roles.grant`, or `exceeds_grant`: a listed board is not one the calling token holds, and nothing was written"),
         (status = 404, description = "A listed board does not exist, and nothing was written"),
         (status = 409, description = "`quota_exceeded`: creating the missing roles would pass the account's 50 roles"),
