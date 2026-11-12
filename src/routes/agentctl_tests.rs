@@ -13128,6 +13128,83 @@ async fn a_work_token_should_get_403_naming_epics_manage_on_close_and_reopen_but
     assert_eq!(detail["closed"], false);
 }
 
+async fn move_as(fx: &Fixture, who: As<'_>, task: &str, column: &str) -> (StatusCode, Value) {
+    let uri = format!("/api/tasks/{task}/move");
+    let body = json!({"column_id": column, "position": 0});
+    let (status, text) = request(fx, who, "POST", &uri, Some(body), true).await;
+    (
+        status,
+        serde_json::from_str(&text).unwrap_or(Value::String(text)),
+    )
+}
+
+#[tokio::test]
+async fn move_epic_into_done_should_need_epics_manage() {
+    let (_dir, fx) = fixture();
+    let (epic, _) = epic_with_children(&fx, 0).await;
+    let work = token_with(&fx, "worker", AuthScope::Work);
+
+    let (status, error) = move_as(&fx, As::Bearer(&work), &epic, &fx.col_done).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+    assert_eq!(error, permission_denied("epics.manage"));
+    assert_eq!(stored(&fx, &epic)["column_id"], fx.col_todo.as_str());
+    assert_eq!(stored(&fx, &epic)["closed"], false);
+}
+
+#[tokio::test]
+async fn move_epic_out_of_done_should_need_epics_manage() {
+    let (_dir, fx) = fixture();
+    let (epic, _) = epic_with_children(&fx, 0).await;
+    let work = token_with(&fx, "worker", AuthScope::Work);
+    let (status, moved) = move_as(&fx, As::Admin, &epic, &fx.col_done).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+
+    let (status, error) = move_as(&fx, As::Bearer(&work), &epic, &fx.col_todo).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+    assert_eq!(error, permission_denied("epics.manage"));
+    assert_eq!(stored(&fx, &epic)["column_id"], fx.col_done.as_str());
+}
+
+#[tokio::test]
+async fn bulk_move_should_refuse_the_whole_batch_for_an_epic_closing_without_epics_manage() {
+    let (_dir, fx) = fixture();
+    let (epic, _) = epic_with_children(&fx, 0).await;
+    let plain = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
+    let work = token_with(&fx, "worker", AuthScope::Work);
+    let uri = format!("/api/boards/{}/tasks/bulk", fx.board_id);
+    let body = json!({"task_ids": [plain, epic], "action": "move", "column_id": fx.col_done});
+
+    let (status, text) = request(&fx, As::Bearer(&work), "POST", &uri, Some(body), true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert!(text.contains("epics.manage"), "{text}");
+    assert_eq!(stored(&fx, &epic)["column_id"], fx.col_todo.as_str());
+    assert_eq!(stored(&fx, &plain)["column_id"], fx.col_todo.as_str());
+}
+
+#[tokio::test]
+async fn move_epic_should_still_work_with_epics_manage_or_inside_done() {
+    let (_dir, fx) = fixture();
+    let (epic, _) = epic_with_children(&fx, 0).await;
+    let plain = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
+    let work = token_with(&fx, "worker", AuthScope::Work);
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+    let second = fx
+        .db
+        .create_column(&fx.board_id, "Archived", None)
+        .expect("column");
+    fx.db.set_column_done(&second, true).expect("set done");
+
+    let (status, moved) = move_as(&fx, As::Bearer(&lead), &epic, &fx.col_done).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    let (status, moved) = move_as(&fx, As::Bearer(&work), &epic, &second).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    assert_eq!(stored(&fx, &epic)["column_id"], second.as_str());
+    let (status, moved) = move_as(&fx, As::Bearer(&work), &plain, &fx.col_done).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    let (status, moved) = move_as(&fx, As::Bearer(&lead), &epic, &fx.col_todo).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+}
+
 #[tokio::test]
 async fn an_epic_whose_children_are_all_done_should_stay_open_until_someone_closes_it() {
     let (_dir, fx) = fixture();

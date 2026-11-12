@@ -10432,7 +10432,8 @@ struct MoveTaskInput {
 /// `completed_at` and crossing out clears it. Without a swimlane the task keeps its lane, or takes
 /// the target board's first lane when the column is on another board. A move to another board also
 /// gives the task that board's color of the same value, else its default. It needs `tasks.move`
-/// alone and no delete permission: the task and everything on it survive.
+/// and no delete permission: the task and everything on it survive. Moving an epic into or out of a
+/// Done column closes or reopens it, which also needs `epics.manage`.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/move",
@@ -10448,7 +10449,7 @@ struct MoveTaskInput {
     responses(
         (status = 200, description = "Moved task detail", body = TaskDetail),
         (status = 400, description = "Unknown column"),
-        (status = 403, description = "`role_move_forbidden`: the token was issued as a role and the board's column rules do not let that role move a task out of its column into this one. `card_locked`: the task carries a locking label"),
+        (status = 403, description = "`role_move_forbidden`: the token was issued as a role and the board's column rules do not let that role move a task out of its column into this one. `permission_denied`: the task is an epic, the move crosses a Done column boundary and the token lacks `epics.manage`. `card_locked`: the task carries a locking label"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit, or held/limit time for an hours limit), or the limit group of the column is full (n/limit). `stale_fence`: a live claim holds another fence. `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column. Without a code: the target board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -10478,6 +10479,12 @@ async fn move_task(
         .ok_or_else(|| AppError::bad_request("unknown column"))?;
     let to_name = to_column.row().name.clone();
     ensure_unlocked(db, &user, before.board_id(), before.row())?;
+    ensure_epic_close_allowed(
+        &user,
+        before.row(),
+        from_column.as_ref().map(|c| c.row()),
+        to_column.row(),
+    )?;
     if before.row().column_id != to_column.row().id {
         if let Some(from) = &from_column {
             ensure_role_move_allowed(db, &user, from.row(), to_column.row())?;
@@ -10773,7 +10780,7 @@ struct BulkTasksResult {
     responses(
         (status = 200, description = "Every task changed, or would change under `dry_run`", body = BulkTasksResult),
         (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks, a link the tasks cannot hold or a `parent` or `child` link whose umbrella is not an epic (`not_epic`)"),
-        (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task carries a locking label, or a task it links to carries one and the link is not `blocked_by` or `related`, and the token is not the owner's. `role_move_forbidden`: a `move` by a token issued as a role that the board's column rules do not let move one of the tasks out of its column into the target"),
+        (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task carries a locking label, or a task it links to carries one and the link is not `blocked_by` or `related`, and the token is not the owner's. `role_move_forbidden`: a `move` by a token issued as a role that the board's column rules do not let move one of the tasks out of its column into the target. `permission_denied` also covers a `move` of an epic across a Done column boundary without `epics.manage`, which refuses the whole batch"),
         (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
         (status = 409, description = "`epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column. `wip_limit_reached`: a `move` would put a task past the target column's or limit group's WIP limit and `force` is not true, and no task moves"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -11060,6 +11067,15 @@ async fn bulk_tasks(
                 .filter(|lane| !lane.is_empty())
                 .map(|lane| lane_on_board(db, &lane, &column.row().board_id))
                 .transpose()?;
+            for task in &tasks {
+                let from = db.column(&task.row().column_id).map_err(AppError::from)?;
+                ensure_epic_close_allowed(
+                    &user,
+                    task.row(),
+                    from.as_ref().map(|c| c.row()),
+                    column.row(),
+                )?;
+            }
             for task in &tasks {
                 if task.row().column_id != column.row().id {
                     if let Some(from) = db.column(&task.row().column_id).map_err(AppError::from)? {
@@ -12437,8 +12453,8 @@ fn claim_conflict(claim: &TaskClaim) -> AppError {
 }
 
 /// Closes an epic. Pomb never closes an epic when its children finish: this call does, and needs
-/// `epics.manage`, or a move into a Done column does, and a move out reopens it. The children,
-/// their links and the epic's column stay as they are.
+/// `epics.manage`. So does a move into a Done column, and a move out of one reopens it. The
+/// children, their links and the epic's column stay as they are.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/close",
@@ -22806,6 +22822,21 @@ fn ensure_unlocked(
     }
     if board_rules(db, board_id)?.locks(&task.labels) {
         return Err(card_locked());
+    }
+    Ok(())
+}
+
+/// Refuses a token without `epics.manage` the move of an epic across a Done column boundary,
+/// which closes or reopens it. The owner's browser session holds every permission and passes.
+fn ensure_epic_close_allowed(
+    user: &AuthUser,
+    task: &TaskRow,
+    from: Option<&ColumnRow>,
+    to: &ColumnRow,
+) -> Result<(), AppError> {
+    let was_done = from.is_some_and(|column| column.is_done);
+    if task.kind == TaskKind::Epic && was_done != to.is_done && !user.has(Permission::EpicsManage) {
+        return Err(AppError::permission_denied(Permission::EpicsManage));
     }
     Ok(())
 }
