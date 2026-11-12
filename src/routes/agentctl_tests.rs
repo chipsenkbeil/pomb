@@ -6116,16 +6116,22 @@ async fn device_approval_should_refuse_a_request_whose_board_names_match_none() 
 #[tokio::test]
 async fn device_approval_should_refuse_a_joined_board_the_approver_does_not_own() {
     let (_dir, fx) = fixture();
+
+    // Give the approver a board they only joined
     let host = fx.db.create_user("host").expect("user");
     let joined = fx.db.create_board(&host, "Joined").expect("board");
     fx.db
         .set_board_member(&joined, "admin", BoardRole::Member)
         .expect("join");
+
+    // Start a device flow that asks for the joined board
     let (status, started, _) =
         start_device_with(&fx, json!({"boards": ["Agentctl", "Joined"]})).await;
     assert_eq!(status, StatusCode::OK, "{started}");
     let device_code = started["device_code"].as_str().expect("device_code");
     let user_code = started["user_code"].as_str().expect("user_code");
+
+    // Approve it with the board the approver only joined
     let (status, page) = form_post(
         &fx,
         As::Admin,
@@ -6134,12 +6140,36 @@ async fn device_approval_should_refuse_a_joined_board_the_approver_does_not_own(
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{page}");
-    assert!(
-        page.contains(&format!(
-            "your role on board {joined} is below the owner role this route needs"
-        )),
-        "{page}"
-    );
+    assert!(page.contains("Choose boards of your account."), "{page}");
+
+    // Check the device is still pending, with no token issued
+    let (status, body) = poll_device(&fx, device_code).await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
+    assert_eq!(body, "authorization_pending");
+}
+
+#[tokio::test]
+async fn device_approval_should_refuse_a_missing_board_with_the_same_answer() {
+    let (_dir, fx) = fixture();
+
+    // Start a device flow that asks for one of the approver's boards
+    let (status, started, _) = start_device_with(&fx, json!({"boards": ["Agentctl"]})).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let device_code = started["device_code"].as_str().expect("device_code");
+    let user_code = started["user_code"].as_str().expect("user_code");
+
+    // Approve it with a board id that does not exist
+    let (status, page) = form_post(
+        &fx,
+        As::Admin,
+        "/device/approve",
+        &format!("user_code={user_code}&boards=no-such-board"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{page}");
+    assert!(page.contains("Choose boards of your account."), "{page}");
+
+    // Check the device is still pending, with no token issued
     let (status, body) = poll_device(&fx, device_code).await;
     assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
     assert_eq!(body, "authorization_pending");

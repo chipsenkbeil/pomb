@@ -26286,7 +26286,12 @@ fn device_grant(
         None => requested.clone(),
         Some(ids) => {
             for id in ids {
-                if !db.board_exists(id).map_err(|error| error.to_string())? {
+                let owned = match db.board_exists(id) {
+                    Ok(owned) => owned,
+                    Err(error) if error.is::<RoleDenied>() => false,
+                    Err(error) => return Err(error.to_string()),
+                };
+                if !owned {
                     return Err("Choose boards of your account.".to_string());
                 }
             }
