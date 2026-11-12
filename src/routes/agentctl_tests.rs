@@ -8563,7 +8563,14 @@ async fn whoami_should_show_all_for_the_session_and_every_board_tokens() {
     let bootstrap: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(bootstrap["kind"], "bootstrap");
     assert_eq!(bootstrap["boards"], "all");
-    assert_eq!(bootstrap["permissions"], session["permissions"]);
+    let without_grant_only: Vec<Value> = session["permissions"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .filter(|name| **name != "tasks.edit_locked")
+        .cloned()
+        .collect();
+    assert_eq!(bootstrap["permissions"], Value::Array(without_grant_only));
 }
 
 #[tokio::test]

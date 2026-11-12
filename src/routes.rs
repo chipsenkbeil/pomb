@@ -9957,7 +9957,7 @@ async fn update_task(
                 if !task.fence_allows(fence) {
                     return Err(stale_fence());
                 }
-                if user.kind != CredentialKind::Session && rules.locks(&task.labels) {
+                if !user.has(Permission::TasksEditLocked) && rules.locks(&task.labels) {
                     let after = patched_labels(
                         &task.labels,
                         labels.clone(),
@@ -10780,7 +10780,7 @@ struct BulkTasksResult {
     responses(
         (status = 200, description = "Every task changed, or would change under `dry_run`", body = BulkTasksResult),
         (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks, a link the tasks cannot hold or a `parent` or `child` link whose umbrella is not an epic (`not_epic`)"),
-        (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task carries a locking label, or a task it links to carries one and the link is not `blocked_by` or `related`, and the token is not the owner's. `role_move_forbidden`: a `move` by a token issued as a role that the board's column rules do not let move one of the tasks out of its column into the target. `permission_denied` also covers a `move` of an epic across a Done column boundary without `epics.manage`, which refuses the whole batch"),
+        (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task carries a locking label, or a task it links to carries one and the link is not `blocked_by` or `related`, and the token lacks `tasks.edit_locked`. `role_move_forbidden`: a `move` by a token issued as a role that the board's column rules do not let move one of the tasks out of its column into the target. `permission_denied` also covers a `move` of an epic across a Done column boundary without `epics.manage`, which refuses the whole batch"),
         (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
         (status = 409, description = "`epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column. `wip_limit_reached`: a `move` would put a task past the target column's or limit group's WIP limit and `force` is not true, and no task moves"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -14368,7 +14368,7 @@ async fn list_comments(
     responses(
         (status = 200, description = "The created comment", body = TaskComment),
         (status = 400, description = "Comment body is required, too long, kind over 64 characters, or author over 80 characters or equal to your username. For a question: a missing or invalid part, named in the message, a choice whose column is not on the board, or a kind other than `question`"),
-        (status = 403, description = "`card_locked`: the task carries a locking label and the token is not the owner's. A question passes when the task's newest comment is the owner's, meaning one written from the browser session, and it does not move the task. Any other comment is refused"),
+        (status = 403, description = "`card_locked`: the task carries a locking label and the token lacks `tasks.edit_locked`. A question passes when the task's newest comment is the owner's, meaning one written from the browser session, and it does not move the task. Any other comment is refused"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`stale_fence`: a live claim holds another fence. For a question on a card without a locking label: the board has no Blocked column, `wip_limit_reached`, or `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -14455,7 +14455,7 @@ async fn create_comment(
     };
     if let Some(question) = question {
         let board_id = task.board_id();
-        if user.kind != CredentialKind::Session
+        if !user.has(Permission::TasksEditLocked)
             && board_rules(&account, board_id)?.locks(&task.row().labels)
         {
             let guard = QuestionGuard {
@@ -22243,11 +22243,11 @@ async fn get_board_rules(
 
 /// Replaces the board's column rules. Only the owner's browser session may call it: a task that
 /// breaks a column's rule is refused entry with 422 `column_rule`, and a task that carries a
-/// locked label is refused to an API token with 403 `card_locked`. A token issued as an agent
-/// role may move a task only where `role_moves` lets that role, and is refused with 403
-/// `role_move_forbidden` otherwise. Leave `role_moves` out to give the standard roles their
-/// standard moves, which apply only where the board's columns hold the stages that set. Send `{}`
-/// to limit no role.
+/// locked label is refused to a token without `tasks.edit_locked` with 403 `card_locked`. A token
+/// issued as an agent role may move a task only where `role_moves` lets that role, and is refused
+/// with 403 `role_move_forbidden` otherwise. Leave `role_moves` out to give the standard roles
+/// their standard moves, which apply only where the board's columns hold the stages that set. Send
+/// `{}` to limit no role.
 #[utoipa::path(
     put,
     path = "/api/boards/{id}/rules",
@@ -22809,15 +22809,14 @@ fn board_rules(db: &AccountDb, board_id: &str) -> Result<ColumnRules, AppError> 
     Ok(ColumnRules::from_config(&board.row().config_json))
 }
 
-/// Refuses an API token the write to `task` when one of its labels locks it. The owner's browser
-/// session passes.
+/// Refuses a token without `tasks.edit_locked` the write to `task` when one of its labels locks it.
 fn ensure_unlocked(
     db: &AccountDb,
     user: &AuthUser,
     board_id: &str,
     task: &TaskRow,
 ) -> Result<(), AppError> {
-    if user.kind == CredentialKind::Session || task.labels.is_empty() {
+    if user.has(Permission::TasksEditLocked) || task.labels.is_empty() {
         return Ok(());
     }
     if board_rules(db, board_id)?.locks(&task.labels) {
@@ -22916,15 +22915,15 @@ fn has_locked_task(
     Ok(locked)
 }
 
-/// Refuses an API token a swimlane change that would move a locked task: any task of the board
-/// when `lane_id` is `None`, else those in that lane. The owner's browser session passes.
+/// Refuses a token without `tasks.edit_locked` a swimlane change that would move a locked task: any
+/// task of the board when `lane_id` is `None`, else those in that lane.
 fn ensure_lane_unlocked(
     db: &AccountDb,
     user: &AuthUser,
     board_id: &str,
     lane_id: Option<&str>,
 ) -> Result<(), AppError> {
-    if user.kind != CredentialKind::Session && has_locked_task(db, board_id, lane_id)? {
+    if !user.has(Permission::TasksEditLocked) && has_locked_task(db, board_id, lane_id)? {
         return Err(AppError::forbidden(
             "a task in the swimlane carries a locking label, so only the owner can change it",
         )
@@ -22933,10 +22932,10 @@ fn ensure_lane_unlocked(
     Ok(())
 }
 
-/// Refuses an API token a board-wide change while a task of the board carries a locking label.
-/// The owner's browser session passes.
+/// Refuses a token without `tasks.edit_locked` a board-wide change while a task of the board
+/// carries a locking label.
 fn ensure_board_unlocked(db: &AccountDb, user: &AuthUser, board_id: &str) -> Result<(), AppError> {
-    if user.kind != CredentialKind::Session && has_locked_task(db, board_id, None)? {
+    if !user.has(Permission::TasksEditLocked) && has_locked_task(db, board_id, None)? {
         return Err(AppError::forbidden(
             "a task on the board carries a locking label, so only the owner can change it",
         )
@@ -25940,7 +25939,7 @@ struct DeviceTemplate {
 /// leaves out `subtasks.delete` and `links.delete` of the lead preset.
 fn holds_delete(permissions: &BTreeSet<Permission>) -> bool {
     permissions.iter().any(|permission| {
-        permission.name().ends_with(".delete") && permission.lowest_preset() == Preset::Admin
+        permission.name().ends_with(".delete") && permission.lowest_preset() == Some(Preset::Admin)
     })
 }
 
@@ -37580,6 +37579,10 @@ mod tests {
             assert_eq!(
                 by_name("tasks.delete")["presets"],
                 serde_json::json!(["admin"])
+            );
+            assert_eq!(
+                by_name("tasks.edit_locked")["presets"],
+                serde_json::json!([])
             );
             assert!(
                 !by_name("time.write")["description"]

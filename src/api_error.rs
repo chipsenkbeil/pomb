@@ -58,8 +58,8 @@ pub enum ErrorCode {
     ExceedsGrant,
     /// The endpoint needs the browser session, not an API token (403).
     SessionRequired,
-    /// The task carries a locking label, which only the owner's browser session may write around
-    /// (403).
+    /// The task carries a locking label, which only a credential holding `tasks.edit_locked` may
+    /// write around (403).
     CardLocked,
     /// The board's column rules do not let the agent role of the token move a task out of its
     /// column into the one asked for (403).

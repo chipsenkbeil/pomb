@@ -17,6 +17,7 @@ use crate::db::{
 use crate::models::{
     AccountId, Actor, ActorKind, AuthScope, ColumnStage, CommentQuestion, QuestionChoice,
 };
+use crate::permissions::Permission;
 
 const MAX_BODY_BYTES: usize = 1 << 22;
 const BOOTSTRAP_TOKEN: &str = "boot-secret";
@@ -25,6 +26,7 @@ const BOOTSTRAP_TOKEN: &str = "boot-secret";
 enum Who {
     Session,
     Token,
+    Granted,
     Lead,
     Bootstrap,
     Role(&'static str),
@@ -47,6 +49,7 @@ struct Fixture {
     lane: String,
     cookie: String,
     token: String,
+    granted_token: String,
     lead_token: String,
     stages: BTreeMap<&'static str, String>,
     role_tokens: BTreeMap<&'static str, String>,
@@ -65,6 +68,12 @@ impl Fixture {
         let owner = db.create_user("alice").expect("alice");
         let (record, token) = new_api_token_record(&owner, "agent", AuthScope::Admin, None);
         db.create_api_token(&record).expect("token");
+        let (mut granted_record, granted_token) =
+            new_api_token_record(&owner, "granted", AuthScope::Admin, None);
+        granted_record
+            .permissions
+            .insert(Permission::TasksEditLocked);
+        db.create_api_token(&granted_record).expect("granted token");
         let (lead_record, lead_token) =
             new_api_token_record(&owner, "lead", AuthScope::Provision, None);
         db.create_api_token(&lead_record).expect("lead token");
@@ -137,6 +146,7 @@ impl Fixture {
             lane,
             cookie,
             token,
+            granted_token,
             lead_token,
             stages,
             role_tokens,
@@ -172,6 +182,9 @@ impl Fixture {
             .header("accept", "application/json");
         builder = match who {
             Who::Token => builder.header("authorization", format!("Bearer {}", self.token)),
+            Who::Granted => {
+                builder.header("authorization", format!("Bearer {}", self.granted_token))
+            }
             Who::Lead => builder.header("authorization", format!("Bearer {}", self.lead_token)),
             Who::Bootstrap => builder.header("authorization", format!("Bearer {BOOTSTRAP_TOKEN}")),
             Who::Role(name) => builder.header(
@@ -1211,6 +1224,100 @@ mod locked {
                 "PATCH",
                 &format!("/api/tasks/{id}"),
                 json!({"name": "Renamed"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn token_with_edit_locked_should_write_a_locked_card() {
+        let fx = Fixture::new();
+        let id = fx.locked_task().await;
+        let (status, text) = fx
+            .json(
+                Who::Granted,
+                "PATCH",
+                &format!("/api/tasks/{id}"),
+                json!({"name": "Renamed"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let (status, text) = fx
+            .json(
+                Who::Granted,
+                "POST",
+                &format!("/api/tasks/{id}/move"),
+                json!({"column_id": fx.ready, "position": 0}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let (status, text) = fx
+            .json(
+                Who::Granted,
+                "POST",
+                &format!("/api/tasks/{id}/comments"),
+                json!({"body": "Agent note"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn token_with_edit_locked_should_post_a_question_on_a_locked_card() {
+        let fx = Fixture::new();
+        let task = fx.locked_task().await;
+        let uri = format!("/api/tasks/{task}/comments");
+        let (status, text) = fx.json(Who::Granted, "POST", &uri, fx.question()).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn admin_preset_token_should_still_be_refused_a_locked_card() {
+        let fx = Fixture::new();
+        let id = fx.locked_task().await;
+        let writes = [
+            (
+                "PATCH",
+                format!("/api/tasks/{id}"),
+                json!({"name": "Renamed"}),
+            ),
+            (
+                "POST",
+                format!("/api/tasks/{id}/move"),
+                json!({"column_id": fx.ready, "position": 0}),
+            ),
+            (
+                "POST",
+                format!("/api/tasks/{id}/comments"),
+                json!({"body": "Agent note"}),
+            ),
+        ];
+        for (method, uri, body) in writes {
+            let (status, text) = fx.json(Who::Token, method, &uri, body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
+            assert_eq!(parse(&text)["code"], "card_locked", "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn browser_session_should_write_a_locked_card() {
+        let fx = Fixture::new();
+        let id = fx.locked_task().await;
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "PATCH",
+                &format!("/api/tasks/{id}"),
+                json!({"name": "Renamed"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let (status, text) = fx
+            .json(
+                Who::Session,
+                "POST",
+                &format!("/api/tasks/{id}/comments"),
+                json!({"body": "Owner note"}),
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{text}");

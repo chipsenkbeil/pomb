@@ -22,9 +22,9 @@ const MAX_ITEM_CHARS: usize = 100;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ColumnRules {
-    /// Labels that lock a task: an API token cannot move, edit or otherwise write a task that
-    /// carries one, and the owner's browser session can. Absent means `["needs:human"]`, and an
-    /// empty list locks nothing.
+    /// Labels that lock a task: a token without `tasks.edit_locked` cannot move, edit or otherwise
+    /// write a task that carries one, and the owner's browser session can. Absent means
+    /// `["needs:human"]`, and an empty list locks nothing.
     #[serde(default = "default_locked_labels")]
     pub locked_labels: Vec<String>,
     /// The entry rule of each column, by column id. A column with no entry takes any task.

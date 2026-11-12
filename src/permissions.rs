@@ -2,11 +2,21 @@
 //!
 //! A [`Permission`] names one capability by a stable `group.action` wire name. A [`Preset`] is the
 //! set of permissions a scope-like label stands for: each preset holds everything the one below it
-//! holds, and `admin` holds every permission.
+//! holds, and `admin` holds every permission a preset can hold. A grant-only permission is in no
+//! preset.
 
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+
+macro_rules! lowest {
+    (Grant) => {
+        None
+    };
+    ($preset:ident) => {
+        Some(Preset::$preset)
+    };
+}
 
 macro_rules! catalog {
     ($($variant:ident, $name:literal, $group:literal, $preset:ident, $description:literal;)*) => {
@@ -71,11 +81,12 @@ macro_rules! catalog {
                 }
             }
 
-            /// Returns the smallest preset that holds this permission.
+            /// Returns the smallest preset that holds this permission, or `None` for a permission
+            /// no preset holds.
             #[must_use]
-            pub const fn lowest_preset(self) -> Preset {
+            pub const fn lowest_preset(self) -> Option<Preset> {
                 match self {
-                    $(Permission::$variant => Preset::$preset,)*
+                    $(Permission::$variant => lowest!($preset),)*
                 }
             }
         }
@@ -112,6 +123,7 @@ catalog! {
     TasksCreate, "tasks.create", "tasks", Work, "Create a task or an epic, and turn a subtask into a task.";
     TasksEdit, "tasks.edit", "tasks", Work, "Update a task, tick the boxes in its description, close and reopen an epic, bulk update and restore tasks.";
     TasksMove, "tasks.move", "tasks", Work, "Move a task to another column or position.";
+    TasksEditLocked, "tasks.edit_locked", "tasks", Grant, "Move, edit and comment on a task that carries a locking label, which no preset holds.";
     TasksClaim, "tasks.claim", "tasks", Work, "Claim a task, renew or release the claim, and watch the task.";
     TasksBin, "tasks.bin", "tasks", Lead, "Move a task to the recycle bin.";
     TasksDelete, "tasks.delete", "tasks", Admin, "Delete a task from the recycle bin for good.";
@@ -193,7 +205,9 @@ impl Preset {
     /// Returns whether this preset holds `permission`.
     #[must_use]
     pub fn contains(self, permission: Permission) -> bool {
-        self >= permission.lowest_preset()
+        permission
+            .lowest_preset()
+            .is_some_and(|lowest| self >= lowest)
     }
 }
 
@@ -327,7 +341,7 @@ mod tests {
 
     use super::*;
 
-    const NAMES: [&str; 58] = [
+    const NAMES: [&str; 59] = [
         "boards.read",
         "boards.create",
         "boards.configure",
@@ -357,6 +371,7 @@ mod tests {
         "tasks.create",
         "tasks.edit",
         "tasks.move",
+        "tasks.edit_locked",
         "tasks.claim",
         "tasks.bin",
         "tasks.delete",
@@ -421,8 +436,21 @@ mod tests {
     }
 
     #[test]
-    fn admin_should_hold_every_permission() {
-        assert_eq!(held(Preset::Admin).len(), Permission::ALL.len());
+    fn admin_should_hold_every_permission_except_the_grant_only_one() {
+        assert_eq!(held(Preset::Admin).len(), Permission::ALL.len() - 1);
+    }
+
+    #[test]
+    fn edit_locked_should_be_held_by_no_preset() {
+        assert_eq!(Permission::TasksEditLocked.lowest_preset(), None);
+        for preset in Preset::ALL {
+            assert!(!preset.contains(Permission::TasksEditLocked));
+            assert!(!preset.permissions().contains(&Permission::TasksEditLocked));
+        }
+        assert_eq!(
+            Permission::named("tasks.edit_locked"),
+            Some(Permission::TasksEditLocked)
+        );
     }
 
     #[test]
@@ -539,7 +567,7 @@ mod tests {
                 } else {
                     Preset::Admin
                 };
-                assert_eq!(permission.lowest_preset(), lowest);
+                assert_eq!(permission.lowest_preset(), Some(lowest));
             }
         }
     }

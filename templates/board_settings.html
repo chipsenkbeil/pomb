@@ -519,8 +519,8 @@
           <label>Locked labels
             <textarea id="br-locked" rows="2" placeholder="One per line">{{ rules_labels }}</textarea>
           </label>
-          <p class="settings-hint">An API token cannot move, edit or comment on a task that carries
-            one of these labels. Clear the box to lock nothing.</p>
+          <p class="settings-hint">A token without <code>tasks.edit_locked</code> cannot move, edit or comment on a task
+            that carries one of these labels. Clear the box to lock nothing.</p>
           {% for c in rules_columns %}
           <fieldset class="br-column" data-column-id="{{ c.id }}">
             <legend>{{ c.name }}</legend>

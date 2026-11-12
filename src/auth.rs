@@ -1827,8 +1827,11 @@ pub fn session_token_from_headers(headers: &HeaderMap) -> Option<String> {
     })
 }
 
-/// Returns the browser user signed in as `account`, which holds full access.
+/// Returns the browser user signed in as `account`, which holds full access, the grant-only
+/// permissions included.
 fn browser_user(account: UserRow) -> AuthUser {
+    let mut permissions = Preset::Admin.permissions();
+    permissions.insert(Permission::TasksEditLocked);
     AuthUser {
         account_id: account.account_id(),
         handle: account.username.clone(),
@@ -1843,7 +1846,7 @@ fn browser_user(account: UserRow) -> AuthUser {
         role_name: None,
         label: None,
         scope: AuthScope::Admin,
-        permissions: Preset::Admin.permissions(),
+        permissions,
         boards: BoardAccess::All,
         expires_at: None,
     }

@@ -3137,3 +3137,31 @@ async fn whoami_should_list_a_narrowed_grant_as_lacking() {
         json!({"beyond": [], "lacks": ["tasks.claim"]})
     );
 }
+
+#[tokio::test]
+async fn child_token_should_not_gain_edit_locked() {
+    let fx = Fixture::new();
+    let ask = json!({"name": "locked-writer", "permissions": ["tasks.edit_locked"]});
+    let (_, without) = issuer_token(
+        &fx,
+        Some(&[Permission::TokensIssue, Permission::TasksRead]),
+        BoardAccess::All,
+        None,
+    );
+    let refused = issue_child(&fx, &without, ask.clone()).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+
+    let (_, with) = issuer_token(
+        &fx,
+        Some(&[
+            Permission::TokensIssue,
+            Permission::BoardsRead,
+            Permission::TasksEditLocked,
+        ]),
+        BoardAccess::All,
+        None,
+    );
+    let issued = issue_child(&fx, &with, ask).await;
+    assert_eq!(issued.status, StatusCode::OK, "{}", issued.body);
+    assert!(permission_names(&issued.body).contains("tasks.edit_locked"));
+}
