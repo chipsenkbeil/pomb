@@ -224,8 +224,6 @@ await page.setViewportSize({ width: 1280, height: 800 });
 await page.goto(`${base}/settings`, { waitUntil: 'load' });
 await page.click('#topbar-search');
 check(await finderOpen(), 'the top-bar field opens the finder on a settings page');
-await page.goto(`${base}/b/${board}`, { waitUntil: 'load' });
-await page.waitForSelector('.task-card');
 
 const RECENT_KEY = 'pomb-finder-recent';
 const GONE_NAME = 'Finder stale recent probe';
