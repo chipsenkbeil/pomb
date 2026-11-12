@@ -253,5 +253,9 @@ from the password store (`Agents/Linode/pomb.app-host` and
   result and the pre-update backup. It exits non-zero on any FAIL, and `--wait`
   polls for up to 20 minutes. Run it after each version tag and each push to
   `main`.
+- `dev site firewall` closes port 22 to the public once the tunnel works.
+- The site verbs reach the box as the user from the `pass` entry at `ssh.pomb.app`,
+  so `~/.ssh/config` needs a `Host ssh.pomb.app` block whose `ProxyCommand` runs
+  `cloudflared access ssh --hostname %h`.
 - `dev site status`, `setup-code` and `restage nightly [--bad]` show the box,
   print each channel's first-start setup code and stage the next update.

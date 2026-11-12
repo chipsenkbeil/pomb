@@ -3,13 +3,15 @@ local fs = require("dev.fs")
 local verb = require("dev.verb")
 
 ---@class pomb.site
----@field HOST_ENTRY string pass entry holding the box user@host
+---@field HOST_ENTRY string pass entry whose user part names the ssh user
+---@field TUNNEL_HOST string name the box answers on through the Cloudflare tunnel
 ---@field ADMIN_IP_ENTRY string pass entry holding the admin address
 ---@field CHANNEL table<string, string> release channel words by name
 ---@field USAGE integer exit code of a usage error
 local M = {}
 
 M.HOST_ENTRY = "Agents/Linode/pomb.app-host"
+M.TUNNEL_HOST = "ssh.pomb.app"
 M.ADMIN_IP_ENTRY = "Agents/Linode/pomb.app-admin-ip"
 M.CHANNEL = { STABLE = "stable", NIGHTLY = "nightly" }
 M.USAGE = 2
@@ -71,7 +73,7 @@ function M.pass_line(entry)
     return value:match("^[^\n]*")
 end
 
----Name the box as `user@host`, from `POMB_HOST` or the password store.
+---Name the box as `POMB_HOST`, or as the password store entry's user at the tunnel name.
 ---
 ---Exits 1 when the entry is missing, empty or malformed.
 ---@return string host the ssh destination
@@ -83,10 +85,11 @@ function M.host()
     if cached_host then
         return cached_host
     end
-    host = M.pass_line(M.HOST_ENTRY)
-    if not host:match("^[%w_.-]+@[^@%s]+$") then
+    local user = M.pass_line(M.HOST_ENTRY):match("^([%w_.-]+)@[^@%s]+$")
+    if not user then
         verb.die("site: the password store entry " .. M.HOST_ENTRY .. " is not user@host")
     end
+    host = user .. "@" .. M.TUNNEL_HOST
     cached_host = host
     return host
 end

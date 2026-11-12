@@ -497,6 +497,8 @@ Host the public Pomb sites. Each subcommand runs here and takes a channel,
   stage a binary that exits 1)
 - `dev site setup-code`: print the setup code each channel logged at its
   first start
+- `dev site firewall`: drop new connections to port 22 except from the box
+  itself, so only the tunnel reaches sshd (idempotent)
 - `dev site decoys` (hidden, listed by `dev help -a`): remove the files a
   verifier planted in the nightly backups directory
 

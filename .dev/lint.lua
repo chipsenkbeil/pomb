@@ -598,6 +598,7 @@ local site_scripts = lint:files({
     ".dev/standalone/pomb-update",
     ".dev/standalone/__publish_release.sh",
     ".dev/site/decoys.sh",
+    ".dev/site/firewall.sh",
     ".dev/site/restage.sh",
     ".dev/site/setup-code.sh",
     ".dev/site/status.sh",
