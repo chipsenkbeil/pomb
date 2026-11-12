@@ -1551,6 +1551,42 @@ mod locked {
     }
 
     #[tokio::test]
+    async fn token_should_set_only_the_colour_of_a_locked_task() {
+        let fx = Fixture::new();
+        let id = fx.locked_task().await;
+        let color = fx
+            .db
+            .list_colors(&fx.board)
+            .expect("colors")
+            .into_iter()
+            .find(|color| !color.is_default)
+            .expect("a colour that is not the default");
+        let uri = format!("/api/tasks/{id}");
+        let (status, text) = fx
+            .json(Who::Token, "PATCH", &uri, json!({"color_id": color.id}))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let after = fx.db.task(&id).expect("read").expect("task");
+        assert_eq!(after.color_id.as_deref(), Some(color.id.as_str()));
+        assert_eq!(after.labels, ["needs:human"]);
+    }
+
+    #[tokio::test]
+    async fn token_should_be_refused_a_locked_task_lane_change() {
+        let fx = Fixture::new();
+        let id = fx.locked_task().await;
+        let before = fx.db.task(&id).expect("read").expect("task");
+        let other = fx.db.create_swimlane(&fx.board, "Other").expect("lane");
+        let uri = format!("/api/tasks/{id}/move");
+        let body = json!({"column_id": fx.backlog, "swimlane_id": other, "position": 0});
+        let (status, text) = fx.json(Who::Token, "POST", &uri, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(parse(&text)["code"], "card_locked", "{text}");
+        let after = fx.db.task(&id).expect("read").expect("task");
+        assert_eq!(after.swimlane_id, before.swimlane_id);
+    }
+
+    #[tokio::test]
     async fn token_should_be_refused_other_edits_to_a_locked_task() {
         let fx = Fixture::new();
         let id = fx.locked_task().await;
