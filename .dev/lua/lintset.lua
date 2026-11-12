@@ -1,5 +1,6 @@
-local devos = require("dev.os")
+local dev_os = require("dev.os")
 local fs = require("dev.fs")
+local standalone = require("dev.standalone")
 
 ---@class lintset.Lint
 ---@field root string absolute project root
@@ -13,6 +14,7 @@ Lint.__index = Lint
 local M = {}
 
 local PROSE_RUN = 3
+local FAIL_RUN = 7
 local KIND = { NONE = "none", BLANK = "blank", COMMENT = "comment", CODE = "code", OPEN = "open" }
 local CASE_ARM_ENDS = { [";;"] = true, [";&"] = true, [";;&"] = true }
 local LITERAL_ENDS = { [","] = true, ["("] = true, ["["] = true }
@@ -139,7 +141,7 @@ end
 local NOT_PROSE = { ["//"] = { "///", "//!" }, ["--"] = { "---", "--[[" }, ["#"] = {} }
 
 local function is_prose(body, marker)
-    if not starts(body, marker) then
+    if not starts(body, marker) or body:gsub("%s+$", "") == marker then
         return false
     end
     for _, prefix in ipairs(NOT_PROSE[marker]) do
@@ -156,8 +158,8 @@ end
 
 ---Find the runs of three or more consecutive full-line comments.
 ---
----Doc comments and block comments are not counted, and a `//` run holding a numbered list item
----passes, since a list enumerates distinct cases.
+---Doc comments and block comments are not counted, a bare marker line ends a run, and a
+---`//` run holding a numbered list item passes. A list enumerates distinct cases.
 ---@param text string the file's text
 ---@param marker string `//`, `--` or `#`
 ---@return lintset.Run[] runs the runs, in line order
@@ -310,7 +312,7 @@ function Lint:check(name, argv)
     else
         self:step(name)
     end
-    if devos.run(argv, { cwd = self.root }) ~= 0 then
+    if dev_os.run(argv, { cwd = self.root }) ~= 0 then
         self.failed[#self.failed + 1] = name
     end
 end
@@ -349,7 +351,7 @@ end
 ---@param name string? the check it serves, the binary when nil
 ---@return boolean found whether the tool is on PATH
 function Lint:have(binary, install, name)
-    if devos.which(binary) then
+    if dev_os.which(binary) then
         return true
     end
     self:missing(binary, install, name or binary)
@@ -381,7 +383,7 @@ end
 function Lint:files(globs)
     local root = self.root
     local ignored = ignore_globs(root)
-    local _, inside = devos.capture(
+    local _, inside = dev_os.capture(
         { "git", "rev-parse", "--is-inside-work-tree" },
         { cwd = root, stderr = "null" }
     )
@@ -395,7 +397,7 @@ function Lint:files(globs)
             argv[#argv + 1] = ":(exclude,glob)" .. glob
         end
         argv[#argv + 1] = ":(exclude,glob)**/target/**"
-        local out = devos.capture(argv, { cwd = root })
+        local out = dev_os.capture(argv, { cwd = root })
         for file in out:gmatch("([^%z]+)") do
             local skip = file:sub(-1) == "/" or (self.skip_hidden and is_hidden(file))
             if not skip and fs.is_file(fs.join(root, file)) then
@@ -423,7 +425,7 @@ function Lint:files(globs)
     for _, word in ipairs({ "-g", "!target", "." }) do
         argv[#argv + 1] = word
     end
-    local out = devos.capture(argv, { cwd = root })
+    local out = dev_os.capture(argv, { cwd = root })
     for file in out:gmatch("[^\n]+") do
         files[#files + 1] = file
     end
@@ -452,7 +454,7 @@ function Lint:grep(pattern, files)
         "::",
         pattern,
     }, files)
-    local out = devos.capture(argv, { cwd = self.root })
+    local out = dev_os.capture(argv, { cwd = self.root })
     local hits = {}
     for row in out:gmatch("[^\n]+") do
         local file, number, text = row:match("^(.-)::(%d+)::(.*)$")
@@ -476,21 +478,31 @@ function Lint:comment_spacing(file, marker)
     end
 end
 
----Fail on each run of three or more consecutive full-line comments.
+---Fail on each run of seven or more consecutive full-line comments and warn from three.
 ---@param file string the path relative to the root
 ---@param marker string `//`, `--` or `#`
 function Lint:comment_runs(file, marker)
     local text = fs.read(fs.join(self.root, file)) or ""
     for _, run in ipairs(M.runs(text, marker)) do
-        self:fail(
-            "comment runs",
-            file
-                .. ":"
-                .. run.line
-                .. ": "
-                .. run.count
-                .. " consecutive comment lines, restructure the code or shrink the comment"
-        )
+        local message = file
+            .. ":"
+            .. run.line
+            .. ": "
+            .. run.count
+            .. " consecutive comment lines, restructure the code or shrink the comment"
+        if run.count >= FAIL_RUN then
+            self:fail("comment runs", message)
+        else
+            io.stderr:write(message, "\n")
+        end
+    end
+end
+
+---Warn about non-helper shell outside .dev/standalone and bad standalone headers, never failing.
+function Lint:standalone()
+    self:step("standalone shell")
+    for _, line in ipairs(standalone.problems(self.root)) do
+        io.stderr:write(line, "\n")
     end
 end
 
