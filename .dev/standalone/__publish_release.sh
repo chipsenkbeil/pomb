@@ -16,32 +16,32 @@ mkdir -p dist
 cp "target/$target/release/pomb" "dist/$name"
 file "dist/$name"
 file "dist/$name" | grep -Eq 'statically linked|static-pie linked' || {
-	echo "The file dist/$name is not statically linked." >&2
-	exit 1
+  echo "The file dist/$name is not statically linked." >&2
+  exit 1
 }
 (cd dist && sha256sum "$name" >"$name.sha256")
 
 assets=("dist/$name" "dist/$name.sha256")
 
 if [[ $ref_type == tag ]]; then
-	if gh release view "$ref_name" >/dev/null 2>&1; then
-		gh release upload "$ref_name" "${assets[@]}" --clobber
-	else
-		gh release create "$ref_name" "${assets[@]}" --title "$ref_name" --verify-tag --notes "commit: $sha"
-	fi
-	exit 0
+  if gh release view "$ref_name" >/dev/null 2>&1; then
+    gh release upload "$ref_name" "${assets[@]}" --clobber
+  else
+    gh release create "$ref_name" "${assets[@]}" --title "$ref_name" --verify-tag --notes "commit: $sha"
+  fi
+  exit 0
 fi
 
 if [[ $(git ls-remote origin refs/heads/main | cut -f1) != "$sha" ]]; then
-	echo "Main moved past $sha, so the nightly is not published."
-	exit 0
+  echo "Main moved past $sha, so the nightly is not published."
+  exit 0
 fi
 
 git tag -f nightly "$sha"
 git push -f origin refs/tags/nightly
 if gh release view nightly >/dev/null 2>&1; then
-	gh release edit nightly --prerelease --target "$sha" --notes "commit: $sha"
-	gh release upload nightly "${assets[@]}" --clobber
+  gh release edit nightly --prerelease --target "$sha" --notes "commit: $sha"
+  gh release upload nightly "${assets[@]}" --clobber
 else
-	gh release create nightly "${assets[@]}" --prerelease --title nightly --target "$sha" --notes "commit: $sha"
+  gh release create nightly "${assets[@]}" --prerelease --title nightly --target "$sha" --notes "commit: $sha"
 fi
