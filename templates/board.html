@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ board_name }} &mdash; Pomb{% endblock %}
+{% block body_attrs %}{% if !chrome.body_classes().is_empty() %} class="{{ chrome.body_classes() }}"{% endif %}{% endblock %}
 {% block content %}
 {% if !custom_css.is_empty() %}<style>{{ custom_css|safe }}</style>{% endif %}
 <header class="topbar">

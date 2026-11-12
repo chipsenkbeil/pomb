@@ -4771,6 +4771,15 @@ pub struct Settings {
     /// The first day of the week in calendars and weekly reports.
     #[serde(default)]
     pub week_start: WeekStart,
+    /// Whether the dark theme is on for the account.
+    #[serde(default)]
+    pub dark: bool,
+    /// Whether task names show larger on the board.
+    #[serde(default)]
+    pub large_names: bool,
+    /// Whether the calendar shows repeating tasks on every day they recur.
+    #[serde(default = "default_true")]
+    pub calendar_show_repeats: bool,
 }
 
 tokio::task_local! {
@@ -5034,6 +5043,9 @@ impl Default for Settings {
             avatar: Avatar::default(),
             time_format: TimeFormat::default(),
             week_start: WeekStart::default(),
+            dark: false,
+            large_names: false,
+            calendar_show_repeats: true,
             interrupt_reasons: vec![
                 "Boss interrupted",
                 "Colleague interrupted",

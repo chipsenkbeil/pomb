@@ -1,5 +1,6 @@
 {% extends "shell.html" %}
 {% block title %}Time in column | Pomb{% endblock %}
+{% block body_attrs %}{% if chrome.dark %} class="dark"{% endif %}{% endblock %}
 {% block shell_title %}Time in column{% endblock %}
 {% block shell_class %} tic-page bshell-report{% endblock %}
 {% block shell_nav %}

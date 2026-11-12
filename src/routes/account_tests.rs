@@ -445,6 +445,30 @@ async fn date_and_time_choices_should_persist() {
 }
 
 #[tokio::test]
+async fn display_switches_should_persist_and_default_off_except_repeats() {
+    let fx = Fixture::new();
+    let read = fx.send("GET", "/api/settings", None).await;
+    assert_eq!(read.body["dark"], false);
+    assert_eq!(read.body["large_names"], false);
+    assert_eq!(read.body["calendar_show_repeats"], true);
+    let saved = fx
+        .send(
+            "PUT",
+            "/api/settings",
+            Some(json!({ "dark": true, "large_names": true, "calendar_show_repeats": false })),
+        )
+        .await;
+    assert_eq!(saved.body["dark"], true);
+    let read = fx.send("GET", "/api/settings", None).await;
+    assert_eq!(read.body["dark"], true);
+    assert_eq!(read.body["large_names"], true);
+    assert_eq!(read.body["calendar_show_repeats"], false);
+    let spec = fx.send("GET", "/api/v1/openapi.json", None).await;
+    let fields = &spec.body["components"]["schemas"]["Settings"]["properties"];
+    assert!(fields["dark"].is_object() && fields["calendar_show_repeats"].is_object());
+}
+
+#[tokio::test]
 async fn unknown_date_and_time_choices_should_be_refused() {
     let fx = Fixture::new();
     for body in [

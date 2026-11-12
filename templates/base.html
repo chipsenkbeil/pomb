@@ -14,7 +14,7 @@
 <script src="/static/pure.js" defer></script>
 <script src="/static/app.js" defer></script>
 </head>
-<body>
+<body{% block body_attrs %}{% endblock %}>
 {% block content %}{% endblock %}
 </body>
 </html>

@@ -18,7 +18,54 @@
   var accountPrefs = {
     hour12: !accountButton || accountButton.dataset.timeFormat !== '24h',
     weekStart: accountButton && accountButton.dataset.weekStart === 'monday' ? 1 : 0,
+    calendarRepeats: !accountButton || accountButton.dataset.calendarRepeats !== 'false',
   };
+
+  const LEGACY_PREF_KEY = Object.freeze({
+    DARK: 'pomb-dark',
+    LARGE_NAMES: 'pomb-large-names',
+    CALENDAR: 'pomb.calendar.settings',
+  });
+
+  const importLocalPrefs = () => {
+    if (!accountButton) return;
+    const found = {};
+    const keys = [];
+    try {
+      const store = window.localStorage;
+      Object.values(LEGACY_PREF_KEY).forEach((key) => {
+        if (store.getItem(key) !== null) keys.push(key);
+      });
+      if (store.getItem(LEGACY_PREF_KEY.DARK) === '1') found.dark = true;
+      if (store.getItem(LEGACY_PREF_KEY.LARGE_NAMES) === '1') found.large_names = true;
+      const raw = store.getItem(LEGACY_PREF_KEY.CALENDAR);
+      if (raw !== null) {
+        try {
+          const saved = JSON.parse(raw);
+          if (saved && typeof saved.showRepeats === 'boolean') found.calendar_show_repeats = saved.showRepeats;
+        } catch (e) { /* unreadable value, dropped with its key */ }
+      }
+    } catch (e) { return; }
+    if (!keys.length) return;
+    if (document.querySelector('.board-wrap')) {
+      if (found.dark) document.body.classList.add('dark');
+      if (found.large_names) document.body.classList.add('large-names');
+    }
+    if (typeof found.calendar_show_repeats === 'boolean') accountPrefs.calendarRepeats = found.calendar_show_repeats;
+    const forget = () => {
+      try {
+        keys.forEach((key) => window.localStorage.removeItem(key));
+      } catch (e) { /* storage unavailable */ }
+    };
+    if (!Object.keys(found).length) { forget(); return; }
+    fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(found),
+    }).then((res) => { if (res.ok) forget(); }, () => {});
+  };
+  importLocalPrefs();
 
   function daysIntoWeek(d) {
     return (d.getDay() - accountPrefs.weekStart + 7) % 7;
@@ -15857,10 +15904,9 @@
     var WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
     var UNASSIGNED = '__unassigned__';
-    var SETTINGS_KEY = 'pomb.calendar.settings';
 
     var firstDayOfWeek = accountPrefs.weekStart;
-    var showRepeats = true;
+    var showRepeats = accountPrefs.calendarRepeats;
     var currentBoard = null;
     var selectedBoards = [];
     var allBoards = [];
@@ -16190,20 +16236,6 @@
       fill('calendar-swimlane-filter', swimlanes, namedLabel(dataset.swimlanes || []), 1);
     }
 
-    function loadSettings() {
-      try {
-        var s = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || '{}');
-        if (typeof s.showRepeats === 'boolean') showRepeats = s.showRepeats;
-      } catch (e) {}
-    }
-
-    function saveSettings() {
-      try {
-        window.localStorage.setItem(SETTINGS_KEY,
-          JSON.stringify({ showRepeats: showRepeats }));
-      } catch (e) {}
-    }
-
     var POPS = {
       'calendar-boards-toggle': 'calendar-boards-panel',
       'calendar-feed-toggle': 'calendar-feed-panel',
@@ -16372,7 +16404,9 @@
       });
       repeats.addEventListener('change', function () {
         showRepeats = repeats.checked;
-        saveSettings();
+        accountPrefs.calendarRepeats = showRepeats;
+        api('/api/settings', 'PUT', { calendar_show_repeats: showRepeats })
+          .then((res) => { if (!res.ok) toast('Could not save the setting.'); });
         if (dataset) render();
       });
     }
@@ -16411,7 +16445,6 @@
     function bindOnce() {
       if (initialized) return;
       initialized = true;
-      loadSettings();
       initPops({
         'calendar-feed-toggle': loadFeeds,
         'calendar-boards-toggle': loadBoardList,
@@ -17564,9 +17597,6 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      try {
-        if (window.localStorage.getItem('pomb-dark') === '1') document.body.classList.add('dark');
-      } catch (e) {}
       qs('tic-filters').addEventListener('submit', function (e) { e.preventDefault(); });
       attachRows(qs('tic-table'), openModal);
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
@@ -17698,7 +17728,6 @@
     init: function () {
       if (this.initialized) return;
       this.initialized = true;
-      if (document.querySelector('.board-wrap') || document.querySelector('.login-page')) this.restorePrefs();
       if (!document.querySelector('.board-wrap')) return;
       this.initMenu();
       this.initLegend();
@@ -17711,17 +17740,9 @@
     },
 
     // ----- preferences -----
-    restorePrefs: function () {
-      try {
-        if (window.localStorage.getItem('pomb-dark') === '1') document.body.classList.add('dark');
-        if (window.localStorage.getItem('pomb-large-names') === '1') document.body.classList.add('large-names');
-      } catch (e) { /* storage unavailable */ }
-    },
     setPref: function (key, on) {
-      try {
-        if (on) window.localStorage.setItem(key, '1');
-        else window.localStorage.removeItem(key);
-      } catch (e) { /* storage unavailable */ }
+      api('/api/settings', 'PUT', { [key]: on })
+        .then((res) => { if (!res.ok) toast('Could not save the setting.'); });
     },
 
     // ----- board menu + reports submenu -----
@@ -19775,7 +19796,7 @@
     toggleDark: function () {
       var on = !document.body.classList.contains('dark');
       document.body.classList.toggle('dark', on);
-      this.setPref('pomb-dark', on);
+      this.setPref('dark', on);
       // KF-353: keep the menu's toggle switch in sync.
       var item = document.querySelector('#board-menu [data-bm="dark"]');
       if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');
@@ -19783,7 +19804,7 @@
     toggleLargeNames: function () {
       var on = !document.body.classList.contains('large-names');
       document.body.classList.toggle('large-names', on);
-      this.setPref('pomb-large-names', on);
+      this.setPref('large_names', on);
       // KF-353: keep the menu's toggle switch in sync.
       var item = document.querySelector('#board-menu [data-bm="large-names"]');
       if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');

@@ -6295,6 +6295,10 @@ fn dropdown_boards(db: &AccountDb) -> Result<Vec<ChromeBoard>, AppError> {
 }
 
 /// Top bar data shared by every page rendered inside the shell template.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one switch the shell pages read"
+)]
 struct ShellChrome {
     /// Unarchived boards for the Boards dropdown.
     boards: Vec<ChromeBoard>,
@@ -6310,6 +6314,12 @@ struct ShellChrome {
     time_format: TimeFormat,
     /// The first day of the week for the signed-in user.
     week_start: WeekStart,
+    /// Whether the signed-in user has the dark theme on.
+    dark: bool,
+    /// Whether the signed-in user has large task names on.
+    large_names: bool,
+    /// Whether the signed-in user's calendar shows repeating tasks on every day they recur.
+    calendar_show_repeats: bool,
     /// The avatar of the signed-in user.
     avatar: AvatarView,
     /// Whether the account menu offers Sign out, which only a passkey sign-in has.
@@ -6327,6 +6337,19 @@ impl ShellChrome {
     /// Returns whether the first-visit hint `id` still shows.
     fn hint_shown(&self, id: &str) -> bool {
         self.tips_on && !self.dismissed_hints.iter().any(|hint| hint == id)
+    }
+
+    /// Returns the classes the page body carries for the account's display switches.
+    #[must_use]
+    fn body_classes(&self) -> String {
+        let mut classes = Vec::new();
+        if self.dark {
+            classes.push("dark");
+        }
+        if self.large_names {
+            classes.push("large-names");
+        }
+        classes.join(" ")
     }
 }
 
@@ -6379,6 +6402,9 @@ fn shell_chrome(state: &AppState, db: &AccountDb, username: &str) -> Result<Shel
         tips_on: settings.show_tips && !db.tips_disabled()?,
         time_format: settings.time_format,
         week_start: settings.week_start,
+        dark: settings.dark,
+        large_names: settings.large_names,
+        calendar_show_repeats: settings.calendar_show_repeats,
         build: Build::current(),
         boards: dropdown_boards(db)?,
         sign_out: state.sign_in.mode() == AuthMode::Passkey,
@@ -25108,6 +25134,12 @@ struct SettingsUpdate {
     time_format: Option<TimeFormat>,
     /// The first day of the week in calendars and weekly reports: `monday` or `sunday`.
     week_start: Option<WeekStart>,
+    /// Whether the dark theme is on.
+    dark: Option<bool>,
+    /// Whether task names show larger on the board.
+    large_names: Option<bool>,
+    /// Whether the calendar shows repeating tasks on every day they recur.
+    calendar_show_repeats: Option<bool>,
 }
 
 /// An avatar of text on colours.
@@ -25359,6 +25391,15 @@ fn apply_settings_patch(
     }
     if let Some(start) = patch.week_start {
         settings.week_start = start;
+    }
+    if let Some(dark) = patch.dark {
+        settings.dark = dark;
+    }
+    if let Some(large) = patch.large_names {
+        settings.large_names = large;
+    }
+    if let Some(repeats) = patch.calendar_show_repeats {
+        settings.calendar_show_repeats = repeats;
     }
     if let Some(show) = patch.show_tips {
         settings.show_tips = show;
@@ -30654,6 +30695,9 @@ mod tests {
                     tips_on: true,
                     time_format: TimeFormat::default(),
                     week_start: WeekStart::default(),
+                    dark: false,
+                    large_names: false,
+                    calendar_show_repeats: true,
                     sign_out: true,
                     recovery_banner: false,
                     storage_full: None,
@@ -30696,6 +30740,9 @@ mod tests {
                 tips_on: true,
                 time_format: TimeFormat::default(),
                 week_start: WeekStart::default(),
+                dark: false,
+                large_names: false,
+                calendar_show_repeats: true,
                 sign_out: true,
                 recovery_banner: false,
                 storage_full: None,
@@ -32978,6 +33025,9 @@ mod tests {
                 tips_on: true,
                 time_format: TimeFormat::default(),
                 week_start: WeekStart::default(),
+                dark: false,
+                large_names: false,
+                calendar_show_repeats: true,
                 sign_out: true,
                 recovery_banner: false,
                 storage_full: None,

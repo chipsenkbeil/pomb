@@ -1129,7 +1129,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 93;
+pub const SCHEMA_VERSION: u64 = 94;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1229,6 +1229,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "85fcffcce6c320cfe75fa9430345995d95f36b96cae143314bb5c3d6501999c8",
     "b8ee38bfa29f6aec24252d7f8440cbfbdb8cfe2f26e1b3243f898d7c0eaed996",
     "b8ee38bfa29f6aec24252d7f8440cbfbdb8cfe2f26e1b3243f898d7c0eaed996",
+    "35f8c1333a5e1f3d3d0cee103fc3eeddce808a8543a8dad43b60448ef926eccd",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
