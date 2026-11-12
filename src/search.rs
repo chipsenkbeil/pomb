@@ -13,6 +13,9 @@ pub const MAX_QUERY_CHARS: usize = 500;
 /// Most terms a query may hold.
 pub const MAX_TERMS: usize = 20;
 
+/// Fewest characters of a task id an `id:` filter or a bare id word may hold.
+pub const MIN_ID_CHARS: usize = 6;
+
 /// Names a part of a card a query can search, in the order a match in it ranks.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -112,15 +115,20 @@ pub struct Hit {
     #[serde(skip)]
     #[schema(ignore)]
     score: usize,
+    /// Whether a bare word matched the start of the task id, which ranks above every text match.
+    #[serde(skip)]
+    #[schema(ignore)]
+    by_id: bool,
 }
 
 impl Hit {
-    /// Sorts `hits` best first: open before done before archived, then by matched field, then by
-    /// score, then by name and id.
+    /// Sorts `hits` best first: cards a bare word matched by id, then open before done before
+    /// archived, then by matched field, then by score, then by name and id.
     pub fn rank(hits: &mut [Self]) {
         hits.sort_by(|a, b| {
-            a.status
-                .cmp(&b.status)
+            b.by_id
+                .cmp(&a.by_id)
+                .then_with(|| a.status.cmp(&b.status))
                 .then_with(|| a.matched_field.cmp(&b.matched_field))
                 .then_with(|| a.score.cmp(&b.score))
                 .then_with(|| a.name.cmp(&b.name))
@@ -177,6 +185,8 @@ enum Filter {
     Color(String),
     /// The card's status.
     Is(Status),
+    /// The start of the task id.
+    Id(String),
 }
 
 /// A filter, kept or inverted.
@@ -206,11 +216,24 @@ struct Word {
     needle: Needle,
 }
 
+impl Word {
+    /// Returns whether the term is a bare run of at least [`MIN_ID_CHARS`] hex digits that starts
+    /// the task `id`.
+    fn matches_id(&self, id: &str) -> bool {
+        let Needle::Fuzzy(chars) = &self.needle else {
+            return false;
+        };
+        chars.len() >= MIN_ID_CHARS
+            && chars.iter().all(char::is_ascii_hexdigit)
+            && fold_chars(id).starts_with(chars)
+    }
+}
+
 /// A parsed card finder query.
 ///
 /// A query is a list of terms separated by spaces. A plain word matches fuzzily, a quoted phrase
 /// matches as an exact case-insensitive substring, and `key:value` terms (`in:`, `board:`,
-/// `column:`, `label:`, `color:` and `is:`) filter. A leading `-` turns any term into an
+/// `column:`, `label:`, `color:`, `id:` and `is:`) filter. A leading `-` turns any term into an
 /// exclusion. Every term must hold for a card to match.
 #[derive(Clone, Debug)]
 pub struct Query {
@@ -374,13 +397,21 @@ impl Query {
             "column" => Filter::Column(folded),
             "label" => Filter::Label(folded),
             "color" => Filter::Color(folded),
+            "id" => {
+                if folded.chars().count() < MIN_ID_CHARS {
+                    return Err(format!(
+                        "{term} needs at least {MIN_ID_CHARS} characters of a task id"
+                    ));
+                }
+                Filter::Id(folded)
+            }
             "is" => Filter::Is(
                 Status::parse(&folded)
                     .ok_or_else(|| format!("{term} is not a status: use open, done or archived"))?,
             ),
             _ => {
                 return Err(format!(
-                    "unknown term {term}: use in:, board:, column:, label:, color: or is:"
+                    "unknown term {term}: use in:, board:, column:, label:, color:, id: or is:"
                 ));
             }
         };
@@ -431,6 +462,7 @@ impl Query {
             matched_index: found.index,
             ranges: found.ranges,
             score: found.score,
+            by_id: found.by_id,
         }))
     }
 
@@ -454,6 +486,7 @@ impl Query {
                 .and_then(|id| board.colors.get(id))
                 .is_some_and(|color| is_named(wanted, &color.id, &color.label)),
             Filter::Is(wanted) => *wanted == status,
+            Filter::Id(wanted) => fold_str(&task.id).starts_with(wanted.as_str()),
         };
         let mut alternatives: HashMap<Discriminant<Filter>, bool> = HashMap::new();
         for condition in &self.conditions {
@@ -493,6 +526,7 @@ impl Query {
         if positives.is_empty() {
             return Ok(Some(Found::none()));
         }
+        let mut by_id = false;
         let mut bests = Vec::with_capacity(positives.len());
         for word in &positives {
             let best = segments
@@ -501,16 +535,22 @@ impl Query {
                     locate(&word.needle, &segment.chars).map(|located| (segment, located))
                 })
                 .min_by_key(|(segment, located)| (segment.field, located.gaps, located.start));
-            let Some(best) = best else {
-                return Ok(None);
-            };
-            bests.push(best);
+            let id_match = word.matches_id(&task.id);
+            by_id |= id_match;
+            match best {
+                Some(best) => bests.push(best),
+                None if id_match => {}
+                None => return Ok(None),
+            }
         }
         let Some((segment, _)) = bests
             .iter()
             .min_by_key(|(segment, located)| (segment.field, located.gaps, located.start))
         else {
-            return Ok(None);
+            return Ok(Some(Found {
+                by_id,
+                ..Found::none()
+            }));
         };
         let mut ranges = Vec::new();
         for word in &positives {
@@ -526,6 +566,7 @@ impl Query {
                 .iter()
                 .map(|(_, located)| located.gaps + located.start)
                 .sum(),
+            by_id,
         }))
     }
 
@@ -602,6 +643,8 @@ struct Found {
     ranges: Vec<Range>,
     /// The sum of the matches' gaps and starts, lower is better.
     score: usize,
+    /// Whether a bare word matched the start of the task id.
+    by_id: bool,
 }
 
 impl Found {
@@ -612,6 +655,7 @@ impl Found {
             index: None,
             ranges: Vec::new(),
             score: 0,
+            by_id: false,
         }
     }
 }

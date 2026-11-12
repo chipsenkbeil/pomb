@@ -754,3 +754,49 @@ async fn search_should_refuse_a_malformed_cursor() {
         assert_eq!(reply.code.as_deref(), Some("invalid_request"), "{cursor}");
     }
 }
+
+#[tokio::test]
+async fn search_should_find_a_card_by_id_prefix() {
+    let Seeded { fx, plans, .. } = seeded().await;
+    let columns = fx.db.list_columns(&plans).expect("columns");
+    let id = fx
+        .task(json!({"column_id": columns[0].id, "name": "Zebra crossing"}))
+        .await;
+    for query in [
+        format!("id:{}", &id[..8]),
+        format!("id:{}", id[..8].to_uppercase()),
+        format!("id:{}", &id[..6]),
+        format!("id:{id}"),
+    ] {
+        assert_eq!(fx.names(&query).await, ["Zebra crossing"], "{query}");
+    }
+    assert!(fx.names("id:ffffffff").await.is_empty());
+}
+
+#[tokio::test]
+async fn search_should_refuse_an_id_prefix_under_six_characters() {
+    let Seeded { fx, .. } = seeded().await;
+    let reply = fx.search("id:24350").await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert_eq!(reply.code.as_deref(), Some("invalid_request"));
+    let message = reply.body["message"].as_str().expect("message");
+    assert!(message.contains("at least 6 characters"), "{message}");
+}
+
+#[tokio::test]
+async fn search_should_rank_a_bare_hex_word_that_matches_an_id_above_text() {
+    let Seeded { fx, plans, .. } = seeded().await;
+    let columns = fx.db.list_columns(&plans).expect("columns");
+    let target = fx
+        .task(json!({"column_id": columns[2].id, "name": "Quiet card"}))
+        .await;
+    let word = target[..8].to_string();
+    fx.task(json!({"column_id": columns[0].id, "name": format!("Notes {word}")}))
+        .await;
+    assert_eq!(
+        fx.names(&word).await,
+        ["Quiet card", &format!("Notes {word}")]
+    );
+    assert_eq!(fx.names(&format!("{word} in:title")).await.len(), 2);
+    assert_eq!(fx.names(&format!("{word} is:open")).await.len(), 1);
+}

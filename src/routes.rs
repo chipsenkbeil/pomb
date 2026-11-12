@@ -8916,17 +8916,20 @@ struct SearchPage {
 /// Terms of the form `key:value` filter, and a value with spaces is quoted, as in
 /// `board:"My Board"`. `in:title|description|subtasks|comments` restricts the fields the words
 /// search (repeat it to search several). `board:` takes a board's name or id, `column:` a
-/// column's name or id, `label:` a label, `color:` a color's label or id, and
-/// `is:open|done|archived` the card's status. Repeating `board:`, `column:`, `color:` or `is:`
-/// accepts a card that satisfies any of them, and repeating `label:` requires every label. A `-`
+/// column's name or id, `label:` a label, `color:` a color's label or id, `id:` the start of a
+/// task id, at least 6 characters, and `is:open|done|archived` the card's status. Repeating
+/// `board:`, `column:`, `color:`, `id:` or `is:` accepts a card that satisfies any of them, and
+/// repeating `label:` requires every label. A `-`
 /// before a word, a phrase or a filter excludes the cards that satisfy it, as in `-label:bug`,
 /// `-is:done` and `-draft`. Each exclusion applies on its own, so `-label:bug -label:wip` drops a
-/// card that has either label, and `in:` cannot be excluded. A term with an unknown key, or a value
-/// its key does not accept, answers 400 `invalid_request` naming the term, and so does a blank
-/// `q`.
+/// card that has either label, and `in:` cannot be excluded. A bare word of at least 6 hex digits
+/// also matches a task whose id starts with it, so pasting `24350646` finds that card. A term with
+/// an unknown key, or a value its key does not accept, such as an `id:` shorter than 6
+/// characters, answers 400 `invalid_request` naming the term, and so does a blank `q`.
 ///
 /// A card is `archived` when its board is archived, otherwise `done` when its column is a done
-/// column, otherwise `open`. Results sort open before done before archived, then by the best
+/// column, otherwise `open`. Results sort the cards a bare word matched by id first, then open
+/// before done before archived, then by the best
 /// field that matched (title, description, subtasks, comments), then by how near the start of
 /// the text and how contiguous the match is, then by name. Each result names its board, its
 /// column, the field that matched and the matched `ranges`, counted in characters from the start
