@@ -15541,6 +15541,52 @@ mod schema_version_tests {
         assert_eq!(first, rows_of(&path, API_TOKENS));
     }
 
+    #[test]
+    fn open_should_give_suspended_and_device_tokens_webhooks_manage() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let mut held = AuthScope::Admin.permissions();
+        held.remove(&Permission::WebhooksManage);
+        let suspended = {
+            let db = Db::connect(&path).expect("connect");
+            let (mut record, _) =
+                new_api_token_record(&account, "suspended", AuthScope::Admin, None);
+            record.permissions = held.clone();
+            db.create_api_token(&record).expect("token");
+            let txn = db.db.begin_write().expect("write txn");
+            move_row_to(&txn, API_TOKENS, &record.id, SUSPENDED_TOKENS, &record.id)
+                .expect("suspend");
+            txn.commit().expect("commit");
+            record.id
+        };
+        put_device_request(&path, AuthScope::Admin, held, None);
+        stamp(&path, 89);
+        assert!(!holds_named(
+            &path,
+            SUSPENDED_TOKENS,
+            &suspended,
+            "webhooks.manage"
+        ));
+
+        drop(Db::connect(&path).expect("open version 89"));
+        assert!(holds_named(
+            &path,
+            SUSPENDED_TOKENS,
+            &suspended,
+            "webhooks.manage"
+        ));
+        assert!(holds_named(&path, DEVICE_AUTHS, "hash", "webhooks.manage"));
+
+        let first = (
+            rows_of(&path, SUSPENDED_TOKENS),
+            rows_of(&path, DEVICE_AUTHS),
+        );
+        stamp(&path, 89);
+        drop(Db::connect(&path).expect("open version 89 again"));
+        assert_eq!(first.0, rows_of(&path, SUSPENDED_TOKENS));
+        assert_eq!(first.1, rows_of(&path, DEVICE_AUTHS));
+    }
+
     /// A version-92 file holding a lead-role token, a token at the lead preset, a token short of one
     /// lead permission, and an admin token, all without `links.delete`, plus its path and keys.
     fn version_92_file_without_links_delete() -> (tempfile::TempDir, String, [String; 4]) {
@@ -15634,6 +15680,108 @@ mod schema_version_tests {
         drop(Db::connect(&path).expect("open version 93"));
         assert_eq!(stripped, rows_of(&path, API_TOKENS));
         assert_ne!(first, stripped);
+    }
+
+    #[must_use]
+    fn holds_named(
+        path: &str,
+        table: TableDefinition<'_, &str, &[u8]>,
+        key: &str,
+        name: &str,
+    ) -> bool {
+        rows_of(path, table)[key]["permissions"]
+            .as_array()
+            .expect("permissions")
+            .iter()
+            .any(|held| held == name)
+    }
+
+    fn put_device_request(
+        path: &str,
+        scope: AuthScope,
+        permissions: BTreeSet<Permission>,
+        role_id: Option<String>,
+    ) {
+        let device = DeviceAuthRow {
+            device_code_hash: "hash".to_string(),
+            user_code: "CODE0000".to_string(),
+            client_name: "device".to_string(),
+            scope,
+            permissions,
+            boards: BoardAccess::All,
+            status: DeviceAuthStatus::Approved,
+            created_at: 1,
+            expires_at: i64::MAX,
+            last_poll_at: None,
+            token_expires_at: None,
+            account_id: None,
+            client_network: None,
+            role_id,
+            requested_role: None,
+            requested_boards: Vec::new(),
+            requested_hours: None,
+            reason: None,
+        };
+        let value = serde_json::to_value(&device).expect("json");
+        put_raw(path, DEVICE_AUTHS, &device.device_code_hash, &value);
+    }
+
+    #[test]
+    fn open_should_give_suspended_and_device_tokens_links_delete() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let mut held = lead_role_permissions();
+        held.remove(&Permission::LinksDelete);
+        let (role, suspended) = {
+            let db = Db::connect(&path).expect("connect");
+            let role = db
+                .create_agent_role(
+                    account.as_str(),
+                    "chief",
+                    BTreeSet::from([Permission::TasksRead]),
+                )
+                .expect("role")
+                .id;
+            let (mut record, _) =
+                new_api_token_record(&account, "suspended", AuthScope::Work, None);
+            record.permissions = held.clone();
+            record.role_id = Some(role.clone());
+            db.create_api_token(&record).expect("token");
+            let txn = db.db.begin_write().expect("write txn");
+            move_row_to(&txn, API_TOKENS, &record.id, SUSPENDED_TOKENS, &record.id)
+                .expect("suspend");
+            txn.commit().expect("commit");
+            (role, record.id)
+        };
+        edit_raw(&path, AGENT_ROLES, &role, |object| {
+            object.insert("standard".to_string(), serde_json::json!("lead"));
+        });
+        put_device_request(&path, AuthScope::Work, held, Some(role));
+        stamp(&path, 92);
+        assert!(!holds_named(
+            &path,
+            SUSPENDED_TOKENS,
+            &suspended,
+            "links.delete"
+        ));
+
+        drop(Db::connect(&path).expect("open version 92"));
+        assert!(holds_named(
+            &path,
+            SUSPENDED_TOKENS,
+            &suspended,
+            "links.delete"
+        ));
+        assert!(holds_named(&path, DEVICE_AUTHS, "hash", "links.delete"));
+
+        let first = (
+            rows_of(&path, SUSPENDED_TOKENS),
+            rows_of(&path, DEVICE_AUTHS),
+        );
+        stamp(&path, 92);
+        drop(Db::connect(&path).expect("open version 92 again"));
+        assert_eq!(first.0, rows_of(&path, SUSPENDED_TOKENS));
+        assert_eq!(first.1, rows_of(&path, DEVICE_AUTHS));
     }
 
     mod grant_standard_roles_seats_take {
