@@ -25631,7 +25631,7 @@ struct DeviceTokenResponse {
 /// Starts device pairing (RFC 8628). No auth: the device shows `user_code` and the person approves
 /// it at `verification_url` while logged in, where they pick the role to act as, the permissions,
 /// the boards and the expiry within the request. A token issued as a role carries the role's name
-/// and `agent-N` label, which `GET /api/v1/auth/whoami` shows. Approval skips a board name the
+/// and `agent-N` label, which `GET /api/v1/auth/whoami` shows. Approval covers only boards the approver owns, not boards the approver joined, and skips a board name the
 /// approver lacks. It refuses a request whose board names match none of the approver's boards with
 /// 400 and issues no token. The approval page reports that none of the boards the request names
 /// belongs to the approver.

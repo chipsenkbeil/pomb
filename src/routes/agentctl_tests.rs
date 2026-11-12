@@ -15,9 +15,9 @@ use crate::db::{
     BootstrapToken, ChildTokenRefusal, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT, NewComment,
 };
 use crate::models::{
-    AccountId, ActiveTimer, Actor, ActorKind, AgentRoleRow, AuthScope, BoardAccess, DeviceAuthRow,
-    DeviceAuthStatus, FieldDefRow, FieldKind, FieldOwner, HistoryKind, SECONDS_PER_DAY,
-    SECONDS_PER_HOUR, TimeEntryRow, TimerMode,
+    AccountId, ActiveTimer, Actor, ActorKind, AgentRoleRow, AuthScope, BoardAccess, BoardRole,
+    DeviceAuthRow, DeviceAuthStatus, FieldDefRow, FieldKind, FieldOwner, HistoryKind,
+    SECONDS_PER_DAY, SECONDS_PER_HOUR, TimeEntryRow, TimerMode,
 };
 use crate::permissions::Permission;
 use crate::{AppState, BODY_LIMIT_BYTES, markdown};
@@ -6022,6 +6022,38 @@ async fn device_approval_should_refuse_a_request_whose_board_names_match_none() 
     assert_eq!(status, StatusCode::BAD_REQUEST, "{page}");
     assert!(
         page.contains("None of the boards the request names is a board of yours."),
+        "{page}"
+    );
+    let (status, body) = poll_device(&fx, device_code).await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
+    assert_eq!(body, "authorization_pending");
+}
+
+#[tokio::test]
+async fn device_approval_should_refuse_a_joined_board_the_approver_does_not_own() {
+    let (_dir, fx) = fixture();
+    let host = fx.db.create_user("host").expect("user");
+    let joined = fx.db.create_board(&host, "Joined").expect("board");
+    fx.db
+        .set_board_member(&joined, "admin", BoardRole::Member)
+        .expect("join");
+    let (status, started, _) =
+        start_device_with(&fx, json!({"boards": ["Agentctl", "Joined"]})).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let device_code = started["device_code"].as_str().expect("device_code");
+    let user_code = started["user_code"].as_str().expect("user_code");
+    let (status, page) = form_post(
+        &fx,
+        As::Admin,
+        "/device/approve",
+        &format!("user_code={user_code}&boards={joined}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{page}");
+    assert!(
+        page.contains(&format!(
+            "your role on board {joined} is below the owner role this route needs"
+        )),
         "{page}"
     );
     let (status, body) = poll_device(&fx, device_code).await;

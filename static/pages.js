@@ -636,9 +636,10 @@
       return catalog.filter(function (item) { return requested.indexOf(item.name) >= 0; });
     },
     deviceBoards: function (boards, ids) {
-      if (!ids) return boards;
-      var allowed = ids.split(',');
-      return boards.filter(function (board) { return allowed.indexOf(board.id) >= 0; });
+      const owned = boards.filter((board) => board.role === 'owner');
+      if (!ids) return owned;
+      const allowed = ids.split(',');
+      return owned.filter((board) => allowed.includes(board.id));
     },
     deviceRoles: function (catalog, roles, requested) {
       var needed = TokenForm.required(catalog);

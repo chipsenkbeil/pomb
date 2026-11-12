@@ -147,7 +147,7 @@ var boardList = [
   { id: 'b1', name: 'Roadmap' }, { id: 'b2', name: 'Road Trip' }, { id: 'b3', name: 'Chores' },
 ];
 check('the board search matches a name part in any case',
-  TokenForm.boardMatches(boardList, ' ROAD ').map(function (board) { return board.id; }), ['b1', 'b2']);
+  TokenForm.boardMatches(boardList, ' ROAD ').map((board) => board.id), ['b1', 'b2']);
 check('an empty board search lists every board', TokenForm.boardMatches(boardList, '').length, 3);
 check('a board search with no hit lists none', TokenForm.boardMatches(boardList, 'zzz'), []);
 check('the chips list the picked boards in board order',
@@ -169,9 +169,11 @@ var asked = ['boards.read', 'tasks.read', 'tasks.create'];
 check('the device picker offers only the requested permissions',
   TokenForm.deviceCatalog(catalog, asked).map(function (item) { return item.name; }), asked);
 check('the device boards keep only the matched ones',
-  TokenForm.deviceBoards([{ id: 'b1', name: 'A' }, { id: 'b2', name: 'B' }, { id: 'b3', name: 'C' }], 'b3,b1').map(function (board) { return board.id; }), ['b1', 'b3']);
+  TokenForm.deviceBoards([{ id: 'b1', name: 'A', role: 'owner' }, { id: 'b2', name: 'B', role: 'owner' }, { id: 'b3', name: 'C', role: 'owner' }], 'b3,b1').map((board) => board.id), ['b1', 'b3']);
 check('the device boards stay whole for a request naming none',
-  TokenForm.deviceBoards([{ id: 'b1', name: 'A' }], '').length, 1);
+  TokenForm.deviceBoards([{ id: 'b1', name: 'A', role: 'owner' }], '').length, 1);
+check('the device boards drop a board the approver only joined',
+  TokenForm.deviceBoards([{ id: 'b1', name: 'A', role: 'owner' }, { id: 'b2', name: 'B', role: 'member' }], '').map((board) => board.id), ['b1']);
 var devicePage = fs.readFileSync('templates/device.html', 'utf8');
 var at = function (text) { return devicePage.indexOf(text); };
 check('the device page shows the summary, then Approve and Deny, before the edit controls',
