@@ -4,6 +4,9 @@ use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+/// The interim reply hyper sends once a handler reads a request that expects it.
+const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
+
 /// `SHUTDOWN_DRAIN` in src/main.rs.
 const DRAIN: Duration = Duration::from_secs(10);
 
@@ -201,15 +204,36 @@ fn second_signal_should_drop_open_requests_at_once() {
     let path = dir.path().join("pomb.redb");
     let path = path.to_str().expect("utf8 path");
     let mut server = Server::start(path);
-    let _stalled = send(
+
+    // Stall a request the server has started reading
+    let mut stalled = send(
         server.port,
         b"POST /api/v1/auth/sign-in HTTP/1.1\r\nHost: 127.0.0.1\r\n\
-          Content-Type: application/json\r\nContent-Length: 100\r\n\r\n{",
+          Content-Type: application/json\r\nContent-Length: 100\r\n\
+          Expect: 100-continue\r\n\r\n",
     );
-    std::thread::sleep(Duration::from_millis(300));
+    stalled
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("read timeout");
+    let mut interim = vec![0u8; CONTINUE.len()];
+    stalled
+        .read_exact(&mut interim)
+        .expect("the server reads the stalled request's body");
+    assert_eq!(interim, CONTINUE);
 
+    // Wait until the drain begins
     server.signal("-TERM");
-    std::thread::sleep(Duration::from_millis(500));
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = server.stdout.read_line(&mut line).expect("read stdout");
+        assert!(read > 0, "pomb exited before it began to drain");
+        if line.starts_with("pomb: shutting down") {
+            break;
+        }
+    }
+
+    // Send the second signal and time the exit
     let second = Instant::now();
     let (status, log) = server.signal_and_wait("-INT", DRAIN + Duration::from_secs(20));
     let elapsed = second.elapsed();
