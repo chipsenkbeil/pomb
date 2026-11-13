@@ -20555,6 +20555,9 @@
           var li = check.closest('li');
           if (li) li.classList.toggle('card-sub-done', check.checked);
           refoldSubtasks(card);
+          var subsec = card.querySelector('.card-subsec');
+          if (subsec && subsec.dataset.subAll !== 'true' && typeof TimerUI !== 'undefined' &&
+              TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(taskId);
         })
         .catch(function () {
           check.checked = !check.checked;
