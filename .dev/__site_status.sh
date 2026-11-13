@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 set -u
 units="pomb-stable.service pomb-nightly.service pomb-update@stable.timer pomb-update@nightly.timer cloudflared.service"
 echo "== units (enabled / active)"

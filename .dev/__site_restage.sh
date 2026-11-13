@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 set -euo pipefail
 exec 9>/run/lock/pomb-update-nightly.lock
 if ! flock -n 9; then

@@ -597,11 +597,11 @@ local site_scripts = lint:files({
     ".dev/standalone/setup.sh",
     ".dev/standalone/pomb-update",
     ".dev/standalone/__publish_release.sh",
-    ".dev/site/decoys.sh",
-    ".dev/site/firewall.sh",
-    ".dev/site/restage.sh",
-    ".dev/site/setup-code.sh",
-    ".dev/site/status.sh",
+    ".dev/__site_decoys.sh",
+    ".dev/__site_firewall.sh",
+    ".dev/__site_restage.sh",
+    ".dev/__site_setup-code.sh",
+    ".dev/__site_status.sh",
 })
 if lint:have("shellcheck", "brew install shellcheck", "shellcheck") then
     lint:check("shellcheck", lintset.with_files({ "shellcheck", "-x", "-s", "bash" }, site_scripts))

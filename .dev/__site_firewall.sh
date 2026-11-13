@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 set -euo pipefail
 if ! systemctl is-active --quiet cloudflared; then
   echo "Refusing to close port 22. The cloudflared unit is not active." >&2
