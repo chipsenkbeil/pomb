@@ -2175,6 +2175,9 @@
     document.getElementById('cp-name').addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); doCopyTask(); }
     });
+    document.getElementById('est-input').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); doAddEstimate(); }
+    });
     // KF-334: a click outside the card-anchored popover closes it.
     document.getElementById('move-task-dialog').addEventListener('click', function (e) {
       if (e.target === e.currentTarget && e.currentTarget.classList.contains('dlg-overlay--popover')) {

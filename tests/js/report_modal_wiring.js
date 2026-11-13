@@ -37,7 +37,7 @@ function check(name, got, want) {
 }
 function count(key) { return (listeners[key] || []).length; }
 
-['mt-move-btn', 'cp-copy-btn', 'cp-name', 'move-task-dialog', 'est-add', 'estimate-dialog', 'duedate-dialog'].forEach(function (id) {
+['mt-move-btn', 'cp-copy-btn', 'cp-name', 'move-task-dialog', 'est-add', 'est-input', 'estimate-dialog', 'duedate-dialog'].forEach(function (id) {
   present[id] = element(id);
 });
 
