@@ -15501,6 +15501,30 @@ async fn read_listed_image(
     (bytes.len() as u64 <= limit && image::sniff(head).is_some()).then_some(bytes)
 }
 
+/// Returns the ids among `ids` of `task`'s attachments whose first bytes [`image::sniff`] accepts,
+/// which are the ones the image route serves.
+async fn servable_images(
+    account: &AccountDb,
+    task: &OwnedTask,
+    ids: &HashSet<String>,
+) -> HashSet<String> {
+    let mut servable = HashSet::new();
+    for id in ids {
+        let Some((file, _)) = account.open_attachment(task, id).ok().flatten() else {
+            continue;
+        };
+        let mut head = Vec::new();
+        let read = tokio::fs::File::from_std(file)
+            .take(image::PREFIX_BYTES as u64)
+            .read_to_end(&mut head)
+            .await;
+        if read.is_ok() && image::sniff(&head).is_some() {
+            servable.insert(id.clone());
+        }
+    }
+    servable
+}
+
 /// Replaces the `api-token` uploader of `attachment` with the account `handle`, unless the handle
 /// is empty.
 fn show_account_handle(attachment: &mut TaskAttachment, handle: &str) {
@@ -16482,9 +16506,15 @@ async fn task_modal(
         None => Vec::new(),
     };
     let (user_fields, system_fields) = field_views(&defs, &row.row().fields);
+    let referenced: HashSet<String> = std::iter::once(task.description.as_str())
+        .chain(task.comments.iter().map(|c| c.body.as_str()))
+        .flat_map(markdown::attachment_ids)
+        .collect();
+    let servable = servable_images(db, &row, &referenced).await;
     let scope = markdown::Scope {
         task_id: &id,
         attachments: &row.row().attachments,
+        servable: &servable,
     };
     for comment in &mut task.comments {
         comment.body_html = markdown::render_in(&comment.body, scope);

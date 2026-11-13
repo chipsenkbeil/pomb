@@ -7,7 +7,6 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
-use crate::image;
 use crate::models::TaskAttachment;
 
 /// Allowlist for rendered markdown: no `input`, `img`, `style` or script-capable markup. The only
@@ -41,16 +40,18 @@ pub struct Scope<'a> {
     pub task_id: &'a str,
     /// The attachments that task holds.
     pub attachments: &'a [TaskAttachment],
+    /// The ids of those attachments whose bytes the image route serves.
+    pub servable: &'a HashSet<String>,
 }
 
 impl Scope<'_> {
     /// Returns the id `![alt](attachment:ID)` names when the task holds an attachment of that id
-    /// stored as a PNG, JPEG, WebP or GIF.
+    /// and the image route serves its bytes.
     fn image_id(&self, dest: &str) -> Option<String> {
         let id = dest.strip_prefix("attachment:")?;
         self.attachments
             .iter()
-            .any(|a| a.id == id && image::is_image_type(&a.mime))
+            .any(|a| a.id == id && self.servable.contains(id))
             .then(|| id.to_string())
     }
 }
@@ -321,6 +322,7 @@ mod tests {
         let scope = Scope {
             task_id: "t",
             attachments: &[],
+            servable: &HashSet::new(),
         };
         let out = render_tickable_in("- [ ] a", scope);
         assert!(
@@ -512,9 +514,11 @@ mod tests {
             attachment("a1", "image/png"),
             attachment("t1", "text/plain"),
         ];
+        let servable = HashSet::from(["a1".to_string()]);
         let scope = Scope {
             task_id: "task9",
             attachments: &attachments,
+            servable: &servable,
         };
         let out = render_in(
             "![a *b* \"c\"](attachment:a1) ![x](attachment:t1) ![y](attachment:zz) ![z](http://e.com/p.png)",
@@ -532,9 +536,11 @@ mod tests {
     #[test]
     fn render_in_should_keep_raw_img_and_forged_markers_out() {
         let attachments = [attachment("a1", "image/png")];
+        let servable = HashSet::from(["a1".to_string()]);
         let scope = Scope {
             task_id: "t",
             attachments: &attachments,
+            servable: &servable,
         };
         let out = render_in(
             "<img src=\"/api/tasks/t/attachments/a1/image\">\n\ncf00g0_ ![a](attachment:a1)",

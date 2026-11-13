@@ -770,6 +770,68 @@ async fn a_description_and_a_comment_should_show_only_the_images_of_their_own_ta
 }
 
 #[tokio::test]
+async fn a_description_and_a_comment_should_show_alt_text_for_an_attachment_the_image_route_refuses()
+ {
+    let fx = fixture().await;
+
+    // Upload an SVG, a fake PNG, a real PNG and a GIF
+    let svg = upload_bytes(
+        &fx,
+        &fx.task,
+        "a.svg",
+        "image/svg+xml",
+        b"<svg xmlns='http://www.w3.org/2000/svg'/>",
+    )
+    .await;
+    let fake = upload_bytes(&fx, &fx.task, "b.png", "image/png", b"not an image").await;
+    let real = upload_bytes(&fx, &fx.task, "c.png", "image/png", &png(3, 3)).await;
+    let mut gif = b"GIF89a".to_vec();
+    gif.extend([3, 0, 3, 0, 0, 0, 0]);
+    let moving = upload_bytes(&fx, &fx.task, "d.gif", "image/gif", &gif).await;
+    let svg = svg["id"].as_str().expect("id");
+    let fake = fake["id"].as_str().expect("id");
+    let real = real["id"].as_str().expect("id");
+    let moving = moving["id"].as_str().expect("id");
+    let source = format!(
+        "![vector](attachment:{svg})\n\n![fake](attachment:{fake})\n\n\
+         ![still](attachment:{real})\n\n![moving](attachment:{moving})"
+    );
+
+    // Put the same source in the description and in a comment
+    let uri = format!("/api/tasks/{}", fx.task);
+    let (status, body) = fx
+        .json("PATCH", &uri, Some(json!({"description": source})))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = fx
+        .json(
+            "POST",
+            &format!("{uri}/comments"),
+            Some(json!({"body": source})),
+        )
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+
+    // Served images render in both places
+    let (_, modal) = fx.call("GET", &format!("{uri}/modal"), None).await;
+    for (id, alt) in [(real, "still"), (moving, "moving")] {
+        let wanted =
+            format!("<img src=\"{uri}/attachments/{id}/image\" alt=\"{alt}\" loading=\"lazy\">");
+        assert_eq!(modal.matches(&wanted).count(), 2, "{alt} in {modal}");
+    }
+
+    // Refused images fall back to alt text
+    for (id, alt) in [(svg, "vector"), (fake, "fake")] {
+        assert!(
+            !modal.contains(&format!("attachments/{id}/image\"")),
+            "{modal}"
+        );
+        assert!(modal.contains(alt), "{alt}");
+    }
+    assert_eq!(modal.matches("/image\"").count(), 4, "{modal}");
+}
+
+#[tokio::test]
 async fn the_modal_should_count_the_references_of_an_attachment_and_keep_the_alt_text_after_a_delete()
  {
     let fx = fixture().await;
