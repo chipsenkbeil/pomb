@@ -33272,6 +33272,40 @@ mod tests {
         assert!(html.contains("data-lane-fold-toggle"), "an expand control");
     }
 
+    /// Every lane header carries a chevron whose aria-expanded matches the fold, with a lane label
+    /// column and with a single named lane.
+    #[test]
+    fn lane_header_should_render_a_chevron_with_aria_expanded_matching_its_fold() {
+        // Two lanes with a label column, the second folded
+        let (_, _, html) = board_grid_with(&[("Default", 2), ("Lane Two", 1)], |bands| {
+            bands[1].collapsed = true;
+        });
+        assert_eq!(html.matches("class=\"lane-chevron\"").count(), 1);
+        assert_eq!(
+            html.matches("class=\"swimlane-expand lane-chevron\"")
+                .count(),
+            1
+        );
+        assert!(html.contains("aria-expanded=\"true\" title=\"Collapse Default\""));
+        assert!(html.contains("aria-label=\"Collapse swimlane Default\""));
+        assert!(html.contains("aria-expanded=\"false\" title=\"Expand Lane Two\""));
+        assert!(html.contains("aria-label=\"Expand swimlane Lane Two\""));
+
+        // A single named lane has no label column, so each open cell head carries the chevron
+        let cell_chevron = "class=\"lane-chevron lane-chevron--cell\"";
+        let (_, _, open) = board_grid(&[("Solo", 1)]);
+        assert!(!open.contains("swimlane-label"), "no label column");
+        assert_eq!(open.matches(cell_chevron).count(), 5);
+        assert!(open.contains("aria-expanded=\"true\""));
+        let (_, _, folded) = board_grid_with(&[("Solo", 1)], |bands| bands[0].collapsed = true);
+        assert_eq!(folded.matches(cell_chevron).count(), 5);
+        assert!(folded.contains("aria-expanded=\"false\""));
+
+        // A collapsed column shows no cell head, so it carries no chevron
+        let (_, _, strip) = board_grid_collapsed(&[("Solo", 1)], &[0]);
+        assert_eq!(strip.matches(cell_chevron).count(), 4);
+    }
+
     /// Several lanes end in one filler row per column that takes the leftover board height.
     #[test]
     fn board_with_several_lanes_should_end_in_one_filler_row() {

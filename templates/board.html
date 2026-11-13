@@ -537,8 +537,9 @@
             data-task-count="{{ band.task_count }}"
             data-collapsed="{% if folded %}1{% else %}0{% endif %}">
           {% if folded && role.is_owner() %}
-          <button type="button" class="swimlane-expand" data-lane-fold-toggle="{{ band.id }}" title="Expand {{ band.name }}" aria-label="Expand swimlane {{ band.name }}"><svg width="14" height="14" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>
+          <button type="button" class="swimlane-expand lane-chevron" data-lane-fold-toggle="{{ band.id }}" aria-expanded="false" title="Expand {{ band.name }}" aria-label="Expand swimlane {{ band.name }}"><svg width="14" height="14" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 8l6 7 6-7"/></svg></button>
           {% else %}
+          {% if role.is_owner() %}<button type="button" class="lane-chevron" data-lane-fold-toggle="{{ band.id }}" aria-expanded="true" title="Collapse {{ band.name }}" aria-label="Collapse swimlane {{ band.name }}"><svg width="14" height="14" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 8l6 7 6-7"/></svg></button>{% endif %}
           <span class="swimlane-name"{% if role.is_owner() %} data-lane-fold-toggle="{{ band.id }}" title="Click to collapse"{% endif %}>{{ band.name }}</span>{% if !band.description.is_empty() %}<span class="swimlane-info" title="{{ band.description }}" aria-label="{{ band.description }}">i</span>{% endif %}
           {% if role.is_owner() %}<span class="swimlane-grip" data-lane-resize="{{ band.id }}" title="Drag to resize" aria-hidden="true"></span>{% endif %}
           {% endif %}
@@ -549,6 +550,7 @@
           {% if cell.collapsed %}<span class="collapsedColumn-nameBox"><span class="collapsedColumn-name">{{ cell.column_name }}</span></span>{% endif %}
           {% if !layout.hide_swimlane_header %}
           <div class="lane-cellHead">
+            {% if !cell.collapsed && !layout.lane_label_column && role.is_owner() %}<button type="button" class="lane-chevron lane-chevron--cell" data-lane-fold-toggle="{{ band.id }}" aria-expanded="{% if folded %}false{% else %}true{% endif %}" title="{% if folded %}Expand{% else %}Collapse{% endif %} {{ band.name }}" aria-label="{% if folded %}Expand{% else %}Collapse{% endif %} swimlane {{ band.name }}"><svg width="14" height="14" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 8l6 7 6-7"/></svg></button>{% endif %}
             <span class="lane-cellCount{% if cell.over_limit() %} lane-cellCount--over{% endif %}" data-lane-count data-limit="{% if let Some(limit) = cell.limit %}{{ limit }}{% endif %}"{% if cell.over_limit() %} title="*LIMIT EXCEEDED*"{% endif %}>{{ cell.count_label() }}</span>
             {% if !folded && role.writes() %}<button type="button" class="lane-cellAdd" data-add-task-for="{{ cell.column_id }}" data-add-lane="{{ cell.swimlane_id }}" title="Add task" aria-label="Add task to {{ cell.column_name }} in {{ band.name }}"><svg width="18" height="18" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>{% endif %}
           </div>
