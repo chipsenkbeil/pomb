@@ -2,6 +2,7 @@ local devos = require("dev.os")
 local fs = require("dev.fs")
 local t = require("dev.testing")
 local testenv = require("dev.testenv")
+local jjenv = require("pomb.jjenv")
 
 local ROOT = fs.dirname(fs.dirname(fs.dirname(debug.getinfo(1, "S").source:sub(2))))
 
@@ -29,7 +30,7 @@ local function stub(root, name, body)
     assert(devos.run({ "chmod", "755", path }) == 0)
 end
 
-local function gate(before, after, dev_exit)
+local function gate(before, after, dev_exit, kind)
     local root = assert(fs.realpath(testenv.tempdir()))
     assert(fs.mkdir(root .. "/bin"))
     assert(fs.mkdir(root .. "/" .. WORKTREE))
@@ -38,6 +39,13 @@ local function gate(before, after, dev_exit)
     assert(fs.write(root .. "/next.json", doc(after)))
     local real_git = (assert(devos.capture({ "sh", "-c", "command -v git" }))):gsub("%s+$", "")
     local wt = root .. "/" .. WORKTREE
+    local git_head = HEAD
+    if kind == jjenv.Kind.JJ then
+        git_head = OTHER
+        assert(fs.mkdir(wt .. "/.jj"))
+        local words = [[[ "$1 $2 $3 $4 $5" = '--no-pager log --no-graph -r @-' ] && echo %s]]
+        stub(root, "jj", words:format(HEAD))
+    end
     stub(
         root,
         "git",
@@ -45,7 +53,7 @@ local function gate(before, after, dev_exit)
 echo %s
 exit 0
 fi
-exec '%s' "$@"]]):format(wt, HEAD, real_git)
+exec '%s' "$@"]]):format(wt, git_head, real_git)
     )
     stub(root, "ci", "cat '" .. root .. "/runs.json'")
     stub(root, "dev", ("cp '%s/next.json' '%s/runs.json'\nexit %d"):format(root, root, dev_exit))
@@ -121,4 +129,24 @@ end)
 t.test("gate refuses when dev fails", function()
     local _, code = gate({}, { row("aaaaaa", "passed", "local") }, 1)
     t.ok(code ~= 0)
+end)
+
+t.test("gate_should_read_head_through_jj_when_the_worktree_has_a_jj_directory", function()
+    local source = "local@" .. HEAD:sub(1, 12)
+    local out, code, err = gate({}, { row("bbbbbb", "passed", source) }, 0, jjenv.Kind.JJ)
+    t.eq(code, 0, err)
+    t.eq(out, "bbbbbb " .. REPO .. " " .. source .. "\n")
+end)
+
+t.test("gate_should_refuse_a_source_naming_the_git_head_in_a_jj_worktree", function()
+    local source = "local@" .. OTHER:sub(1, 12)
+    local _, code, err = gate({}, { row("bbbbbb", "passed", source) }, 0, jjenv.Kind.JJ)
+    t.ok(code ~= 0)
+    t.ok(err:find("which is not the HEAD " .. HEAD .. " of", 1, true), err)
+end)
+
+t.test("gate_should_read_head_through_git_without_a_jj_directory", function()
+    local source = "local@" .. HEAD:sub(1, 12)
+    local _, code, err = gate({}, { row("bbbbbb", "passed", source) }, 0, jjenv.Kind.GIT)
+    t.eq(code, 0, err)
 end)

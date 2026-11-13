@@ -7,6 +7,7 @@ Usage: dev __gate <worktree> <verb> <log>. Exactly one new ci run must appear un
 local devos = require("dev.os")
 local fs = require("dev.fs")
 local json = require("dev.json")
+local vcs = require("pomb.vcs")
 
 local ctx = ...
 
@@ -14,14 +15,6 @@ local function fail(...)
     io.stderr:write(...)
     io.stderr:write("\n")
     return 1
-end
-
-local function head_of(wt)
-    local out, code = devos.capture({ "git", "-C", wt, "rev-parse", "HEAD" }, { stderr = "null" })
-    if code ~= 0 then
-        return nil
-    end
-    return (out:gsub("%s+$", ""))
 end
 
 local function runs(wt)
@@ -97,7 +90,7 @@ if row.source ~= "local" and not sha then
     )
 end
 if sha then
-    local head = head_of(wt)
+    local head = vcs.head(wt)
     if not head then
         return fail(
             "Could not read the HEAD commit of ",

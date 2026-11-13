@@ -3,10 +3,14 @@ local fs = require("dev.fs")
 local t = require("dev.testing")
 local testenv = require("dev.testenv")
 local gitenv = require("pomb.gitenv")
+local jjenv = require("pomb.jjenv")
 
 local ROOT = fs.dirname(fs.dirname(fs.dirname(debug.getinfo(1, "S").source:sub(2))))
 
 devos.defaults.env = gitenv.env
+
+local case = jjenv.case
+local Kind = jjenv.Kind
 
 local STUB_CI = [[
 if [ "$1" = -C ]; then cd "$2" || exit 2; fi
@@ -29,7 +33,7 @@ local function commit(work, body)
     return git(work, "rev-parse", "HEAD")
 end
 
-local function fixture()
+local function fixture(kind)
     local dir = assert(fs.realpath(testenv.tempdir()))
     local work = dir .. "/work"
     git(dir, "init", "-q", "--bare", "remote.git")
@@ -53,6 +57,9 @@ local function fixture()
     local body = STUB_CI:gsub("@dir@", dir):gsub("@work@", work)
     assert(fs.write(stub, "#!/bin/sh\n" .. body))
     assert(devos.run({ "chmod", "755", stub }) == 0)
+    if kind == Kind.JJ then
+        jjenv.install(work)
+    end
     return { dir = dir, work = work, base = base, moved = moved }
 end
 
@@ -60,36 +67,36 @@ local function seen(fix)
     return fs.read(fix.dir .. "/seen")
 end
 
-t.test("regress exports the merge-base when the candidate is behind main", function()
-    local fix = fixture()
+case("regress exports the merge-base when the candidate is behind main", function(kind)
+    local fix = fixture(kind)
     local _, code, err = testenv.verb(fix.work, { "regress" })
     t.eq(code, 0, err)
     t.eq(seen(fix), "base\n")
 end)
 
-t.test("regress prints the full baseline sha for the default", function()
-    local fix = fixture()
+case("regress prints the full baseline sha for the default", function(kind)
+    local fix = fixture(kind)
     local _, code, err = testenv.verb(fix.work, { "regress" })
     t.eq(code, 0, err)
     t.ok(err:find("baseline: " .. fix.base .. "\n", 1, true), err)
 end)
 
-t.test("regress prints the full baseline sha for an explicit REV", function()
-    local fix = fixture()
+case("regress prints the full baseline sha for an explicit REV", function(kind)
+    local fix = fixture(kind)
     local _, code, err = testenv.verb(fix.work, { "regress", "gerrit/main" })
     t.eq(code, 0, err)
     t.ok(err:find("baseline: " .. fix.moved .. "\n", 1, true), err)
 end)
 
-t.test("regress uses an explicit REV unchanged", function()
-    local fix = fixture()
+case("regress uses an explicit REV unchanged", function(kind)
+    local fix = fixture(kind)
     local _, code, err = testenv.verb(fix.work, { "regress", "gerrit/main" })
     t.eq(code, 0, err)
     t.eq(seen(fix), "moved\n")
 end)
 
-t.test("regress leaves the working tree untouched", function()
-    local fix = fixture()
+case("regress leaves the working tree untouched", function(kind)
+    local fix = fixture(kind)
     local before = git(fix.work, "status", "--porcelain")
     local _, code, err = testenv.verb(fix.work, { "regress" })
     t.eq(code, 0, err)
@@ -98,8 +105,8 @@ t.test("regress leaves the working tree untouched", function()
     t.ok(not fs.exists(fix.work .. "/.ci-baseline"))
 end)
 
-t.test("regress ships the baseline inside the staged tree", function()
-    local fix = fixture()
+case("regress ships the baseline inside the staged tree", function(kind)
+    local fix = fixture(kind)
     local _, code, err = testenv.verb(fix.work, { "regress" })
     t.eq(code, 0, err)
     t.ok(fs.read(fix.dir .. "/where") ~= fix.work)
@@ -109,17 +116,52 @@ t.test("regress ships the baseline inside the staged tree", function()
     t.ok(not fs.exists(fix.dir .. "/staged_ignored"))
 end)
 
-t.test("regress removes the staged tree after a passing run", function()
-    local fix = fixture()
+case("regress removes the staged tree after a passing run", function(kind)
+    local fix = fixture(kind)
     local _, code, err = testenv.verb(fix.work, { "regress" })
     t.eq(code, 0, err)
     t.ok(not fs.exists((fs.read(fix.dir .. "/where"):gsub("%s+$", ""))))
 end)
 
-t.test("regress removes the staged tree after a failing run", function()
-    local fix = fixture()
+case("regress removes the staged tree after a failing run", function(kind)
+    local fix = fixture(kind)
     assert(fs.write(fix.dir .. "/fail", ""))
     local _, code = testenv.verb(fix.work, { "regress" })
     t.ok(code ~= 0)
     t.ok(not fs.exists((fs.read(fix.dir .. "/where"):gsub("%s+$", ""))))
+end)
+
+local function git_calls(fix)
+    return table.concat(testenv.calls(fix.work, "git"), "\n")
+end
+
+t.test("regress reads the checkout through jj when .jj exists", function()
+    local fix = fixture(Kind.JJ)
+    local _, code, err = testenv.verb(fix.work, { "regress" })
+    t.eq(code, 0, err)
+    t.eq(seen(fix), "base\n")
+    local jj = table.concat(testenv.calls(fix.work, "jj"), "\n")
+    t.ok(jj:find("file list", 1, true), jj)
+    t.ok(jj:find("heads(::@- & ::main@gerrit)", 1, true), jj)
+    local git = git_calls(fix)
+    t.ok(not git:find("ls-files", 1, true), git)
+    t.ok(not git:find("merge-base", 1, true), git)
+    t.ok(not git:find("rev-parse HEAD", 1, true), git)
+end)
+
+t.test("regress resolves an explicit REV through jj when .jj exists", function()
+    local fix = fixture(Kind.JJ)
+    local _, code, err = testenv.verb(fix.work, { "regress", "gerrit/main" })
+    t.eq(code, 0, err)
+    t.eq(seen(fix), "moved\n")
+    local jj = table.concat(testenv.calls(fix.work, "jj"), "\n")
+    t.ok(jj:find("-r main@gerrit", 1, true), jj)
+    t.ok(not git_calls(fix):find("--verify", 1, true))
+end)
+
+t.test("regress reads the checkout through git when .jj is absent", function()
+    local fix = fixture(Kind.GIT)
+    local _, code, err = testenv.verb(fix.work, { "regress" })
+    t.eq(code, 0, err)
+    t.ok(not fs.exists(fix.work .. "/bin/jj.log"))
 end)

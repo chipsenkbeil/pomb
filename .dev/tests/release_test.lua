@@ -21,6 +21,7 @@ local FILES = {
     "lua/pomb/drain.lua",
     "lua/pomb/forge.lua",
     "lua/pomb/lock.lua",
+    "lua/pomb/vcs.lua",
     "__bump_version.lua",
     "__version_guard.lua",
 }

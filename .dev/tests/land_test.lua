@@ -19,6 +19,7 @@ local VERBS = {
     "lua/pomb/drain.lua",
     "lua/pomb/forge.lua",
     "lua/pomb/lock.lua",
+    "lua/pomb/vcs.lua",
 }
 
 local STUB_DEV = [[

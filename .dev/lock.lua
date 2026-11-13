@@ -9,6 +9,7 @@ A temporary directory holds a copy of the working copy's tracked and unignored f
 local devos = require("dev.os")
 local fs = require("dev.fs")
 local verb = require("dev.verb")
+local vcs = require("pomb.vcs")
 
 local ctx = ...
 local root = ctx.root
@@ -41,20 +42,6 @@ local function parse(args)
         verb.die("Name the package to resolve. " .. USAGE)
     end
     return found
-end
-
-local function stage(tree)
-    return devos.run({
-        "bash",
-        "-o",
-        "pipefail",
-        "-c",
-        'git ls-files -z --cached --others --exclude-standard | while IFS= read -r -d "" path; do '
-            .. 'if [ -e "$path" ] || [ -L "$path" ]; then printf "%s\\0" "$path"; fi; done '
-            .. '| tar -cf - --null -T - | tar -xf - -C "$1"',
-        "bash",
-        tree,
-    }, { cwd = root }) or 1
 end
 
 local function run_job(log, tree, wanted)
@@ -127,7 +114,7 @@ local ok, code = pcall(function()
     if not fs.mkdir(tree) then
         return 1
     end
-    local staged = stage(tree)
+    local staged = vcs.stage(root, tree)
     if staged ~= 0 then
         return staged
     end
