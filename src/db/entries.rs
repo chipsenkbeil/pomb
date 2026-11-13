@@ -181,7 +181,7 @@ mod tests {
     use crate::db::{
         EntryEdit, MAX_TASK_ROW_BYTES, META, NewComment, NewTimeEntry, SCHEMA_VERSION_KEY,
     };
-    use crate::models::{Actor, ActorKind, EntryKind, InstanceMode, Quotas};
+    use crate::models::{Actor, ActorKind, EntryKind, HistoryKind, InstanceMode, Quotas};
 
     fn edit(started_at: &str) -> EntryEdit<'_> {
         EntryEdit {
@@ -482,6 +482,34 @@ mod tests {
         );
         assert_eq!(refused_bound(result), Bound::TaskRowBytes);
         assert!(fx.db.list_entries(&task).expect("entries").is_empty());
+    }
+
+    #[test]
+    fn log_task_time_should_store_a_timer_entry_and_no_event_at_the_row_cap() {
+        let fx = fixture();
+        let task = board_task(&fx, "Full");
+        fill_task_row(&fx.db, &task);
+        let events = |db: &Db| {
+            let row = db.task(&task).expect("read").expect("task");
+            row.history
+                .iter()
+                .filter(|event| event.kind == HistoryKind::TimeLogged)
+                .count()
+        };
+        let before = events(&fx.db);
+        let entry = NewTimeEntry {
+            kind: EntryKind::Stopwatch,
+            ..timed(Some(&task), "")
+        };
+        let id = fx
+            .db
+            .log_task_time(&fx.admin, entry, "Logged time", Actor::SYSTEM)
+            .expect("logged")
+            .expect("entry id");
+        let stored = fx.db.list_entries(&task).expect("entries");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].id, id);
+        assert_eq!(events(&fx.db), before);
     }
 
     #[test]

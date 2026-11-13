@@ -3822,6 +3822,68 @@ fn run_pomodoro(fx: &Fixture, task: &str) {
 }
 
 #[tokio::test]
+async fn timer_stop_should_record_its_entry_when_the_task_row_is_at_its_cap() {
+    const COMMENT_SIZES: [usize; 5] = [5000, 500, 50, 5, 0];
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    for size in COMMENT_SIZES {
+        let body = "c".repeat(size);
+        let comment = NewComment {
+            author: "bob",
+            body: &body,
+            actor_kind: ActorKind::User,
+            token_name: None,
+            token_id: None,
+            kind: None,
+        };
+        while fx
+            .db
+            .add_comment(&task, comment, Actor::SYSTEM, None)
+            .is_ok()
+        {}
+    }
+    let mut description_bytes = 0;
+    while fx
+        .db
+        .update_task(
+            &task,
+            None,
+            Some(&"d".repeat(description_bytes + 1)),
+            None,
+            None,
+        )
+        .is_ok()
+    {
+        description_bytes += 1;
+    }
+    let manual = fx
+        .member(
+            "POST",
+            "/api/time/manual",
+            Some(manual_time(&task, json!({}))),
+        )
+        .await;
+    assert_eq!(manual.status, StatusCode::CONFLICT, "{}", manual.body);
+    let message = manual.body["message"].as_str().expect("message");
+    assert!(message.contains("bytes in one task"), "{message}");
+    fx.db
+        .account(&fx.member)
+        .set_active_timer(&ActiveTimer {
+            task_id: Some(task.clone()),
+            mode: TimerMode::Stopwatch,
+            started_at: chrono::Utc::now().timestamp() - 600,
+            duration_secs: None,
+        })
+        .expect("timer");
+    let stopped = fx.member("POST", "/api/timer/stop", Some(json!({}))).await;
+    assert_eq!(stopped.status, StatusCode::OK, "{}", stopped.body);
+    let entries = fx.db.list_entries(&task).expect("entries");
+    assert_eq!(entries.len(), 1, "the session is recorded");
+    let account = fx.db.account(&fx.member);
+    assert!(account.active_timer().expect("timer").is_none());
+}
+
+#[tokio::test]
 async fn timer_stop_should_refuse_an_over_cap_reason_and_keep_the_timer_running() {
     let fx = Fixture::multi();
     let (_, task) = fx.member_task();

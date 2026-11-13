@@ -12572,11 +12572,12 @@ impl Db {
     }
 
     /// Logs `entry` for `account` on its task and its `time_logged` history event, reading
-    /// `detail`, in one write, so a failed history write stores no entry. A manual entry is
-    /// refused at the stored-bytes quota, and a timer session's is stored past it as far as
-    /// [`OverQuota::TimerSession`] allows. Returns the entry id, or [`None`] with nothing written
-    /// when the entry names no task, the task does not exist or `account` holds no role on its
-    /// board.
+    /// `detail`, in one write, so a failed history write stores no entry. A timer session's entry
+    /// is the exception when the task row is at [`MAX_TASK_ROW_BYTES`]: it is stored and only the
+    /// history event is dropped. A manual entry is refused at the stored-bytes quota, and a timer
+    /// session's is stored past it as far as [`OverQuota::TimerSession`] allows. Returns the entry
+    /// id, or [`None`] with nothing written when the entry names no task, the task does not exist
+    /// or `account` holds no role on its board.
     pub fn log_task_time(
         &self,
         account: &AccountId,
@@ -12587,7 +12588,8 @@ impl Db {
         let Some(task_id) = entry.task_id else {
             return Ok(None);
         };
-        let over = if entry.kind == EntryKind::Manual {
+        let manual = entry.kind == EntryKind::Manual;
+        let over = if manual {
             OverQuota::Refuse
         } else {
             OverQuota::TimerSession
@@ -12607,7 +12609,7 @@ impl Db {
             from: Some(format_minutes(before)),
             to: Some(format_minutes(before + entry.minutes)),
         };
-        if !txn_push_task_event(
+        let pushed = txn_push_task_event(
             &txn,
             task_id,
             HistoryKind::TimeLogged,
@@ -12615,8 +12617,16 @@ impl Db {
             actor,
             change,
             over,
-        )? {
-            return Ok(None);
+        );
+        match pushed {
+            Ok(true) => {}
+            Ok(false) => return Ok(None),
+            Err(error)
+                if !manual
+                    && error
+                        .downcast_ref::<QuotaExceeded>()
+                        .is_some_and(|refusal| refusal.bound == Bound::TaskRowBytes) => {}
+            Err(error) => return Err(error),
         }
         txn_store_entry(&txn, &entry, over)?;
         mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &entry.id)?;
