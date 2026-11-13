@@ -29,7 +29,13 @@ echo "$*" >>'@bin@/jj.log'
 [ "$1" = --no-pager ] || exit 64
 shift
 case "$1" in
-file) exec '@git@' ls-files --cached --others --exclude-standard ;;
+file)
+    case "$*" in
+    "file list -r "*) exec '@git@' ls-tree -r --name-only "$4" ;;
+    "file show -r "*) exec '@git@' show "$4:$5" ;;
+    *) exec '@git@' ls-files --cached --others --exclude-standard ;;
+    esac
+    ;;
 log) ;;
 *) exit 0 ;;
 esac

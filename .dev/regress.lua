@@ -47,21 +47,6 @@ local function baseline_rev(requested)
     return merge_base(found.remote .. "/main")
 end
 
-local function export(rev, dir, tree)
-    local archive = dir .. "/baseline.tar"
-    local code = devos.run({
-        "git",
-        "archive",
-        "--output=" .. archive,
-        "--prefix=" .. BASELINE .. "/",
-        rev,
-    }, { cwd = root }) or 1
-    if code ~= 0 then
-        return code
-    end
-    return devos.run({ "tar", "-xf", archive, "-C", tree }, { cwd = root }) or 1
-end
-
 local function run_job(log, tree)
     return devos.run({
         "bash",
@@ -126,7 +111,7 @@ local ok, code = pcall(function()
     if staged ~= 0 then
         return staged
     end
-    local exported = export(rev, dir, tree)
+    local exported = vcs.export(root, rev, tree, BASELINE .. "/")
     if exported ~= 0 then
         return exported
     end

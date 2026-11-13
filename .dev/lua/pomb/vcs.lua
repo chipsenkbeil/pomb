@@ -54,6 +54,29 @@ function M.stage(root, tree)
     }, { cwd = root }) or 1
 end
 
+---Write the files of commit `rev` under `tree/prefix`.
+---@param root string absolute path of the repository, a jj one when `.jj` exists there
+---@param rev string full commit id
+---@param tree string existing directory that receives the files
+---@param prefix string path under `tree`, ending in `/`
+---@return integer code exit status of the export
+function M.export(root, rev, tree, prefix)
+    local script, dest
+    if is_jj(root) then
+        dest = tree .. "/" .. prefix
+        script = 'jj --no-pager file list -r "$1" | while IFS= read -r path; do '
+            .. 'mkdir -p "$2/$(dirname "$path")" '
+            .. '&& jj --no-pager file show -r "$1" "$path" >"$2/$path" || exit 1; done'
+    else
+        dest = tree
+        script = 'git archive --prefix="$3" "$1" | tar -xf - -C "$2"'
+    end
+    return devos.run(
+        { "bash", "-o", "pipefail", "-c", script, "bash", rev, dest, prefix },
+        { cwd = root }
+    ) or 1
+end
+
 ---Name the commit the checkout at `dir` sits on.
 ---
 ---That is the git HEAD, or the parent of the working-copy commit in jj.
