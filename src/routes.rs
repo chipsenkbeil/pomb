@@ -9176,14 +9176,14 @@ async fn create_task(
         }
     }
 
-    // Default to the board's first swimlane when none is given
+    // Default to the board's first unarchived swimlane when none is given
     let swimlane_id = match input.swimlane_id.filter(|s| !s.is_empty()) {
         Some(id) => Some(lane_on_board(db, &id, &column.row().board_id)?),
         None => db
             .list_swimlanes(&column.row().board_id)
             .map_err(AppError::from)?
             .into_iter()
-            .next()
+            .find(|lane| !lane.archived)
             .map(|lane| lane.id),
     };
 
@@ -10520,10 +10520,10 @@ struct MoveTaskInput {
 
 /// Moves a task to a new column/swimlane/position. Crossing into the Done column stamps
 /// `completed_at` and crossing out clears it. Without a swimlane the task keeps its lane, or takes
-/// the target board's first lane when the column is on another board. A move to another board also
-/// gives the task that board's color of the same value, else its default. It needs `tasks.move`
-/// and no delete permission: the task and everything on it survive. Moving an epic into or out of a
-/// Done column closes or reopens it, which also needs `epics.manage`.
+/// the target board's first unarchived lane when the column is on another board. A move to another
+/// board also gives the task that board's color of the same value, else its default. It needs
+/// `tasks.move` and no delete permission: the task and everything on it survive. Moving an epic
+/// into or out of a Done column closes or reopens it, which also needs `epics.manage`.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/move",
@@ -10614,7 +10614,7 @@ async fn move_task(
                 .list_swimlanes(&to_column.row().board_id)
                 .map_err(AppError::from)?
                 .into_iter()
-                .next()
+                .find(|lane| !lane.archived)
                 .map(|lane| lane.id),
             None => before.row().swimlane_id.clone(),
         };
@@ -10790,7 +10790,7 @@ struct BulkTasksInput {
     /// `move`: the target column, on any board of the account.
     column_id: Option<String>,
     /// `move`: the target swimlane on the target board. Without one each task keeps its lane, or
-    /// takes the target board's first lane when the column is on another board.
+    /// takes the target board's first unarchived lane when the column is on another board.
     swimlane_id: Option<String>,
     /// `move`: the index the first task takes among the target cell's other tasks. When absent
     /// the tasks go where new tasks go, the top or bottom of the cell per the board's "Position of
@@ -18332,14 +18332,19 @@ struct UpdateSwimlaneInput {
     limits: Option<Vec<LaneLimit>>,
     /// Folds the swimlane into one thin row, or unfolds it. The board remembers it.
     collapsed: Option<bool>,
+    /// Archives the swimlane, or unarchives it. An archived lane stays on the board's lane list
+    /// with `archived` true, and a task created or moved to another board with no `swimlane_id`
+    /// lands in the first unarchived lane. Archiving the board's last unarchived lane, or a lane
+    /// holding a card a timer runs on, is refused with 409.
+    archived: Option<bool>,
     /// Height in pixels of the swimlane's row, from 100 to 4000. Null returns it to the default,
     /// and absent leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
     height: Option<Option<i64>>,
 }
 
-/// Updates a swimlane's name, description, WIP limits, fold state and height. Only the fields
-/// sent change.
+/// Updates a swimlane's name, description, WIP limits, fold state, archived flag and height. Only
+/// the fields sent change.
 #[utoipa::path(
     patch,
     path = "/api/swimlanes/{id}",
@@ -18351,6 +18356,7 @@ struct UpdateSwimlaneInput {
         (status = 200, description = "Swimlane updated"),
         (status = 400, description = "Invalid input: an empty name, a limit under 1 or repeated for a column, a limit on a column of another board, a description over 500 characters, or a height out of range"),
         (status = 404, description = "Swimlane not found"),
+        (status = 409, description = "Archiving the board's last unarchived swimlane, or a swimlane holding a card a timer runs on, which the message names"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -18392,10 +18398,17 @@ async fn update_swimlane(
         description: input.description.as_deref().map(str::trim),
         limits: input.limits.as_deref(),
         collapsed: input.collapsed,
+        archived: input.archived,
         height: input.height,
     };
     match db.update_swimlane(&lane, &patch).map_err(AppError::from)? {
         SwimlaneUpdateOutcome::Updated => Ok(StatusCode::OK),
+        SwimlaneUpdateOutcome::LastUnarchived => Err(AppError::conflict(
+            "cannot archive the last unarchived swimlane on a board",
+        )),
+        SwimlaneUpdateOutcome::TimerRunning(card) => Err(AppError::conflict(format!(
+            "cannot archive a swimlane while a timer runs on card {card}"
+        ))),
         SwimlaneUpdateOutcome::NotFound => Err(AppError::not_found("swimlane not found")),
         SwimlaneUpdateOutcome::UnknownColumn => Err(AppError::bad_request(
             "a swimlane limit names a column that is not on the board",
@@ -20024,6 +20037,8 @@ struct SwimlaneListItem {
     limits: Vec<LaneLimit>,
     /// Whether the swimlane is folded into one thin row.
     collapsed: bool,
+    /// Whether the swimlane is archived, out of view with its cards kept.
+    archived: bool,
     /// Height in pixels of the swimlane's row, null for the default.
     height: Option<i64>,
 }
@@ -20076,6 +20091,7 @@ async fn get_board_detail(
             description: lane.description,
             limits: lane.limits,
             collapsed: lane.collapsed,
+            archived: lane.archived,
             height: lane.height,
         })
         .collect();
@@ -30589,7 +30605,7 @@ mod tests {
         version_info,
     };
     use crate::auth::is_event_wait;
-    use crate::db::{BootstrapToken, Db, NewTimeEntry};
+    use crate::db::{BootstrapToken, Db, NewTimeEntry, SwimlanePatch};
     use crate::layouts::{LAYOUTS, chip_labels};
     use crate::models::{
         AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
@@ -32698,6 +32714,7 @@ mod tests {
             description: String::new(),
             limits: Vec::new(),
             collapsed: false,
+            archived: false,
             height: None,
         }];
         let colors = vec![ColorRow {
@@ -37304,6 +37321,228 @@ mod tests {
         let lane = fx.db.swimlane(&first).expect("read").expect("lane");
         assert!(lane.limits.is_empty() && !lane.collapsed && lane.height.is_none());
         assert_eq!(lane.name, "Team A", "fields left out stay as they were");
+    }
+
+    async fn create_lane_task(
+        fx: &Kf221Fixture,
+        name: &str,
+        lane: Option<&str>,
+    ) -> serde_json::Value {
+        let mut body = serde_json::json!({"name": name, "column_id": fx.col_wip});
+        if let Some(lane) = lane {
+            body["swimlane_id"] = serde_json::json!(lane);
+        }
+        let (status, text) = send(fx, "POST", "/api/tasks", Some(body)).await;
+        assert_eq!(status, axum::http::StatusCode::CREATED, "{text}");
+        serde_json::from_str(&text).expect("json")
+    }
+
+    #[tokio::test]
+    async fn archive_swimlane_should_round_trip_and_show_on_the_board_detail() {
+        let (_dir, fx) = kf221_fixture();
+        let (first, second) = two_lanes(&fx);
+        let uri = format!("/api/swimlanes/{first}");
+
+        // Archive the first lane
+        let (status, text) = send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"archived": true})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        assert!(
+            fx.db
+                .swimlane(&first)
+                .expect("read")
+                .expect("lane")
+                .archived
+        );
+
+        // Read the flags back from the board detail
+        let (_, text) = send(&fx, "GET", &format!("/api/boards/{}", fx.board_id), None).await;
+        let detail: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let flags: Vec<(String, bool)> = detail["swimlanes"]
+            .as_array()
+            .expect("lanes")
+            .iter()
+            .map(|lane| {
+                (
+                    lane["id"].as_str().expect("id").to_string(),
+                    lane["archived"].as_bool().expect("flag"),
+                )
+            })
+            .collect();
+        assert_eq!(flags, [(first.clone(), true), (second, false)]);
+
+        // Unarchive it again
+        let (status, text) = send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"archived": false})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        assert!(
+            !fx.db
+                .swimlane(&first)
+                .expect("read")
+                .expect("lane")
+                .archived
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_swimlane_should_refuse_the_last_unarchived_lane() {
+        let (_dir, fx) = kf221_fixture();
+        let (first, second) = two_lanes(&fx);
+        let archive = Some(serde_json::json!({"archived": true}));
+        let (status, _) = send(
+            &fx,
+            "PATCH",
+            &format!("/api/swimlanes/{first}"),
+            archive.clone(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let (status, text) = send(&fx, "PATCH", &format!("/api/swimlanes/{second}"), archive).await;
+        assert_eq!(status, axum::http::StatusCode::CONFLICT, "{text}");
+        assert!(
+            !fx.db
+                .swimlane(&second)
+                .expect("read")
+                .expect("lane")
+                .archived
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_swimlane_should_refuse_while_a_timer_runs_on_one_of_its_cards() {
+        let (_dir, fx) = kf221_fixture();
+        let (first, _) = two_lanes(&fx);
+
+        // Run a timer on a card in the lane
+        let task = create_lane_task(&fx, "Timed card", Some(&first)).await;
+        let timer = ActiveTimer {
+            task_id: task["id"].as_str().map(str::to_string),
+            mode: TimerMode::Stopwatch,
+            started_at: chrono::Utc::now().timestamp(),
+            duration_secs: None,
+        };
+        fx.db.set_active_timer(&fx.user_id, &timer).expect("timer");
+
+        // Archive the lane
+        let (status, text) = send(
+            &fx,
+            "PATCH",
+            &format!("/api/swimlanes/{first}"),
+            Some(serde_json::json!({"archived": true})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CONFLICT, "{text}");
+        assert!(text.contains("Timed card"), "{text}");
+        assert!(
+            !fx.db
+                .swimlane(&first)
+                .expect("read")
+                .expect("lane")
+                .archived
+        );
+    }
+
+    #[tokio::test]
+    async fn new_tasks_and_cross_board_moves_should_land_in_the_first_unarchived_lane() {
+        let (_dir, fx) = kf221_fixture();
+        let (first, second) = two_lanes(&fx);
+        let (status, _) = send(
+            &fx,
+            "PATCH",
+            &format!("/api/swimlanes/{first}"),
+            Some(serde_json::json!({"archived": true})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+
+        // A task created with no lane takes the first unarchived one
+        let created = create_lane_task(&fx, "Unplaced", None).await;
+        let id = created["id"].as_str().expect("id");
+        let row = fx.db.task(id).expect("read").expect("task");
+        assert_eq!(row.swimlane_id.as_deref(), Some(second.as_str()));
+
+        // Move it to a board whose first lane is archived, naming no lane
+        let other = fx
+            .db
+            .create_board(&fx.user_id, "Other")
+            .expect("other board");
+        let foreign = fx
+            .db
+            .create_column(&other, "Foreign", None)
+            .expect("column");
+        fx.db.ensure_default_swimlane(&other).expect("lane");
+        let other_first = fx.db.list_swimlanes(&other).expect("lanes")[0].id.clone();
+        let other_second = fx.db.create_swimlane(&other, "Two").expect("lane");
+
+        // Archive the other board's first lane
+        let (status, text) = send(
+            &fx,
+            "PATCH",
+            &format!("/api/swimlanes/{other_first}"),
+            Some(serde_json::json!({"archived": true})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let (status, text) = send(
+            &fx,
+            "POST",
+            &format!("/api/tasks/{id}/move"),
+            Some(serde_json::json!({"column_id": foreign})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let row = fx.db.task(id).expect("read").expect("task");
+        assert_eq!(row.swimlane_id.as_deref(), Some(other_second.as_str()));
+    }
+
+    #[tokio::test]
+    async fn archive_swimlane_should_need_swimlanes_edit() {
+        let (_dir, fx) = kf221_fixture();
+        let (first, second) = two_lanes(&fx);
+
+        // Archive the second lane directly so the unarchive request has something to undo
+        fx.db
+            .update_swimlane(
+                &second,
+                &SwimlanePatch {
+                    archived: Some(true),
+                    ..SwimlanePatch::default()
+                },
+            )
+            .expect("archive");
+        let (_, worker) = store_token(&fx, "worker-bot", AuthScope::Work, None);
+
+        // A token without swimlanes.edit is refused both ways
+        for (lane, archived) in [(&first, true), (&second, false)] {
+            let uri = format!("/api/swimlanes/{lane}");
+            let body = serde_json::json!({ "archived": archived }).to_string();
+            assert_permission_denied(&fx, &worker, ("PATCH", &uri, Some(&body)), "swimlanes.edit")
+                .await;
+        }
+        assert!(
+            !fx.db
+                .swimlane(&first)
+                .expect("read")
+                .expect("lane")
+                .archived
+        );
+        assert!(
+            fx.db
+                .swimlane(&second)
+                .expect("read")
+                .expect("lane")
+                .archived
+        );
     }
 
     #[tokio::test]

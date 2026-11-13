@@ -922,6 +922,9 @@ pub struct SwimlaneRow {
     /// A folded lane renders as one thin row with its counts. Defaults to false.
     #[serde(default)]
     pub collapsed: bool,
+    /// An archived lane is out of view and takes no new tasks by default. Defaults to false.
+    #[serde(default)]
+    pub archived: bool,
     /// The lane's height in pixels once dragged, or null for the default height.
     #[serde(default)]
     pub height: Option<i64>,

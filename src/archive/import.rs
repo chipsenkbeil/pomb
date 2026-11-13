@@ -446,6 +446,7 @@ impl Builder<'_> {
                 description: String::new(),
                 limits: Vec::new(),
                 collapsed: false,
+                archived: false,
                 height: None,
             });
         }
@@ -670,6 +671,7 @@ impl Builder<'_> {
                 description: lane.description,
                 limits,
                 collapsed: lane.collapsed,
+                archived: lane.archived,
                 height: lane.height,
             });
         }

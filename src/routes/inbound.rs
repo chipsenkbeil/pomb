@@ -477,7 +477,7 @@ pub(crate) async fn receive_inbound_mail(
         .list_swimlanes(&board_id)
         .map_err(AppError::from)?
         .into_iter()
-        .next()
+        .find(|lane| !lane.archived)
         .map(|lane| lane.id);
     let (size, color_id) = new_task_color(&account, &board_id, None, None)?;
     let placement = new_task_placement(&account, &board_id)?;

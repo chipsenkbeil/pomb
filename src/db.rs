@@ -186,7 +186,7 @@ pub enum SwimlaneDeleteOutcome {
 }
 
 /// Typed outcome for [`Db::update_swimlane`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SwimlaneUpdateOutcome {
     /// Updated, with every field set in the patch stored.
     Updated,
@@ -194,6 +194,10 @@ pub enum SwimlaneUpdateOutcome {
     NotFound,
     /// Refused: a limit names a column that is not on the lane's board.
     UnknownColumn,
+    /// Refused: archiving the lane would leave the board no unarchived lane.
+    LastUnarchived,
+    /// Refused: a timer runs on the named card of the lane being archived.
+    TimerRunning(String),
 }
 
 /// Typed outcome for [`Db::merge_swimlanes`].
@@ -1129,7 +1133,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 94;
+pub const SCHEMA_VERSION: u64 = 95;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1230,6 +1234,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "b8ee38bfa29f6aec24252d7f8440cbfbdb8cfe2f26e1b3243f898d7c0eaed996",
     "b8ee38bfa29f6aec24252d7f8440cbfbdb8cfe2f26e1b3243f898d7c0eaed996",
     "35f8c1333a5e1f3d3d0cee103fc3eeddce808a8543a8dad43b60448ef926eccd",
+    "79a5f8988a4826ad121f959dfd9ea54a6c916d2e61bbcaaaf950ae7a5056a1e8",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -5617,6 +5622,19 @@ fn txn_clear_timer_if(
     Ok(())
 }
 
+/// Returns the name of a card in swimlane `lane_id` that any account's timer runs on, inside an
+/// open write transaction.
+fn txn_timer_card_in_lane(txn: &WriteTransaction, lane_id: &str) -> DbResult<Option<String>> {
+    let timers: Vec<ActiveTimer> = rows_in(&txn.open_table(ACTIVE_TIMER)?)?;
+    for task_id in timers.into_iter().filter_map(|timer| timer.task_id) {
+        let task = txn_read_one::<TaskRow>(txn, TASKS, &task_id)?;
+        if let Some(task) = task.filter(|task| task.swimlane_id.as_deref() == Some(lane_id)) {
+            return Ok(Some(task.name));
+        }
+    }
+    Ok(None)
+}
+
 /// One column x swimlane cell's tasks in position order (id breaks ties),
 /// read inside an open write transaction.
 fn txn_cell_tasks(
@@ -5827,6 +5845,7 @@ fn txn_insert_swimlane(
         description: String::new(),
         limits: Vec::new(),
         collapsed: false,
+        archived: false,
         height: None,
     };
     txn_store_owned(txn, SWIMLANES, &id, &row, over)?;
@@ -6268,6 +6287,8 @@ pub struct SwimlanePatch<'a> {
     pub limits: Option<&'a [LaneLimit]>,
     /// Folds or unfolds the lane.
     pub collapsed: Option<bool>,
+    /// Archives or unarchives the lane.
+    pub archived: Option<bool>,
     /// `Some(None)` returns the lane to its default height.
     pub height: Option<Option<i64>>,
 }
@@ -8190,6 +8211,20 @@ impl Db {
         if let Some(collapsed) = patch.collapsed {
             lane.collapsed = collapsed;
         }
+        if let Some(archived) = patch.archived {
+            // Refuse an archive that leaves no visible lane or strands a running timer
+            if archived && !lane.archived {
+                let lanes: Vec<SwimlaneRow> =
+                    txn_indexed_rows(&txn, SWIMLANES_BY_BOARD, &lane.board_id, SWIMLANES)?;
+                if lanes.iter().all(|other| other.id == id || other.archived) {
+                    return Ok(SwimlaneUpdateOutcome::LastUnarchived);
+                }
+                if let Some(name) = txn_timer_card_in_lane(&txn, id)? {
+                    return Ok(SwimlaneUpdateOutcome::TimerRunning(name));
+                }
+            }
+            lane.archived = archived;
+        }
         if let Some(height) = patch.height {
             lane.height = height;
         }
@@ -8274,6 +8309,7 @@ impl Db {
         }
         let mut main = main;
         main.collapsed = false;
+        main.archived = false;
         txn_store_owned(&txn, SWIMLANES, &main_id, &main, OverQuota::Allow)?;
         txn.commit()?;
         Ok(SwimlaneMergeOutcome::Merged {
@@ -8298,7 +8334,18 @@ impl Db {
             return Ok(SwimlaneDeleteOutcome::NotFound);
         };
         let neighbor = if at > 0 { at - 1 } else { at + 1 };
-        let Some(target) = lanes.get(neighbor) else {
+        let target = lanes
+            .get(neighbor)
+            .filter(|next| lane.archived || !next.archived)
+            .or_else(|| {
+                lanes
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, other)| *index != at && !other.archived)
+                    .min_by_key(|(index, _)| index.abs_diff(at))
+                    .map(|(_, other)| other)
+            });
+        let Some(target) = target else {
             return Ok(SwimlaneDeleteOutcome::RefusedLast);
         };
 
@@ -12241,7 +12288,10 @@ impl Db {
                 let mut lanes: Vec<SwimlaneRow> =
                     txn_indexed_rows(txn, SWIMLANES_BY_BOARD, &target.board_id, SWIMLANES)?;
                 lanes.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
-                lanes.into_iter().next().map(|lane| lane.id)
+                lanes
+                    .into_iter()
+                    .find(|lane| !lane.archived)
+                    .map(|lane| lane.id)
             }
             None => old_swimlane_id.clone(),
         };
@@ -13447,6 +13497,53 @@ mod swimlane_tests {
         board.db.delete_swimlane(&board.lanes[1]).expect("delete");
         let outcome = board.db.delete_swimlane(&board.lanes[0]).expect("delete");
         assert_eq!(outcome, SwimlaneDeleteOutcome::RefusedLast);
+        assert_eq!(place(&board, &task).1, Some(board.lanes[0].clone()));
+    }
+
+    fn archive_lane(board: &Board, lane: usize) {
+        let patch = SwimlanePatch {
+            archived: Some(true),
+            ..SwimlanePatch::default()
+        };
+        let outcome = board
+            .db
+            .update_swimlane(&board.lanes[lane], &patch)
+            .expect("archive");
+        assert_eq!(outcome, SwimlaneUpdateOutcome::Updated);
+    }
+
+    #[test]
+    fn delete_should_skip_an_archived_neighbour_and_refuse_the_last_unarchived_lane() {
+        let board = board_with_lanes(&["Two", "Three"]);
+        archive_lane(&board, 1);
+        let task = add_task(&board, 0, 2, "task");
+
+        // Delete the lane beside an archived one
+        let outcome = board.db.delete_swimlane(&board.lanes[2]).expect("delete");
+        assert_eq!(outcome, SwimlaneDeleteOutcome::Deleted);
+        assert_eq!(place(&board, &task).1, Some(board.lanes[0].clone()));
+
+        // Refuse the last unarchived lane
+        let outcome = board.db.delete_swimlane(&board.lanes[0]).expect("delete");
+        assert_eq!(outcome, SwimlaneDeleteOutcome::RefusedLast);
+        assert_eq!(place(&board, &task).1, Some(board.lanes[0].clone()));
+    }
+
+    #[test]
+    fn merge_should_unarchive_an_archived_main_lane() {
+        let board = board_with_lanes(&["Two"]);
+        archive_lane(&board, 0);
+        let task = add_task(&board, 0, 1, "task");
+        board
+            .db
+            .merge_swimlanes(&board.id, Actor::SYSTEM)
+            .expect("merge");
+        let lane = board
+            .db
+            .swimlane(&board.lanes[0])
+            .expect("read")
+            .expect("lane");
+        assert!(!lane.archived);
         assert_eq!(place(&board, &task).1, Some(board.lanes[0].clone()));
     }
 

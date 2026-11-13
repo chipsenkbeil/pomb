@@ -197,6 +197,9 @@ struct LaneInfo {
     limits: Vec<LaneLimit>,
     /// Whether the lane is folded.
     collapsed: bool,
+    /// Whether the lane is archived.
+    #[serde(default)]
+    archived: bool,
     /// The lane's height in pixels, or null for the default.
     height: Option<i64>,
 }
@@ -672,6 +675,7 @@ fn lane_info(lane: SwimlaneRow) -> LaneInfo {
         description: lane.description,
         limits: lane.limits,
         collapsed: lane.collapsed,
+        archived: lane.archived,
         height: lane.height,
     }
 }
@@ -1281,7 +1285,7 @@ mod tests {
     use super::*;
     use crate::db::{
         AccountDb, ColumnKind, ColumnPatch, Db, NewComment, NewTimeEntry, SCHEMA_VERSION,
-        SchemaTooNew,
+        SchemaTooNew, SwimlanePatch,
     };
     use crate::models::{API_TOKEN_ACTOR, AccountId, Actor, EntryKind, Owner};
 
@@ -1673,6 +1677,42 @@ mod tests {
             .expect("import")
             .0;
         assert_eq!(snapshot.columns[0].stage, Some(ColumnStage::Verify));
+    }
+
+    #[test]
+    fn archived_lane_should_survive_an_export_and_import_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+        seeded
+            .db
+            .create_swimlane(&seeded.board, "Two")
+            .expect("lane");
+        let first = seeded.db.list_swimlanes(&seeded.board).expect("lanes")[0]
+            .id
+            .clone();
+        let patch = SwimlanePatch {
+            archived: Some(true),
+            ..SwimlanePatch::default()
+        };
+        seeded.db.update_swimlane(&first, &patch).expect("archive");
+
+        // Export the board, then read it back
+        let exported = document(&archive_of(&seeded));
+        assert_eq!(exported["swimlanes"][0]["archived"], true);
+        let spool_dir = tempfile::tempdir().expect("tempdir");
+        let spool = Spool::create(spool_dir.path()).expect("spool");
+        let account = AccountId::new("acc");
+        let importer = Importer {
+            handle: "chip",
+            account: &account,
+            max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
+            activities: &[],
+        };
+        let snapshot = read_board(&archive_bytes(&seeded), &importer, &spool)
+            .expect("import")
+            .0;
+        assert!(snapshot.swimlanes[0].archived);
+        assert!(!snapshot.swimlanes[1].archived);
     }
 
     #[test]
