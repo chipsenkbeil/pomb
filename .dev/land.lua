@@ -5,11 +5,11 @@ Apply a verified commit onto the remote's main and push it once lint and test pa
 Usage: dev land <verified-commit> --card ID
 Steps, any failure aborts before the push:
 1. Fetch the remote of record. Refuse a commit that is not exactly one commit past its merge-base with <remote>/main, or that changes the package version in Cargo.toml or the pomb entry of Cargo.lock: only dev release bumps the version. Refuse a commit that adds a file under .dev/standalone unless the card has the standalone-ok label.
-2. Wait for the release lock .dev/release.lock to clear, up to POMB_LAND_WAIT_BOUND seconds (default 5400), polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) and saying who holds it. A lock whose pid is gone is removed. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>, first removing a clean land worktree left by an earlier attempt, and refusing when that worktree holds uncommitted changes. On gerrit the commit gets a Change-Id trailer when it has none.
+2. Take the land lock .dev/land.lock, which names the card and the pid, to allow one land at a time to apply, test and push. Wait for it while a live land holds it, polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) up to POMB_LAND_WAIT_BOUND seconds (default 5400) and saying who holds it, and take over a lock whose pid is gone. Drop it after the push, after a push refused because main moved, after a refusal and on every other exit. Then wait for the release lock .dev/release.lock to clear, up to POMB_LAND_WAIT_BOUND seconds (default 5400), polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) and saying who holds it. A lock whose pid is gone is removed. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>, first removing a clean land worktree left by an earlier attempt, and refusing when that worktree holds uncommitted changes. On gerrit the commit gets a Change-Id trailer when it has none.
 3. Refuse attribution trailers through __push_main --check, before any gate.
 4. Read the card's latest dev-check note from dev board show. When it has mode=run, passes the rows dev --remote lint and dev --remote test, and names the landed commit or one with the same git patch-id, skip the gates whether or not main moved since, and say so. Otherwise say why and run dev lint --remote, then dev test --remote, through __gate, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts. When the commit changes a path under tests/ or .dev/ or a Cargo file, also run dev nixcheck --remote through __gate after test with the same drain retry, even when the card's dev-check let lint and test skip, since that note records only lint and test. Any other change runs no nixcheck gate.
 5. Push to main through __push_main, remove the land worktree, print the landed sha, note it on the card with dev board note and move the card to Release with dev board move. Then remove the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch. In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the bookmark of the same name. A worktree with uncommitted changes is kept, and the verb says why.
-6. A push refused because main moved on (exit 3) removes the worktree, fetches, and repeats steps 2 to 5 on the new main, 3 attempts in all. It never forces the push.
+6. A push refused because main moved on (exit 3) removes the worktree, drops the land lock, fetches, and repeats steps 2 to 5 on the new main, 3 attempts in all. It never forces the push.
 The remote of record is forge.remote, else gerrit when that remote exists, else origin. A failed land leaves its worktree behind; the next land removes it when it is clean, and a worktree with uncommitted changes is removed by hand. A push refused a third time exits 1 with the worktree left behind, and so does any other push failure, which is not retried.
 ]]
 local devos = require("dev.os")
@@ -35,6 +35,20 @@ end
 
 local function warn(...)
     io.stderr:write(...)
+end
+
+local land_lock_repo
+
+local function drop_land_lock()
+    if land_lock_repo then
+        lock.land.drop(land_lock_repo)
+        land_lock_repo = nil
+    end
+end
+
+local function die(message)
+    drop_land_lock()
+    verb.die(message)
 end
 
 local function usage()
@@ -69,7 +83,7 @@ local function parse(args)
         usage()
     end
     if card:find("[^A-Za-z0-9]") then
-        verb.die(("The --card value must be letters and digits, got '%s'."):format(card))
+        die(("The --card value must be letters and digits, got '%s'."):format(card))
     end
     return commit, card
 end
@@ -111,7 +125,7 @@ local function listed_files(repo, rev, filter)
         QUIET
     )
     if code ~= 0 then
-        verb.die(("Could not list the files commit %s changes, so nothing landed."):format(rev))
+        die(("Could not list the files commit %s changes, so nothing landed."):format(rev))
     end
     local found = {}
     for path in out:gmatch("([^%z]+)") do
@@ -146,7 +160,7 @@ local function card_labels(repo, card)
         cells[#cells + 1] = cell
     end
     if code ~= 0 or #cells < 4 then
-        verb.die(("Could not read the labels of card %s, so nothing landed."):format(card))
+        die(("Could not read the labels of card %s, so nothing landed."):format(card))
     end
     local labels = {}
     if cells[4] ~= "-" then
@@ -255,11 +269,12 @@ local function apply(land)
     local repo, wt, remote, cand, base = land.repo, land.wt, land.remote, land.cand, land.base
     local added = run_git(repo, "worktree", "add", "-q", "--detach", wt, base)
     if added ~= 0 then
+        drop_land_lock()
         os.exit(added or 1)
     end
     if land.fork == base then
         if run_git(wt, "reset", "-q", "--hard", cand) ~= 0 then
-            verb.die(("Commit %s does not reset onto %s/main, and the worktree is left at %s."):format(
+            die(("Commit %s does not reset onto %s/main, and the worktree is left at %s."):format(
                 land.commit,
                 remote,
                 wt
@@ -267,7 +282,7 @@ local function apply(land)
         end
     elseif devos.run(git(wt, "cherry-pick", cand), { stdout = "null" }) ~= 0 then
         run_git(wt, "cherry-pick", "--abort")
-        verb.die(
+        die(
             ("Commit %s does not apply onto %s/main, and the worktree is left at %s."):format(
                 land.commit,
                 remote,
@@ -280,7 +295,7 @@ local function apply(land)
         local trailers = devos.capture_input(git(wt, "interpret-trailers", "--parse"), body, QUIET)
         if not trailers:find("Change-Id:", 1, true) then
             if not forge.add_change_id(wt) then
-                verb.die(("Could not add a Change-Id, and the worktree is left at %s."):format(wt))
+                die(("Could not add a Change-Id, and the worktree is left at %s."):format(wt))
             end
         end
     end
@@ -315,7 +330,7 @@ local function wait_for_release(repo)
             return
         end
         if waited >= bound then
-            verb.die(("The release of batch %s still held the land lock after %s seconds, so nothing landed."):format(
+            die(("The release of batch %s still held the release lock after %s seconds, so nothing landed."):format(
                 holder.batch,
                 bound
             ))
@@ -326,9 +341,35 @@ local function wait_for_release(repo)
     end
 end
 
+local function take_land_lock(repo, card)
+    local interval = positive_env("POMB_LAND_WAIT_INTERVAL", WAIT_INTERVAL_SECS)
+    local bound = positive_env("POMB_LAND_WAIT_BOUND", WAIT_BOUND_SECS)
+    local waited = 0
+    while not lock.land.take(repo, card) do
+        local holder = lock.land.holder(repo)
+        if holder and not lock.land.alive(holder) then
+            say(("The land lock of card %s names a process that is gone, so it is taken over.\n"):format(holder.card))
+            lock.land.clear(repo, holder)
+        else
+            if waited >= bound then
+                die(("The land of card %s still held the land lock after %s seconds, so nothing landed."):format(
+                    holder and holder.card or "?",
+                    bound
+                ))
+            end
+            if holder then
+                say(("Waiting for the land of card %s (pid %s) to finish before landing.\n"):format(holder.card, holder.pid))
+            end
+            devos.run({ "sleep", tostring(interval) })
+            waited = waited + interval
+        end
+    end
+    land_lock_repo = repo
+end
+
 local function check_attribution(wt)
     if devos.run({ "dev", "__push_main", wt, "--check" }, { cwd = wt }) ~= 0 then
-        verb.die(("The attribution check failed, and the worktree is left at %s."):format(wt))
+        die(("The attribution check failed, and the worktree is left at %s."):format(wt))
     end
 end
 
@@ -405,7 +446,7 @@ local function gates(opts)
             })
         end })
         if not ran then
-            verb.die(
+            die(
                 ("The ci hub was still draining after %s seconds, so dev %s --remote did not run, nothing was pushed, and the worktree is left at %s."):format(
                     code,
                     gate,
@@ -415,7 +456,7 @@ local function gates(opts)
         end
         if code ~= 0 then
             local err = trim(fs.read(logs .. "/" .. gate .. ".err") or "")
-            verb.die(
+            die(
                 ("The dev %s --remote gate did not pass on this worktree: %s, so see %s/%s.log, and the worktree is left at %s."):format(
                     gate,
                     err,
@@ -442,7 +483,7 @@ if fetched ~= 0 then
 end
 local cand, code = read_git(repo, "rev-parse", "--verify", commit .. "^{commit}")
 if code ~= 0 then
-    verb.die(("No such commit: %s."):format(commit))
+    die(("No such commit: %s."):format(commit))
 end
 local base
 base, code = read_git(repo, "rev-parse", remote .. "/main")
@@ -452,16 +493,16 @@ end
 local fork
 fork, code = read_git(repo, "merge-base", base, cand)
 if code ~= 0 then
-    verb.die(("Commit %s shares no history with %s/main."):format(commit, remote))
+    die(("Commit %s shares no history with %s/main."):format(commit, remote))
 end
 local count = read_git(repo, "rev-list", "--count", fork .. ".." .. cand)
 if count ~= "1" then
-    verb.die(
+    die(
         ("Commit %s is %s commits past %s/main, expected exactly one."):format(commit, count, remote)
     )
 end
 if versions(repo, cand .. "^") ~= versions(repo, cand) then
-    verb.die(
+    die(
         ("Commit %s changes the package version in Cargo.toml or Cargo.lock, and only dev release bumps it."):format(
             commit
         )
@@ -469,7 +510,7 @@ if versions(repo, cand .. "^") ~= versions(repo, cand) then
 end
 local standalone_problem = standalone.land_problem(added_files(repo, cand), card_labels(repo, card))
 if standalone_problem then
-    verb.die(("Commit %s %s, so nothing landed."):format(commit, standalone_problem))
+    die(("Commit %s %s, so nothing landed."):format(commit, standalone_problem))
 end
 
 local nixcheck = needs_nixcheck(repo, cand)
@@ -477,14 +518,14 @@ local nixcheck = needs_nixcheck(repo, cand)
 local wt = repo .. "/.dev/worktrees/land-" .. card
 if fs.exists(wt) then
     if read_git(wt, "status", "--porcelain") ~= "" then
-        verb.die(
+        die(
             ("Worktree .dev/worktrees/land-%s has uncommitted changes, so it is kept and nothing landed."):format(
                 card
             )
         )
     end
     if run_git(repo, "worktree", "remove", wt) ~= 0 then
-        verb.die(
+        die(
             ("Worktree .dev/worktrees/land-%s could not be removed, so remove it by hand and land the card again."):format(
                 card
             )
@@ -495,13 +536,16 @@ local sha
 local verdict
 local attempt = 1
 while true do
+    take_land_lock(repo, card)
     wait_for_release(repo)
     fetched = run_git(repo, "fetch", "-q", remote)
     if fetched ~= 0 then
+        drop_land_lock()
         return fetched or 1
     end
     base, code = read_git(repo, "rev-parse", remote .. "/main")
     if code ~= 0 then
+        drop_land_lock()
         return code or 1
     end
     sha = apply({
@@ -531,16 +575,18 @@ while true do
     if release_running(repo) then
         say("A release took the land lock while the gates ran, so the commit is applied again once it is done.\n")
         run_git(repo, "worktree", "remove", "--force", wt)
+        drop_land_lock()
     else
         local status = devos.run({ "dev", "__push_main", wt }, { cwd = wt })
         if status == 0 then
+            drop_land_lock()
             break
         end
         if status ~= 3 then
-            verb.die(("The push failed with status %s, and the worktree is left at %s."):format(status, wt))
+            die(("The push failed with status %s, and the worktree is left at %s."):format(status, wt))
         end
         if attempt >= ATTEMPTS then
-            verb.die(
+            die(
                 ("The branch %s/main moved on %s times, so nothing was pushed, the worktree is left at %s, and you should land the card again."):format(
                     remote,
                     ATTEMPTS,
@@ -550,6 +596,7 @@ while true do
         end
         say(("The branch %s/main moved on, so the commit is applied again.\n"):format(remote))
         run_git(repo, "worktree", "remove", "--force", wt)
+        drop_land_lock()
         attempt = attempt + 1
     end
 end

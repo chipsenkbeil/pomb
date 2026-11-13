@@ -330,14 +330,16 @@ pass on ci.
 
 The commit must be exactly one commit past its merge-base with the remote's
 main and must not change the package version. A commit that adds a file under
-`.dev/standalone` needs the `standalone-ok` label on its card. Land waits for
-`.dev/release.lock` to clear, up to `POMB_LAND_WAIT_BOUND` seconds (default
-5400, polled every `POMB_LAND_WAIT_INTERVAL`, default 30), and refuses
-attribution trailers. It skips the ci runs when the card's latest `dev-check`
-note passed `dev --remote lint` and `dev --remote test` on the same patch.
-Otherwise it runs `dev lint --remote` and then `dev test --remote`, and a run
-refused while the ci hub is draining repeats every `POMB_DRAIN_INTERVAL`
-seconds (default 60) up to `POMB_DRAIN_BOUND` (default 3600).
+`.dev/standalone` needs the `standalone-ok` label on its card. Land takes the
+lock `.dev/land.lock` to allow one land at a time to apply, test and push. It
+waits for that lock and for `.dev/release.lock` to clear, up to
+`POMB_LAND_WAIT_BOUND` seconds each (default 5400, polled every
+`POMB_LAND_WAIT_INTERVAL`, default 30), and refuses attribution trailers. It
+skips the ci runs when the card's latest `dev-check` note passed `dev --remote
+lint` and `dev --remote test` on the same patch. Otherwise it runs `dev lint
+--remote` and then `dev test --remote`, and a run refused while the ci hub is
+draining repeats every `POMB_DRAIN_INTERVAL` seconds (default 60) up to
+`POMB_DRAIN_BOUND` (default 3600).
 
 A push refused after main moved is applied again on the new main, 3
 attempts in all, and never forced. On success the card moves to Release and
@@ -465,12 +467,12 @@ request.
 Release refuses unless main has a commit since its last `v*` tag. It bumps
 the version in `.dev/worktrees/release-N` and commits `Release batch-N:
 SUMMARY` with only `Cargo.toml` and `Cargo.lock`. It takes the lock
-`.dev/release.lock`, runs `dev lint --remote`, `dev test --remote`,
-`dev nixcheck --remote` and `dev build --remote` at the same time on ci, and
-pushes main only when all four pass and main has not moved. It then tags
-`batch-N` and `vVERSION` and prints the nix hash and the request block. A
-`--dry-run` leaves the release worktree behind, and `dev verify --cleanup`
-removes it.
+`.dev/release.lock` (which `dev land` waits on) and runs `dev lint --remote`,
+`dev test --remote`, `dev nixcheck --remote` and `dev build --remote` at the
+same time on ci, and pushes main only when all four pass and main has not
+moved. It then tags `batch-N` and `vVERSION` and prints the nix hash and the
+request block. A `--dry-run` leaves the release worktree behind, and
+`dev verify --cleanup` removes it.
 
 Example:
 

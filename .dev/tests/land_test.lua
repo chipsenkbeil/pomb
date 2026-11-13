@@ -734,7 +734,7 @@ t.test("land should give up when the release lock outlasts the wait bound", func
     local env = { POMB_LAND_WAIT_INTERVAL = "1", POMB_LAND_WAIT_BOUND = "2" }
     local _, code, err = land(fix, cand, env)
     t.ok(code ~= 0)
-    t.ok(err:find("still held the land lock after 2 seconds", 1, true), err)
+    t.ok(err:find("still held the release lock after 2 seconds", 1, true), err)
     t.eq(#lines(fix, "calls"), 0)
     t.eq(remote_main(fix), before)
     done(fix)
@@ -764,6 +764,96 @@ t.test("land should apply again when a release takes the lock during its gates",
     eq_list(lines(fix, "calls"), { "lint", "test", "lint", "test" })
     t.eq(#lines(fix, "pushes"), 1)
     t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    done(fix)
+end)
+
+local function land_lock_path(fix)
+    return fix.work .. "/.dev/land.lock"
+end
+
+local STUB_LAND_SLEEP = [=[
+echo "$*" >>'@dir@/sleeps'
+git --git-dir='@dir@/remote.git' rev-parse main >>'@dir@/during'
+[ ! -e '@dir@/work/.dev/worktrees/land-abc123' ] || echo applied >>'@dir@/during'
+[ ! -e '@dir@/calls' ] || echo gated >>'@dir@/during'
+rm -f '@dir@/work/.dev/land.lock'
+]=]
+
+t.test("land should wait while a live land holds the land lock", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    stub(fix.dir, "sleep", STUB_LAND_SLEEP)
+    assert(fs.write(land_lock_path(fix), ("card=other pid=%d\n"):format(devos.getpid())))
+    local before = remote_main(fix)
+    local out, code, err = land(fix, cand, { POMB_LAND_WAIT_INTERVAL = "1" })
+    t.ok(code == 0, err)
+    t.ok(out:find("Waiting for the land of card other (pid " .. devos.getpid() .. ")", 1, true), out)
+    t.eq(#lines(fix, "sleeps"), 1)
+    eq_list(lines(fix, "during"), { before })
+    eq_list(lines(fix, "calls"), { "lint", "test" })
+    t.eq(#lines(fix, "pushes"), 1)
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    t.ok(not fs.exists(land_lock_path(fix)))
+    done(fix)
+end)
+
+t.test("land should give up when the land lock outlasts the wait bound", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    stub(fix.dir, "sleep", "echo \"$*\" >>'@dir@/sleeps'\n")
+    assert(fs.write(land_lock_path(fix), ("card=other pid=%d\n"):format(devos.getpid())))
+    local before = remote_main(fix)
+    local env = { POMB_LAND_WAIT_INTERVAL = "1", POMB_LAND_WAIT_BOUND = "2" }
+    local _, code, err = land(fix, cand, env)
+    t.ok(code ~= 0)
+    t.ok(err:find("The land of card other still held the land lock after 2 seconds", 1, true), err)
+    t.eq(#lines(fix, "calls"), 0)
+    t.eq(remote_main(fix), before)
+    t.ok(fs.read(land_lock_path(fix)):find("card=other", 1, true))
+    done(fix)
+end)
+
+t.test("land should take over a land lock naming a dead pid and drop it after landing", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    assert(fs.write(land_lock_path(fix), ("card=other pid=%d\n"):format(dead_pid())))
+    local out, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.ok(out:find("The land lock of card other names a process that is gone", 1, true), out)
+    t.eq(#lines(fix, "sleeps"), 0)
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    t.ok(not fs.exists(land_lock_path(fix)))
+    done(fix)
+end)
+
+t.test("land should drop the land lock when a gate refuses it", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    assert(fs.write(land_lock_path(fix), ("card=other pid=%d\n"):format(dead_pid())))
+    mark(fix, "fail-lint")
+    local _, code = land(fix, cand)
+    t.ok(code ~= 0)
+    t.ok(not fs.exists(land_lock_path(fix)))
+    done(fix)
+end)
+
+t.test("land should drop the land lock when the push fails", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    mark(fix, "fail-push")
+    local _, code = land(fix, cand)
+    t.ok(code ~= 0)
+    t.ok(not fs.exists(land_lock_path(fix)))
+    done(fix)
+end)
+
+t.test("land should drop the land lock between attempts when main moved", function()
+    local fix = candidate_with_refused_pushes(1)
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    local _, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.eq(#lines(fix, "pushes"), 2)
+    t.ok(not fs.exists(land_lock_path(fix)))
     done(fix)
 end)
 
