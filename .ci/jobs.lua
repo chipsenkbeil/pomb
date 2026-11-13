@@ -67,8 +67,8 @@ for pair in cand:candidate base:baseline; do
   src=${pair%%:*}
   dst=$seeders/${pair##*:}
   mkdir -p "$dst"
-  for f in seed-gm.err seed-vt.err seed-ep.err; do
-    [ -f "$out/$src/$f" ] && cp "$out/$src/$f" "$dst/$f" || true
+  for f in "$out/$src"/seed-*.err; do
+    [ -f "$f" ] && cp "$f" "$dst/" || true
   done
 done
 tar czf "$root/regress-report.tgz" -C "$out" report -C "$seeders" candidate baseline

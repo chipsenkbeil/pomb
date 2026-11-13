@@ -146,6 +146,7 @@ end
 
 local pid = start_server(seed_time)
 
+-- The regress job collects every seed-*.err in the work directory
 local gm_argv = { "dev", "tools", "seed-golden-master", "--as-of", "2026-09-30", base, jar }
 local gm = seed(gm_argv, work .. "/seed-gm.err")
 
