@@ -9491,6 +9491,7 @@
   }
 
   function onBoardShortcut(e, key) {
+    if (/^(Shift|Control|Alt|Meta)$/.test(e.key)) return false;
     if (columnKeyHints.length) {
       if (/^[1-9]$/.test(e.key)) {
         e.preventDefault();
