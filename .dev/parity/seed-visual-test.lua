@@ -10,20 +10,10 @@ blue task (the modal goldens' task: markdown description, three subtasks);
 Do today holds Task Gamma; In progress has WIP limit 3; Done is
 the done column.
 ]]
-local devos = require("dev.os")
 local json = require("dev.json")
-local verb = require("dev.verb")
+local seeder = require("pomb.seeder")
 
 local ctx = ...
-local base, jar = ctx.args[1], ctx.args[2]
-if not base then
-    verb.die("Base url is required. Usage: dev " .. ctx.name .. " BASE_URL COOKIE_JAR.")
-end
-if not jar then
-    verb.die("Cookie jar is required. Usage: dev " .. ctx.name .. " BASE_URL COOKIE_JAR.")
-end
-
-local Refused = {}
 local ORDER = { "name", "column_id", "color_id", "due_at" }
 local Color = {
     YELLOW = "yellow",
@@ -46,30 +36,12 @@ local PALETTE = {
     Color.CYAN,
 }
 local WANTED = {
-    { "Personal To-do", "null" },
-    { "Do today", "null" },
-    { "In progress", "3" },
-    { "Done", "null" },
+    { "Personal To-do", json.null },
+    { "Do today", json.null },
+    { "In progress", 3 },
+    { "Done", json.null },
 }
-
-local function api(method, path, body)
-    local argv = { "curl", "-sS", "-f", "-X", method, "-b", jar, "-H", "Accept: application/json" }
-    if body then
-        for _, word in ipairs({ "-H", "Content-Type: application/json", "--data-binary", body }) do
-            argv[#argv + 1] = word
-        end
-    end
-    argv[#argv + 1] = base .. path
-    local out, code = devos.capture(argv)
-    if code ~= 0 then
-        error(setmetatable({ code = code }, Refused), 0)
-    end
-    return out
-end
-
-local function get(path)
-    return json.decode(api("GET", path))
-end
+local COLUMN_ORDER = { "board_id", "name", "wip_limit", "is_done" }
 
 local function color_id(colors, label)
     for _, color in ipairs(colors) do
@@ -79,7 +51,8 @@ local function color_id(colors, label)
     end
 end
 
-local function seed()
+local function seed(client)
+    local api, get, mk = client.api, client.get, client.mk
     local board = json.decode(api("POST", "/api/boards", '{"name":"Pomb Visual Test"}')).id
     local todo = get("/api/boards/" .. board .. "/columns")[1].id
     local existing = {}
@@ -89,17 +62,17 @@ local function seed()
     for i, spec in ipairs(WANTED) do
         local name, limit = spec[1], spec[2]
         if existing[i] then
-            api(
-                "PATCH",
-                "/api/columns/" .. existing[i],
-                string.format('{"name":"%s","wip_limit":%s,"is_done":false}', name, limit)
+            local body = json.encode(
+                { name = name, wip_limit = limit, is_done = false },
+                { order = COLUMN_ORDER }
             )
+            api("PATCH", "/api/columns/" .. existing[i], body)
         else
-            api(
-                "POST",
-                "/api/columns",
-                string.format('{"board_id":"%s","name":"%s","wip_limit":%s}', board, name, limit)
+            local body = json.encode(
+                { board_id = board, name = name, wip_limit = limit },
+                { order = COLUMN_ORDER }
             )
+            api("POST", "/api/columns", body)
         end
     end
     local cols = get("/api/boards/" .. board .. "/columns")
@@ -120,11 +93,6 @@ local function seed()
     for order, name in ipairs(PALETTE) do
         local id = color_id(colors, name)
         api("PATCH", "/api/boards/" .. board .. "/colors/" .. id, '{"sort_order":' .. order .. "}")
-    end
-
-    local function mk(fields)
-        local body = json.encode(fields, { order = ORDER })
-        return json.decode(api("POST", "/api/tasks", body)).id
     end
 
     local alpha = mk({
@@ -160,12 +128,4 @@ local function seed()
     return board
 end
 
-local ok, result = pcall(seed)
-if ok then
-    io.write(result, "\n")
-    return 0
-end
-if getmetatable(result) == Refused then
-    return result.code
-end
-error(result, 0)
+return seeder.run(ctx, ORDER, seed)

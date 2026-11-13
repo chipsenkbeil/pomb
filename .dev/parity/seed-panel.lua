@@ -10,52 +10,19 @@ label "ready" and the metadata field "team". The last column is the Done
 column and holds "Done card", which has no owner and the reviewer seats "code",
 approved at revision "r1", and "docs", approved.
 ]]
-local devos = require("dev.os")
 local json = require("dev.json")
-local verb = require("dev.verb")
+local seeder = require("pomb.seeder")
 
 local ctx = ...
-local base, jar = ctx.args[1], ctx.args[2]
-if not base then
-    verb.die("Base url is required. Usage: dev " .. ctx.name .. " BASE_URL COOKIE_JAR.")
-end
-if not jar then
-    verb.die("Cookie jar is required. Usage: dev " .. ctx.name .. " BASE_URL COOKIE_JAR.")
-end
-
-local Refused = {}
 local ORDER = { "name", "column_id", "labels", "metadata" }
 
-local function api(method, path, body)
-    local argv = { "curl", "-sS", "-f", "-X", method, "-b", jar, "-H", "Accept: application/json" }
-    if body then
-        for _, word in ipairs({ "-H", "Content-Type: application/json", "--data-binary", body }) do
-            argv[#argv + 1] = word
-        end
-    end
-    argv[#argv + 1] = base .. path
-    local out, code = devos.capture(argv)
-    if code ~= 0 then
-        error(setmetatable({ code = code }, Refused), 0)
-    end
-    return out
-end
-
-local function get(path)
-    return json.decode(api("GET", path))
-end
-
-local function seed()
+local function seed(client)
+    local api, get, mk = client.api, client.get, client.mk
     local board = json.decode(api("POST", "/api/boards", '{"name":"Pomb Panel Test"}')).id
     local cols = get("/api/boards/" .. board .. "/columns")
     local todo = cols[1].id
     local done_col = cols[#cols].id
     api("PATCH", "/api/columns/" .. done_col, '{"is_done":true}')
-
-    local function mk(fields)
-        local body = json.encode(fields, { order = ORDER })
-        return json.decode(api("POST", "/api/tasks", body)).id
-    end
 
     mk({ name = "Bare card", column_id = todo })
     local full = mk({
@@ -84,12 +51,4 @@ local function seed()
     return board
 end
 
-local ok, result = pcall(seed)
-if ok then
-    io.write(result, "\n")
-    return 0
-end
-if getmetatable(result) == Refused then
-    return result.code
-end
-error(result, 0)
+return seeder.run(ctx, ORDER, seed)
