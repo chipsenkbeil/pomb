@@ -3,11 +3,9 @@ positional
 Build the release binary.
 ]]
 local devos = require("dev.os")
+local argv = require("pomb.argv")
 
 local ctx = ...
 
-local argv = { "cargo", "build", "--release", "--locked" }
-for _, arg in ipairs(ctx.args) do
-    argv[#argv + 1] = arg
-end
-return devos.run(argv, { cwd = ctx.root }) or 1
+local cmd = argv.extend({ "cargo", "build", "--release", "--locked" }, ctx.args)
+return devos.run(cmd, { cwd = ctx.root }) or 1

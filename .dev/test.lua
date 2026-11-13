@@ -8,12 +8,10 @@ of each pending `.snap.new` file.
 local devos = require("dev.os")
 local fs = require("dev.fs")
 local verb = require("dev.verb")
+local argv = require("pomb.argv")
 
 local ctx = ...
-local argv = { "cargo", "nextest", "run", "--all-features" }
-for _, arg in ipairs(ctx.args) do
-    argv[#argv + 1] = arg
-end
+local nextest = argv.extend({ "cargo", "nextest", "run", "--all-features" }, ctx.args)
 
 local function step(cmd)
     local code = devos.run(cmd, { cwd = ctx.root }) or 1
@@ -50,7 +48,7 @@ local function print_pending_snapshots()
     end
 end
 
-local code = devos.run(argv, { cwd = ctx.root, env = { INSTA_UPDATE = "new" } }) or 1
+local code = devos.run(nextest, { cwd = ctx.root, env = { INSTA_UPDATE = "new" } }) or 1
 if code ~= 0 then
     print_pending_snapshots()
     return code
