@@ -4134,9 +4134,14 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
 }
 .dlg-overlay.dlg-overlay--popover[hidden] { display: none; }
 #edit-column-dialog .dlg {
+  max-width: min(720px, calc(100vw - 2rem));
   max-height: calc(100vh - 2rem);
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+#edit-column-dialog .dlg-grid2 { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 639px) {
+  #edit-column-dialog .dlg-grid2 { grid-template-columns: repeat(2, 1fr); }
 }
 .dlg-overlay--popover .dlg {
   position: fixed;
