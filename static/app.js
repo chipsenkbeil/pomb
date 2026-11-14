@@ -1535,6 +1535,8 @@
     show('above', !inBoard);
     show('below', !inBoard);
     show('delete', !inBoard && lanes.length > 1);
+    const archiveItem = menu.querySelector('[data-lane-act="archive"]');
+    if (archiveItem) archiveItem.hidden = lanes.length < 2;
     menu.querySelector('[data-lane-act="fold"]').textContent = lanes[at].collapsed ? 'Expand' : 'Collapse';
     placeMenu(menu, x, y);
   }
@@ -1693,6 +1695,7 @@
       else if (act === 'down') moveSwimlane(id, 1);
       else if (act === 'above') addLaneBeside(id, 'above');
       else if (act === 'below') addLaneBeside(id, 'below');
+      else if (act === 'archive') archiveSwimlane(id);
       else if (act === 'delete') deleteSwimlane(id);
     });
 
@@ -2805,6 +2808,53 @@
         reloadAfter(api('/api/swimlanes/' + encodeURIComponent(id), 'DELETE'), 'Could not delete swimlane.');
       });
   }
+
+  const setLaneArchived = (id, archived, failure) => {
+    api('/api/swimlanes/' + encodeURIComponent(id), 'PATCH', { archived })
+      .then((res) => {
+        if (res.ok) return drained(res).then(() => window.location.reload());
+        return res.json().then((body) => (body && body.message) || failure, () => failure).then((message) => toast(message));
+      })
+      .catch(() => toast(failure));
+  };
+
+  const cardCount = (count) => (count === 1 ? '1 card' : count + ' cards');
+
+  const archiveSwimlane = (id) => {
+    const lane = laneOrder().find((l) => l.id === id);
+    if (!lane) return;
+    showConfirmDialog('Archive swimlane',
+      'Archive the swimlane ' + lane.name + '? Its ' + cardCount(lane.count) +
+      ' leave the board and stay frozen until the lane is unarchived.', 'Archive',
+      () => setLaneArchived(id, true, 'Could not archive swimlane.'));
+  };
+
+  const openArchivedLanes = () => {
+    const lanes = Array.from(document.querySelectorAll('#archived-lanes [data-lane-id]'), (el) => ({
+      id: el.dataset.laneId,
+      name: el.dataset.laneName,
+      count: parseInt(el.dataset.taskCount, 10) || 0,
+    }));
+    const list = document.getElementById('archived-lanes-list');
+    document.getElementById('archived-lanes-note').textContent = lanes.length ? '' : 'No lanes are archived.';
+    list.textContent = '';
+    lanes.forEach((lane) => {
+      const item = document.createElement('li');
+      item.className = 'layout-list-item archived-lane-item';
+      const name = document.createElement('span');
+      name.className = 'layout-list-name';
+      name.textContent = lane.name + ' (' + cardCount(lane.count) + ')';
+      const unarchive = document.createElement('button');
+      unarchive.type = 'button';
+      unarchive.className = 'btn';
+      unarchive.textContent = 'Unarchive';
+      unarchive.addEventListener('click', () => setLaneArchived(lane.id, false, 'Could not unarchive swimlane.'));
+      item.appendChild(name);
+      item.appendChild(unarchive);
+      list.appendChild(item);
+    });
+    document.getElementById('archived-lanes-dialog').hidden = false;
+  };
 
 
   function inlineLaneForm(options) {
@@ -17881,6 +17931,9 @@
           break;
         case 'recycle':
           this.openBin();
+          break;
+        case 'archived-lanes':
+          openArchivedLanes();
           break;
         case 'timeline':
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/timeline';

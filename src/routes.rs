@@ -4843,6 +4843,17 @@ struct BandView {
     cells: Vec<CellView>,
 }
 
+/// An archived lane as the Archived lanes dialog lists it.
+#[derive(Clone, Debug)]
+struct ArchivedLaneView {
+    /// The lane's id.
+    id: String,
+    /// The lane's name.
+    name: String,
+    /// The cards the lane keeps.
+    task_count: usize,
+}
+
 impl BandView {
     /// Returns the lane's limits as the JSON the Edit swimlane dialog reads.
     fn limits_json(&self) -> String {
@@ -5154,6 +5165,8 @@ struct BoardTemplate {
     chrome: ShellChrome,
     columns: Vec<ColumnHead>,
     bands: Vec<BandView>,
+    /// The archived lanes, which the board leaves out of its bands.
+    archived_lanes: Vec<ArchivedLaneView>,
     layout: BoardLayout,
     /// Whether the add-task dialog puts new cards at the top.
     new_tasks_at_top: bool,
@@ -5931,6 +5944,20 @@ fn board_template(
         Ok(())
     })
     .map_err(AppError::from)?;
+
+    // Collect the archived lanes with their card counts
+    let archived_lanes: Vec<ArchivedLaneView> = swimlanes
+        .iter()
+        .filter(|lane| lane.archived)
+        .map(|lane| ArchivedLaneView {
+            id: lane.id.clone(),
+            name: lane.name.clone(),
+            task_count: tasks
+                .iter()
+                .filter(|t| t.is_work() && t.swimlane_id.as_deref() == Some(lane.id.as_str()))
+                .count(),
+        })
+        .collect();
     tasks.sort_by(|a, b| {
         a.position
             .total_cmp(&b.position)
@@ -6047,6 +6074,13 @@ fn board_template(
         })
         .collect();
 
+    // The column heads count every card, as the WIP limit does, and the bands show only open lanes
+    tasks.retain(|t| {
+        !archived_lanes
+            .iter()
+            .any(|lane| t.swimlane_id.as_deref() == Some(lane.id.as_str()))
+    });
+
     // Palette positions for Task sorting by color
     let color_rank: HashMap<String, i64> = db
         .list_colors(&board_id)
@@ -6058,7 +6092,7 @@ fn board_template(
     let mut reads = db.link_reads().map_err(AppError::from)?;
     let owners = OwnerKeys::load(db)?;
     let mut bands = Vec::new();
-    for lane in &swimlanes {
+    for lane in swimlanes.iter().filter(|lane| !lane.archived) {
         let mut cells = Vec::new();
         for col in &columns {
             let settings = ColumnSettings::from_column(col);
@@ -6180,6 +6214,7 @@ fn board_template(
         prune_warning: notice.map(PruneWarning::from),
         columns: column_heads,
         bands,
+        archived_lanes,
         layout: BoardLayout {
             hide_swimlane_header,
             lane_label_column,
@@ -33066,6 +33101,7 @@ mod tests {
             prune_warning: None,
             columns,
             bands,
+            archived_lanes: Vec::new(),
             layout: BoardLayout {
                 hide_swimlane_header,
                 lane_label_column,
@@ -33255,6 +33291,93 @@ mod tests {
                 assert_eq!(html.contains(control), offered, "{control} for {role:?}");
             }
         }
+    }
+
+    #[test]
+    fn board_should_offer_lane_archiving_to_the_owner_alone() {
+        for (role, offered) in [
+            (BoardRole::Owner, true),
+            (BoardRole::Member, false),
+            (BoardRole::Viewer, false),
+        ] {
+            let (_, _, html) =
+                render_grid_as(&[("Default", 2), ("Lane Two", 1)], &[], true, role, |_| {});
+            for control in [
+                "data-lane-act=\"archive\"",
+                "data-bm=\"archived-lanes\"",
+                "id=\"archived-lanes-dialog\"",
+            ] {
+                assert_eq!(html.contains(control), offered, "{control} for {role:?}");
+            }
+        }
+    }
+
+    /// An archived lane and its cards leave the board and come back with the lane.
+    #[tokio::test]
+    async fn board_should_leave_out_an_archived_lane_and_its_cards() {
+        let (_dir, fx) = kf221_fixture();
+        let (first, second) = two_lanes(&fx);
+
+        // Put one card in each lane
+        let (status, _) = create_task_json(
+            &fx,
+            serde_json::json!({ "name": "Kept card", "swimlane_id": first }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        let (status, _) = create_task_json(
+            &fx,
+            serde_json::json!({ "name": "Frozen card", "swimlane_id": second }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        let board = format!("/b/{}", fx.board_id);
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert!(page.contains("Frozen card"), "an open lane shows its card");
+
+        // Archive the second lane and read the board again
+        let (status, text) = send(
+            &fx,
+            "PATCH",
+            &format!("/api/swimlanes/{second}"),
+            Some(serde_json::json!({"archived": true})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert!(page.contains("Kept card"), "the other lane keeps its card");
+        assert!(!page.contains("Frozen card"), "the archived card is gone");
+        assert!(
+            !page.contains(&format!("data-swimlane-id=\"{second}\"")),
+            "the archived lane has no cell to drop on"
+        );
+        assert!(
+            !page.contains(&format!(
+                "<span data-lane-id=\"{second}\" data-lane-name=\"Two\" data-lane-description"
+            )),
+            "the lane order leaves it out"
+        );
+        assert!(
+            page.contains(&format!(
+                "<span data-lane-id=\"{second}\" data-lane-name=\"Two\" data-task-count=\"1\">"
+            )),
+            "the Archived lanes dialog lists it with its card count"
+        );
+
+        // Unarchive the lane and check its card returns
+        let (status, text) = send(
+            &fx,
+            "PATCH",
+            &format!("/api/swimlanes/{second}"),
+            Some(serde_json::json!({"archived": false})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert!(
+            page.contains("Frozen card"),
+            "unarchiving brings the card back"
+        );
     }
 
     /// A folded lane renders one thin row of counts that keeps its hidden task lists.

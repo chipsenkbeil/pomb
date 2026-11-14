@@ -686,6 +686,8 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
   cursor: grab; font-size: 0.85rem;
 }
 .layout-list-item:last-child { border-bottom: none; }
+.archived-lane-item { cursor: default; }
+.archived-lane-item .btn { margin-left: auto; }
 .layout-list-handle { color: var(--ink-faint); letter-spacing: -2px; cursor: grab; }
 .layout-list-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layout-list-delete {
