@@ -182,7 +182,7 @@ mod tests {
         EntryEdit, MAX_TASK_ROW_BYTES, META, NewComment, NewTimeEntry, SCHEMA_VERSION_KEY,
     };
     use crate::models::{
-        Actor, ActorKind, EntryKind, HistoryKind, InstanceMode, Quotas, format_minutes,
+        Actor, ActorKind, EntryKind, HistoryKind, InstanceMode, Quotas, TaskEvent, format_minutes,
     };
 
     fn edit(started_at: &str) -> EntryEdit<'_> {
@@ -439,15 +439,48 @@ mod tests {
         db.add_comment(task, comment(""), Actor::SYSTEM, None)
             .expect("probe comment");
         let overhead = row_bytes(db, task) - before;
-        while let Some(room) = MAX_TASK_ROW_BYTES.checked_sub(row_bytes(db, task) + overhead) {
-            let body = "c".repeat(room.min(COMMENT_BYTES));
-            if db
-                .add_comment(task, comment(&body), Actor::SYSTEM, None)
-                .is_err()
-            {
-                break;
+
+        // Shrink the last comment until the row takes it
+        'fill: while let Some(room) = MAX_TASK_ROW_BYTES.checked_sub(row_bytes(db, task) + overhead)
+        {
+            let mut len = room.min(COMMENT_BYTES);
+            loop {
+                let body = "c".repeat(len);
+                if db
+                    .add_comment(task, comment(&body), Actor::SYSTEM, None)
+                    .is_ok()
+                {
+                    break;
+                }
+                if len == 0 {
+                    break 'fill;
+                }
+                len -= 1;
             }
         }
+
+        // Check no time-log event still fits in the remaining room
+        let event = TaskEvent {
+            id: "0".repeat(36),
+            kind: HistoryKind::TimeLogged,
+            detail: "Logged time".to_string(),
+            actor: Actor::SYSTEM.name.to_string(),
+            created_at: "2026-11-11T09:00:00+00:00".to_string(),
+            column_id: None,
+            token_name: None,
+            from: Some("0m".to_string()),
+            to: Some("5m".to_string()),
+            parent_token: None,
+            role_id: None,
+            role_name: None,
+            label: None,
+        };
+        let event_bytes = serde_json::to_vec(&event).expect("json").len();
+        let left = MAX_TASK_ROW_BYTES.saturating_sub(row_bytes(db, task));
+        assert!(
+            left < event_bytes,
+            "{left} bytes left for a {event_bytes} byte event"
+        );
     }
 
     #[must_use]
