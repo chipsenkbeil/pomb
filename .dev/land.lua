@@ -108,25 +108,31 @@ local function run_git(dir, ...)
     return devos.run(git(dir, ...))
 end
 
+local function capture(argv, opts, failure)
+    local out, code = devos.capture(argv, opts)
+    if failure and code ~= 0 then
+        die(failure)
+    end
+    return out, code
+end
+
 local function read_git(dir, ...)
-    local out, code = devos.capture(git(dir, ...), QUIET)
+    local out, code = capture(git(dir, ...), QUIET)
     return trim(out), code
 end
 
 local function versions(dir, rev)
-    local manifest = devos.capture(git(dir, "show", rev .. ":Cargo.toml"), QUIET)
-    local lockfile = devos.capture(git(dir, "show", rev .. ":Cargo.lock"), QUIET)
+    local manifest = capture(git(dir, "show", rev .. ":Cargo.toml"), QUIET)
+    local lockfile = capture(git(dir, "show", rev .. ":Cargo.lock"), QUIET)
     return (cargo.manifest_version(manifest) or "") .. "\n" .. (cargo.lock_version(lockfile) or "")
 end
 
 local function listed_files(repo, rev, filter)
-    local out, code = devos.capture(
+    local out = capture(
         git(repo, "diff-tree", "-z", "--no-commit-id", "--name-only", "-r", filter, rev),
-        QUIET
+        QUIET,
+        ("Could not list the files commit %s changes, so nothing landed."):format(rev)
     )
-    if code ~= 0 then
-        die(("Could not list the files commit %s changes, so nothing landed."):format(rev))
-    end
     local found = {}
     for path in out:gmatch("([^%z]+)") do
         found[#found + 1] = path
@@ -153,14 +159,14 @@ local function needs_nixcheck(repo, rev)
 end
 
 local function card_labels(repo, card)
-    local out, code =
-        devos.capture({ "dev", "board", "show", card }, { cwd = repo, stderr = "null" })
+    local failure = ("Could not read the labels of card %s, so nothing landed."):format(card)
+    local out = capture({ "dev", "board", "show", card }, { cwd = repo, stderr = "null" }, failure)
     local cells = {}
     for cell in ((lines(out)[1] or "") .. "  "):gmatch("(.-)%s%s+") do
         cells[#cells + 1] = cell
     end
-    if code ~= 0 or #cells < 4 then
-        die(("Could not read the labels of card %s, so nothing landed."):format(card))
+    if #cells < 4 then
+        die(failure)
     end
     local labels = {}
     if cells[4] ~= "-" then
