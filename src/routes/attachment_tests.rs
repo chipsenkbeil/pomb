@@ -826,7 +826,8 @@ async fn a_description_and_a_comment_should_show_alt_text_for_an_attachment_the_
             !modal.contains(&format!("attachments/{id}/image\"")),
             "{modal}"
         );
-        assert!(modal.contains(alt), "{alt}");
+        let link = format!(">{alt}</a>");
+        assert_eq!(modal.matches(&link).count(), 2, "{alt} in {modal}");
     }
     assert_eq!(modal.matches("/image\"").count(), 4, "{modal}");
 }
