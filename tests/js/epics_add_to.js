@@ -53,7 +53,7 @@ let pageBoard, taskModal;
 var window = {};
 var CARD_SUB_ICONS = {};
 var BoardChrome;
-var TimerUI;
+const refreshBoardCard = (id) => { refreshed.push(id); };
 
 function reset() {
   calls = [];
@@ -76,8 +76,7 @@ function reset() {
   opened = [];
   pageBoard = 'b1';
   taskModal = null;
-  TimerUI = { refreshTaskCard: function (id) { refreshed.push(id); } };
-  window = { TimerUI: TimerUI, location: { reload: function () { reloads++; } } };
+  window = { location: { reload: function () { reloads++; } } };
 }
 
 var document = {
@@ -239,15 +238,6 @@ function trigger() {
   await flush();
   await flush();
   check('an empty refusal falls back to a fixed message', toasts, ['Could not add the card to the epic.']);
-
-  reset();
-  window.TimerUI = undefined;
-  TimerUI = undefined;
-  replies.push(response(true, '{}'));
-  addCardToEpic(card(false), 'e1');
-  await flush();
-  await flush();
-  check('without the card refresher the page reloads', reloads, 1);
 
   reset();
   BoardChrome.epics = [epic('e1', 'Alpha'), epic('e3', 'Kid', { parent_id: 'e1' }), epic('c1', 'Self')];

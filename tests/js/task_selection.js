@@ -35,7 +35,7 @@ var membersDialog = {
 };
 var refreshed = [];
 var rendered = [];
-var TimerUI = { refreshTaskCard: function (id) { refreshed.push(id); } };
+const refreshBoardCard = (id) => { refreshed.push(id); };
 var membersBulkIds = null;
 var membersDialogTaskId = 'old';
 var membersRoster = [];

@@ -15,7 +15,7 @@ const check = (name, got, want) => {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const refreshed = [];
-const TimerUI = { refreshTaskCard: (id) => { refreshed.push(id); } };
+const refreshBoardCard = (id) => { refreshed.push(id); };
 const toast = () => {};
 const api = () => Promise.resolve({ ok: true });
 let onChange = null;

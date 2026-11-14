@@ -627,7 +627,7 @@
   }
 
   function refreshBulkCards(ids) {
-    if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) ids.forEach(TimerUI.refreshTaskCard, TimerUI);
+    ids.forEach(refreshBoardCard);
   }
 
   function bulkColor(ids, colorId) {
@@ -770,6 +770,32 @@
       if (e.shiftKey && e.target.closest && e.target.closest('.task-card')) e.preventDefault();
     });
     document.addEventListener('htmx:afterSwap', paintSelection);
+  }
+
+  // KF-103: once a session logs its time, the card shows the server's new
+  // total (only a discard reverts to the old one).
+  function refreshBoardCard(taskId) {
+    if (!taskId) return;
+    fetch('/api/tasks/' + encodeURIComponent(taskId) + '/card', { headers: { 'Accept': 'text/html' }, credentials: 'same-origin' })
+      .then(function (res) { return res.ok ? res.text() : null; })
+      .then(function (html) {
+        var card = document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
+        if (!html || !card) return;
+        var holder = document.createElement('div');
+        holder.innerHTML = html;
+        var fresh = holder.querySelector('.task-card');
+        if (!fresh) return;
+        card.replaceWith(fresh);
+        paintSelection();
+        applyCardSecState(fresh);
+        if (window.BoardChrome && BoardChrome.refreshMarks) BoardChrome.refreshMarks();
+        if (typeof TimerUI !== 'undefined') {
+          TimerUI.updateCardIndicators();
+          TimerUI.updateCardLive();
+        }
+        if (window.BoardChrome && BoardChrome.isFiltering && BoardChrome.isFiltering()) BoardChrome.applyFilter();
+      })
+      .catch(function () { /* the next board load shows the total */ });
   }
 
   // ---------- column drag reorder ----------
@@ -3435,7 +3461,7 @@
     addTaskLink(id, LinkKind.CHILD, targetId)
       .then(function () {
         modalTab = 'children';
-        if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(targetId);
+        refreshBoardCard(targetId);
         refreshAfterLinkChange();
       })
       .catch(function (err) { toast(linkFailure(err, 'Could not link the child.')); });
@@ -5271,8 +5297,7 @@
   function addCardToEpic(card, epicId) {
     var id = card.dataset.taskId;
     addToEpic(id, epicId, !!card.querySelector('.card-epic-tag'), function () {
-      if (window.TimerUI && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(id);
-      else window.location.reload();
+      refreshBoardCard(id);
     });
   }
 
@@ -6846,7 +6871,7 @@
     renderMembersList(document.getElementById('members-search').value);
     // A card on the board re-renders so its avatars and its
     // place under an active filter follow the new members.
-    if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(taskId);
+    refreshBoardCard(taskId);
     // Refresh the modal body row when the dialog was opened for the
     // modal's task.
     if (modalTaskId() && modalTaskId() === taskId) {
@@ -8506,7 +8531,7 @@
           self.broadcastTimer();
           self.refresh();
           if (!keepPopup) self.closePopup();
-          self.refreshTaskCard(retiredTask);
+          refreshBoardCard(retiredTask);
         } else if (res.status === 404 && taskId && self.selectedTask &&
                    String(self.selectedTask.id) === String(taskId)) {
           self.dropSelection(); // KF-001: the task was deleted meanwhile
@@ -8647,7 +8672,7 @@
         // Another tab took the break first, so follow it. A refused stop starts no break.
         if (!data || data.already_stopped) { self.refresh(); return; }
         self.broadcastTimer();
-        self.refreshTaskCard(loggedTask);
+        refreshBoardCard(loggedTask);
         fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
           .then(function (res) { return jsonIfJson(res); })
           .then(function (status) {
@@ -8783,7 +8808,7 @@
           if (data && data.discarded) {
             toast('Session discarded', 'Session lasted less than 20 seconds');
           } else if (data && !data.already_stopped) {
-            self.refreshTaskCard(loggedTask);
+            refreshBoardCard(loggedTask);
           }
         });
     },
@@ -8793,31 +8818,6 @@
       var s = this.state;
       return s && s.phase !== 'idle' && s.taskId && (s.mode === 'pomodoro' || s.mode === 'stopwatch')
         ? String(s.taskId) : null;
-    },
-
-    // KF-103: once a session logs its time, the card shows the server's new
-    // total (only a discard reverts to the old one).
-    refreshTaskCard: function (taskId) {
-      var self = this;
-      if (!taskId) return;
-      fetch('/api/tasks/' + encodeURIComponent(taskId) + '/card', { headers: { 'Accept': 'text/html' }, credentials: 'same-origin' })
-        .then(function (res) { return res.ok ? res.text() : null; })
-        .then(function (html) {
-          var card = document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
-          if (!html || !card) return;
-          var holder = document.createElement('div');
-          holder.innerHTML = html;
-          var fresh = holder.querySelector('.task-card');
-          if (!fresh) return;
-          card.replaceWith(fresh);
-          paintSelection();
-          applyCardSecState(fresh);
-          if (window.BoardChrome && BoardChrome.refreshMarks) BoardChrome.refreshMarks();
-          self.updateCardIndicators();
-          self.updateCardLive();
-          if (window.BoardChrome && BoardChrome.isFiltering && BoardChrome.isFiltering()) BoardChrome.applyFilter();
-        })
-        .catch(function () { /* the next board load shows the total */ });
     },
 
     // KF-021: the Add button must read the input instead of posting undefined.
@@ -20620,8 +20620,7 @@
           if (li) li.classList.toggle('card-sub-done', check.checked);
           refoldSubtasks(card);
           var subsec = card.querySelector('.card-subsec');
-          if (subsec && subsec.dataset.subAll !== 'true' && typeof TimerUI !== 'undefined' &&
-              TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(taskId);
+          if (subsec && subsec.dataset.subAll !== 'true') refreshBoardCard(taskId);
         })
         .catch(function () {
           check.checked = !check.checked;
@@ -22208,7 +22207,7 @@
         window.setTimeout(() => this.apply(plan), BOARD_LIVE_IDLE_POLL_MS);
         return;
       }
-      plan.refresh.forEach((id) => TimerUI.refreshTaskCard(id));
+      plan.refresh.forEach((id) => refreshBoardCard(id));
     },
 
     busy() {

@@ -9,7 +9,7 @@ var search = { value: 'ann', focus: function () { calls.push('focus'); } };
 var document = {
   getElementById: function (id) { return id === 'members-dialog' ? dialog : search; },
 };
-var TimerUI = { refreshTaskCard: function (id) { calls.push('card:' + id); } };
+const refreshBoardCard = (id) => { calls.push('card:' + id); };
 var modal = null;
 var modalDirty = false;
 function modalTaskId() { return modal; }

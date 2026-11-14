@@ -104,7 +104,8 @@ const window = { htmx: { process: (el) => processed.push(el) } };
 const updateColumnCount = (colId, delta, minutes) => columnCounts.push([colId, delta, minutes]);
 const cardEstimateMinutes = (card) => (card ? parseInt(card.dataset.estimateMinutes, 10) || 0 : 0);
 const modalTaskId = () => modal.dataset.taskId;
-const TimerUI = { refreshed: [], refreshTaskCard: (id) => TimerUI.refreshed.push(id) };
+const refreshedCards = [];
+const refreshBoardCard = (id) => refreshedCards.push(id);
 function api(path, method, data) {
   return new Promise(function (resolve) {
     calls.push({ path: path, method: method, data: data });
@@ -286,12 +287,12 @@ eval(fn('  function wireNewChild(overlay) {'));
 
   reset();
   withEpicCard();
-  TimerUI.refreshed = [];
+  refreshedCards.length = 0;
   pickChild('k1');
   pending[0](response(true, ''));
   await flush();
   await flush();
-  check('add_existing_swaps_card refreshes the linked card', TimerUI.refreshed, ['k1']);
+  check('add_existing_swaps_card refreshes the linked card', refreshedCards, ['k1']);
   check('add_existing_swaps_card still refreshes the modal', refreshes, 1);
 
   epicCard = null;
