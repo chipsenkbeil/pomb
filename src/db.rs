@@ -12924,7 +12924,7 @@ impl Db {
     }
 
     /// Updates a time entry (date/time, task reassignment, note, labels) and writes a
-    /// `time_edited` event on its task, if it has one, in one write.
+    /// `time_edited` event on its task and, when it moved, on the task it left, in one write.
     /// An empty `task_id` makes it task-less. Returns false when the entry does not exist; the task
     /// must exist (checked by the caller).
     pub fn update_entry(
@@ -12953,7 +12953,13 @@ impl Db {
         row.labels = edit.labels.to_vec();
 
         drop(tbl);
+        let moved = !old_task.is_empty() && old_task != task_id;
         let before = txn_account_minutes(&txn, &row.account_id, task_id)?;
+        let old_before = if moved {
+            Some(txn_account_minutes(&txn, &row.account_id, &old_task)?)
+        } else {
+            None
+        };
         txn_store_entry(&txn, &row, OverQuota::Refuse)?;
 
         // Task-less entries (empty `task_id`) are not in the index
@@ -12975,6 +12981,23 @@ impl Db {
             txn_push_task_event(
                 &txn,
                 task_id,
+                HistoryKind::TimeEdited,
+                &detail,
+                actor,
+                change,
+                OverQuota::Refuse,
+            )?;
+        }
+        if let Some(old_before) = old_before {
+            let after = txn_account_minutes(&txn, &row.account_id, &old_task)?;
+            let change = EventChange {
+                from: Some(format_minutes(old_before)),
+                to: Some(format_minutes(after)),
+            };
+            let detail = format!("Edited a time entry ({}m)", row.minutes);
+            txn_push_task_event(
+                &txn,
+                &old_task,
                 HistoryKind::TimeEdited,
                 &detail,
                 actor,

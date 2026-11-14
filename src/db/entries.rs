@@ -181,7 +181,9 @@ mod tests {
     use crate::db::{
         EntryEdit, MAX_TASK_ROW_BYTES, META, NewComment, NewTimeEntry, SCHEMA_VERSION_KEY,
     };
-    use crate::models::{Actor, ActorKind, EntryKind, HistoryKind, InstanceMode, Quotas};
+    use crate::models::{
+        Actor, ActorKind, EntryKind, HistoryKind, InstanceMode, Quotas, format_minutes,
+    };
 
     fn edit(started_at: &str) -> EntryEdit<'_> {
         EntryEdit {
@@ -550,5 +552,127 @@ mod tests {
         assert_eq!(kept.task_id, other);
         assert_eq!(kept.note, "before");
         assert_eq!(kept.minutes, 5);
+    }
+
+    #[must_use]
+    fn time_edits(db: &Db, task: &str) -> Vec<(Option<String>, Option<String>)> {
+        let row = db.task(task).expect("read").expect("task");
+        row.history
+            .iter()
+            .filter(|event| event.kind == HistoryKind::TimeEdited)
+            .map(|event| (event.from.clone(), event.to.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn update_entry_should_record_a_move_on_both_tasks() {
+        let fx = fixture();
+        let from = board_task(&fx, "From");
+        let to = board_task(&fx, "To");
+        let entry = fx
+            .db
+            .log_task_time(
+                &fx.admin,
+                timed(Some(&from), ""),
+                "Logged time",
+                Actor::SYSTEM,
+            )
+            .expect("logged")
+            .expect("entry id");
+        let moved = fx
+            .db
+            .update_entry(
+                &entry,
+                &to,
+                EntryEdit {
+                    seconds: 300,
+                    note: "",
+                    started_at: "2026-11-11T09:00:00Z",
+                    labels: &[],
+                },
+                Actor::SYSTEM,
+            )
+            .expect("moved");
+        assert!(moved);
+        assert_eq!(
+            time_edits(&fx.db, &from),
+            vec![(Some(format_minutes(5)), Some(format_minutes(0)))]
+        );
+        assert_eq!(
+            time_edits(&fx.db, &to),
+            vec![(Some(format_minutes(0)), Some(format_minutes(5)))]
+        );
+    }
+
+    #[test]
+    fn update_entry_should_add_no_event_to_other_tasks_when_the_task_stays() {
+        let fx = fixture();
+        let task = board_task(&fx, "Same");
+        let other = board_task(&fx, "Other");
+        let entry = fx
+            .db
+            .log_task_time(
+                &fx.admin,
+                timed(Some(&task), ""),
+                "Logged time",
+                Actor::SYSTEM,
+            )
+            .expect("logged")
+            .expect("entry id");
+        fx.db
+            .update_entry(
+                &entry,
+                &task,
+                EntryEdit {
+                    seconds: 120,
+                    note: "after",
+                    started_at: "2026-11-11T10:00:00Z",
+                    labels: &[],
+                },
+                Actor::SYSTEM,
+            )
+            .expect("edited");
+        assert!(time_edits(&fx.db, &other).is_empty());
+        assert_eq!(time_edits(&fx.db, &task).len(), 1);
+    }
+
+    #[test]
+    fn update_entry_should_refuse_a_move_out_of_a_full_task_and_keep_the_entry() {
+        let fx = fixture();
+        let full = board_task(&fx, "Full");
+        let to = board_task(&fx, "To");
+        let entry = fx
+            .db
+            .log_task_time(
+                &fx.admin,
+                timed(Some(&full), "before"),
+                "Logged time",
+                Actor::SYSTEM,
+            )
+            .expect("logged")
+            .expect("entry id");
+        fill_task_row(&fx.db, &full);
+        let refusal = fx
+            .db
+            .update_entry(
+                &entry,
+                &to,
+                EntryEdit {
+                    seconds: 120,
+                    note: "after",
+                    started_at: "2026-11-11T10:00:00Z",
+                    labels: &[],
+                },
+                Actor::SYSTEM,
+            )
+            .expect_err("refused");
+        assert_eq!(
+            refusal.downcast_ref::<QuotaExceeded>().map(|r| r.bound),
+            Some(Bound::TaskRowBytes)
+        );
+        let kept = fx.db.entry(&entry).expect("read").expect("entry");
+        assert_eq!(kept.task_id, full);
+        assert_eq!(kept.note, "before");
+        assert!(time_edits(&fx.db, &to).is_empty());
     }
 }
