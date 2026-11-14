@@ -3,10 +3,10 @@ use uuid::Uuid;
 
 use super::usage::OverQuota;
 use super::{
-    BOARDS, COLUMNS, COLUMNS_BY_BOARD, Db, DbResult, TASKS, TASKS_BY_COLUMN, txn_indexed_rows,
-    txn_read_one, txn_store_board,
+    BOARDS, COLUMNS, COLUMNS_BY_BOARD, Db, DbResult, txn_indexed_rows, txn_read_one,
+    txn_store_board, txn_wip_cards,
 };
-use crate::models::{BoardRow, ColumnRow, LimitGroup, MAX_LIMIT_GROUPS, TaskRow};
+use crate::models::{BoardRow, ColumnRow, LimitGroup, MAX_LIMIT_GROUPS};
 
 /// What a limit group write did.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,10 +61,9 @@ pub(crate) fn txn_group_over_limit(
     };
     let mut count = 0;
     for column_id in &group.column_ids {
-        let held: Vec<TaskRow> = txn_indexed_rows(txn, TASKS_BY_COLUMN, column_id, TASKS)?;
-        count += held
+        count += txn_wip_cards(txn, column_id)?
             .iter()
-            .filter(|other| other.id != task_id && other.is_work())
+            .filter(|other| other.id != task_id)
             .count();
     }
     Ok((count as i64 >= group.limit).then_some((count, group.limit)))

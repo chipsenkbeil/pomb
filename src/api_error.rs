@@ -151,6 +151,9 @@ pub enum ErrorCode {
     EpicHasOpenChildren,
     /// An epic has a child that is not done yet, so nobody can claim it (409).
     EpicNotClaimable,
+    /// The task sits in, or the write would put it into, an archived swimlane, whose cards take no
+    /// writes until the lane is unarchived (409).
+    LaneArchived,
     /// The account has no agent role with that id (404).
     UnknownRole,
     /// The server failed (5xx).

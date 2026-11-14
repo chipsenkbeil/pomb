@@ -5464,6 +5464,27 @@ fn txn_refuse_board_over_quota(
     txn_refuse_over_quota(txn, &board.owner_id, quota, after)
 }
 
+/// Returns whether swimlane `lane_id` is archived, read inside an open write transaction.
+fn txn_lane_archived(txn: &WriteTransaction, lane_id: Option<&str>) -> DbResult<bool> {
+    let Some(lane_id) = lane_id else {
+        return Ok(false);
+    };
+    let lane: Option<SwimlaneRow> = txn_read_one(txn, SWIMLANES, lane_id)?;
+    Ok(lane.is_some_and(|lane| lane.archived))
+}
+
+/// Returns the work tasks of column `column_id` that count toward its limits, which leaves out
+/// those in an archived swimlane, read inside an open write transaction.
+pub(crate) fn txn_wip_cards(txn: &WriteTransaction, column_id: &str) -> DbResult<Vec<TaskRow>> {
+    let mut cards = Vec::new();
+    for task in txn_indexed_rows::<TaskRow>(txn, TASKS_BY_COLUMN, column_id, TASKS)? {
+        if task.is_work() && !txn_lane_archived(txn, task.swimlane_id.as_deref())? {
+            cards.push(task);
+        }
+    }
+    Ok(cards)
+}
+
 /// Returns the refusal of putting work task `task` into `target` when that would pass the column's
 /// limit or its limit group's, read inside an open write transaction. `from` is the column the
 /// task leaves, none for a task that is new to the board. A task that stays in its column, and a
@@ -5481,10 +5502,9 @@ fn txn_wip_refusal(
         if target.wip_limit_in_hours() {
             let minutes =
                 |task: &TaskRow| (task.estimate_hours.unwrap_or(0.0) * 60.0).round() as i64;
-            let cell: Vec<TaskRow> = txn_indexed_rows(txn, TASKS_BY_COLUMN, &target.id, TASKS)?;
-            let held: i64 = cell
+            let held: i64 = txn_wip_cards(txn, &target.id)?
                 .iter()
-                .filter(|other| other.id != task.id && other.is_work())
+                .filter(|other| other.id != task.id)
                 .map(minutes)
                 .sum();
             if minutes(task) > 0 && held + minutes(task) > limit * 60 {
@@ -5494,9 +5514,9 @@ fn txn_wip_refusal(
                 }));
             }
         } else {
-            let count = txn_indexed_rows::<TaskRow>(txn, TASKS_BY_COLUMN, &target.id, TASKS)?
+            let count = txn_wip_cards(txn, &target.id)?
                 .iter()
-                .filter(|other| other.id != task.id && other.is_work())
+                .filter(|other| other.id != task.id)
                 .count();
             if count as i64 >= limit {
                 return Ok(Some(WipRefused::Column {
@@ -5524,10 +5544,10 @@ fn txn_board_over_wip(txn: &WriteTransaction, board_id: &str) -> DbResult<Option
         let Some(limit) = column.wip_limit else {
             continue;
         };
-        let held: Vec<TaskRow> = txn_indexed_rows(txn, TASKS_BY_COLUMN, &column.id, TASKS)?;
-        let work = held.iter().filter(|task| task.is_work());
+        let held = txn_wip_cards(txn, &column.id)?;
         if column.wip_limit_in_hours() {
-            let minutes: i64 = work
+            let minutes: i64 = held
+                .iter()
                 .map(|task| (task.estimate_hours.unwrap_or(0.0) * 60.0).round() as i64)
                 .sum();
             if minutes > limit * 60 {
@@ -5535,7 +5555,7 @@ fn txn_board_over_wip(txn: &WriteTransaction, board_id: &str) -> DbResult<Option
                 return Ok(Some(WipRefused::Column { held, limit }));
             }
         } else {
-            let count = work.count();
+            let count = held.len();
             if count as i64 > limit {
                 let held = WipHeld::Tasks(count);
                 return Ok(Some(WipRefused::Column { held, limit }));
@@ -8117,8 +8137,14 @@ impl Db {
     pub fn count_tasks_in_column(&self, column_id: &str) -> DbResult<usize> {
         let mut work = 0;
         for id in mmap_get(&self.db, TASKS_BY_COLUMN, column_id)? {
-            let task: Option<TaskRow> = read_one(&self.db, TASKS, &id)?;
-            work += usize::from(task.is_some_and(|task| task.is_work()));
+            let Some(task) = read_one::<TaskRow>(&self.db, TASKS, &id)? else {
+                continue;
+            };
+            let frozen = match task.swimlane_id.as_deref() {
+                Some(lane) => self.swimlane(lane)?.is_some_and(|lane| lane.archived),
+                None => false,
+            };
+            work += usize::from(task.is_work() && !frozen);
         }
         Ok(work)
     }

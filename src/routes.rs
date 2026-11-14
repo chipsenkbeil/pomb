@@ -5986,6 +5986,11 @@ fn board_template(
     let label_settings = LabelSettings::from_config(&board.row().config_json);
     let unit = EstimateUnit::of(board.row());
     let groups = limit_groups::LimitGroupView::all(db, &board.row().limit_groups)?;
+    tasks.retain(|t| {
+        !archived_lanes
+            .iter()
+            .any(|lane| t.swimlane_id.as_deref() == Some(lane.id.as_str()))
+    });
     let column_heads: Vec<ColumnHead> = columns
         .iter()
         .map(|col| {
@@ -6092,13 +6097,6 @@ fn board_template(
             }
         })
         .collect();
-
-    // The column heads count every card, as the WIP limit does, and the bands show only open lanes
-    tasks.retain(|t| {
-        !archived_lanes
-            .iter()
-            .any(|lane| t.swimlane_id.as_deref() == Some(lane.id.as_str()))
-    });
 
     // Palette positions for Task sorting by color
     let color_rank: HashMap<String, i64> = db
@@ -9172,7 +9170,7 @@ fn create_target_column(db: &AccountDb, input: &CreateTaskInput) -> Result<Owned
         (status = 201, description = "Created task", body = TaskDetail),
         (status = 400, description = "Invalid input: empty name, unparseable due_at, neither `column_id` nor (for an epic) `board_id`, or a `board_id` that is not the column's board"),
         (status = 404, description = "Column or board not found"),
-        (status = 409, description = "`wip_limit_reached`: the column or its limit group is at its WIP limit and `force` is not true, and nothing is created. Without a code: the board's numbering has no number left"),
+        (status = 409, description = "`lane_archived`: the `swimlane_id` names an archived swimlane. `wip_limit_reached`: the column or its limit group is at its WIP limit and `force` is not true, and nothing is created. Without a code: the board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -9433,11 +9431,15 @@ fn placement_index(placement: NewTaskPlacement) -> f64 {
 /// Returns the id of swimlane `id` when it lies on the caller's board `board_id`, or the 400 an
 /// unknown swimlane gets.
 fn lane_on_board(db: &AccountDb, id: &str, board_id: &str) -> Result<String, AppError> {
-    db.swimlane(id)
+    let lane = db
+        .swimlane(id)
         .map_err(AppError::from)?
         .filter(|lane| lane.row().board_id == board_id)
-        .map(|lane| lane.into_row().id)
-        .ok_or_else(|| AppError::bad_request("unknown swimlane"))
+        .ok_or_else(|| AppError::bad_request("unknown swimlane"))?;
+    if lane.row().archived {
+        return Err(lane_archived());
+    }
+    Ok(lane.into_row().id)
 }
 
 /// Validates the metadata a task request carries: `None` is absent, `Some(None)` clears, and
@@ -9944,7 +9946,7 @@ fn update_history(
         (status = 400, description = "Invalid input, including `kind` naming the kind the task already has and `unlink_children` true without `kind` `task`"),
         (status = 403, description = "`permission_denied`: `kind` `task` needs `epics.manage`. `card_locked`: the task carries a locking label and the token lacks `tasks.edit_locked`, unless the patch sets only the size or its colour"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`stale_fence`: a live claim holds another fence. `epic_has_children`: `kind` `task` on an epic that has children, without `unlink_children`. `claim_held`: `kind` `epic` on a task with a live claim, without that claim's `If-Claim-Fence`"),
+        (status = 409, description = "`lane_archived`: the task sits in an archived swimlane. `stale_fence`: a live claim holds another fence. `epic_has_children`: `kind` `task` on an epic that has children, without `unlink_children`. `claim_held`: `kind` `epic` on a task with a live claim, without that claim's `If-Claim-Fence`"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -9966,6 +9968,7 @@ async fn update_task(
         return Err(AppError::permission_denied(Permission::EpicsManage));
     }
     let owned = found(db.task(&id), "task not found")?;
+    ensure_lane_open(db, owned.row())?;
     let rules = board_rules(db, owned.board_id())?;
     let only_labels = input.only_labels();
     let only_size = input.only_size();
@@ -10595,7 +10598,7 @@ struct MoveTaskInput {
         (status = 400, description = "Unknown column"),
         (status = 403, description = "`role_move_forbidden`: the token was issued as a role and the board's column rules do not let that role move a task out of its column into this one. `permission_denied`: the task is an epic, the move crosses a Done column boundary and the token lacks `epics.manage`. `card_locked`: the task carries a locking label and the token lacks `tasks.edit_locked`, unless the move stays in the task's column and swimlane"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit, or held/limit time for an hours limit), or the limit group of the column is full (n/limit). `stale_fence`: a live claim holds another fence. `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column. Without a code: the target board's numbering has no number left"),
+        (status = 409, description = "`lane_archived`: the task sits in an archived swimlane, or `swimlane_id` names one. `wip_limit_reached`: column WIP limit reached (n/limit, or held/limit time for an hours limit), or the limit group of the column is full (n/limit). `stale_fence`: a live claim holds another fence. `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column. Without a code: the target board's numbering has no number left"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -10611,6 +10614,7 @@ async fn move_task(
     let db = &account;
 
     let before = found(db.task(&id), "task not found")?;
+    ensure_lane_open(db, before.row())?;
     let fence = write_fence_header(&headers)?;
     let from_column = db.column(&before.row().column_id).map_err(AppError::from)?;
     let from_name = from_column
@@ -10932,7 +10936,7 @@ struct BulkTasksResult {
         (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks, a link the tasks cannot hold or a `parent` or `child` link whose umbrella is not an epic (`not_epic`)"),
         (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task carries a locking label, or a task it links to carries one and the link is not `blocked_by` or `related`, and the token lacks `tasks.edit_locked`. `role_move_forbidden`: a `move` by a token issued as a role that the board's column rules do not let move one of the tasks out of its column into the target. `permission_denied` also covers a `move` of an epic across a Done column boundary without `epics.manage`, which refuses the whole batch"),
         (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
-        (status = 409, description = "`epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column. `wip_limit_reached`: a `move` would put a task past the target column's or limit group's WIP limit and `force` is not true, and no task moves"),
+        (status = 409, description = "`lane_archived`: a task, or a task a relation touches, sits in an archived swimlane, or a `move` names one, which refuses the whole batch. `epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column. `wip_limit_reached`: a `move` would put a task past the target column's or limit group's WIP limit and `force` is not true, and no task moves"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -11146,11 +11150,13 @@ async fn bulk_tasks(
             }
             for (kind, target_id) in &add {
                 let target = found(db.task(target_id), "task or target not found")?;
+                ensure_lane_open(db, target.row())?;
                 if !matches!(kind, LinkKind::BlockedBy | LinkKind::Related) {
                     ensure_unlocked(db, &user, target.board_id(), target.row())?;
                 }
             }
             for (kind, target_id) in &remove {
+                ensure_task_id_lane_open(db, target_id)?;
                 if !matches!(kind, LinkKind::BlockedBy | LinkKind::Related) {
                     ensure_task_id_unlocked(db, &user, target_id)?;
                 }
@@ -11821,6 +11827,7 @@ async fn markdown_preview(
         (status = 200, description = "Task moved to the recycle bin"),
         (status = 403, description = "`permission_denied`: the token lacks `tasks.bin`. `card_locked`: the task or a task it links to carries a locking label"),
         (status = 404, description = "Task not found"),
+        (status = 409, description = "`lane_archived`: the task or a task it links to sits in an archived swimlane"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -12372,6 +12379,7 @@ async fn create_task_link(
         return Err(AppError::bad_request("target is the task itself"));
     }
     let target = found(account.task(&input.target_id), missing)?;
+    ensure_lane_open(&account, target.row())?;
     if !matches!(kind, LinkKind::BlockedBy | LinkKind::Related) {
         ensure_unlocked(&account, &user, target.board_id(), target.row())?;
     }
@@ -12526,10 +12534,11 @@ async fn delete_task_link(
         .unwrap_or_default()
         .into_iter()
         .find(|link| link.id == link_id);
-    if let Some(link) = link
-        && !matches!(link.kind, LinkKind::BlockedBy | LinkKind::Related)
-    {
-        ensure_task_id_unlocked(&account, &user, &link.target_id)?;
+    if let Some(link) = link {
+        ensure_task_id_lane_open(&account, &link.target_id)?;
+        if !matches!(link.kind, LinkKind::BlockedBy | LinkKind::Related) {
+            ensure_task_id_unlocked(&account, &user, &link.target_id)?;
+        }
     }
     match account
         .delete_task_link(
@@ -14556,7 +14565,7 @@ async fn list_comments(
         (status = 400, description = "Comment body is required, too long, kind over 64 characters, or author over 80 characters or equal to your username. For a question: a missing or invalid part, named in the message, a choice whose column is not on the board, or a kind other than `question`"),
         (status = 403, description = "`card_locked`: the task carries a locking label and the token lacks `tasks.edit_locked`. A question passes when the task's newest comment is the owner's, meaning one written from the browser session, and it does not move the task. Any other comment is refused"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`stale_fence`: a live claim holds another fence. For a question on a card without a locking label: the board has no Blocked column, `wip_limit_reached`, or `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column"),
+        (status = 409, description = "`lane_archived`: the task sits in an archived swimlane. `stale_fence`: a live claim holds another fence. For a question on a card without a locking label: the board has no Blocked column, `wip_limit_reached`, or `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -14569,6 +14578,7 @@ async fn create_comment(
 ) -> Result<Json<TaskComment>, AppError> {
     let input: CreateCommentInput = parse_body(&headers, body).await?;
     let task = found(account.task(&id), "task not found")?;
+    ensure_lane_open(&account, task.row())?;
     let newest_by_owner =
         task.row().comments.last().is_some_and(|comment| {
             comment.actor_kind == ActorKind::User && comment.token_id.is_none()
@@ -16748,7 +16758,7 @@ fn logged_start(text: Option<&str>, now: DateTime<Utc>) -> Result<String, AppErr
         (status = 200, description = "The task's time entries, newest first", body = Vec<TimeEntryItem>),
         (status = 400, description = "Neither or both of minutes and seconds, minutes outside 1 to 1440, seconds outside 1 to 86400, a started_at that is not RFC3339 or lies in the future, or a role over 64 characters"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`quota_exceeded`: the account holds its most time entries or stored bytes, or 500 entries that started this UTC day"),
+        (status = 409, description = "`lane_archived`: the task sits in an archived swimlane. `quota_exceeded`: the account holds its most time entries or stored bytes, or 500 entries that started this UTC day"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -17893,7 +17903,7 @@ struct ManualTimeInput {
         (status = 200, description = "Created entry id and minutes", body = IdMinutesResult),
         (status = 400, description = "Invalid date/time range or time in the future"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`quota_exceeded`: the account holds its most time entries or stored bytes, or 500 entries that started that UTC day"),
+        (status = 409, description = "`lane_archived`: the task sits in an archived swimlane. `quota_exceeded`: the account holds its most time entries or stored bytes, or 500 entries that started that UTC day"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -23048,8 +23058,21 @@ fn board_rules(db: &AccountDb, board_id: &str) -> Result<ColumnRules, AppError> 
     Ok(ColumnRules::from_config(&board.row().config_json))
 }
 
-/// Refuses a token without `tasks.edit_locked` the write to `task` when one of its labels locks it.
+/// Refuses any write to `task` while its swimlane is archived, and a token without
+/// `tasks.edit_locked` the write when one of its labels locks it.
 fn ensure_unlocked(
+    db: &AccountDb,
+    user: &AuthUser,
+    board_id: &str,
+    task: &TaskRow,
+) -> Result<(), AppError> {
+    ensure_lane_open(db, task)?;
+    ensure_labels_unlocked(db, user, board_id, task)
+}
+
+/// Refuses a token without `tasks.edit_locked` the write to `task` when one of its labels locks
+/// it, whatever its swimlane.
+fn ensure_labels_unlocked(
     db: &AccountDb,
     user: &AuthUser,
     board_id: &str,
@@ -23116,6 +23139,35 @@ fn ensure_role_move_allowed(
         ))
         .with_code(ErrorCode::RoleMoveForbidden)),
         _ => Ok(()),
+    }
+}
+
+/// Returns the refusal of a write to a task in, or into, an archived swimlane.
+#[must_use]
+fn lane_archived() -> AppError {
+    AppError::conflict(
+        "the swimlane is archived, so its cards take no writes until it is unarchived",
+    )
+    .with_code(ErrorCode::LaneArchived)
+}
+
+/// Refuses any write to `task` while its swimlane is archived.
+fn ensure_lane_open(db: &AccountDb, task: &TaskRow) -> Result<(), AppError> {
+    let Some(lane_id) = task.swimlane_id.as_deref() else {
+        return Ok(());
+    };
+    match db.swimlane(lane_id).map_err(AppError::from)? {
+        Some(lane) if lane.row().archived => Err(lane_archived()),
+        _ => Ok(()),
+    }
+}
+
+/// Refuses any write to the task `task_id` names while its swimlane is archived. An id that names
+/// no task of the account passes.
+fn ensure_task_id_lane_open(db: &AccountDb, task_id: &str) -> Result<(), AppError> {
+    match db.task(task_id).map_err(AppError::from)? {
+        Some(task) => ensure_lane_open(db, task.row()),
+        None => Ok(()),
     }
 }
 
@@ -23188,6 +23240,20 @@ fn ensure_board_unlocked(db: &AccountDb, user: &AuthUser, board_id: &str) -> Res
 fn ensure_task_id_unlocked(db: &AccountDb, user: &AuthUser, task_id: &str) -> Result<(), AppError> {
     match db.task(task_id).map_err(AppError::from)? {
         Some(task) => ensure_unlocked(db, user, task.board_id(), task.row()),
+        None => Ok(()),
+    }
+}
+
+/// Refuses an API token the retiring of a timer on the task `task_id` names when a label locks it,
+/// whatever its swimlane, so a timer in a lane archived later still stops. An id that names no task
+/// of the account passes.
+fn ensure_timer_task_unlocked(
+    db: &AccountDb,
+    user: &AuthUser,
+    task_id: &str,
+) -> Result<(), AppError> {
+    match db.task(task_id).map_err(AppError::from)? {
+        Some(task) => ensure_labels_unlocked(db, user, task.board_id(), task.row()),
         None => Ok(()),
     }
 }
@@ -28464,7 +28530,7 @@ struct TimerStartInput {
         (status = 200, description = "Timer status after starting", body = TimerStatusView),
         (status = 400, description = "Unknown timer mode"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`quota_exceeded`: a running session to replace could not be recorded, since the account is more than 1 MiB past its stored-bytes quota, holds its most time entries, or holds 500 entries that started that UTC day, so it keeps running"),
+        (status = 409, description = "`lane_archived`: the task sits in an archived swimlane. `quota_exceeded`: a running session to replace could not be recorded, since the account is more than 1 MiB past its stored-bytes quota, holds its most time entries, or holds 500 entries that started that UTC day, so it keeps running"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -28494,7 +28560,7 @@ async fn timer_start(
     // Retire any running timer first, with the same logging rules as stop
     if let Some(old) = db.active_timer().map_err(AppError::from)? {
         if let Some(task_id) = old.task_id.as_deref() {
-            ensure_task_id_unlocked(db, &user, task_id)?;
+            ensure_timer_task_unlocked(db, &user, task_id)?;
         }
         log_timer_session(
             db,
@@ -28614,7 +28680,7 @@ async fn timer_stop(
     }
     let timer = active.ok_or_else(|| AppError::not_found("no active timer"))?;
     if let Some(task_id) = timer.task_id.as_deref() {
-        ensure_task_id_unlocked(db, &user, task_id)?;
+        ensure_timer_task_unlocked(db, &user, task_id)?;
     }
     let logged = log_timer_session(
         db,
@@ -30559,6 +30625,9 @@ mod inbound_tests;
 
 #[cfg(test)]
 mod openapi;
+
+#[cfg(test)]
+mod lane_archive_tests;
 
 #[cfg(test)]
 mod limits_tests;
