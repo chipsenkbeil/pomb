@@ -268,6 +268,55 @@ async fn a_custom_color_should_paint_the_board_page_and_the_task_modal() {
     );
 }
 
+#[tokio::test]
+async fn an_api_task_should_keep_its_requested_color_on_create_and_detail() {
+    let (_dir, fx) = fixture();
+    let (_, created) = add_custom(&fx, &fx.board_id, "#e0f2f1", "Teal").await;
+    let (status, task) = call(
+        &fx,
+        "POST",
+        "/api/tasks",
+        Some(json!({"column_id": fx.col_todo, "name": "Requested", "color_id": created["id"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{task}");
+    assert_eq!(task["color_id"], created["id"], "{task}");
+    let id = task["id"].as_str().expect("id");
+    let (status, detail) = call(&fx, "GET", &format!("/api/tasks/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["color_id"], created["id"], "{detail}");
+}
+
+#[tokio::test]
+async fn an_api_task_should_refuse_another_boards_color_and_take_the_default_for_an_empty_one() {
+    let (_dir, fx) = fixture();
+    let (other, _) = new_board(&fx, "Other").await;
+    let (_, theirs) = add_custom(&fx, &other, "#ffeedd", "Peach").await;
+    let (status, error) = call(
+        &fx,
+        "POST",
+        "/api/tasks",
+        Some(json!({"column_id": fx.col_todo, "name": "Foreign", "color_id": theirs["id"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert!(error.to_string().contains("unknown color"), "{error}");
+    let (status, blank) = call(
+        &fx,
+        "POST",
+        "/api/tasks",
+        Some(json!({"column_id": fx.col_todo, "name": "Blank", "color_id": ""})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{blank}");
+    let default = fx
+        .db
+        .default_color(&fx.board_id)
+        .expect("default color")
+        .expect("board default");
+    assert_eq!(blank["color_id"], default.id, "{blank}");
+}
+
 async fn set_points_mode(fx: &Fixture, on: bool) {
     let (status, config) = call(
         fx,
