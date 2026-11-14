@@ -18840,6 +18840,9 @@ struct BoardExportData {
     users: Vec<ExportUserRef>,
     /// Tasks deleted from the board that wait in its recycle bin, which the board history reports.
     deleted: Vec<ExportDeletedTask>,
+    /// The server's clock when the dataset was built, as RFC3339. Reports that end an open
+    /// interval at "now" align the browser's clock to it.
+    generated_at: String,
     tasks: Vec<TaskRow>,
 }
 
@@ -18951,6 +18954,7 @@ fn build_board_export_data(
                 deleted_at: rfc3339_of(row.deleted_at),
             })
             .collect(),
+        generated_at: rfc3339_of(chrono::Utc::now().timestamp()),
         tasks,
     }
 }
@@ -32892,7 +32896,15 @@ mod tests {
 
         // The dataset serializes with the keys the Export page consumes
         let v = serde_json::to_value(&data).unwrap();
-        for key in ["board", "columns", "swimlanes", "colors", "users", "tasks"] {
+        for key in [
+            "board",
+            "columns",
+            "swimlanes",
+            "colors",
+            "users",
+            "generated_at",
+            "tasks",
+        ] {
             assert!(v.get(key).is_some(), "missing key {key}");
         }
     }

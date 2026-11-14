@@ -168,5 +168,32 @@ listeners.click(rowEvent(rowEl));
 listeners.keydown(rowEvent(rowEl));
 listeners.click(rowEvent(null));
 check('clicking a task row, or Enter on it, opens that task', opened, ['a', 'a']);
+const realNow = Date.now;
+const serverNow = Date.parse('2026-02-01T12:00:00Z');
+Date.now = () => serverNow - 10 * MIN;
+const skewed = {
+  generated_at: iso(serverNow),
+  columns: columns,
+  tasks: [{
+    id: 'c',
+    name: 'C',
+    column_id: 'todo',
+    created_at: iso(serverNow - 5 * MIN),
+    color_id: null,
+    labels: [],
+    member_ids: [],
+    history: [],
+  }],
+};
+const skew = TimeInColumnPage.clockOffset(skewed);
+check('offset aligns the browser clock to generated_at', skew, 10 * MIN);
+const skewRows = TimeInColumnPage.taskRows(skewed, skewed.tasks[0], Date.now() + skew);
+check('open interval ends at the server time', skewRows.map((r) => r.ms), [5 * MIN]);
+check('open interval shows 5m', TimeInColumnPage.fmtDuration(skewRows[0].ms, 'minutes'), '5m');
+check('no generated_at leaves the browser clock', TimeInColumnPage.clockOffset({ columns: columns, tasks: [] }), 0);
+check('unparsable generated_at leaves the browser clock', TimeInColumnPage.clockOffset({ generated_at: 'x' }), 0);
+Date.now = realNow;
+const modalSrc = src.slice(src.indexOf('function openTaskTimeInColumn()'), src.indexOf('TimeInColumnPage.taskRows(data, task, now)'));
+check('task modal aligns now to the server clock', modalSrc.indexOf('TimeInColumnPage.clockOffset(data)') > 0, true);
 console.log('failures=' + failures);
 if (failures) throw new Error(failures + ' time in column check(s) failed');

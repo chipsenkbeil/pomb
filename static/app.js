@@ -4119,7 +4119,7 @@
         var body = document.querySelector('#modal-root .task-modal-body');
         if (!body) return;
         var name = (document.getElementById('modal-name') || {}).value || task.name;
-        var now = Date.now();
+        var now = Date.now() + TimeInColumnPage.clockOffset(data);
         var rows = TimeInColumnPage.taskRows(data, task, now);
         var html = '<div class="tm-subview" data-task-id="' + escapeHtml(id) + '">' +
           '<button type="button" class="tm-subview-back" data-tm-subview="back" title="Back to task">&larr; ' + escapeHtml(name) + '</button>' +
@@ -17690,9 +17690,10 @@
         fill(qs('tic-label'), Object.keys(labels).sort().map(function (l) {
           return { value: l, text: l };
         }));
+        const offset = clockOffset(data);
         function refresh() {
           var period = qs('tic-period').value;
-          var now = Date.now();
+          var now = Date.now() + offset;
           var table = buildTable(data, {
             columns: selectedColumns(),
             periodDays: period === 'all' ? null : parseInt(period, 10),
@@ -17723,8 +17724,14 @@
       });
     }
 
+    const clockOffset = (data) => {
+      const server = Date.parse(data && data.generated_at);
+      return Number.isNaN(server) ? 0 : server - Date.now();
+    };
+
     return {
       init: init, buildTable: buildTable, taskRows: taskRows, fmtDuration: fmtDuration,
+      clockOffset: clockOffset,
       render: render, attachRows: attachRows,
       boardExportRows: boardExportRows, taskExportRows: taskExportRows, exportFile: exportFile,
       exportStem: exportStem, saveExport: saveExport,

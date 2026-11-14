@@ -846,3 +846,21 @@ async fn bin_empty_should_refuse_a_locked_task() {
     let (_, bin) = call(&fx, "GET", &uri, None).await;
     assert_eq!(bin["tasks"], json!([]));
 }
+
+#[tokio::test]
+async fn board_export_data_should_carry_the_server_time() {
+    let (_dir, fx) = fixture();
+    let before = chrono::Utc::now().timestamp();
+    let (status, export) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{}/export-data", fx.board_id),
+        None,
+    )
+    .await;
+    let after = chrono::Utc::now().timestamp();
+    assert_eq!(status, StatusCode::OK, "{export}");
+    let stamp = export["generated_at"].as_str().expect("generated_at");
+    let parsed = chrono::DateTime::parse_from_rfc3339(stamp).expect("rfc3339");
+    assert!((before..=after).contains(&parsed.timestamp()), "{stamp}");
+}
