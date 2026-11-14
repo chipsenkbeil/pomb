@@ -11,6 +11,7 @@ local devos = require("dev.os")
 local forge = require("pomb.forge")
 local fs = require("dev.fs")
 local json = require("dev.json")
+local verb = require("dev.verb")
 
 local ctx = ...
 local stderr = io.stderr
@@ -19,8 +20,8 @@ local HOST = "green-box"
 local PUBLIC_URL = "https://pomb.chip.network"
 local WORKTREES = ".dev/worktrees/"
 local SHORT = 12
-local USAGE = "usage: dev verify <release-sha> [--backup <file>] [--cleanup <worktree>...]"
-    .. " [--delete-branch <branch>]..."
+local USAGE = "Usage: dev verify takes a release sha, then optional --backup, --cleanup"
+    .. " and --delete-branch arguments."
 local USAGE_CODE = 2
 local QUIET = { stderr = "null" }
 
@@ -109,6 +110,10 @@ local function text_of(value)
     return ""
 end
 
+local function or_none(value)
+    return value ~= "" and value or "none"
+end
+
 local function main_repo()
     local common = devos.capture({
         "git",
@@ -123,15 +128,16 @@ end
 
 local function login_case(public, location)
     if public == "200" then
-        return true, "200, the passkey sign-in page"
+        return true, "The public /login page answered 200, the passkey sign-in page."
     elseif public == "303" and location == "/" then
-        return true, "303 to /, no sign-in (--auth none)"
+        return true, "The /login page redirected to /, with no sign-in, as --auth none allows."
     elseif public == "303" and location == "/setup" then
-        return true, "303 to /setup, passkey sign-in before the first passkey"
+        return true, "The /login page redirected to /setup, as expected before the first passkey."
     end
-    local shown_public = public ~= "" and public or "none"
-    local shown_location = location ~= "" and location or "none"
-    return false, ("status %s location %s"):format(shown_public, shown_location)
+    return false, ("The public /login page answered with status %s and location %s."):format(
+        or_none(public),
+        or_none(location)
+    )
 end
 
 local function login_probe()
@@ -165,8 +171,10 @@ local function cleanup_worktree(worktree, opts)
     local head = devos.capture(git(path, { "symbolic-ref", "--short", "-q", "HEAD" }), QUIET)
     local branch = trim(head)
     local removal = git(repo, { "worktree", "remove", "--force", worktree })
-    if devos.run(removal) ~= 0 then
-        print(("Skipped %s, which could not be removed."):format(worktree))
+    local reason, removed = devos.capture(removal, { stderr = "stdout" })
+    if removed ~= 0 then
+        local why = trim(reason):gsub("%s*\n%s*", " "):gsub("%.$", "")
+        print(("Skipped %s, which could not be removed, and git said: %s."):format(worktree, why))
         return
     end
     print(("Removed %s."):format(worktree))
@@ -199,7 +207,7 @@ end
 local repo = main_repo()
 local remote_name, why = forge.remote(repo)
 if not remote_name then
-    stderr:write(why, "\n")
+    verb.note(("Dev verify cannot run, because %s."):format(why))
     return 1
 end
 if devos.run(git(repo, { "fetch", "-q", remote_name })) ~= 0 then
@@ -215,15 +223,18 @@ end
 local sha = trim(resolved)
 
 local failures = 0
-local function check(name, ok, detail)
-    print(("%s  %-24s %s"):format(ok and "PASS" or "FAIL", name, detail))
+local function check(ok, sentence)
+    print(("%s %s"):format(ok and "PASS" or "FAIL", sentence))
     if not ok then
         failures = failures + 1
     end
 end
 
 local live = text_of(decode(remote("curl -s localhost:3000/api/v1/version")).build_sha)
-check("build_sha", live == sha, ("live %s release %s"):format(live ~= "" and live or "none", sha))
+check(
+    live == sha,
+    ("The live build sha is %s, and the release sha is %s."):format(or_none(live), sha)
+)
 
 local prod_js = remote("curl -s localhost:3000/static/app.js | shasum -a 256"):match("^(%S+)") or ""
 local app, shown = devos.capture(git(repo, { "show", sha .. ":static/app.js" }))
@@ -232,52 +243,67 @@ if shown ~= 0 then
 end
 local tree_js = sha256(app)
 check(
-    "app_js",
     prod_js ~= "" and prod_js == tree_js,
-    ("prod %s release %s"):format(prod_js:sub(1, SHORT), tree_js:sub(1, SHORT))
+    ("The prod app.js hash starts with %s, and the release app.js hash starts with %s."):format(
+        or_none(prod_js:sub(1, SHORT)),
+        or_none(tree_js:sub(1, SHORT))
+    )
 )
 
 local xsite = trim(remote(
     'curl -s -o /dev/null -w "%{http_code}" -X POST -H "Origin: https://evil.example"'
         .. ' -H "Sec-Fetch-Site: cross-site" localhost:3000/api/boards'
 ))
-check("cross_site_post", xsite == "403", "status " .. xsite)
+check(
+    xsite == "403",
+    ("A cross-site POST got status %s, and 403 is expected."):format(or_none(xsite))
+)
 
 local journal = remote(
     'journalctl -u pomb --since "$(systemctl show pomb -p ActiveEnterTimestamp --value)"'
         .. ' --no-pager | grep -iE "schema|listening" | tail -2'
 ):gsub("\n+$", "")
-for line in (journal .. "\n"):gmatch("([^\n]*)\n") do
-    print("      " .. line)
+if journal ~= "" then
+    for line in (journal .. "\n"):gmatch("([^\n]*)\n") do
+        print("      " .. line)
+    end
 end
 local lowered = journal:lower()
+local journal_ok = lowered:find("schema", 1, true) ~= nil
+    and lowered:find("listening", 1, true) ~= nil
 check(
-    "journal",
-    lowered:find("schema", 1, true) ~= nil and lowered:find("listening", 1, true) ~= nil,
-    "schema and listening lines since last start"
+    journal_ok,
+    journal_ok and "The journal shows schema and listening lines since the last start."
+        or "The journal lacks a schema or listening line since the last start."
 )
 
 local login_ok, login_detail = login_probe()
-check("public_login", login_ok, login_detail)
+check(login_ok, login_detail)
 
 local spec = decode(remote("curl -s localhost:3000/api/v1/openapi.json"))
 local first_server = type(spec.servers) == "table" and spec.servers[1] or nil
 local servers = type(first_server) == "table" and text_of(first_server.url) or ""
-check("openapi_servers", servers == PUBLIC_URL, servers ~= "" and servers or "none")
+check(
+    servers == PUBLIC_URL,
+    ("The OpenAPI servers[0].url is %s, and the public URL is %s."):format(
+        or_none(servers),
+        PUBLIC_URL
+    )
+)
 
 local token_code = text_of(
     decode(remote('curl -s -H "Authorization: Bearer pomb_nope" localhost:3000/api/boards')).code
 )
 check(
-    "bad_token_code",
     token_code == "token_invalid",
-    "code " .. (token_code ~= "" and token_code or "none")
+    ("A bad Bearer token got code %s, and token_invalid is expected."):format(or_none(token_code))
 )
 
 if backup_path then
     local test = { "ssh", HOST, "sudo test -s " .. devos.quote(backup_path) }
     local present = devos.run(test, { stdout = "null", stderr = "null" }) == 0
-    check("backup_present", present, backup_path)
+    local found = present and "is present on" or "is missing from"
+    check(present, ("The backup %s %s the host."):format(backup_path, found))
 end
 
 if failures > 0 then
