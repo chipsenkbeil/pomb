@@ -88,7 +88,7 @@ if ! cmp -s "$here/sshd/10-pomb.conf" /etc/ssh/sshd_config.d/10-pomb.conf 2>/dev
     exit 1
   fi
 fi
-sshd -T | grep -Ei '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin) '
+sshd -T | grep -Ei '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin|persourcepenalties|persourcepenaltyexemptlist) '
 
 echo "== user and directories"
 if ! id pomb >/dev/null 2>&1; then
