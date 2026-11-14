@@ -1,0 +1,344 @@
+const { isoDate, previewCell } = require('../../static/pure.js');
+const src = require('fs').readFileSync(process.argv[2], 'utf8');
+const start = src.indexOf('  var MassUpdate = (function () {');
+const end = src.indexOf('\n  })();', start) + '\n  })();'.length;
+if (start < 0 || end < start) throw new Error('MassUpdate not found');
+
+const NOW = Date.parse('2026-11-14T00:00:00');
+const STEP_NAMES = ['filter', 'select', 'action', 'preview'];
+
+const makeEl = (tag) => {
+  const el = {
+    tag, value: '', hidden: false, disabled: false, checked: false, selected: false,
+    textContent: '', className: '', options: [], children: [], dataset: {}, handlers: {},
+    lastChild: null,
+    appendChild(child) {
+      if (child.tag === 'option') {
+        el.options.push(child);
+        if (el.options.length === 1) el.value = child.value;
+      }
+      el.children.push(child);
+      el.lastChild = child;
+    },
+    addEventListener(name, fn) { el.handlers[name] = fn; },
+    setAttribute() {},
+    focus() {},
+  };
+  Object.defineProperty(el, 'innerHTML', {
+    get() { return ''; },
+    set() { el.options = []; el.children = []; el.lastChild = null; },
+  });
+  return el;
+};
+
+const makeCard = (id, columnId, extra) => {
+  const list = { dataset: { columnId } };
+  const dataset = Object.assign({ taskId: id, taskName: 'Card ' + id, colorValue: 'red', labels: '[]' }, extra);
+  return { dataset, closest: () => list };
+};
+
+const fixtureCards = () => [
+  makeCard('a', 'c1', { labels: '["bug"]', memberIds: 'u1', dueAt: '2026-11-10T12:00:00', dueDone: '0' }),
+  makeCard('b', 'c1', { colorValue: 'blue', labels: '["ui"]' }),
+  makeCard('c', 'c2', { memberIds: 'u2', groupDay: '2026-11-05' }),
+  makeCard('d', 'c2', { colorValue: 'green', groupDay: '2026-10-01' }),
+  makeCard('e', 'c3', { colorValue: 'blue', labels: '["bug","ui"]', memberIds: 'u1,u2', dueAt: '2026-12-20T12:00:00', dueDone: '0' }),
+];
+
+const load = () => {
+  const els = {};
+  const sections = {};
+  STEP_NAMES.forEach((name) => { sections[name] = makeEl('section'); });
+  const cards = fixtureCards();
+  const headers = [
+    { dataset: { columnId: 'c1', columnName: 'Todo', isDone: '0' } },
+    { dataset: { columnId: 'c2', columnName: 'Done', isDone: '1' } },
+    { dataset: { columnId: 'c3', columnName: 'Doing', isDone: '0' } },
+  ];
+  const swatches = [{ dataset: { value: 'red', label: 'Red', id: 'k1' } }, { dataset: { value: 'blue', label: 'Blue', id: 'k2' } }];
+  const document = {
+    getElementById: (id) => { if (!els[id]) els[id] = makeEl('div'); return els[id]; },
+    createElement: (tag) => makeEl(tag),
+    querySelector: (sel) => {
+      const m = /data-mu-step="(\w+)"/.exec(sel);
+      return m ? sections[m[1]] : null;
+    },
+    querySelectorAll: (sel) => {
+      if (sel === '.task-card') return cards;
+      if (sel === '#column-headers-row .columnHeader') return headers;
+      if (sel.indexOf('#board-colors') === 0) return swatches;
+      return [];
+    },
+  };
+  const calls = [];
+  const pending = [];
+  const api = (path, method, body) => {
+    calls.push({ path, method, body });
+    return new Promise((resolve) => { pending.push(resolve); });
+  };
+  const fetchJson = () => Promise.resolve([]);
+  const withWip = (send) => send(false);
+  const withForce = (body) => body;
+  const boardId = () => 'b1';
+  const boardNameFor = () => 'Board';
+  const cssEscape = (s) => s;
+  const parseDueAt = (s) => new Date(s);
+  const periodToRange = () => ['2026-11-01', '2026-11-30'];
+  const showConfirmDialog = () => {};
+  const BoardChrome = {
+    dateMatches: (value, dueAt, dueDone) => {
+      if (value === 'none') return !dueAt;
+      return !!dueAt && !dueDone && Date.parse(dueAt) < NOW;
+    },
+  };
+  const window = { location: { reload() {} } };
+  const mu = eval('(function () {' + src.slice(start, end) + '\n return MassUpdate; })()');
+  const byId = (id) => document.getElementById(id);
+  const click = (id) => byId(id).handlers.click();
+  const rows = () => byId('mu-list').children.map((row) => row.children[0]);
+  const rowIds = () => rows().map((box) => box.dataset.taskId);
+  const flush = () => new Promise((resolve) => { setImmediate(resolve); });
+  const respondWith = (index, res) => pending[index](res);
+  const respond = (index, tasks) => respondWith(index, {
+    ok: true,
+    text: () => Promise.resolve(JSON.stringify({ tasks })),
+  });
+  mu.open();
+  return { byId, click, rows, rowIds, flush, respond, respondWith, calls, sections };
+};
+
+const filtered = (setup) => {
+  const page = load();
+  setup(page);
+  page.click('mu-next');
+  return page.rowIds();
+};
+
+let failures = 0;
+let current = '';
+const check = (name, got, want) => {
+  const g = JSON.stringify(got);
+  const w = JSON.stringify(want);
+  if (g !== w) { failures++; console.log('FAIL ' + current + ' ' + name + ': got ' + g + ' want ' + w); }
+};
+
+const tests = {
+  mass_update_should_list_every_card_with_no_filter: () => {
+    check('all', filtered(() => {}), ['a', 'b', 'c', 'd', 'e']);
+  },
+
+  mass_update_should_narrow_by_columns_and_by_period_in_done_columns: () => {
+    check('columns', filtered((p) => { p.byId('mu-columns').options[0].selected = true; }), ['a', 'b']);
+    check('two columns', filtered((p) => {
+      p.byId('mu-columns').options[0].selected = true;
+      p.byId('mu-columns').options[2].selected = true;
+    }), ['a', 'b', 'e']);
+    check('period only limits done columns', filtered((p) => { p.byId('mu-period').value = 'this-month'; }), ['a', 'b', 'c', 'e']);
+    check('columns and period', filtered((p) => {
+      p.byId('mu-columns').options[1].selected = true;
+      p.byId('mu-period').value = 'this-month';
+    }), ['c']);
+  },
+
+  mass_update_should_narrow_by_color: () => {
+    check('match', filtered((p) => { p.byId('mu-color').value = 'blue'; }), ['b', 'e']);
+    check('non-match', filtered((p) => { p.byId('mu-color').value = 'purple'; }), []);
+  },
+
+  mass_update_should_narrow_by_label: () => {
+    check('match', filtered((p) => { p.byId('mu-label').value = 'bug'; }), ['a', 'e']);
+    check('non-match', filtered((p) => { p.byId('mu-label').value = 'missing'; }), []);
+  },
+
+  mass_update_should_list_the_labels_cards_carry_sorted_once: () => {
+    const page = load();
+    check('options', page.byId('mu-label').options.map((o) => o.value), ['all', 'bug', 'ui']);
+  },
+
+  mass_update_should_narrow_by_member: () => {
+    check('match', filtered((p) => { p.byId('mu-member').value = 'u2'; }), ['c', 'e']);
+    check('non-match', filtered((p) => { p.byId('mu-member').value = 'u9'; }), []);
+  },
+
+  mass_update_should_narrow_to_unassigned_cards: () => {
+    check('unassigned', filtered((p) => { p.byId('mu-member').value = 'none'; }), ['b', 'd']);
+    const page = load();
+    check('option', page.byId('mu-member').options.map((o) => o.textContent), ['Any', 'Unassigned']);
+  },
+
+  mass_update_should_narrow_by_due_state: () => {
+    check('has match', filtered((p) => { p.byId('mu-due').value = 'has'; }), ['a', 'e']);
+    check('none match', filtered((p) => { p.byId('mu-due').value = 'none'; }), ['b', 'c', 'd']);
+    check('overdue match', filtered((p) => { p.byId('mu-due').value = 'overdue'; }), ['a']);
+  },
+
+  mass_update_should_narrow_by_due_before_and_after_a_day: () => {
+    check('before match', filtered((p) => {
+      p.byId('mu-due').value = 'before';
+      p.byId('mu-due-day').value = '2026-11-30';
+    }), ['a']);
+    check('before non-match', filtered((p) => {
+      p.byId('mu-due').value = 'before';
+      p.byId('mu-due-day').value = '2026-11-01';
+    }), []);
+    check('after match', filtered((p) => {
+      p.byId('mu-due').value = 'after';
+      p.byId('mu-due-day').value = '2026-11-30';
+    }), ['e']);
+    check('after non-match', filtered((p) => {
+      p.byId('mu-due').value = 'after';
+      p.byId('mu-due-day').value = '2027-01-01';
+    }), []);
+    check('no day matches nothing', filtered((p) => { p.byId('mu-due').value = 'before'; }), []);
+  },
+
+  mass_update_should_show_the_due_day_field_only_for_before_and_after: () => {
+    const page = load();
+    const seen = ['all', 'before', 'after', 'has'].map((value) => {
+      page.byId('mu-due').value = value;
+      page.byId('mu-due').handlers.change();
+      return page.byId('mu-due-day-field').hidden;
+    });
+    check('hidden', seen, [true, false, false, true]);
+  },
+
+  mass_update_should_combine_filters: () => {
+    check('color and label', filtered((p) => {
+      p.byId('mu-color').value = 'blue';
+      p.byId('mu-label').value = 'bug';
+    }), ['e']);
+  },
+
+  mass_update_should_pick_every_match_and_disable_next_when_none_picked: () => {
+    const page = load();
+    page.click('mu-next');
+    check('picked', page.rows().map((box) => box.checked), [true, true, true, true, true]);
+    check('count', page.byId('mu-count').textContent, '5 tasks match your filter');
+    page.click('mu-clear-all');
+    check('next disabled', page.byId('mu-next').disabled, true);
+    page.click('mu-select-all');
+    check('next enabled', page.byId('mu-next').disabled, false);
+  },
+
+  mass_update_should_keep_the_choices_when_previous_is_pressed: () => {
+    const page = load();
+    page.byId('mu-color').value = 'blue';
+    page.click('mu-next');
+    const box = page.rows()[0];
+    box.checked = false;
+    page.byId('mu-list').handlers.change({ target: { closest: () => box } });
+    page.click('mu-next');
+    check('on action', page.sections.action.hidden, false);
+    page.click('mu-prev');
+    check('back on select', page.sections.select.hidden, false);
+    check('picked kept', page.rows().map((row) => [row.dataset.taskId, row.checked]), [['b', false], ['e', true]]);
+    page.click('mu-prev');
+    check('back on filter', page.sections.filter.hidden, false);
+    check('prev hidden on first step', page.byId('mu-prev').hidden, true);
+    check('filter kept', page.byId('mu-color').value, 'blue');
+    page.click('mu-next');
+    check('picked survive a round trip', page.rows().map((row) => [row.dataset.taskId, row.checked]), [['b', false], ['e', true]]);
+  },
+
+  mass_update_should_reset_the_picks_when_the_filter_changes: () => {
+    const page = load();
+    page.byId('mu-color').value = 'blue';
+    page.click('mu-next');
+    page.rows()[0].checked = false;
+    page.byId('mu-list').handlers.change({ target: { closest: () => page.rows()[0] } });
+    page.click('mu-prev');
+    page.byId('mu-color').value = 'red';
+    page.click('mu-next');
+    check('rows', page.rows().map((row) => [row.dataset.taskId, row.checked]), [['a', true], ['c', true]]);
+  },
+
+  mass_update_should_send_a_dry_run_and_render_the_preview: async () => {
+    const page = load();
+    page.byId('mu-color').value = 'blue';
+    page.click('mu-next');
+    page.click('mu-next');
+    page.byId('mu-move-column').value = 'c2';
+    page.click('mu-next');
+    check('apply disabled while waiting', page.byId('mu-apply').disabled, true);
+    check('request', page.calls.map((c) => [c.path, c.method, c.body.dry_run, c.body.action, c.body.task_ids, c.body.column_id]),
+      [['/api/boards/b1/tasks/bulk', 'POST', true, 'move', ['b', 'e'], 'c2']]);
+    page.respond(0, [{ name: 'Card b', before: 'Todo', after: 'Done' }, { name: 'Card e', before: null, after: 'Done' }]);
+    await page.flush();
+    check('count', page.byId('mu-preview-count').textContent, '2 tasks will be updated');
+    check('rows', page.byId('mu-preview-body').children.map((row) => row.children.map((cell) => cell.textContent)),
+      [['Card b', 'Todo', 'Done'], ['Card e', previewCell(null), 'Done']]);
+    check('apply enabled', page.byId('mu-apply').disabled, false);
+  },
+
+  mass_update_should_drop_a_dry_run_answer_after_the_user_left_the_preview: async () => {
+    const page = load();
+    page.click('mu-next');
+    page.click('mu-next');
+    page.byId('mu-move-column').value = 'c2';
+    page.click('mu-next');
+    page.click('mu-prev');
+    page.respond(0, [{ name: 'Card a', before: 'Todo', after: 'Done' }]);
+    await page.flush();
+    check('on action', page.sections.action.hidden, false);
+    check('no rows', page.byId('mu-preview-body').children.length, 0);
+    check('count untouched', page.byId('mu-preview-count').textContent, '0 tasks will be updated');
+    check('apply still disabled', page.byId('mu-apply').disabled, true);
+  },
+
+  mass_update_should_drop_an_older_dry_run_answer_after_a_newer_request: async () => {
+    const page = load();
+    page.click('mu-next');
+    page.click('mu-next');
+    page.byId('mu-move-column').value = 'c2';
+    page.click('mu-next');
+    page.click('mu-prev');
+    page.click('mu-next');
+    check('two requests', page.calls.length, 2);
+    page.respond(1, [{ name: 'Card new', before: 'Todo', after: 'Done' }]);
+    await page.flush();
+    page.respond(0, [{ name: 'Card old', before: 'Todo', after: 'Done' }, { name: 'Card old 2', before: 'Todo', after: 'Done' }]);
+    await page.flush();
+    check('newest answer wins', page.byId('mu-preview-body').children.map((row) => row.children[0].textContent), ['Card new']);
+    check('count', page.byId('mu-preview-count').textContent, '1 task will be updated');
+  },
+
+  mass_update_should_return_to_the_action_step_with_the_refusal_message: async () => {
+    const page = load();
+    page.click('mu-next');
+    page.click('mu-next');
+    page.byId('mu-move-column').value = 'c2';
+    page.click('mu-next');
+    page.respondWith(0, { ok: false, text: () => Promise.resolve(JSON.stringify({ message: 'Nope' })) });
+    await page.flush();
+    check('back on action', page.sections.action.hidden, false);
+    check('error shown', page.byId('mu-error').textContent, 'Nope');
+    check('apply disabled', page.byId('mu-apply').disabled, true);
+  },
+
+  mass_update_should_refuse_the_preview_without_a_target_column: () => {
+    const page = load();
+    page.click('mu-next');
+    page.click('mu-next');
+    page.byId('mu-move-column').value = '';
+    page.click('mu-next');
+    check('back on action', page.sections.action.hidden, false);
+    check('error', page.byId('mu-error').textContent, 'Choose a column to move the tasks to.');
+    check('nothing sent', page.calls.length, 0);
+  },
+};
+
+const run = async () => {
+  for (const name of Object.keys(tests)) {
+    try {
+      current = name;
+      await tests[name]();
+    } catch (e) {
+      failures++;
+      console.log('FAIL ' + name + ': ' + e.stack);
+    }
+  }
+  if (failures) process.exit(1);
+  console.log('mass_update ok');
+};
+
+run();
