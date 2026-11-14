@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "41"
+  version: "42"
 ---
 
 # Pomb
@@ -104,14 +104,31 @@ A lead token issues a subagent with `POST /api/v1/auth/tokens/children` and a `r
 `exceeds_grant`, ask for less. On 401 `token_expired` a role child asks its lead for a new one,
 else the user. `POST /api/v1/auth/tokens/revoke-self` revokes your token and its children.
 
+## Swimlanes
+
+A swimlane is a row of the board, and a task's cell is its column and swimlane. `GET /api/boards/{id}`
+lists the lanes in row order, each with `archived`, `collapsed`, `limits` and `height`.
+
+- Create a lane with `POST /api/swimlanes` and `{"board_id": "<id>", "name": "..."}` under
+  `swimlanes.create`. It goes last unless `position` says where. Edit it with
+  `PATCH /api/swimlanes/{id}` (name, description, limits, fold, archive, height) and reorder it with
+  `POST /api/swimlanes/{id}/move` and `{"position": N}`, both under `swimlanes.edit`. Deleting a lane
+  needs `swimlanes.delete`.
+- A task's lane is its `swimlane_id`. A create with none takes the board's first unarchived lane. A
+  move with none keeps the task's lane, and a move to another board takes that board's first
+  unarchived lane. `position` counts the other tasks in the target cell, so 0 is its top.
+- A column's WIP limit counts its tasks across every live lane. A lane's `limits` only flag a crowded
+  cell and never refuse a move.
+- Archive a finished lane with `{"archived": true}`. Its tasks take no writes and leave the WIP counts,
+  and a write into or out of it is a 409 `lane_archived`. The last unarchived lane, or one with a
+  running timer, cannot be archived.
+
 ## Find, claim, work, release
 
 1. Find the board with `GET /api/boards`: the one the user names, else ask which when there are
-   several. Read its columns and swimlanes with `GET /api/boards/{id}`. The Done columns have
-   `is_done` set, and a swimlane's `limits` only flag a crowded cell. `PATCH /api/swimlanes/{id}`
-   with `{"archived": true}` or `false` archives or restores a lane (409: last unarchived lane, running
-   timer). A task with no `swimlane_id` takes the first unarchived lane. Search skips archived lanes:
-   `lane:archived` finds their cards, `lane:NAME` a lane's.
+   several. Read its columns and swimlanes with `GET /api/boards/{id}` (see Swimlanes). The Done
+   columns have `is_done` set. Search skips archived lanes: `lane:archived` finds their cards, and
+   `lane:NAME` a lane's.
 2. List ready, unclaimed work with `GET /api/boards/{id}/tasks?ready=true&claimed=false`, adding
    `column_id`, `color_id` or `label` to narrow it. The list is paged: while `next_cursor` is not
    null, repeat the request with `cursor=<next_cursor>`. Read one task with `GET /api/tasks/{id}`.
