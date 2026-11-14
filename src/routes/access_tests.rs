@@ -2302,6 +2302,88 @@ fn due_dates_of_a(fx: &Accounts) {
     }
 }
 
+/// Moves A's second task, which is due 2030-03-01, into a new lane and archives the lane.
+async fn archive_lane_of_a_second_task(fx: &Accounts) {
+    let lane = fx
+        .db
+        .create_swimlane(&fx.a_ids.board, "Frozen")
+        .expect("lane");
+    let owned = fx.db.account(&fx.a);
+    let proof = owned.task(&fx.a_ids.task2).expect("read").expect("task");
+    owned
+        .apply_task_change(&proof, Actor::SYSTEM, |row| {
+            row.swimlane_id = Some(lane.clone());
+            ((), true)
+        })
+        .expect("move")
+        .expect("task");
+    let patch = Payload::Json(json!({"archived": true}));
+    let (status, text) = send(
+        &fx.app,
+        Who::Token(&fx.a_token),
+        &Method::PATCH,
+        &format!("/api/swimlanes/{lane}"),
+        Some(&patch),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+}
+
+/// The calendar export leaves out the due dates of cards in archived lanes.
+#[tokio::test]
+async fn calendar_export_should_leave_out_cards_in_archived_lanes() {
+    let fx = accounts().await;
+    due_dates_of_a(&fx);
+    archive_lane_of_a_second_task(&fx).await;
+    let uri = format!(
+        "/api/calendar-export?boards={}&format=csv&type=task",
+        fx.a_ids.board
+    );
+    let (status, text) = send(&fx.app, Who::Token(&fx.a_token), &Method::GET, &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(text.contains("2030-01-10T10:00:00Z"), "{text}");
+    assert!(!text.contains("2030-03-01T10:00:00Z"), "{text}");
+}
+
+/// The iCal calendar feed leaves out the due dates of cards in archived lanes.
+#[tokio::test]
+async fn calendar_feed_should_leave_out_cards_in_archived_lanes() {
+    let fx = accounts().await;
+    let owned = fx.db.account(&fx.a);
+    for (task, name) in [
+        (&fx.a_ids.task, "Feed live"),
+        (&fx.a_ids.task2, "Feed frozen"),
+    ] {
+        let proof = owned.task(task).expect("read").expect("task");
+        owned
+            .apply_task_change(&proof, Actor::SYSTEM, |row| {
+                row.name = name.to_string();
+                row.due_at = Some("2030-01-01T10:00:00Z".to_string());
+                ((), true)
+            })
+            .expect("due")
+            .expect("task");
+    }
+    archive_lane_of_a_second_task(&fx).await;
+    let link = format!("/api/boards/{}/calendar-feeds", fx.a_ids.board);
+    let label = Payload::Json(json!({"label": "Phone"}));
+    let (status, text) = send(
+        &fx.app,
+        Who::Token(&fx.a_token),
+        &Method::POST,
+        &link,
+        Some(&label),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let feed: Value = serde_json::from_str(&text).expect("json");
+    let path = feed["path"].as_str().expect("feed path").to_string();
+    let (status, ical) = send(&fx.app, Who::Anonymous, &Method::GET, &path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ical.contains("SUMMARY:Feed live"), "{ical}");
+    assert!(!ical.contains("Feed frozen"), "{ical}");
+}
+
 /// The export holds a board's due dates in the range for the chosen due date type, as CSV.
 #[tokio::test]
 async fn calendar_export_should_write_the_due_dates_in_range_for_the_chosen_type() {

@@ -120,6 +120,15 @@ check('boards merge into one dataset naming each task\'s board',
     merged.users.map(function (u) { return u.id; })],
   [['a@One', 'b@Two'], 2, 1, 1, ['u1', 'u2']]);
 
+const lanes = CalendarPage.mergeBoards([
+  { data: { board: { name: 'One' }, tasks: [task('live', { swimlane_id: 'l1' }), task('frozen', { swimlane_id: 'l2' })], columns: [], swimlanes: [{ id: 'l1', archived: false }, { id: 'l2', archived: true }], colors: [], users: [] } },
+]);
+check('the calendar leaves out cards in archived lanes', lanes.tasks.map((t) => t.id), ['live']);
+const mainArchived = CalendarPage.mergeBoards([
+  { data: { board: { name: 'One', main_swimlane_id: 'l2' }, tasks: [task('live', { swimlane_id: 'l1' }), task('loose', { swimlane_id: null })], columns: [], swimlanes: [{ id: 'l1', archived: false }, { id: 'l2', archived: true }], colors: [], users: [] } },
+]);
+check('the calendar resolves a card with no lane to the main lane', mainArchived.tasks.map((t) => t.id), ['live']);
+
 check('the export link names the boards, format, range and type',
   CalendarPage.exportUrl(['b1', 'b2'], { format: 'csv', from: '2026-10-01', to: '2026-10-31', type: 'subtask' }),
   '/api/calendar-export?boards=b1%2Cb2&format=csv&from=2026-10-01&to=2026-10-31&type=subtask');

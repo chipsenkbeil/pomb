@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "40"
+  version: "41"
 ---
 
 # Pomb
@@ -109,8 +109,9 @@ else the user. `POST /api/v1/auth/tokens/revoke-self` revokes your token and its
 1. Find the board with `GET /api/boards`: the one the user names, else ask which when there are
    several. Read its columns and swimlanes with `GET /api/boards/{id}`. The Done columns have
    `is_done` set, and a swimlane's `limits` only flag a crowded cell. `PATCH /api/swimlanes/{id}`
-   with `{"archived": true}` or `false` archives or restores a lane, and 409 refuses the last
-   unarchived lane or one with a running timer. A task with no `swimlane_id` takes the first unarchived lane.
+   with `{"archived": true}` or `false` archives or restores a lane (409: last unarchived lane, running
+   timer). A task with no `swimlane_id` takes the first unarchived lane. Search skips archived lanes:
+   `lane:archived` finds their cards, `lane:NAME` a lane's.
 2. List ready, unclaimed work with `GET /api/boards/{id}/tasks?ready=true&claimed=false`, adding
    `column_id`, `color_id` or `label` to narrow it. The list is paged: while `next_cursor` is not
    null, repeat the request with `cursor=<next_cursor>`. Read one task with `GET /api/tasks/{id}`.
@@ -119,8 +120,7 @@ else the user. `POST /api/v1/auth/tokens/revoke-self` revokes your token and its
    `owner_held` another holder owns the task, so pick a different one.
 4. While working, send `POST /api/tasks/{id}/owner/renew` with `{"name": "claude-code@<host>",
    "ttl_seconds": 900}` and `If-Owner-Fence: N` every `ttl_seconds / 3` seconds (300 for 900). Send
-   `If-Owner-Fence: N` on `PATCH /api/tasks/{id}`, `POST /api/tasks/{id}/move` and
-   `POST /api/tasks/{id}/comments`.
+   `If-Owner-Fence: N` on `PATCH /api/tasks/{id}`, `POST /api/tasks/{id}/move` and `POST /api/tasks/{id}/comments`.
 5. Report progress with `POST /api/tasks/{id}/comments` and `{"body": "...", "kind": "agent"}`. Move
    a finished task into a Done column with `POST /api/tasks/{id}/move` and
    `{"column_id": "<done column id>", "position": 0}`, where `position` is the index among the other

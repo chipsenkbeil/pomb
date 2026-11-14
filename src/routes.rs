@@ -8985,11 +8985,13 @@ struct SearchPage {
 /// Terms of the form `key:value` filter, and a value with spaces is quoted, as in
 /// `board:"My Board"`. `in:title|description|subtasks|comments` restricts the fields the words
 /// search (repeat it to search several). `board:` takes a board's name or id, `column:` a
-/// column's name or id, `label:` a label, `color:` a color's label or id, `id:` the start of a
-/// task id, at least 6 characters, and `is:open|done|archived` the card's status. Repeating
-/// `board:`, `column:`, `color:`, `id:` or `is:` accepts a card that satisfies any of them, and
-/// repeating `label:` requires every label. A `-`
-/// before a word, a phrase or a filter excludes the cards that satisfy it, as in `-label:bug`,
+/// column's name or id, `lane:` a swimlane's name or id, `label:` a label, `color:` a color's
+/// label or id, `id:` the start of a task id, at least 6 characters, and `is:open|done|archived`
+/// the card's status. A search leaves out the cards in archived swimlanes: `lane:archived` finds
+/// only those, and `lane:NAME` finds the cards of the lane with that name whether or not it is
+/// archived. Repeating `board:`, `column:`, `lane:`, `color:`, `id:` or `is:` accepts a card that
+/// satisfies any of them, and repeating `label:` requires every label. A `-` before a word, a
+/// phrase or a filter excludes the cards that satisfy it, as in `-label:bug`,
 /// `-is:done` and `-draft`. Each exclusion applies on its own, so `-label:bug -label:wip` drops a
 /// card that has either label, and `in:` cannot be excluded. A bare word of at least 6 hex digits
 /// also matches a task whose id starts with it, so pasting `24350646` finds that card, unless the
@@ -9094,6 +9096,7 @@ fn run_search(
             board,
             snapshot.columns().map_err(AppError::from)?,
             snapshot.colors().map_err(AppError::from)?,
+            snapshot.swimlanes().map_err(AppError::from)?,
         );
         for id in snapshot.task_ids().map_err(AppError::from)? {
             if std::time::Instant::now() >= deadline {
@@ -18856,12 +18859,16 @@ struct ExportDeletedTask {
 struct ExportBoardRef {
     id: String,
     name: String,
+    /// The lane a task with no swimlane sits in.
+    main_swimlane_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
 struct ExportNamedRef {
     id: String,
     name: String,
+    /// Whether the lane is archived, out of view with its cards kept.
+    archived: bool,
 }
 
 /// A column in the export dataset, with its names before renames.
@@ -18901,6 +18908,7 @@ fn build_board_export_data(
         board: ExportBoardRef {
             id: board.id.clone(),
             name: board.name.clone(),
+            main_swimlane_id: board.main_swimlane(swimlanes),
         },
         columns: columns
             .iter()
@@ -18916,6 +18924,7 @@ fn build_board_export_data(
             .map(|s| ExportNamedRef {
                 id: s.id.clone(),
                 name: s.name.clone(),
+                archived: s.archived,
             })
             .collect(),
         colors: colors
@@ -19950,7 +19959,7 @@ async fn export_calendar(
     let mut boards = Vec::new();
     for id in ids {
         let board = found(account.board(id), "board not found")?;
-        boards.push((board.row().id.clone(), board.row().name.clone()));
+        boards.push(board.row().clone());
     }
     let slot = match Slot::Board(account.account_id().as_str())
         .acquire(&state)
@@ -19962,10 +19971,19 @@ async fn export_calendar(
     let reader = account.clone();
     let rows = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<String>>, String> {
         let mut rows = vec![calendar_export::header_row()];
-        for (id, name) in &boards {
+        for board in &boards {
+            let id = &board.id;
             let columns = reader.list_columns(id).map_err(|error| error.to_string())?;
-            let tasks = reader.board_tasks(id).map_err(|error| error.to_string())?;
-            calendar_export::due_rows(&mut rows, name, &columns, &tasks, level, range);
+            let lanes = reader
+                .list_swimlanes(id)
+                .map_err(|error| error.to_string())?;
+            let mut tasks = reader.board_tasks(id).map_err(|error| error.to_string())?;
+            tasks.retain(|task| {
+                !board
+                    .lane_of(&lanes, task.swimlane_id.as_deref())
+                    .is_some_and(|lane| lane.archived)
+            });
+            calendar_export::due_rows(&mut rows, &board.name, &columns, &tasks, level, range);
         }
         Ok(rows)
     })
@@ -32962,6 +32980,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             column_id: "c1".into(),
+            swimlane_id: None,
             due_at: due_at.map(Into::into),
             due_repeat: repeat.map(Into::into),
         }

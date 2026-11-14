@@ -5,7 +5,7 @@ use std::time::Instant;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::models::{BoardRow, ColorRow, ColumnRow, TaskRow};
+use crate::models::{BoardRow, ColorRow, ColumnRow, SwimlaneRow, TaskRow};
 
 /// Longest query accepted, in characters.
 pub const MAX_QUERY_CHARS: usize = 500;
@@ -150,16 +150,27 @@ pub struct BoardView {
     columns: HashMap<String, ColumnRow>,
     /// The colors by id.
     colors: HashMap<String, ColorRow>,
+    /// The swimlanes, with the lane a card with no lane sits in resolved by `main_lane`.
+    lanes: Vec<SwimlaneRow>,
+    /// The id of the board's main lane, if it has a lane.
+    main_lane: Option<String>,
 }
 
 impl BoardView {
-    /// Creates the view of `board` with its `columns` and `colors`.
+    /// Creates the view of `board` with its `columns`, `colors` and swimlanes `lanes`.
     #[must_use]
-    pub fn new(board: &BoardRow, columns: Vec<ColumnRow>, colors: Vec<ColorRow>) -> Self {
+    pub fn new(
+        board: &BoardRow,
+        columns: Vec<ColumnRow>,
+        colors: Vec<ColorRow>,
+        lanes: Vec<SwimlaneRow>,
+    ) -> Self {
         Self {
             id: board.id.clone(),
             name: board.name.clone(),
             archived: board.config_bool("archived"),
+            main_lane: board.main_swimlane(&lanes),
+            lanes,
             columns: columns
                 .into_iter()
                 .map(|column| (column.id.clone(), column))
@@ -170,6 +181,22 @@ impl BoardView {
                 .collect(),
         }
     }
+
+    /// Returns the lane that holds `task`, which for a card with no lane is the main lane.
+    #[must_use]
+    fn lane_of(&self, task: &TaskRow) -> Option<&SwimlaneRow> {
+        let id = task.swimlane_id.as_ref().or(self.main_lane.as_ref())?;
+        self.lanes.iter().find(|lane| lane.id == *id)
+    }
+}
+
+/// Which lanes a `lane:` term keeps.
+#[derive(Clone, Debug)]
+enum LaneTerm {
+    /// Every archived lane.
+    Archived,
+    /// The lane with this id or name, folded to lowercase.
+    Named(String),
 }
 
 /// How a term filters, with its value folded to lowercase.
@@ -179,6 +206,8 @@ enum Filter {
     Board(String),
     /// The column's id or name.
     Column(String),
+    /// The swimlane the card sits in.
+    Lane(LaneTerm),
     /// One of the task's labels.
     Label(String),
     /// The task color's id or label.
@@ -233,8 +262,8 @@ impl Word {
 ///
 /// A query is a list of terms separated by spaces. A plain word matches fuzzily, a quoted phrase
 /// matches as an exact case-insensitive substring, and `key:value` terms (`in:`, `board:`,
-/// `column:`, `label:`, `color:`, `id:` and `is:`) filter. A leading `-` turns any term into an
-/// exclusion. Every term must hold for a card to match.
+/// `column:`, `lane:`, `label:`, `color:`, `id:` and `is:`) filter. A leading `-` turns any term
+/// into an exclusion. Every term must hold for a card to match.
 #[derive(Clone, Debug)]
 pub struct Query {
     /// The fields the text terms search.
@@ -399,6 +428,8 @@ impl Query {
             }
             "board" => Filter::Board(folded),
             "column" => Filter::Column(folded),
+            "lane" if folded == "archived" => Filter::Lane(LaneTerm::Archived),
+            "lane" => Filter::Lane(LaneTerm::Named(folded)),
             "label" => Filter::Label(folded),
             "color" => Filter::Color(folded),
             "id" => {
@@ -415,7 +446,7 @@ impl Query {
             ),
             _ => {
                 return Err(format!(
-                    "unknown term {term}: use in:, board:, column:, label:, color:, id: or is:"
+                    "unknown term {term}: use in:, board:, column:, lane:, label:, color:, id: or is:"
                 ));
             }
         };
@@ -480,9 +511,22 @@ impl Query {
     ) -> bool {
         let is_named =
             |wanted: &str, id: &str, name: &str| wanted == fold_str(id) || wanted == fold_str(name);
+        let lane = board.lane_of(task);
+        let in_archived_lane = lane.is_some_and(|lane| lane.archived);
+        let names_lane = self
+            .conditions
+            .iter()
+            .any(|condition| !condition.negated && matches!(condition.filter, Filter::Lane(_)));
+        if in_archived_lane && !names_lane {
+            return false;
+        }
         let holds = |filter: &Filter| match filter {
             Filter::Board(wanted) => is_named(wanted, &board.id, &board.name),
             Filter::Column(wanted) => is_named(wanted, &column.id, &column.name),
+            Filter::Lane(LaneTerm::Archived) => in_archived_lane,
+            Filter::Lane(LaneTerm::Named(wanted)) => {
+                lane.is_some_and(|lane| is_named(wanted, &lane.id, &lane.name))
+            }
             Filter::Label(wanted) => task.labels.iter().any(|label| fold_str(label) == *wanted),
             Filter::Color(wanted) => task
                 .color_id

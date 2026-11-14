@@ -512,6 +512,7 @@ async fn search_should_time_out_between_the_segments_of_a_card() {
         &board,
         snapshot.columns().expect("columns"),
         snapshot.colors().expect("colors"),
+        snapshot.swimlanes().expect("lanes"),
     );
     let mut checked = 0;
     for id in snapshot.task_ids().expect("ids") {
@@ -822,4 +823,58 @@ async fn search_should_skip_the_id_match_under_in() {
         fx.names(&format!("id:{word} in:description")).await,
         ["Quiet card"]
     );
+}
+
+async fn archive_lanes(fx: &Fixture, plans: &str) -> (String, String) {
+    let columns = fx.db.list_columns(plans).expect("columns");
+    let mut lanes = Vec::new();
+    for (name, card) in [("Old work", "Deploy retired"), ("Frozen", "Deploy frozen")] {
+        let lane = fx.db.create_swimlane(plans, name).expect("lane");
+        fx.task(json!({"column_id": columns[0].id, "swimlane_id": lane, "name": card}))
+            .await;
+        let reply = fx
+            .send(
+                &fx.token,
+                "PATCH",
+                &format!("/api/swimlanes/{lane}"),
+                Some(json!({"archived": true})),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        lanes.push(lane);
+    }
+    (lanes.remove(0), lanes.remove(0))
+}
+
+#[tokio::test]
+async fn search_should_leave_out_cards_in_archived_lanes_by_default() {
+    let Seeded { fx, plans, .. } = seeded().await;
+    archive_lanes(&fx, &plans).await;
+    let found = fx.names("deploy").await;
+    assert_eq!(found.len(), 4, "{found:?}");
+    assert!(!found.contains(&"Deploy retired".to_string()), "{found:?}");
+    assert!(!found.contains(&"Deploy frozen".to_string()), "{found:?}");
+    assert!(fx.names("retired").await.is_empty());
+}
+
+#[tokio::test]
+async fn search_should_find_only_cards_in_archived_lanes_with_lane_archived() {
+    let Seeded { fx, plans, .. } = seeded().await;
+    archive_lanes(&fx, &plans).await;
+    let mut found = fx.names("lane:archived").await;
+    found.sort();
+    assert_eq!(found, ["Deploy frozen", "Deploy retired"]);
+    assert_eq!(fx.names("lane:archived retired").await, ["Deploy retired"]);
+}
+
+#[tokio::test]
+async fn search_should_filter_by_lane_name_quoted_or_not_archived_or_not() {
+    let Seeded { fx, plans, .. } = seeded().await;
+    let (old, _) = archive_lanes(&fx, &plans).await;
+    assert_eq!(fx.names("lane:\"Old work\"").await, ["Deploy retired"]);
+    assert_eq!(fx.names("lane:Frozen").await, ["Deploy frozen"]);
+    assert_eq!(fx.names(&format!("lane:{old}")).await, ["Deploy retired"]);
+    let main = fx.names("lane:lane board:plans deploy").await;
+    assert!(main.contains(&"Deploy to staging".to_string()), "{main:?}");
+    assert!(!main.contains(&"Deploy retired".to_string()), "{main:?}");
 }

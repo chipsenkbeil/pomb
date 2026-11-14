@@ -658,6 +658,20 @@ impl BoardRow {
             .map(|lane| lane.id.clone())
     }
 
+    /// Returns the lane among `lanes` that holds a card whose swimlane is `lane_id`, which for a
+    /// card with no lane is the board's main lane.
+    #[must_use]
+    pub fn lane_of<'a>(
+        &self,
+        lanes: &'a [SwimlaneRow],
+        lane_id: Option<&str>,
+    ) -> Option<&'a SwimlaneRow> {
+        let id = lane_id
+            .map(str::to_string)
+            .or_else(|| self.main_swimlane(lanes))?;
+        lanes.iter().find(|lane| lane.id == id)
+    }
+
     /// Reports whether the board shows its swimlane names folded into a narrow rotated column.
     pub fn lane_names_folded(&self) -> bool {
         self.config_bool(LANE_NAMES_FOLDED_KEY)
@@ -1752,6 +1766,9 @@ pub struct FeedTask {
     pub name: String,
     /// The column the task sits in.
     pub column_id: String,
+    /// The swimlane the task sits in, or null for the board's main lane.
+    #[serde(default)]
+    pub swimlane_id: Option<String>,
     /// Due date/time as RFC3339, or null when the task has no due date.
     #[serde(default)]
     pub due_at: Option<String>,

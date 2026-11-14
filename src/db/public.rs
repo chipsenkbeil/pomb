@@ -270,9 +270,14 @@ impl PublicDb {
         let Some(board) = self.feed_board(raw)?.filter(|board| board.id == grant.0.id) else {
             return Ok(None);
         };
+        let lanes = self.db.list_swimlanes(&board.id)?;
         let mut tasks = Vec::new();
         for id in self.db.board_task_ids(&board.id)? {
-            tasks.extend(self.db.task_as::<FeedTask>(&id)?);
+            tasks.extend(self.db.task_as::<FeedTask>(&id)?.filter(|task| {
+                !board
+                    .lane_of(&lanes, task.swimlane_id.as_deref())
+                    .is_some_and(|lane| lane.archived)
+            }));
         }
         Ok(Some(FeedBoard {
             columns: self.db.list_columns(&board.id)?,

@@ -16176,7 +16176,9 @@
       var seenUsers = {};
       parts.forEach(function (p) {
         var name = (p.data.board && p.data.board.name) || p.name || '';
-        (p.data.tasks || []).forEach(function (t) {
+        const archivedLanes = new Set((p.data.swimlanes || []).filter((lane) => lane.archived).map((lane) => lane.id));
+        const mainLane = p.data.board && p.data.board.main_swimlane_id;
+        (p.data.tasks || []).filter((t) => !archivedLanes.has(t.swimlane_id || mainLane)).forEach(function (t) {
           var copy = {};
           Object.keys(t).forEach(function (k) { copy[k] = t[k]; });
           copy.board_name = name;
