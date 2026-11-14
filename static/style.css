@@ -9340,8 +9340,7 @@ body:has(.board-wrap[data-role="viewer"]) #modal-root :is(.tm-color-chip, .tm-du
 .columnHeader-marks[hidden],
 .columnHeader-mark[hidden] { display: none; }
 .columnHeader-marks { display: flex; flex-wrap: wrap; gap: 4px 6px; padding: 2px 0 6px; }
-.columnHeader-mark,
-.columnHeader-markClear {
+.columnHeader-mark {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -9354,8 +9353,6 @@ body:has(.board-wrap[data-role="viewer"]) #modal-root :is(.tm-color-chip, .tm-du
 }
 .columnHeader-mark { color: var(--mark-color); background: var(--surface-white); border: 1px solid var(--mark-color); }
 .columnHeader-mark.is-active { color: var(--surface-white); background: var(--mark-color); }
-.columnHeader-markClear { color: var(--text-strong); background: var(--clear); border: 1px solid var(--text-dim); }
-.columnHeader-markClear[hidden] { display: none; }
 
 .task-modal.tm-bare .tm-tabs,
 .task-modal.tm-bare .tm-main,

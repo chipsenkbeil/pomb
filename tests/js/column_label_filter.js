@@ -31,30 +31,20 @@ function header(column, labels) {
       classes: classes,
     };
   });
-  var clear = {
-    hidden: true,
-    textContent: '',
-    setAttribute: function () {},
-    querySelector: function () { return clear; },
-  };
   var marks = {
     hidden: false,
     closest: function () { return { dataset: { columnId: column } }; },
-    querySelector: function () { return clear; },
     querySelectorAll: function () { return buttons; },
     addEventListener: function (type, fn) { handlers[type] = fn; },
   };
   function click(target) {
     handlers.click({
       target: {
-        closest: function (sel) {
-          if (sel === '.columnHeader-mark') return target === clear ? null : target;
-          return target === clear ? clear : null;
-        },
+        closest: (sel) => (sel === '.columnHeader-mark' ? target : null),
       },
     });
   }
-  return { marks: marks, buttons: buttons, clear: clear, click: click };
+  return { marks: marks, buttons: buttons, click: click };
 }
 
 var cards = [
@@ -104,14 +94,14 @@ check('nothing filtered at first', [chrome.isFiltering(), hidden()], [false, [fa
 headers[0].click(headers[0].buttons[0]);
 check('a count narrows only its own column', hidden(), [false, true, false, false]);
 check('the filter reports itself', chrome.isFiltering(), true);
-check('the clear control shows the label', [headers[0].clear.hidden, headers[0].clear.textContent], [false, 'needs:human']);
-check('the other column keeps its clear control hidden', headers[1].clear.hidden, true);
+check('the clicked mark shows as active', headers[0].buttons[0].classes['is-active'], true);
+check('the other column keeps its filter off', chrome.columnLabels, { c1: 'needs:human' });
 
 headers[1].click(headers[1].buttons[0]);
 check('each column narrows on its own', hidden(), [false, true, true, false]);
 
-headers[0].click(headers[0].clear);
-check('clearing one column leaves the other', hidden(), [false, false, true, false]);
+headers[0].click(headers[0].buttons[0]);
+check('a second click on the active mark clears only its column', hidden(), [false, false, true, false]);
 
 headers[1].click(headers[1].buttons[0]);
 check('a second click on the count clears it', [hidden(), chrome.isFiltering()], [[false, false, false, false], false]);
@@ -120,10 +110,19 @@ checkedLabels = [{ value: 'other' }];
 headers[0].click(headers[0].buttons[0]);
 check('the column label and the panel label both apply', hidden(), [true, true, false, true]);
 checkedLabels = [];
-headers[0].click(headers[0].clear);
+headers[0].click(headers[0].buttons[0]);
+
+headers[1].click(headers[1].buttons[0]);
+cards[3].dataset.labels = '[]';
+chrome.refreshMarks();
+check('an active mark at count 0 stays visible', [headers[1].buttons[0].hidden, headers[1].buttons[0].classes['is-active']], [false, true]);
+headers[1].click(headers[1].buttons[0]);
+check('a second click on the zero active mark clears its filter', [hidden(), chrome.isFiltering()], [[false, false, false, false], false]);
+check('the cleared zero mark hides without a manual refresh', headers[1].buttons[0].hidden, true);
 
 cards[0].dataset.labels = '[]';
 cards[2].dataset.labels = JSON.stringify(['needs:human']);
+cards[3].dataset.labels = JSON.stringify(['needs:human']);
 chrome.refreshMarks();
 check('counts follow the cards in each column', headers.map(function (h) { return h.buttons[0].count.textContent; }), ['0', '2']);
 check('a chip with no cards hides', headers.map(function (h) { return h.buttons[0].hidden; }), [true, false]);

@@ -512,7 +512,6 @@
           {% if !col.marks.is_empty() %}
           <div class="columnHeader-marks"{% if !col.holds_marks() %} hidden{% endif %}>
             {% for mark in col.marks %}<button type="button" class="columnHeader-mark"{% if mark.count == 0 %} hidden{% endif %} data-mark-label="{{ mark.label }}" style="--mark-color: {{ mark.color }}" title="Show only the cards in this column labelled {{ mark.label }}"><svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 1v10M2 1h7l-2 2.5L9 6H2" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg> <span class="columnHeader-markCount">{{ mark.count }}</span> {{ mark.label }}</button>{% endfor %}
-            <button type="button" class="columnHeader-markClear" hidden><span aria-hidden="true">&times;</span> <span class="columnHeader-markClearLabel"></span></button>
           </div>
           {% endif %}
 {% if role.writes() %}          <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>{% endif %}

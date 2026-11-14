@@ -18831,35 +18831,29 @@
       document.querySelectorAll('.columnHeader-marks').forEach(function (marks) {
         var th = marks.closest('.columnHeader');
         var colId = th.dataset.columnId;
-        var clear = marks.querySelector('.columnHeader-markClear');
         function show(label) {
           if (label) self.columnLabels[colId] = label; else delete self.columnLabels[colId];
           marks.querySelectorAll('.columnHeader-mark').forEach(function (btn) {
             btn.classList.toggle('is-active', btn.dataset.markLabel === label);
             btn.setAttribute('aria-pressed', btn.dataset.markLabel === label ? 'true' : 'false');
           });
-          clear.hidden = !label;
-          clear.querySelector('.columnHeader-markClearLabel').textContent = label || '';
-          clear.setAttribute('aria-label', label ? 'Clear the ' + label + ' filter of this column' : '');
           self.applyFilter();
+          self.refreshMarks();
         }
         marks.addEventListener('click', function (e) {
           var btn = e.target.closest('.columnHeader-mark');
-          if (btn) {
-            show(self.columnLabels[colId] === btn.dataset.markLabel ? null : btn.dataset.markLabel);
-          } else if (e.target.closest('.columnHeader-markClear')) {
-            show(null);
-          }
+          if (btn) show(self.columnLabels[colId] === btn.dataset.markLabel ? null : btn.dataset.markLabel);
         });
       });
     },
     refreshMarks: function () {
+      const self = this;
       this.scheduleEpicsRefresh();
       document.querySelectorAll('.columnHeader-marks').forEach(function (marks) {
         var colId = marks.closest('.columnHeader').dataset.columnId;
         var cards = document.querySelectorAll('.task-list[data-column-id="' + cssEscape(colId) + '"] .task-card');
-        var clear = marks.querySelector('.columnHeader-markClear');
-        var any = !clear.hidden;
+        const active = self.columnLabels[colId];
+        let any = !!active;
         marks.querySelectorAll('.columnHeader-mark').forEach(function (btn) {
           var n = 0;
           cards.forEach(function (card) {
@@ -18868,7 +18862,7 @@
             if (held.indexOf(btn.dataset.markLabel) !== -1) n++;
           });
           btn.querySelector('.columnHeader-markCount').textContent = String(n);
-          btn.hidden = n === 0;
+          btn.hidden = n === 0 && btn.dataset.markLabel !== active;
           if (n > 0) any = true;
         });
         marks.hidden = !any;
