@@ -5,8 +5,7 @@ local testenv = require("dev.testenv")
 local lock = require("pomb.lock")
 local gitenv = require("pomb.gitenv")
 local jjenv = require("pomb.jjenv")
-
-local ROOT = fs.dirname(fs.dirname(fs.dirname(debug.getinfo(1, "S").source:sub(2))))
+local testkit = require("pomb.testkit")
 
 devos.defaults.env = gitenv.env
 
@@ -44,16 +43,14 @@ local function fixture(kind)
     local work = dir .. "/work"
     assert(fs.mkdir(work))
     git(work, "init", "-q")
-    assert(fs.symlink(ROOT .. "/.dev", work .. "/.dev"))
+    assert(fs.symlink(testkit.root .. "/.dev", work .. "/.dev"))
     assert(fs.write(work .. "/Cargo.lock", "original\n"))
     assert(fs.write(work .. "/other", "other\n"))
     git(work, "add", "Cargo.lock", "other")
     git(work, "commit", "-q", "-m", "base")
     assert(fs.mkdir(work .. "/bin"))
-    local stub = work .. "/bin/ci"
     local body = STUB_CI:gsub("@dir@", dir):gsub("@work@", work)
-    assert(fs.write(stub, "#!/bin/sh\n" .. body))
-    assert(devos.run({ "chmod", "755", stub }) == 0)
+    testkit.stub(work .. "/bin/ci", body)
     if kind == Kind.JJ then
         jjenv.install(work)
     end
@@ -173,7 +170,7 @@ t.test("the land lock should drop only a lock this process holds", function()
 end)
 
 t.test("gitignore should ignore the land lock and its staged files", function()
-    local text = assert(fs.read(ROOT .. "/.gitignore"))
+    local text = assert(fs.read(testkit.root .. "/.gitignore"))
     t.ok(text:find("\n.dev/land.lock\n", 1, true))
     t.ok(text:find("\n.dev/land.lock.*\n", 1, true))
 end)

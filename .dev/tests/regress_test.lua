@@ -4,8 +4,7 @@ local t = require("dev.testing")
 local testenv = require("dev.testenv")
 local gitenv = require("pomb.gitenv")
 local jjenv = require("pomb.jjenv")
-
-local ROOT = fs.dirname(fs.dirname(fs.dirname(debug.getinfo(1, "S").source:sub(2))))
+local testkit = require("pomb.testkit")
 
 devos.defaults.env = gitenv.env
 
@@ -40,7 +39,7 @@ local function fixture(kind)
     git(dir, "clone", "-q", "remote.git", "work")
     git(work, "remote", "rename", "origin", "gerrit")
     git(work, "checkout", "-q", "-b", "main")
-    assert(fs.symlink(ROOT .. "/.dev", work .. "/.dev"))
+    assert(fs.symlink(testkit.root .. "/.dev", work .. "/.dev"))
     local base = commit(work, "base")
     git(work, "push", "-q", "gerrit", "main")
     git(work, "checkout", "-q", "-b", "card")
@@ -53,10 +52,8 @@ local function fixture(kind)
     assert(fs.write(work .. "/ignored", "x\n"))
     assert(fs.write(work .. "/extra", "extra\n"))
     assert(fs.mkdir(work .. "/bin"))
-    local stub = work .. "/bin/ci"
     local body = STUB_CI:gsub("@dir@", dir):gsub("@work@", work)
-    assert(fs.write(stub, "#!/bin/sh\n" .. body))
-    assert(devos.run({ "chmod", "755", stub }) == 0)
+    testkit.stub(work .. "/bin/ci", body)
     if kind == Kind.JJ then
         jjenv.install(work)
     end

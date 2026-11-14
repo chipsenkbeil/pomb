@@ -56,6 +56,7 @@ A map of the code. Update it in the same change that adds, moves or removes a mo
 - `.dev/lua/pomb/lock.lua`: the release lock file `.dev/release.lock` in the main checkout, which `release.lua` takes before its gates and `land.lua` waits on, with the pid check that frees a stale lock, and the land lock `.dev/land.lock`, which `land.lua` takes before its apply and drops after its push to run one land at a time through its gates.
 - `.dev/lua/pomb/cargo.lua`: the package version readers for `Cargo.toml` text and the pomb entry of `Cargo.lock` text, shared by `land.lua` and `__version_guard.lua`.
 - `.dev/lua/pomb/backup.lua`: the `--backup` argument of `dev verify`, a bare file name or a path under `/var/lib/pomb-backups/`, resolved to the copy's path on green-box and refused otherwise.
+- `.dev/lua/pomb/testkit.lua`: the checkout path (`root`) and `stub`, which writes an executable `#!/bin/sh` script, shared by the gate, lock and regress tests.
 - `.dev/lua/pomb/gitenv.lua`: the test git identity and environment (`env`) and the `git` helper that runs git with `-C dir` and trims its output, shared by the dev test files.
 - `.dev/lua/pomb/vcs.lua`: the repository reads `dev regress`, `dev lock` and `__gate` share (`stage`, `head`, `merge_base`, `resolve`), through jj when `<root>/.jj` exists and through git otherwise.
 - `.dev/lua/pomb/jjenv.lua`: the test fixture that turns a git repository into a jj one, with a `.jj` directory, a `jj` that answers from the git repository and a logging `git`, shared by the dev test files.
