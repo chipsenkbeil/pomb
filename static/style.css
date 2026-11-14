@@ -1102,18 +1102,44 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
 .board-table thead:has(.columnHeader-bandRow) #column-headers-row th { top: var(--band-row-h); }
 
 .columnHeader-bandRow .columnHeader-groupBand {
+  --band-rule: var(--rule-d7);
   color: var(--muted);
   background: var(--hover-light);
-  border-left: 1px solid var(--rule-light);
   border-bottom: 1px solid var(--rule-light);
 }
 
 .columnHeader-bandRow .columnHeader-groupBand--over {
+  --band-rule: var(--board-headerWarningTextColor);
   color: var(--board-headerWarningTextColor);
 }
 
-body.dark .columnHeader-bandRow .columnHeader-groupBand { background: var(--btn-hover); border-color: var(--btn-border); }
+.columnHeader-groupBracket {
+  display: block;
+  box-sizing: border-box;
+  height: 18px;
+  line-height: 17px;
+  padding: 0 6px;
+  border: 1px solid var(--band-rule);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+}
+
+.columnHeader-groupName {
+  font-weight: 400;
+}
+
+.columnHeader--grouped {
+  box-shadow: inset 0 2px 0 var(--rule-d7);
+}
+
+.columnHeader--groupedOver {
+  box-shadow: inset 0 2px 0 var(--board-headerWarningTextColor);
+}
+
+body.dark .columnHeader-bandRow .columnHeader-groupBand { background: var(--btn-hover); border-color: var(--btn-border); --band-rule: var(--btn-border); }
+body.dark .columnHeader-bandRow .columnHeader-groupBand--over { --band-rule: var(--board-headerWarningTextColor); }
 body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupBand--over) { color: var(--btn-ink); }
+body.dark .columnHeader--grouped:not(.columnHeader--groupedOver) { box-shadow: inset 0 2px 0 var(--btn-border); }
 
 /* KF-371: an expanded header's Column sum (Task count or Estimated hours)
    ends the title row, so the name ellipsizes before it; the KF-313 rule

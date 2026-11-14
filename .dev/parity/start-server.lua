@@ -10,6 +10,8 @@ cookie jar, the log, the seeder stderr files and state.json.
 The first request creates the owner, named "owner", and every cookie-less
 request acts as that owner, who dismisses the first-visit hints through
 the settings API so the screenshots show the board a returning user sees.
+The Golden Master board gets one limit group over its second and third
+columns, so a board's group band renders in every run.
 The Golden Master board is seeded with the clock frozen at
 PARITY_SEED_TIME (the fixture's capture day). The server then restarts on
 the same database with the clock frozen at PARITY_SERVE_TIME (the day the
@@ -156,6 +158,11 @@ for _, col in ipairs(columns) do
     api("PATCH", "/api/columns/" .. col.id, '{"config_json":"{\\"prop_subtasks\\":\\"show\\"}"}')
 end
 api("PUT", "/api/boards/" .. gm .. "/config", '{"legend_visible":true}')
+api(
+    "POST",
+    "/api/boards/" .. gm .. "/limit-groups",
+    '{"column_ids":["' .. columns[2].id .. '","' .. columns[3].id .. '"],"limit":50}'
+)
 
 stop_server(pid)
 pid = start_server(serve_time)

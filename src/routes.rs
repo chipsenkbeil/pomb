@@ -5270,6 +5270,22 @@ struct GroupBand {
     span: usize,
     /// The group the band shows, absent for a gap.
     group: Option<ColumnGroup>,
+    /// The name of the first column the band spans.
+    first: String,
+    /// The name of the last column the band spans.
+    last: String,
+}
+
+impl GroupBand {
+    /// Returns the columns the band spans as "First to Last", or the one name when it spans one.
+    #[must_use]
+    fn range(&self) -> String {
+        if self.first == self.last {
+            self.first.clone()
+        } else {
+            format!("{} to {}", self.first, self.last)
+        }
+    }
 }
 
 impl BoardTemplate {
@@ -5284,11 +5300,14 @@ impl BoardTemplate {
             if same {
                 if let Some(band) = bands.last_mut() {
                     band.span += 1;
+                    band.last.clone_from(&col.name);
                 }
             } else {
                 bands.push(GroupBand {
                     span: 1,
                     group: col.group.clone(),
+                    first: col.name.clone(),
+                    last: col.name.clone(),
                 });
             }
         }

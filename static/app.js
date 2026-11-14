@@ -415,8 +415,12 @@
     document.querySelectorAll('.columnHeader-groupBand[data-group-id]').forEach((band) => {
       const count = totals.get(band.dataset.groupId);
       const limit = limits.get(band.dataset.groupId);
-      band.textContent = count + ' / ' + limit;
+      const label = band.querySelector('.columnHeader-groupUsed');
+      if (label) label.textContent = count + ' / ' + limit;
       band.classList.toggle('columnHeader-groupBand--over', count > limit);
+    });
+    headers.forEach((th) => {
+      th.classList.toggle('columnHeader--groupedOver', totals.get(th.dataset.groupId) > limits.get(th.dataset.groupId));
     });
   };
 

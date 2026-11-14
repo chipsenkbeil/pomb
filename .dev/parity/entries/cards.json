@@ -1,7 +1,7 @@
 {"entries":[
 {"id":"cards-03-color-submenu","golden":"cards/03-card-context-color-submenu","viewport":{"width":1440,"height":612},
- "note":"Right-click at (405,171) on the Dark mode card, open Color. The root menu is compared with cards/01, which has the same menu.",
- "setup":[{"goto":"/b/{gm}"},{"clickAt":[405,171],"button":"right"},{"waitFor":"#card-ctx-menu"},{"click":"[data-card-act=\"color\"]"},{"waitFor":"#card-ctx-submenu"}],
+ "note":"Right-click at (405,193) on the Dark mode card, open Color. The root menu is compared with cards/01, which has the same menu.",
+ "setup":[{"goto":"/b/{gm}"},{"clickAt":[405,193],"button":"right"},{"waitFor":"#card-ctx-menu"},{"click":"[data-card-act=\"color\"]"},{"waitFor":"#card-ctx-submenu"}],
  "comparisons":[
   {"id":"rootMenu","from":"cards/01-card-context-menu","key":"menu","sel":"#card-ctx-menu","props":["x","y","w","h","bg","br"]},
   {"id":"rootItem","from":"cards/01-card-context-menu","key":"item","sel":"[data-card-act=\"timer\"]","props":["x","y","w","h"]},

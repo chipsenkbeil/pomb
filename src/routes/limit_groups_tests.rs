@@ -329,7 +329,11 @@ async fn board_page_should_show_a_limit_group_count_against_its_limit_on_its_col
     let page = fx.page(&format!("/b/{}", fx.board)).await;
     assert_eq!(page.matches("columnHeader-groupBand\"").count(), 1);
     assert!(!page.contains("columnHeader-groupCount"));
-    assert_eq!(page.matches("title=\"Limit group\">2 / 4</th>").count(), 1);
+    assert_eq!(
+        page.matches("columnHeader-groupUsed\">2 / 4</span></span></th>")
+            .count(),
+        1
+    );
     assert!(page.contains("colspan=\"2\" scope=\"colgroup\""));
     assert_eq!(
         page.matches(&format!("data-group-id=\"{group}\"")).count(),
@@ -350,7 +354,7 @@ async fn board_page_should_mark_a_limit_group_over_its_limit() {
 
     let page = fx.page(&format!("/b/{}", fx.board)).await;
     assert_eq!(page.matches("columnHeader-groupBand--over").count(), 1);
-    assert!(page.contains("title=\"Limit group\">3 / 2</th>"));
+    assert!(page.contains("columnHeader-groupUsed\">3 / 2</span></span></th>"));
 }
 
 #[tokio::test]
@@ -374,4 +378,68 @@ async fn board_page_should_show_no_group_band_without_a_group() {
     let page = fx.page(&format!("/b/{}", fx.board)).await;
     assert!(!page.contains("columnHeader-groupBand"));
     assert!(!page.contains("columnHeader-bandRow"));
+}
+
+#[tokio::test]
+async fn board_page_should_draw_a_group_band_as_a_bracket_over_exactly_its_columns() {
+    let fx = Fixture::new();
+    fx.group(&[1, 2], 4).await;
+
+    let page = fx.page(&format!("/b/{}", fx.board)).await;
+    assert!(page.contains("class=\"columnHeader-groupBand\" colspan=\"2\" scope=\"colgroup\""));
+    assert_eq!(page.matches("columnHeader-groupBracket\"").count(), 1);
+    assert_eq!(page.matches("columnHeader--grouped").count(), 2);
+}
+
+#[tokio::test]
+async fn board_page_should_name_the_first_and_last_column_of_a_group_beside_its_count() {
+    let fx = Fixture::new();
+    fx.group(&[0, 1], 4).await;
+    fx.group(&[2, 3], 1).await;
+
+    let page = fx.page(&format!("/b/{}", fx.board)).await;
+    assert!(page.contains(
+        "<span class=\"columnHeader-groupName\">One to Two</span> <span class=\"columnHeader-groupUsed\">0 / 4</span>"
+    ));
+    assert!(page.contains(
+        "<span class=\"columnHeader-groupName\">Three to Four</span> <span class=\"columnHeader-groupUsed\">0 / 1</span>"
+    ));
+}
+
+#[tokio::test]
+async fn board_page_should_render_two_adjacent_groups_as_two_separate_brackets() {
+    let fx = Fixture::new();
+    fx.group(&[0, 1], 2).await;
+    fx.group(&[2, 3], 3).await;
+
+    let page = fx.page(&format!("/b/{}", fx.board)).await;
+    assert_eq!(page.matches("columnHeader-groupBand\"").count(), 2);
+    assert_eq!(page.matches("columnHeader-groupBracket\"").count(), 2);
+    assert_eq!(page.matches("colspan=\"2\" scope=\"colgroup\"").count(), 2);
+}
+
+#[tokio::test]
+async fn board_page_should_keep_a_column_limit_inline_inside_and_outside_a_group() {
+    let fx = Fixture::new();
+    fx.db
+        .set_column_wip(&fx.columns[1], Some(5))
+        .expect("limit");
+    fx.db
+        .set_column_wip(&fx.columns[3], Some(7))
+        .expect("limit");
+    fx.group(&[0, 1], 2).await;
+
+    let page = fx.page(&format!("/b/{}", fx.board)).await;
+    assert!(page.contains("<span class=\"columnHeader-count\">0 / 5</span>"));
+    assert!(page.contains("<span class=\"columnHeader-count\">0 / 7</span>"));
+}
+
+#[test]
+fn group_band_style_should_leave_a_horizontal_gap_between_adjacent_brackets() {
+    let css = include_str!("../../static/style.css");
+    let start = css
+        .find(".board-table thead .columnHeader-bandRow th {")
+        .expect("band cell rule");
+    let rule = &css[start..start + css[start..].find('}').expect("rule end")];
+    assert!(rule.contains("padding: 2px 10px;"));
 }

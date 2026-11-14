@@ -3,15 +3,24 @@ const start = src.indexOf('  const refreshGroupCounts = ');
 const end = src.indexOf('\n  };', start) + '\n  };'.length;
 if (start < 0 || end < start) throw new Error('refreshGroupCounts not found');
 
-const header = (groupId, limit, taskCount) => ({
-  dataset: { groupId, groupLimit: String(limit), taskCount: String(taskCount) },
-});
+const header = (groupId, limit, taskCount) => {
+  const classes = new Set();
+  return {
+    dataset: { groupId, groupLimit: String(limit), taskCount: String(taskCount) },
+    classList: { toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)) },
+    classes,
+  };
+};
 
 const band = (groupId) => {
   const classes = new Set();
+  const count = { textContent: '' };
   return {
     dataset: { groupId },
-    textContent: '',
+    querySelector: (sel) => (sel === '.columnHeader-groupUsed' ? count : null),
+    get textContent() {
+      return count.textContent;
+    },
     classList: { toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)) },
     classes,
   };
@@ -58,6 +67,12 @@ check('the other group is not over', band2.classes.has('columnHeader-groupBand--
 b.dataset.taskCount = '2';
 refresh();
 check('a drag out clears the over class', band1.classes.has('columnHeader-groupBand--over'), false);
+check('a drag out clears the member rule', a.classes.has('columnHeader--groupedOver'), false);
+
+b.dataset.taskCount = '3';
+refresh();
+check('over the limit colours every member header', [a, b].map((h) => h.classes.has('columnHeader--groupedOver')), [true, true]);
+check('another group keeps its member rule', other.classes.has('columnHeader--groupedOver'), false);
 
 if (failures) process.exit(1);
 console.log('group counts ok');
