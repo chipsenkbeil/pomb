@@ -1,3 +1,5 @@
+use std::sync::{Arc, Barrier};
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::StatusCode;
@@ -814,6 +816,42 @@ async fn settings_put_should_keep_a_template_saved_in_between() {
     }
     let kept = fx.db.settings(&fx.admin).expect("settings");
     assert_eq!(kept.subtask_templates.len(), 8);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_hint_dismissals_should_keep_every_hint() {
+    for _ in 0..8 {
+        let fx = Fixture::new();
+        let auth = format!("Bearer {}", fx.token);
+        let runtime = Handle::current();
+        let sends = ["members", "timer", "members"];
+        let start = Arc::new(Barrier::new(sends.len()));
+        let mut jobs = Vec::new();
+        for hint in sends {
+            let put_app = fx.app.clone();
+            let put_auth = auth.clone();
+            let put_runtime = runtime.clone();
+            let put_start = start.clone();
+            jobs.push(std::thread::spawn(move || {
+                put_start.wait();
+                put_runtime.block_on(call(
+                    &put_app,
+                    "PUT",
+                    "/api/settings",
+                    &[("authorization", &put_auth)],
+                    Some(json!({ "dismiss_hint": hint })),
+                ))
+            }));
+        }
+        for job in jobs {
+            let reply = job.join().expect("join");
+            assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        }
+        let kept = fx.db.settings(&fx.admin).expect("settings");
+        let mut hints = kept.dismissed_hints.clone();
+        hints.sort();
+        assert_eq!(hints, ["members", "timer"]);
+    }
 }
 
 #[tokio::test]
