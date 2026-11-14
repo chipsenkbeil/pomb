@@ -20659,7 +20659,10 @@
     // hashchange) scroll to the card and open its modal.
     function openTaskFromHash() {
       var m = /^#task-([\w-]+)$/.exec(window.location.hash || '');
-      if (!m) return;
+      if (!m) {
+        if (modalTaskId()) closeModal();
+        return;
+      }
       var id = m[1];
       var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
       if (card) {
