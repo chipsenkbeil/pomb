@@ -152,11 +152,29 @@ pub(crate) fn txn_remove_agent_roles_of(txn: &WriteTransaction, account: &str) -
     Ok(())
 }
 
+/// Returns `role` when it belongs to `account`, otherwise [`None`].
+#[must_use]
+fn owned_role(account: &str, role: Option<AgentRoleRow>) -> Option<AgentRoleRow> {
+    role.filter(|role| role.account_id == account)
+}
+
+/// Returns agent role `id` when `account` holds it, read inside an open write transaction.
+fn txn_owned_role(
+    txn: &WriteTransaction,
+    account: &str,
+    id: &str,
+) -> DbResult<Option<AgentRoleRow>> {
+    Ok(owned_role(
+        account,
+        txn_read_one::<AgentRoleRow>(txn, AGENT_ROLES, id)?,
+    ))
+}
+
 impl Db {
     /// Returns agent role `id` of `account`, or [`None`] when the account holds no such role.
     pub fn agent_role(&self, account: &str, id: &str) -> DbResult<Option<AgentRoleRow>> {
         let role = read_one::<AgentRoleRow>(&self.db, AGENT_ROLES, id)?;
-        Ok(role.filter(|role| role.account_id == account))
+        Ok(owned_role(account, role))
     }
 
     /// Returns the agent roles of `account`, by name.
@@ -183,9 +201,7 @@ impl Db {
         now: i64,
     ) -> DbResult<Result<ApiTokenRecord, RoleTokenRefusal>> {
         let txn = self.db.begin_write()?;
-        let Some(mut role) = txn_read_one::<AgentRoleRow>(&txn, AGENT_ROLES, role_id)?
-            .filter(|role| role.account_id == record.account_id)
-        else {
+        let Some(mut role) = txn_owned_role(&txn, &record.account_id, role_id)? else {
             return Ok(Err(RoleTokenRefusal::UnknownRole));
         };
         if let Err(refusal) = txn_check_child_token(&txn, &mut record, hours, now)? {
@@ -211,9 +227,7 @@ impl Db {
         mut record: ApiTokenRecord,
     ) -> DbResult<Option<ApiTokenRecord>> {
         let txn = self.db.begin_write()?;
-        let Some(mut role) = txn_read_one::<AgentRoleRow>(&txn, AGENT_ROLES, role_id)?
-            .filter(|role| role.account_id == record.account_id)
-        else {
+        let Some(mut role) = txn_owned_role(&txn, &record.account_id, role_id)? else {
             return Ok(None);
         };
         role.issued += 1;
@@ -279,9 +293,7 @@ impl Db {
         permissions: Option<BTreeSet<Permission>>,
     ) -> DbResult<Option<AgentRoleRow>> {
         let txn = self.db.begin_write()?;
-        let Some(mut role) = txn_read_one::<AgentRoleRow>(&txn, AGENT_ROLES, id)?
-            .filter(|role| role.account_id == account)
-        else {
+        let Some(mut role) = txn_owned_role(&txn, account, id)? else {
             return Ok(None);
         };
         if let Some(name) = name {
@@ -302,11 +314,9 @@ impl Db {
     /// or board.
     pub fn grant_agent_role(&self, account: &str, role_id: &str, board_id: &str) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
-        let role = txn_read_one::<AgentRoleRow>(&txn, AGENT_ROLES, role_id)?;
+        let role = txn_owned_role(&txn, account, role_id)?;
         let board = txn_read_one::<BoardRow>(&txn, BOARDS, board_id)?;
-        if !role.is_some_and(|role| role.account_id == account)
-            || !board.is_some_and(|board| board.owner_id == account)
-        {
+        if role.is_none() || !board.is_some_and(|board| board.owner_id == account) {
             return Ok(false);
         }
         txn_grant(&txn, account, role_id, board_id)?;
@@ -395,8 +405,7 @@ impl Db {
         board_id: &str,
     ) -> DbResult<Option<u64>> {
         let txn = self.db.begin_write()?;
-        let held = txn_read_one::<AgentRoleRow>(&txn, AGENT_ROLES, role_id)?
-            .is_some_and(|role| role.account_id == account);
+        let held = txn_owned_role(&txn, account, role_id)?.is_some();
         if !held || !txn_remove_grant(&txn, role_id, board_id)? {
             return Ok(None);
         }
