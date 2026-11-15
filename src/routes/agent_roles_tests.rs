@@ -669,6 +669,7 @@ const STANDARD_NAMES: [&str; 6] = [
     "lead",
 ];
 
+#[must_use]
 fn names_of(reply: &Value, key: &str) -> Vec<String> {
     reply[key]
         .as_array()
@@ -931,6 +932,7 @@ async fn ensure_standard_roles_should_refuse_a_double_name_clash() {
     );
 }
 
+#[must_use]
 fn read_perms() -> BTreeSet<Permission> {
     BTreeSet::from([Permission::TasksRead])
 }
@@ -977,6 +979,7 @@ async fn issue_child(fx: &Fixture, bearer: &str, body: Value) -> Reply {
     .await
 }
 
+#[must_use]
 fn permission_names(reply: &Value) -> BTreeSet<String> {
     reply["permissions"]
         .as_array()
@@ -986,6 +989,7 @@ fn permission_names(reply: &Value) -> BTreeSet<String> {
         .collect()
 }
 
+#[must_use]
 fn board_ids(reply: &Value) -> BTreeSet<String> {
     reply["boards"]
         .as_array()
@@ -1601,6 +1605,7 @@ struct RoleTokens {
     other: String,
 }
 
+#[must_use]
 fn names(list: &[&str]) -> BTreeSet<String> {
     list.iter().map(|name| (*name).to_string()).collect()
 }
