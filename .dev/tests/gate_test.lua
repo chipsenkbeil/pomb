@@ -66,7 +66,8 @@ end
 
 t.test("gate accepts one new passed local run", function()
     local old = row("aaaaaa", "passed", "local")
-    local out, code, err = gate({ before = { old }, after = { old, row("bbbbbb", "passed", "local") }, dev_exit = 0 })
+    local out, code, err =
+        gate({ before = { old }, after = { old, row("bbbbbb", "passed", "local") }, dev_exit = 0 })
     t.eq(code, 0, err)
     t.eq(out, "bbbbbb " .. REPO .. " local\n")
 end)
@@ -96,58 +97,82 @@ t.test("gate refuses two new runs", function()
 end)
 
 t.test("gate refuses a run that did not pass", function()
-    local _, code, err = gate({ before = {}, after = { row("aaaaaa", "failed", "local") }, dev_exit = 0 })
+    local _, code, err =
+        gate({ before = {}, after = { row("aaaaaa", "failed", "local") }, dev_exit = 0 })
     t.ok(code ~= 0)
     t.ok(err:find("only a passed run counts.", 1, true), err)
 end)
 
 t.test("gate refuses a dirty source", function()
-    local _, code, err = gate({ before = {}, after = { row("aaaaaa", "passed", "local(dirty)") }, dev_exit = 0 })
+    local _, code, err =
+        gate({ before = {}, after = { row("aaaaaa", "passed", "local(dirty)") }, dev_exit = 0 })
     t.ok(code ~= 0)
     t.ok(err:find("only a clean local source counts.", 1, true), err)
 end)
 
 t.test("gate_should_accept_a_local_source_naming_head", function()
     local source = "local@" .. HEAD:sub(1, 12)
-    local out, code, err = gate({ before = {}, after = { row("bbbbbb", "passed", source) }, dev_exit = 0 })
+    local out, code, err =
+        gate({ before = {}, after = { row("bbbbbb", "passed", source) }, dev_exit = 0 })
     t.eq(code, 0, err)
     t.eq(out, "bbbbbb " .. REPO .. " " .. source .. "\n")
 end)
 
 t.test("gate_should_refuse_a_local_source_naming_another_commit", function()
-    local _, code, err = gate({ before = {}, after = { row("bbbbbb", "passed", "local@" .. OTHER:sub(1, 12)) }, dev_exit = 0 })
+    local _, code, err = gate({
+        before = {},
+        after = { row("bbbbbb", "passed", "local@" .. OTHER:sub(1, 12)) },
+        dev_exit = 0,
+    })
     t.ok(code ~= 0)
     t.ok(err:find("which is not the HEAD " .. HEAD .. " of", 1, true), err)
 end)
 
 t.test("gate_should_refuse_a_dirty_local_source_naming_head", function()
     local source = "local(dirty)@" .. HEAD:sub(1, 12)
-    local _, code, err = gate({ before = {}, after = { row("bbbbbb", "passed", source) }, dev_exit = 0 })
+    local _, code, err =
+        gate({ before = {}, after = { row("bbbbbb", "passed", source) }, dev_exit = 0 })
     t.ok(code ~= 0)
     t.ok(err:find("only a clean local source counts.", 1, true), err)
 end)
 
 t.test("gate refuses when dev fails", function()
-    local _, code = gate({ before = {}, after = { row("aaaaaa", "passed", "local") }, dev_exit = 1 })
+    local _, code =
+        gate({ before = {}, after = { row("aaaaaa", "passed", "local") }, dev_exit = 1 })
     t.ok(code ~= 0)
 end)
 
 t.test("gate_should_read_head_through_jj_when_the_worktree_has_a_jj_directory", function()
     local source = "local@" .. HEAD:sub(1, 12)
-    local out, code, err = gate({ before = {}, after = { row("bbbbbb", "passed", source) }, dev_exit = 0, kind = jjenv.Kind.JJ })
+    local out, code, err = gate({
+        before = {},
+        after = { row("bbbbbb", "passed", source) },
+        dev_exit = 0,
+        kind = jjenv.Kind.JJ,
+    })
     t.eq(code, 0, err)
     t.eq(out, "bbbbbb " .. REPO .. " " .. source .. "\n")
 end)
 
 t.test("gate_should_refuse_a_source_naming_the_git_head_in_a_jj_worktree", function()
     local source = "local@" .. OTHER:sub(1, 12)
-    local _, code, err = gate({ before = {}, after = { row("bbbbbb", "passed", source) }, dev_exit = 0, kind = jjenv.Kind.JJ })
+    local _, code, err = gate({
+        before = {},
+        after = { row("bbbbbb", "passed", source) },
+        dev_exit = 0,
+        kind = jjenv.Kind.JJ,
+    })
     t.ok(code ~= 0)
     t.ok(err:find("which is not the HEAD " .. HEAD .. " of", 1, true), err)
 end)
 
 t.test("gate_should_read_head_through_git_without_a_jj_directory", function()
     local source = "local@" .. HEAD:sub(1, 12)
-    local _, code, err = gate({ before = {}, after = { row("bbbbbb", "passed", source) }, dev_exit = 0, kind = jjenv.Kind.GIT })
+    local _, code, err = gate({
+        before = {},
+        after = { row("bbbbbb", "passed", source) },
+        dev_exit = 0,
+        kind = jjenv.Kind.GIT,
+    })
     t.eq(code, 0, err)
 end)

@@ -37,19 +37,18 @@ local REPORT = {
     BACKUP = "backup ",
     ARCHIVES = "archives ",
 }
-local HEADER_CAPTURE =
-    {
-        "curl",
-        "-sS",
-        "--max-time",
-        tostring(PROBE_TIMEOUT_SECS),
-        "-o",
-        "/dev/null",
-        "-D",
-        "-",
-        "-w",
-        "status=%{http_code}\n",
-    }
+local HEADER_CAPTURE = {
+    "curl",
+    "-sS",
+    "--max-time",
+    tostring(PROBE_TIMEOUT_SECS),
+    "-o",
+    "/dev/null",
+    "-D",
+    "-",
+    "-w",
+    "status=%{http_code}\n",
+}
 
 local REMOTE_SCRIPT = [==[
 set -u
@@ -382,12 +381,7 @@ local function verify(opts)
     while true do
         report = remote_report(channel, id)
         local last = first_field(report or "", REPORT.LAST_UPDATE)
-        if
-            not wait
-            or report == nil
-            or result_matches(last, id)
-            or os.time() >= deadline
-        then
+        if not wait or report == nil or result_matches(last, id) or os.time() >= deadline then
             break
         end
         devos.nap(WAIT_STEP_SECS)
@@ -405,9 +399,7 @@ local function verify(opts)
         local lines = first_field(report, REPORT.JOURNAL_LINES)
         if #bad == 0 then
             pass(
-                "journal since the unit started has no panic or error lines ("
-                    .. lines
-                    .. " lines)"
+                "journal since the unit started has no panic or error lines (" .. lines .. " lines)"
             )
         else
             fail("journal since the unit started has panic or error lines")

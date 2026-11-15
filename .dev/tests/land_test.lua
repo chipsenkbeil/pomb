@@ -496,7 +496,7 @@ end)
 
 t.test("land refuses a standalone script whose name needs quoting", function()
     local fix = fixture()
-    local name = ".dev/standalone/caf\195\169 \"x\".sh"
+    local name = '.dev/standalone/caf\195\169 "x".sh'
     local cand = candidate(fix, { [name] = "#!/bin/sh\n" }, "add a standalone script")
     local before = remote_main(fix)
     local _, code, err = land(fix, cand)
@@ -787,7 +787,10 @@ t.test("land should wait while a live land holds the land lock", function()
     local before = remote_main(fix)
     local out, code, err = land(fix, cand, { POMB_LAND_WAIT_INTERVAL = "1" })
     t.ok(code == 0, err)
-    t.ok(out:find("Waiting for the land of card other (pid " .. devos.getpid() .. ")", 1, true), out)
+    t.ok(
+        out:find("Waiting for the land of card other (pid " .. devos.getpid() .. ")", 1, true),
+        out
+    )
     t.eq(#lines(fix, "sleeps"), 1)
     eq_list(lines(fix, "during"), { before })
     eq_list(lines(fix, "calls"), { "lint", "test" })
@@ -922,7 +925,14 @@ t.test("land should retry a gate refused by a drain", function()
     local env = { POMB_DRAIN_INTERVAL = "1", POMB_DRAIN_BOUND = "5" }
     local out, code, err = land(fix, cand, env)
     t.ok(code == 0, err)
-    t.ok(out:find("The dev lint --remote run waits 1 seconds because the ci hub is draining.", 1, true), out)
+    t.ok(
+        out:find(
+            "The dev lint --remote run waits 1 seconds because the ci hub is draining.",
+            1,
+            true
+        ),
+        out
+    )
     eq_list(lines(fix, "calls"), { "lint", "lint", "test" })
     t.eq(#lines(fix, "pushes"), 1)
     t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")

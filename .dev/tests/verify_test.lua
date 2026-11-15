@@ -41,10 +41,12 @@ local function write_stubs(dir, ssh_body)
     assert(fs.mkdir(bin, { parents = true }))
     local ssh = ssh_body or ("#!/bin/sh\necho ran >>'" .. dir .. "/ssh.log'\n")
     assert(fs.write(bin .. "/ssh", ssh))
-    assert(fs.write(
-        bin .. "/curl",
-        "#!/bin/sh\necho \"$@\" >>'" .. dir .. "/curl.log'\nprintf '" .. login_reply .. "'\n"
-    ))
+    assert(
+        fs.write(
+            bin .. "/curl",
+            '#!/bin/sh\necho "$@" >>\'' .. dir .. "/curl.log'\nprintf '" .. login_reply .. "'\n"
+        )
+    )
     assert(fs.write(bin .. "/shasum", "#!/bin/sh\ncat >/dev/null\necho " .. STUB_HASH .. "  -\n"))
     assert(devos.run({ "chmod", "755", bin .. "/ssh", bin .. "/curl", bin .. "/shasum" }) == 0)
     return bin
@@ -64,12 +66,16 @@ end
 local function passing_ssh_body(sha)
     local hash = STUB_HASH
     return "#!/bin/sh\n"
-        .. "case \"$*\" in\n"
-        .. "*version*) echo '{\"build_sha\":\"" .. sha .. "\"}' ;;\n"
-        .. "*app.js*) echo " .. hash .. " ;;\n"
+        .. 'case "$*" in\n'
+        .. '*version*) echo \'{"build_sha":"'
+        .. sha
+        .. "\"}' ;;\n"
+        .. "*app.js*) echo "
+        .. hash
+        .. " ;;\n"
         .. "*http_code*) printf 403 ;;\n"
-        .. "*pomb_nope*) echo '{\"code\":\"token_invalid\"}' ;;\n"
-        .. "*openapi*) echo '{\"servers\":[{\"url\":\"https://pomb.chip.network\"}]}' ;;\n"
+        .. '*pomb_nope*) echo \'{"code":"token_invalid"}\' ;;\n'
+        .. '*openapi*) echo \'{"servers":[{"url":"https://pomb.chip.network"}]}\' ;;\n'
         .. "*journalctl*) echo 'pomb: schema v1'; echo 'pomb: listening on 3000' ;;\n"
         .. "*sudo\\ test*) exit 0 ;;\n"
         .. "esac\n"

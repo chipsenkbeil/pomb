@@ -86,10 +86,12 @@ t.test("bump output passes the version guard against the old manifest", function
     assert(fs.write(dir .. "/base.toml", manifest("0.5.85")))
     local _, code, err = bump(dir)
     t.eq(code, 0, err)
-    _, code, err = testenv.verb(
-        dir,
-        { "__version_guard", dir .. "/base.toml", dir .. "/work/Cargo.toml", dir .. "/work/Cargo.lock" }
-    )
+    _, code, err = testenv.verb(dir, {
+        "__version_guard",
+        dir .. "/base.toml",
+        dir .. "/work/Cargo.toml",
+        dir .. "/work/Cargo.lock",
+    })
     t.eq(code, 0, err)
     fs.remove(dir, { recursive = true })
 end)

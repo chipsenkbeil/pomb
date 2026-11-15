@@ -35,8 +35,10 @@ local function seed(client)
     api("POST", "/api/tasks/" .. full .. "/seats", '{"name":"code","role":"reviewer"}')
     local done = mk({ name = "Done card", column_id = todo })
     for _, seat in ipairs({ "code", "docs" }) do
-        local seat_body =
-            json.encode({ name = seat, role = "reviewer" }, { order = { "name", "role" } })
+        local seat_body = json.encode(
+            { name = seat, role = "reviewer" },
+            { order = { "name", "role" } }
+        )
         api("POST", "/api/tasks/" .. done .. "/seats", seat_body)
         api("POST", "/api/tasks/" .. done .. "/seats/take", json.encode({ seat = seat }))
     end

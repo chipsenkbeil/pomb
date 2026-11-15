@@ -20,8 +20,10 @@ local function guard(base, cand_manifest, cand_lock)
     assert(fs.write(dir .. "/base.toml", manifest(base)))
     assert(fs.write(dir .. "/cand.toml", manifest(cand_manifest)))
     assert(fs.write(dir .. "/cand.lock", lock(cand_lock)))
-    local _, code, err =
-        testenv.verb(dir, { "__version_guard", dir .. "/base.toml", dir .. "/cand.toml", dir .. "/cand.lock" })
+    local _, code, err = testenv.verb(
+        dir,
+        { "__version_guard", dir .. "/base.toml", dir .. "/cand.toml", dir .. "/cand.lock" }
+    )
     fs.remove(dir, { recursive = true })
     return code, err
 end
@@ -34,11 +36,25 @@ end)
 t.test("guard refuses a version equal to the base", function()
     local code, err = guard("0.5.81", "0.5.81", "0.5.81")
     t.ok(code ~= 0)
-    t.ok(err:find("Cargo.toml version 0.5.81 equals the base version 0.5.81, so bump and commit it.", 1, true), err)
+    t.ok(
+        err:find(
+            "Cargo.toml version 0.5.81 equals the base version 0.5.81, so bump and commit it.",
+            1,
+            true
+        ),
+        err
+    )
 end)
 
 t.test("guard refuses a lock that differs from the manifest", function()
     local code, err = guard("0.5.81", "0.5.82", "0.5.81")
     t.ok(code ~= 0)
-    t.ok(err:find("Cargo.lock pomb version 0.5.81 differs from Cargo.toml version 0.5.82, so commit the lock update.", 1, true), err)
+    t.ok(
+        err:find(
+            "Cargo.lock pomb version 0.5.81 differs from Cargo.toml version 0.5.82, so commit the lock update.",
+            1,
+            true
+        ),
+        err
+    )
 end)

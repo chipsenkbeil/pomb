@@ -280,11 +280,13 @@ local function apply(land)
     end
     if land.fork == base then
         if run_git(wt, "reset", "-q", "--hard", cand) ~= 0 then
-            die(("Commit %s does not reset onto %s/main, and the worktree is left at %s."):format(
-                land.commit,
-                remote,
-                wt
-            ))
+            die(
+                ("Commit %s does not reset onto %s/main, and the worktree is left at %s."):format(
+                    land.commit,
+                    remote,
+                    wt
+                )
+            )
         end
     elseif devos.run(git(wt, "cherry-pick", cand), { stdout = "null" }) ~= 0 then
         run_git(wt, "cherry-pick", "--abort")
@@ -331,17 +333,28 @@ local function wait_for_release(repo)
             return
         end
         if not lock.alive(holder) then
-            say(("The release lock of batch %s names a process that is gone, so it is taken over.\n"):format(holder.batch))
+            say(
+                ("The release lock of batch %s names a process that is gone, so it is taken over.\n"):format(
+                    holder.batch
+                )
+            )
             lock.clear(repo)
             return
         end
         if waited >= bound then
-            die(("The release of batch %s still held the release lock after %s seconds, so nothing landed."):format(
-                holder.batch,
-                bound
-            ))
+            die(
+                ("The release of batch %s still held the release lock after %s seconds, so nothing landed."):format(
+                    holder.batch,
+                    bound
+                )
+            )
         end
-        say(("Waiting for the release of batch %s (pid %s) to finish before landing.\n"):format(holder.batch, holder.pid))
+        say(
+            ("Waiting for the release of batch %s (pid %s) to finish before landing.\n"):format(
+                holder.batch,
+                holder.pid
+            )
+        )
         devos.run({ "sleep", tostring(interval) })
         waited = waited + interval
     end
@@ -354,17 +367,28 @@ local function take_land_lock(repo, card)
     while not lock.land.take(repo, card) do
         local holder = lock.land.holder(repo)
         if holder and not lock.land.alive(holder) then
-            say(("The land lock of card %s names a process that is gone, so it is taken over.\n"):format(holder.card))
+            say(
+                ("The land lock of card %s names a process that is gone, so it is taken over.\n"):format(
+                    holder.card
+                )
+            )
             lock.land.clear(repo, holder)
         else
             if waited >= bound then
-                die(("The land of card %s still held the land lock after %s seconds, so nothing landed."):format(
-                    holder and holder.card or "?",
-                    bound
-                ))
+                die(
+                    ("The land of card %s still held the land lock after %s seconds, so nothing landed."):format(
+                        holder and holder.card or "?",
+                        bound
+                    )
+                )
             end
             if holder then
-                say(("Waiting for the land of card %s (pid %s) to finish before landing.\n"):format(holder.card, holder.pid))
+                say(
+                    ("Waiting for the land of card %s (pid %s) to finish before landing.\n"):format(
+                        holder.card,
+                        holder.pid
+                    )
+                )
             end
             devos.run({ "sleep", tostring(interval) })
             waited = waited + interval
@@ -408,8 +432,10 @@ local function latest_check(text)
 end
 
 local function skip_reason(repo, card, cand)
-    local out, code =
-        devos.capture({ "dev", "board", "show", card }, { cwd = repo, stderr = "null" })
+    local out, code = devos.capture(
+        { "dev", "board", "show", card },
+        { cwd = repo, stderr = "null" }
+    )
     if code ~= 0 then
         return nil, "the card could not be read"
     end
@@ -444,13 +470,18 @@ local function gates(opts)
     for _, gate in ipairs(names) do
         say(("Running dev %s --remote.\n"):format(gate))
         local log = logs .. "/" .. gate .. ".log"
-        local ran, code = drain.run({ gate = gate, log = log, say = say, run = function()
-            return devos.capture({ "dev", "__gate", wt, gate, log }, {
-                cwd = wt,
-                env = { DEV_AGENT = "pomb/land/" .. card },
-                stderr = logs .. "/" .. gate .. ".err",
-            })
-        end })
+        local ran, code = drain.run({
+            gate = gate,
+            log = log,
+            say = say,
+            run = function()
+                return devos.capture({ "dev", "__gate", wt, gate, log }, {
+                    cwd = wt,
+                    env = { DEV_AGENT = "pomb/land/" .. card },
+                    stderr = logs .. "/" .. gate .. ".err",
+                })
+            end,
+        })
         if not ran then
             die(
                 ("The ci hub was still draining after %s seconds, so dev %s --remote did not run, nothing was pushed, and the worktree is left at %s."):format(
@@ -504,7 +535,11 @@ end
 local count = read_git(repo, "rev-list", "--count", fork .. ".." .. cand)
 if count ~= "1" then
     die(
-        ("Commit %s is %s commits past %s/main, expected exactly one."):format(commit, count, remote)
+        ("Commit %s is %s commits past %s/main, expected exactly one."):format(
+            commit,
+            count,
+            remote
+        )
     )
 end
 if versions(repo, cand .. "^") ~= versions(repo, cand) then
@@ -579,7 +614,9 @@ while true do
         gates({ wt = wt, card = card, attempt = attempt, names = names })
     end
     if release_running(repo) then
-        say("A release took the land lock while the gates ran, so the commit is applied again once it is done.\n")
+        say(
+            "A release took the land lock while the gates ran, so the commit is applied again once it is done.\n"
+        )
         run_git(repo, "worktree", "remove", "--force", wt)
         drop_land_lock()
     else
@@ -589,7 +626,12 @@ while true do
             break
         end
         if status ~= 3 then
-            die(("The push failed with status %s, and the worktree is left at %s."):format(status, wt))
+            die(
+                ("The push failed with status %s, and the worktree is left at %s."):format(
+                    status,
+                    wt
+                )
+            )
         end
         if attempt >= ATTEMPTS then
             die(
@@ -612,7 +654,10 @@ say(("Landed %s.\n"):format(sha))
 local note = { "dev", "board", "note", card, ("landed %s on %s/main"):format(sha, remote) }
 if devos.run(note, { cwd = repo }) ~= 0 then
     warn(
-        ("Landed, but dev board note %s failed, so note %s on the card yourself.\n"):format(card, sha)
+        ("Landed, but dev board note %s failed, so note %s on the card yourself.\n"):format(
+            card,
+            sha
+        )
     )
 end
 if devos.run({ "dev", "board", "move", card, "release" }, { cwd = repo }) ~= 0 then

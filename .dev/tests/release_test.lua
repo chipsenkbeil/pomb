@@ -244,7 +244,14 @@ t.test("release should retry a gate refused by a drain", function()
     )
     t.eq(code, 0, err)
     t.eq(gates(fix), "build,lint,nixcheck,test,test")
-    t.ok(out:find("The dev test --remote run waits 1 seconds because the ci hub is draining.", 1, true), out)
+    t.ok(
+        out:find(
+            "The dev test --remote run waits 1 seconds because the ci hub is draining.",
+            1,
+            true
+        ),
+        out
+    )
     done(fix)
 end)
 
@@ -264,16 +271,12 @@ end)
 t.test("release should abort naming the drain when it outlasts the wait bound", function()
     local fix = fixture("0.5.85", "0.5.85", 1)
     local before = remote_ref(fix, "main")
-    local _, code, err = release(
-        fix,
-        RELEASE,
-        {
-            DRAIN_GATE = "test",
-            DRAIN_TIMES = "99",
-            POMB_DRAIN_INTERVAL = "1",
-            POMB_DRAIN_BOUND = "2",
-        }
-    )
+    local _, code, err = release(fix, RELEASE, {
+        DRAIN_GATE = "test",
+        DRAIN_TIMES = "99",
+        POMB_DRAIN_INTERVAL = "1",
+        POMB_DRAIN_BOUND = "2",
+    })
     t.ok(code ~= 0)
     t.ok(err:find("still draining after 2 seconds", 1, true), err)
     t.eq(gates(fix), "build,lint,nixcheck,test,test,test")
@@ -342,7 +345,12 @@ end)
 t.test("release should print the tag rerun command when the tag push fails", function()
     local fix = fixture("0.5.85", "0.5.85", 1)
     local hook = fix.remote .. "/hooks/pre-receive"
-    assert(fs.write(hook, '#!/bin/sh\nwhile read o n r; do [ "$r" != refs/tags/batch-7 ] || exit 1; done\n'))
+    assert(
+        fs.write(
+            hook,
+            '#!/bin/sh\nwhile read o n r; do [ "$r" != refs/tags/batch-7 ] || exit 1; done\n'
+        )
+    )
     assert(devos.run({ "chmod", "755", hook }) == 0)
     local _, code, err = release(fix, RELEASE)
     t.ok(code ~= 0)
@@ -354,20 +362,28 @@ t.test("release should print the tag rerun command when the tag push fails", fun
     done(fix)
 end)
 
-t.test("release should print the version tag rerun command when only that tag push fails", function()
-    local fix = fixture("0.5.85", "0.5.85", 1)
-    local hook = fix.remote .. "/hooks/pre-receive"
-    assert(fs.write(hook, '#!/bin/sh\nwhile read o n r; do [ "$r" != refs/tags/v0.5.86 ] || exit 1; done\n'))
-    assert(devos.run({ "chmod", "755", hook }) == 0)
-    local out, code, err = release(fix, RELEASE)
-    t.ok(code ~= 0)
-    local head = remote_ref(fix, "main")
-    t.ok(err:find("Rerun: dev __push_tag v0.5.86 " .. head, 1, true), err)
-    t.ok(not err:find("dev __push_tag batch-7", 1, true), err)
-    t.eq(remote_ref(fix, "refs/tags/batch-7^{commit}"), head)
-    t.ok(not out:find("homelab request", 1, true), out)
-    done(fix)
-end)
+t.test(
+    "release should print the version tag rerun command when only that tag push fails",
+    function()
+        local fix = fixture("0.5.85", "0.5.85", 1)
+        local hook = fix.remote .. "/hooks/pre-receive"
+        assert(
+            fs.write(
+                hook,
+                '#!/bin/sh\nwhile read o n r; do [ "$r" != refs/tags/v0.5.86 ] || exit 1; done\n'
+            )
+        )
+        assert(devos.run({ "chmod", "755", hook }) == 0)
+        local out, code, err = release(fix, RELEASE)
+        t.ok(code ~= 0)
+        local head = remote_ref(fix, "main")
+        t.ok(err:find("Rerun: dev __push_tag v0.5.86 " .. head, 1, true), err)
+        t.ok(not err:find("dev __push_tag batch-7", 1, true), err)
+        t.eq(remote_ref(fix, "refs/tags/batch-7^{commit}"), head)
+        t.ok(not out:find("homelab request", 1, true), out)
+        done(fix)
+    end
+)
 
 local function refuse_existing_tag(opts)
     local fix = fixture("0.5.85", "0.5.85", 1)
@@ -574,7 +590,15 @@ t.test("release should hold the land lock until the push", function()
     local fix = fixture("0.5.85", "0.5.85", 1)
     local hook = fix.remote .. "/hooks/pre-receive"
     local note = fix.dir .. "/push-lock.log"
-    assert(fs.write(hook, ("#!/bin/sh\nwhile read o n r; do [ \"$r\" != refs/heads/main ] || [ ! -e '%s' ] || echo held >>'%s'; done\n"):format(lock_path(fix), note)))
+    assert(
+        fs.write(
+            hook,
+            ("#!/bin/sh\nwhile read o n r; do [ \"$r\" != refs/heads/main ] || [ ! -e '%s' ] || echo held >>'%s'; done\n"):format(
+                lock_path(fix),
+                note
+            )
+        )
+    )
     assert(devos.run({ "chmod", "755", hook }) == 0)
     local _, code, err = release(fix, RELEASE)
     t.eq(code, 0, err)

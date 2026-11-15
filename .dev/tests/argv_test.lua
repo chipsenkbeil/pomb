@@ -3,7 +3,10 @@ local t = require("dev.testing")
 
 t.test("extend appends each word and returns the same list", function()
     local list = { "cargo", "build" }
-    t.eq(argv.extend(list, { "--release", "-j", "2" }), { "cargo", "build", "--release", "-j", "2" })
+    t.eq(
+        argv.extend(list, { "--release", "-j", "2" }),
+        { "cargo", "build", "--release", "-j", "2" }
+    )
     t.eq(list, { "cargo", "build", "--release", "-j", "2" })
 end)
 

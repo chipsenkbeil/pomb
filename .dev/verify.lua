@@ -134,17 +134,16 @@ local function login_case(public, location)
     elseif public == "303" and location == "/setup" then
         return true, "The /login page redirected to /setup, as expected before the first passkey."
     end
-    return false, ("The public /login page answered with status %s and location %s."):format(
-        or_none(public),
-        or_none(location)
-    )
+    return false,
+        ("The public /login page answered with status %s and location %s."):format(
+            or_none(public),
+            or_none(location)
+        )
 end
 
 local function login_probe()
-    local headers = devos.capture(
-        { "curl", "-s", "-o", "/dev/null", "-D", "-", PUBLIC_URL .. "/login" },
-        QUIET
-    )
+    local headers =
+        devos.capture({ "curl", "-s", "-o", "/dev/null", "-D", "-", PUBLIC_URL .. "/login" }, QUIET)
     local public, location = "", ""
     local first = true
     for line in headers:gsub("\r", ""):gmatch("[^\n]+") do
@@ -191,7 +190,12 @@ local function cleanup_worktree(worktree, opts)
             print(("Deleted branch %s by force."):format(branch))
         end
     else
-        print(("Kept branch %s, which is not merged, so pass --delete-branch %s to delete it."):format(branch, branch))
+        print(
+            ("Kept branch %s, which is not merged, so pass --delete-branch %s to delete it."):format(
+                branch,
+                branch
+            )
+        )
     end
 end
 
@@ -213,10 +217,8 @@ end
 if devos.run(git(repo, { "fetch", "-q", remote_name })) ~= 0 then
     return 1
 end
-local resolved, code = devos.capture(
-    git(repo, { "rev-parse", "--verify", parsed.sha .. "^{commit}" }),
-    QUIET
-)
+local resolved, code =
+    devos.capture(git(repo, { "rev-parse", "--verify", parsed.sha .. "^{commit}" }), QUIET)
 if code ~= 0 then
     abort(("No commit %s exists."):format(parsed.sha))
 end
@@ -250,10 +252,12 @@ check(
     )
 )
 
-local xsite = trim(remote(
-    'curl -s -o /dev/null -w "%{http_code}" -X POST -H "Origin: https://evil.example"'
-        .. ' -H "Sec-Fetch-Site: cross-site" localhost:3000/api/boards'
-))
+local xsite = trim(
+    remote(
+        'curl -s -o /dev/null -w "%{http_code}" -X POST -H "Origin: https://evil.example"'
+            .. ' -H "Sec-Fetch-Site: cross-site" localhost:3000/api/boards'
+    )
+)
 check(
     xsite == "403",
     ("A cross-site POST got status %s, and 403 is expected."):format(or_none(xsite))

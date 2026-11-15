@@ -375,19 +375,43 @@ end
 
 ---List the project's files matching the globs, never under a target directory.
 ---
----Inside a git work tree that is what git tracks or would track, so a nested checkout is never
----walked. Elsewhere it is a ripgrep walk. A project lists globs relative to its root in
----`.dev/lint-ignore`, one per line, to leave those out, and `skip_hidden` drops hidden paths.
+---In a jj checkout that is what `jj file list` shows. Inside a git work tree it is what git tracks
+---or would track, so a nested checkout is never walked. Elsewhere it is a ripgrep walk. A project
+---lists globs relative to its root in `.dev/lint-ignore`, one per line, to leave those out, and
+---`skip_hidden` drops hidden paths.
 ---@param globs string[] file name globs such as `*.rs`
 ---@return string[] files paths relative to the root
 function Lint:files(globs)
     local root = self.root
     local ignored = ignore_globs(root)
+    local files = {}
+    if fs.exists(root .. "/.jj") and dev_os.which("jj") then
+        local include = {}
+        for _, glob in ipairs(globs) do
+            include[#include + 1] = 'glob:"**/' .. glob .. '"'
+        end
+        local fileset = "(" .. table.concat(include, " | ") .. ")"
+        for _, glob in ipairs(ignored) do
+            fileset = fileset .. ' ~ glob:"' .. glob .. '"'
+        end
+        fileset = fileset .. ' ~ glob:"**/target/**"'
+        local out, code = dev_os.capture(
+            { "jj", "file", "list", fileset },
+            { cwd = root, stderr = "null" }
+        )
+        if code == 0 then
+            for file in out:gmatch("[^\n]+") do
+                if not (self.skip_hidden and is_hidden(file)) then
+                    files[#files + 1] = file
+                end
+            end
+            return files
+        end
+    end
     local _, inside = dev_os.capture(
         { "git", "rev-parse", "--is-inside-work-tree" },
         { cwd = root, stderr = "null" }
     )
-    local files = {}
     if inside == 0 then
         local argv = { "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--" }
         for _, glob in ipairs(globs) do
@@ -406,17 +430,13 @@ function Lint:files(globs)
         end
         return files
     end
-    local argv = { "rg", "--files" }
+    local argv = { "rg", "--files", "--no-require-git" }
     if self.skip_hidden then
         argv[#argv + 1] = "--no-hidden"
     else
         for _, word in ipairs({ "--hidden", "-g", "!.git", "-g", "!.jj" }) do
             argv[#argv + 1] = word
         end
-    end
-    for _, glob in ipairs(globs) do
-        argv[#argv + 1] = "-g"
-        argv[#argv + 1] = glob
     end
     for _, glob in ipairs(ignored) do
         argv[#argv + 1] = "-g"
@@ -425,9 +445,21 @@ function Lint:files(globs)
     for _, word in ipairs({ "-g", "!target", "." }) do
         argv[#argv + 1] = word
     end
+    local patterns = {}
+    for _, glob in ipairs(globs) do
+        local lua_pattern = glob:gsub("[%^%$%(%)%%%.%[%]%+%-]", "%%%0")
+        lua_pattern = lua_pattern:gsub("%*", "[^/]*"):gsub("%?", "[^/]")
+        patterns[#patterns + 1] = "^" .. lua_pattern .. "$"
+    end
     local out = dev_os.capture(argv, { cwd = root })
     for file in out:gmatch("[^\n]+") do
-        files[#files + 1] = file
+        local name = file:match("[^/]*$")
+        for _, pattern in ipairs(patterns) do
+            if name:find(pattern) then
+                files[#files + 1] = file:gsub("^%./", "")
+                break
+            end
+        end
     end
     return files
 end
@@ -473,7 +505,10 @@ function Lint:comment_spacing(file, marker)
     for _, number in ipairs(M.spacing(text, marker)) do
         self:fail(
             "comment spacing",
-            file .. ":" .. number .. ": full-line comment directly after code, add a blank line before it"
+            file
+                .. ":"
+                .. number
+                .. ": full-line comment directly after code, add a blank line before it"
         )
     end
 end

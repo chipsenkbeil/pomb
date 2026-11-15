@@ -10,8 +10,15 @@ local fs = require("dev.fs")
 local ctx = ...
 
 local base_toml, cand_toml, cand_lock = ctx.args[1], ctx.args[2], ctx.args[3]
-if not (base_toml and cand_toml and cand_lock) or base_toml == "" or cand_toml == "" or cand_lock == "" then
-    io.stderr:write("usage: __version_guard <base Cargo.toml> <candidate Cargo.toml> <candidate Cargo.lock>\n")
+if
+    not (base_toml and cand_toml and cand_lock)
+    or base_toml == ""
+    or cand_toml == ""
+    or cand_lock == ""
+then
+    io.stderr:write(
+        "usage: __version_guard <base Cargo.toml> <candidate Cargo.toml> <candidate Cargo.lock>\n"
+    )
     return 1
 end
 
@@ -27,7 +34,12 @@ if not old then
     return 1
 end
 if new == old then
-    io.stderr:write(("Cargo.toml version %s equals the base version %s, so bump and commit it.\n"):format(new, old))
+    io.stderr:write(
+        ("Cargo.toml version %s equals the base version %s, so bump and commit it.\n"):format(
+            new,
+            old
+        )
+    )
     return 1
 end
 if locked ~= new then

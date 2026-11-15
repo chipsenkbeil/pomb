@@ -388,11 +388,8 @@ local function seed_task(i, task)
     api("PATCH", "/api/tasks/" .. task_id, patch)
 
     for _, subtask in ipairs(task.subtasks or {}) do
-        local sub_id = api(
-            "POST",
-            "/api/tasks/" .. task_id .. "/subtasks",
-            { name = subtask.name }
-        ).id
+        local sub_id =
+            api("POST", "/api/tasks/" .. task_id .. "/subtasks", { name = subtask.name }).id
         if truthy(subtask.done) then
             api("PATCH", "/api/tasks/" .. task_id .. "/subtasks/" .. sub_id, { done = true })
         end

@@ -42,7 +42,9 @@ local function die(message)
 end
 
 local function usage()
-    io.stderr:write('usage: dev release --batch N --summary "<text>" [--env KEY=VALUE]... [--dry-run]\n')
+    io.stderr:write(
+        'usage: dev release --batch N --summary "<text>" [--env KEY=VALUE]... [--dry-run]\n'
+    )
     io.stderr:write("       dev release --hash-only <sha> [--batch N] [--env KEY=VALUE]...\n")
     os.exit(2)
 end
@@ -74,7 +76,8 @@ end
 
 local function parse(args)
     local found = { envs = {}, dry_run = false, batch = "", summary = "", hash_only = "" }
-    local values = { ["--batch"] = "batch", ["--summary"] = "summary", ["--hash-only"] = "hash_only" }
+    local values =
+        { ["--batch"] = "batch", ["--summary"] = "summary", ["--hash-only"] = "hash_only" }
     local i = 1
     while i <= #args do
         local arg = args[i]
@@ -184,7 +187,12 @@ if opts.hash_only ~= "" then
     end
     local hash = nix_hash(repo, opts.hash_only)
     if not hash then
-        die(("The nix hash failed for %s. Rerun: dev release --hash-only %s."):format(opts.hash_only, opts.hash_only))
+        die(
+            ("The nix hash failed for %s. Rerun: dev release --hash-only %s."):format(
+                opts.hash_only,
+                opts.hash_only
+            )
+        )
     end
     request_block(opts, opts.hash_only, hash)
     return 0
@@ -206,7 +214,13 @@ if code ~= 0 then
     die(("No v* tag is in the history of %s/main."):format(remote))
 end
 if read_git(repo, "rev-list", "--count", last_tag .. ".." .. base) == "0" then
-    die(("The %s/main (%s) has no commit since %s. Nothing to release."):format(remote, base:sub(1, 7), last_tag))
+    die(
+        ("The %s/main (%s) has no commit since %s. Nothing to release."):format(
+            remote,
+            base:sub(1, 7),
+            last_tag
+        )
+    )
 end
 
 local rel = ".dev/worktrees/release-" .. opts.batch
@@ -243,15 +257,30 @@ if code ~= 0 then
     die(("Cannot read Cargo.toml at %s."):format(last_tag))
 end
 assert(fs.write(tag_toml, tagged))
-local guard = devos.run({ "dev", "__version_guard", tag_toml, "Cargo.toml", "Cargo.lock" }, { cwd = wt })
+local guard = devos.run(
+    { "dev", "__version_guard", tag_toml, "Cargo.toml", "Cargo.lock" },
+    { cwd = wt }
+)
 fs.remove(tag_toml)
 if guard ~= 0 then
-    die(("The version %s fails the check against %s. The worktree is left at %s."):format(new_version, last_tag, wt))
+    die(
+        ("The version %s fails the check against %s. The worktree is left at %s."):format(
+            new_version,
+            last_tag,
+            wt
+        )
+    )
 end
 
 for _, tag in ipairs({ "batch-" .. opts.batch, "v" .. new_version }) do
     if tag_taken(repo, remote, tag) then
-        die(("Tag %s already exists locally or on %s. The worktree is left at %s."):format(tag, remote, wt))
+        die(
+            ("Tag %s already exists locally or on %s. The worktree is left at %s."):format(
+                tag,
+                remote,
+                wt
+            )
+        )
     end
 end
 
@@ -259,11 +288,13 @@ local logs = assert(fs.mktemp({ prefix = "release-" .. opts.batch, dir = true })
 say(("Logs are in %s.\n"):format(logs))
 local holder = lock.holder(repo)
 if holder and lock.alive(holder) then
-    die(("Release batch %s (pid %s) already holds the land lock. The worktree is left at %s."):format(
-        holder.batch,
-        holder.pid,
-        wt
-    ))
+    die(
+        ("Release batch %s (pid %s) already holds the land lock. The worktree is left at %s."):format(
+            holder.batch,
+            holder.pid,
+            wt
+        )
+    )
 end
 lock.take(repo, opts.batch)
 lock_repo = repo
@@ -280,9 +311,19 @@ end
 
 drop_gate_trees()
 for _, gate in ipairs(GATES) do
-    if devos.run(git(repo, "worktree", "add", "-q", "--detach", gate_trees[gate], sha), { cwd = repo }) ~= 0 then
+    if
+        devos.run(
+            git(repo, "worktree", "add", "-q", "--detach", gate_trees[gate], sha),
+            { cwd = repo }
+        ) ~= 0
+    then
         drop_gate_trees()
-        die(("The git worktree add failed for %s. The worktree is left at %s."):format(gate_trees[gate], wt))
+        die(
+            ("The git worktree add failed for %s. The worktree is left at %s."):format(
+                gate_trees[gate],
+                wt
+            )
+        )
     end
 end
 
@@ -311,21 +352,25 @@ local ran = {}
 for _, gate in ipairs(GATES) do
     local gate_code = gate_file(gate, "code")
     if gate_code == "3" then
-        die(("The ci hub was still draining after %s seconds, so dev %s --remote did not run. See %s/%s.log. The worktree is left at %s."):format(
-            gate_file(gate, "ran"),
-            gate,
-            logs,
-            gate,
-            wt
-        ))
+        die(
+            ("The ci hub was still draining after %s seconds, so dev %s --remote did not run. See %s/%s.log. The worktree is left at %s."):format(
+                gate_file(gate, "ran"),
+                gate,
+                logs,
+                gate,
+                wt
+            )
+        )
     elseif gate_code ~= "0" then
-        die(("The command dev %s --remote did not pass on this worktree: %s. See %s/%s.log. The worktree is left at %s."):format(
-            gate,
-            gate_file(gate, "err"),
-            logs,
-            gate,
-            wt
-        ))
+        die(
+            ("The command dev %s --remote did not pass on this worktree: %s. See %s/%s.log. The worktree is left at %s."):format(
+                gate,
+                gate_file(gate, "err"),
+                logs,
+                gate,
+                wt
+            )
+        )
     end
     ran[gate] = gate_file(gate, "ran")
 end
@@ -349,11 +394,13 @@ if devos.run(git(repo, "fetch", "-q", remote)) ~= 0 then
     die(("The fetch of %s failed."):format(remote))
 end
 if read_git(repo, "rev-parse", remote .. "/main") ~= base then
-    die(("The %s/main branch moved past %s while the gates ran. Rerun dev release. The worktree is left at %s."):format(
-        remote,
-        base:sub(1, 7),
-        wt
-    ))
+    die(
+        ("The %s/main branch moved past %s while the gates ran. Rerun dev release. The worktree is left at %s."):format(
+            remote,
+            base:sub(1, 7),
+            wt
+        )
+    )
 end
 if opts.dry_run then
     lock.drop(repo)
@@ -372,11 +419,13 @@ for _, tag in ipairs({ "batch-" .. opts.batch, "v" .. new_version }) do
     end
 end
 if #reruns > 0 then
-    die(("Pushed %s but tagging failed. Rerun: %s. Then run: dev release --hash-only %s."):format(
-        sha,
-        table.concat(reruns, " && "),
-        sha
-    ))
+    die(
+        ("Pushed %s but tagging failed. Rerun: %s. Then run: dev release --hash-only %s."):format(
+            sha,
+            table.concat(reruns, " && "),
+            sha
+        )
+    )
 end
 local hash = nix_hash(repo, sha)
 if not hash then

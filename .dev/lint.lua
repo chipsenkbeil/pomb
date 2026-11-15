@@ -2,6 +2,7 @@
 Run the Rust lint set over the project.
 Cargo fmt, clippy, ast-grep, cargo-sort and cargo-deny run first, then the manifest and source
 checks. Every failed check is named at the end, and the exit code is non-zero when any failed.
+The verb takes no arguments, and a stray one exits 2.
 ]]
 local dev_os = require("dev.os")
 local fs = require("dev.fs")
@@ -9,7 +10,8 @@ local lintset = require("lintset")
 local verb = require("dev.verb")
 
 local EDITION = "2024"
-local CANONICAL = { "Copy", "Clone", "Debug", "Default", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash" }
+local CANONICAL =
+    { "Copy", "Clone", "Debug", "Default", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash" }
 local DEPENDENCY_TABLES = [=[[.dependencies, .["dev-dependencies"], .["build-dependencies"],
      .workspace.dependencies]]=]
 local UNPINNED = DEPENDENCY_TABLES
@@ -98,7 +100,7 @@ local function check_rust_version(manifest)
                 manifest
                     .. ": declares rust-version "
                     .. rust_version
-                    .. ", but the crate sets publish = false, remove it and let rust-toolchain.toml pin the compiler"
+                    .. ", but the crate sets publish = false, so remove it and let rust-toolchain.toml pin the compiler"
             )
         end
     elseif rust_version == "" then
@@ -117,7 +119,7 @@ local function check_manifest(manifest)
             manifest
                 .. ": path dependency '"
                 .. dep
-                .. "' needs an exact version, such as version = \"=1.2.3\""
+                .. '\' needs an exact version, such as version = "=1.2.3"'
         )
     end
     for _, dep in ipairs(names("-p", "toml", "-o", "json", BANNED, manifest)) do
@@ -127,7 +129,10 @@ local function check_manifest(manifest)
                 manifest .. ": depends on async-trait, write async trait methods as native async fn"
             )
         else
-            lint:fail("manifests", manifest .. ": depends on " .. dep .. ", use std::sync::LazyLock")
+            lint:fail(
+                "manifests",
+                manifest .. ": depends on " .. dep .. ", use std::sync::LazyLock"
+            )
         end
     end
     local thiserror = #names("-p", "toml", "-o", "json", THISERROR, manifest) > 0
@@ -282,10 +287,19 @@ local function check_unsafe()
     end
 end
 
-if dev_os.run({ "cargo", "+nightly", "fmt", "--version" }, { cwd = root, stdout = "null", stderr = "null" }) == 0 then
+if
+    dev_os.run(
+        { "cargo", "+nightly", "fmt", "--version" },
+        { cwd = root, stdout = "null", stderr = "null" }
+    ) == 0
+then
     lint:check("cargo fmt", { "cargo", "+nightly", "fmt", "--check" })
 else
-    lint:missing("nightly rustfmt", "rustup toolchain install nightly --component rustfmt", "cargo fmt")
+    lint:missing(
+        "nightly rustfmt",
+        "rustup toolchain install nightly --component rustfmt",
+        "cargo fmt"
+    )
 end
 
 lint:check(
@@ -294,10 +308,16 @@ lint:check(
 )
 
 if mentions_debug_assertions() then
-    lint:check(
-        "cargo clippy release",
-        { "cargo", "clippy", "--release", "--all-targets", "--all-features", "--", "-D", "warnings" }
-    )
+    lint:check("cargo clippy release", {
+        "cargo",
+        "clippy",
+        "--release",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+    })
 end
 
 if lint:have("ast-grep", "brew install ast-grep", "ast-grep scan") then
@@ -350,7 +370,10 @@ if lint:have("rg", "brew install ripgrep", "source patterns") then
     lint:step("comment periods")
     for _, file in ipairs(rs_files) do
         for _, number in ipairs(lintset.periods(read(file))) do
-            lint:fail("comment periods", file .. ":" .. number .. ": a // one-liner ends in a period, drop it")
+            lint:fail(
+                "comment periods",
+                file .. ":" .. number .. ": a // one-liner ends in a period, drop it"
+            )
         end
     end
 
@@ -382,7 +405,10 @@ if lint:have("rg", "brew install ripgrep", "source patterns") then
     end
 end
 
-if lint:have("rg", "brew install ripgrep", "unsafe") and lint:have("yq", "brew install yq", "unsafe") then
+if
+    lint:have("rg", "brew install ripgrep", "unsafe")
+    and lint:have("yq", "brew install yq", "unsafe")
+then
     check_unsafe()
 end
 
@@ -392,7 +418,8 @@ lint:standalone()
 
 local json = require("dev.json")
 
-local SCRIPTS = { "static/pure.js", "static/app.js", "static/passkey.js", "static/pages.js", "static/docs.js" }
+local SCRIPTS =
+    { "static/pure.js", "static/app.js", "static/passkey.js", "static/pages.js", "static/docs.js" }
 local PRIVACY_OCTET = "(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
 local PRIVACY_IP = "(?<![0-9A-Za-z.§])"
     .. PRIVACY_OCTET
@@ -513,7 +540,9 @@ local function tracked_files()
     end
     local files = {}
     for file in out:gmatch("([^%z]+)") do
-        local skip = file:find("^scratchpad/") or file:find("Cargo%.lock$") or file:find("^target/")
+        local skip = file:find("^scratchpad/")
+            or file:find("Cargo%.lock$")
+            or file:find("^target/")
             or file:find("/target/")
         if not skip then
             files[#files + 1] = file
@@ -593,21 +622,39 @@ end
 check_inline_scripts()
 check_c_build_tools()
 
-local site_scripts = lint:files({
-    ".dev/standalone/setup.sh",
-    ".dev/standalone/pomb-update",
-    ".dev/standalone/__publish_release.sh",
-    ".dev/__site_decoys.sh",
-    ".dev/__site_firewall.sh",
-    ".dev/__site_restage.sh",
-    ".dev/__site_setup-code.sh",
-    ".dev/__site_status.sh",
-})
+local site_names = {
+    [".dev/standalone/setup.sh"] = true,
+    [".dev/standalone/pomb-update"] = true,
+    [".dev/standalone/__publish_release.sh"] = true,
+    [".dev/__site_decoys.sh"] = true,
+    [".dev/__site_firewall.sh"] = true,
+    [".dev/__site_restage.sh"] = true,
+    [".dev/__site_setup-code.sh"] = true,
+    [".dev/__site_status.sh"] = true,
+}
+local site_scripts = {}
+for _, file in ipairs(lint:files({ "*.sh", "pomb-update" })) do
+    if site_names[file] then
+        site_scripts[#site_scripts + 1] = file
+    end
+end
 if lint:have("shellcheck", "brew install shellcheck", "shellcheck") then
     lint:check("shellcheck", lintset.with_files({ "shellcheck", "-x", "-s", "bash" }, site_scripts))
 end
 if lint:have("shfmt", "brew install shfmt", "shfmt") then
     lint:check("shfmt", lintset.with_files({ "shfmt", "-d", "-i", "2", "-ci" }, site_scripts))
+end
+
+if lint:have("stylua", "brew install stylua", "stylua") then
+    local lua_files = {}
+    for _, file in ipairs(lint:files({ "*.lua" })) do
+        if file:find("^%.dev/") and not file:find("^%.dev/worktrees/") then
+            lua_files[#lua_files + 1] = file
+        end
+    end
+    if #lua_files > 0 then
+        lint:check("stylua", lintset.with_files({ "stylua", "--check" }, lua_files))
+    end
 end
 
 check_private_details()

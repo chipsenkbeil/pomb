@@ -79,9 +79,20 @@ end
 
 local function api(method, path, body)
     return curl({
-        "curl", "-sS", "-f", "-b", jar,
-        "-H", "Accept: application/json", "-H", "Content-Type: application/json",
-        "-X", method, "--data-binary", body, base .. path,
+        "curl",
+        "-sS",
+        "-f",
+        "-b",
+        jar,
+        "-H",
+        "Accept: application/json",
+        "-H",
+        "Content-Type: application/json",
+        "-X",
+        method,
+        "--data-binary",
+        body,
+        base .. path,
     })
 end
 
@@ -95,7 +106,11 @@ local LAUNCH = 'nohup "$@" >>"$LOG" 2>&1 </dev/null & echo $!'
 local function start_server(wall)
     need(fs.write(ftfile, wall))
     local argv = {
-        "sh", "-c", LAUNCH, "sh", "env",
+        "sh",
+        "-c",
+        LAUNCH,
+        "sh",
+        "env",
         "TZ=" .. tz,
         "FAKETIME_TIMESTAMP_FILE=" .. ftfile,
         "FAKETIME_CACHE_DURATION=0",

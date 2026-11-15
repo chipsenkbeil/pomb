@@ -6,9 +6,9 @@ local M = {}
 
 ---Absolute path of the checkout that holds this module.
 ---@type string
-M.root = fs.dirname(fs.dirname(fs.dirname(fs.dirname(
-    assert(fs.realpath(debug.getinfo(1, "S").source:sub(2)))
-))))
+M.root = fs.dirname(
+    fs.dirname(fs.dirname(fs.dirname(assert(fs.realpath(debug.getinfo(1, "S").source:sub(2))))))
+)
 
 ---Write an executable `#!/bin/sh` script.
 ---@param path string absolute path of the script

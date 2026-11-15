@@ -705,6 +705,20 @@ pub struct Parser {
 }
 ```
 
+### 97. Declare a test crate root's `mod common` before its use groups
+
+A test crate root declares `#[cfg(test)] mod common` first, then its `use`
+groups.
+
+Review
+
+```rust
+#[cfg(test)]
+mod common;
+
+use common::Fixture;
+```
+
 ### 34. Re-export from the root, and make a module public only for its namespace
 
 Keep modules private and re-export their items from the crate root. Make a
@@ -749,9 +763,10 @@ pub mod prelude {
 }
 ```
 
-### 37. Glob-import only preludes, macro packs and the domain module
+### 37. Glob-import only preludes, macro packs, the domain module and a test module's parent
 
-Every other import names its items.
+Every other import names its items. A `#[cfg(test)]` module may glob-import its
+parent with `use super::*`, as rule 65 shows.
 
 Review (`clippy::wildcard_imports` stays off)
 
@@ -760,6 +775,11 @@ use log::*;
 use mlua::prelude::*;
 
 use crate::pdf::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+}
 ```
 
 ### 38. Group imports std, external, then the crate

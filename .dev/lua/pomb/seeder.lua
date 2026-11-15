@@ -16,7 +16,8 @@ local function client(base, jar, order)
     local self = {}
 
     function self.api(method, path, body)
-        local argv = { "curl", "-sS", "-f", "-X", method, "-b", jar, "-H", "Accept: application/json" }
+        local argv =
+            { "curl", "-sS", "-f", "-X", method, "-b", jar, "-H", "Accept: application/json" }
         if body then
             for _, word in ipairs({ "-H", "Content-Type: application/json", "--data-binary", body }) do
                 argv[#argv + 1] = word
