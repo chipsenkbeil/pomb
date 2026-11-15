@@ -48,7 +48,7 @@ function element(tag) {
 }
 
 var epicHoverTried, hoveredAct, hideCount, trigger0;
-var calls, toasts, refreshed, reloads, menusClosed, replies, els, umbrellaLine, tmId, cardMenuCard, epicSubmenuLoading, opened;
+var calls, toasts, refreshed, reloads, menusClosed, replies, els, umbrellaLine, umbrellaNames, tmId, cardMenuCard, epicSubmenuLoading, opened;
 let pageBoard, taskModal;
 var window = {};
 var CARD_SUB_ICONS = {};
@@ -70,6 +70,7 @@ function reset() {
   trigger0 = element('button');
   els['tm-epic-list'].hidden = true;
   umbrellaLine = false;
+  umbrellaNames = [];
   tmId = 'c1';
   cardMenuCard = null;
   epicSubmenuLoading = false;
@@ -86,7 +87,7 @@ var document = {
     if (sel === '#modal-root .task-modal') return taskModal;
     return sel === '#modal-root .tm-umbrella-line' && umbrellaLine ? {} : null;
   },
-  querySelectorAll: function () { return []; },
+  querySelectorAll: (sel) => (sel === '#modal-root .tm-umbrella-line .tm-umbrella-name' ? umbrellaNames : []),
   createElement: element,
   createTextNode: function (text) { return { text: text }; },
 };
@@ -123,7 +124,7 @@ const arrowConst = (name) => {
 };
 const fetchBoardEpics = arrowConst('fetchBoardEpics');
 const epicChoiceList = arrowConst('epicChoiceList');
-eval(fn('  function appendEpicChoices(container, choices, makeButton) {'));
+eval(fn('  function appendEpicChoices(container, choices, makeButton, currentId) {'));
 eval(fn('  function addCardToEpic(card, epicId) {'));
 eval(fn('  function modalTaskBoard() {'));
 eval(fn('  function toggleModalEpicList(trigger) {'));
@@ -132,6 +133,8 @@ eval(fn('    function openEpicSubmenu(btn, task) {', '    '));
 eval(fn('    function hoverCardMenuItem(item) {', '    '));
 var realCloseAllTmMenus = eval('(' + fn('  function closeAllTmMenus() {').replace('function closeAllTmMenus', 'function') + ')');
 BoardChrome = eval('(function () {' + src.slice(chromeStart, chromeEnd) + '\n return BoardChrome; })()');
+const realEpicChoices = BoardChrome.epicChoices;
+const realLoadEpics = BoardChrome.loadEpics;
 
 var JSON_HEADERS = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
 
@@ -441,6 +444,75 @@ function trigger() {
     return b;
   });
   check('depth goes to the --depth property, none for a root', lone.children.map(function (b) { return b.style['--depth']; }), [2, undefined]);
+
+  BoardChrome.epicChoices = realEpicChoices;
+  BoardChrome.loadEpics = realLoadEpics;
+  const rowState = (box) => box.children.map((b) => [b.label(), b.disabled, b.getAttribute('aria-checked')]);
+  const pillCard = (epicId) => ({
+    dataset: { taskId: 'c1' },
+    querySelector: (sel) => (sel === '.card-epic-tag' && epicId ? { dataset: { epicId: epicId } } : null),
+  });
+  const nameSpan = (id) => {
+    const span = element('span');
+    span.setAttribute('data-open-task', id);
+    return span;
+  };
+
+  reset();
+  BoardChrome.epics = [epic('e1', 'Alpha'), epic('e4', 'Gamma')];
+  BoardChrome.epicsLoaded = true;
+  cardMenuCard = pillCard('e1');
+  els['card-ctx-menu'].hidden = false;
+  openEpicSubmenu(trigger(), { id: 'c1' });
+  await flush();
+  await flush();
+  check('the board submenu checks and disables the current epic only', rowState(opened[0]), [
+    ['Alpha', true, 'true'],
+    ['Gamma', false, null],
+  ]);
+
+  reset();
+  BoardChrome.epics = [epic('e1', 'Alpha'), epic('e4', 'Gamma')];
+  BoardChrome.epicsLoaded = true;
+  cardMenuCard = pillCard(null);
+  els['card-ctx-menu'].hidden = false;
+  openEpicSubmenu(trigger(), { id: 'c1' });
+  await flush();
+  await flush();
+  check('a card in no epic checks no board row', rowState(opened[0]), [
+    ['Alpha', false, null],
+    ['Gamma', false, null],
+  ]);
+
+  reset();
+  BoardChrome.epics = [epic('e1', 'Alpha'), epic('e4', 'Gamma')];
+  BoardChrome.epicsLoaded = true;
+  umbrellaNames = [nameSpan('e9'), nameSpan('e1')];
+  const modalTrigger = trigger();
+  toggleModalEpicList(modalTrigger);
+  await flush();
+  check('the modal list checks and disables the direct parent only', rowState(els['tm-epic-list']), [
+    ['Alpha', true, 'true'],
+    ['Gamma', false, null],
+  ]);
+  replies.push(response(true, '{}'));
+  els['tm-epic-list'].children[1].click();
+  await flush();
+  await flush();
+  check('an unchecked modal row still adds the card', calls.map((c) => [c.method, c.path, c.body]), [
+    ['POST', '/api/tasks/e4/links', '{"kind":"child","target_id":"c1"}'],
+  ]);
+
+  reset();
+  BoardChrome.epics = [epic('e1', 'Alpha'), epic('e4', 'Gamma')];
+  BoardChrome.epicsLoaded = true;
+  umbrellaNames = [nameSpan('e1'), nameSpan('e9')];
+  toggleModalEpicList(trigger());
+  await flush();
+  check('an ancestor above the direct parent checks no modal row', rowState(els['tm-epic-list']), [
+    ['Alpha', false, null],
+    ['Gamma', false, null],
+  ]);
 
   if (failures) process.exit(1);
   console.log('ok');

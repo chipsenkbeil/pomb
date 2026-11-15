@@ -1822,9 +1822,10 @@
         openCardSubmenu(btn, function (sub) {
           sub.dataset.for = CARD_SUBMENU.EPIC;
           sub.classList.add('card-sub--epics');
+          const pill = card.querySelector('.card-epic-tag');
           appendEpicChoices(sub, choices, function (label, epicId) {
             return cardSubmenuButton(label, CARD_SUBMENU.EPIC, { 'data-epic-id': epicId });
-          });
+          }, pill && pill.dataset.epicId);
         });
       }, function () { epicSubmenuLoading = false; });
     }
@@ -5278,7 +5279,7 @@
     return choices;
   };
 
-  function appendEpicChoices(container, choices, makeButton) {
+  function appendEpicChoices(container, choices, makeButton, currentId) {
     if (!choices.length) {
       var none = document.createElement('button');
       none.type = 'button';
@@ -5290,6 +5291,10 @@
     choices.forEach(function (choice) {
       var button = makeButton((choice.depth ? '↳ ' : '') + choice.name, choice.id);
       if (choice.depth) button.style.setProperty('--depth', choice.depth);
+      if (currentId && choice.id === currentId) {
+        button.disabled = true;
+        button.setAttribute('aria-checked', 'true');
+      }
       container.appendChild(button);
     });
   }
@@ -5314,6 +5319,8 @@
     BoardChrome.epicChoices(id, task && task.id).then(function (choices) {
       if (!choices) { toast('Could not load epics.'); return; }
       list.textContent = '';
+      const umbrellaNames = document.querySelectorAll('#modal-root .tm-umbrella-line .tm-umbrella-name');
+      const parentName = umbrellaNames[umbrellaNames.length - 1];
       appendEpicChoices(list, choices, function (label, epicId) {
         var button = document.createElement('button');
         button.type = 'button';
@@ -5324,7 +5331,7 @@
           addToEpic(id, epicId, hasParent, refreshAfterLinkChange);
         });
         return button;
-      });
+      }, parentName && parentName.getAttribute('data-open-task'));
       list.hidden = false;
       trigger.setAttribute('aria-expanded', 'true');
     });
