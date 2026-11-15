@@ -14649,6 +14649,24 @@ async fn a_child_should_not_be_stored_once_its_parent_is_gone() {
     assert_eq!(token_count(&fx), before);
 }
 
+#[tokio::test]
+async fn a_child_should_not_be_stored_under_an_expired_parent() {
+    let (_dir, fx) = fixture();
+    let now = chrono::Utc::now().timestamp();
+    let (parent, _) =
+        new_api_token_record(&fx.user_id, "lapsed", AuthScope::Provision, Some(now - 1));
+    fx.db.create_api_token(&parent).expect("token");
+    let (mut record, _) = new_api_token_record(&fx.user_id, "kid", AuthScope::Read, None);
+    record.parent_id = Some(parent.id.clone());
+    let before = token_count(&fx);
+    let refusal = fx
+        .db
+        .create_child_api_token(record, 1, now)
+        .expect("create");
+    assert_eq!(refusal.map(|_| ()), Err(ChildTokenRefusal::ParentGone));
+    assert_eq!(token_count(&fx), before);
+}
+
 /// Returns the names in a list of tokens, sorted.
 fn names_of(list: &Value) -> Vec<String> {
     let mut names: Vec<String> = list
