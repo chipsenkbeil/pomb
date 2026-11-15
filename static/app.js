@@ -16459,16 +16459,21 @@
       var repeats = qs('calendar-show-repeats');
       day.value = String(firstDayOfWeek);
       repeats.checked = showRepeats;
-      day.addEventListener('change', function () {
+      day.addEventListener('change', () => {
+        const previous = firstDayOfWeek;
         firstDayOfWeek = day.value === '1' ? 1 : 0;
         accountPrefs.weekStart = firstDayOfWeek;
-        fetch('/api/settings', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({ week_start: firstDayOfWeek === 1 ? 'monday' : 'sunday' }),
-        });
-        if (dataset) render();
+        api('/api/settings', 'PUT', { week_start: firstDayOfWeek === 1 ? 'monday' : 'sunday' })
+          .then((res) => {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+          })
+          .catch(() => {
+            firstDayOfWeek = previous;
+            accountPrefs.weekStart = previous;
+            day.value = String(previous);
+            toast('Could not save the setting.');
+          })
+          .then(() => { if (dataset) render(); });
       });
       repeats.addEventListener('change', function () {
         showRepeats = repeats.checked;

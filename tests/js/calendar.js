@@ -2,7 +2,39 @@ var src = require('fs').readFileSync(process.argv[2], 'utf8');
 var start = src.indexOf('  var CalendarPage = (function () {');
 var end = src.indexOf('\n  })();', start) + '\n  })();'.length;
 if (start < 0 || end < start) throw new Error('CalendarPage not found');
-var document = { getElementById: function () { return null; } };
+const elements = {};
+function element(id) {
+  if (!elements[id]) elements[id] = {
+    value: '', checked: false, hidden: true, textContent: '', innerHTML: '', options: [], dataset: {},
+    listeners: {},
+    addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
+    setAttribute() {}, querySelectorAll: () => [],
+    closest: () => null, focus() {}, remove() {},
+    appendChild() {},
+  };
+  return elements[id];
+}
+const document = { getElementById: element };
+const window = { setTimeout: () => 0, clearTimeout() {}, location: { origin: 'https://x.test' } };
+const settingsSaves = [];
+let saveStatus = 200;
+function fetch(url, opts) {
+  if (opts && opts.method === 'PUT') {
+    settingsSaves.push(JSON.parse(opts.body));
+    return Promise.resolve({ ok: saveStatus === 200, status: saveStatus });
+  }
+  return Promise.resolve({
+    ok: true,
+    json: () => Promise.resolve({ board: { name: 'One' }, tasks: [], columns: [], swimlanes: [], colors: [], users: [] }),
+  });
+}
+const fetchJson = (url) => fetch(url, {}).then((res) => res.json());
+const api = (path, method, data) => fetch(path, { method, body: data === undefined ? undefined : JSON.stringify(data) });
+const toast = (message) => {
+  const el = element('toast');
+  el.textContent = message;
+  el.hidden = false;
+};
 var accountPrefs = { hour12: true, weekStart: 0 };
 function escapeHtml(s) { return String(s); }
 function parseDueAt(s) { return new Date(s); }
@@ -144,4 +176,30 @@ var chip = CalendarPage.renderChip({ id: 't9', name: 'Pay', color_id: '', column
 check('a chip carries its task id so a click can open the task',
   [chip.indexOf('data-task-id="t9"') > -1, chip.indexOf('role="button"') > -1], [true, true]);
 
-process.exit(failures ? 1 : 0);
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+const changeFirstDay = (value) => {
+  const day = element('calendar-first-day');
+  day.value = value;
+  day.listeners.change.forEach((fn) => fn());
+  return flush();
+};
+CalendarPage.open('b1');
+flush().then(() => {
+  saveStatus = 500;
+  return changeFirstDay('1');
+}).then(() => {
+  check('a failed save reverts the select', element('calendar-first-day').value, '0');
+  check('a failed save says the setting could not be saved',
+    [element('toast').hidden, element('toast').textContent], [false, 'Could not save the setting.']);
+  check('a failed save renders the grid with the old first day', headers(element('calendar-grid').innerHTML)[0], 'Sun');
+  saveStatus = 200;
+  element('toast').hidden = true;
+  element('toast').textContent = '';
+  return changeFirstDay('1');
+}).then(() => {
+  check('a successful save keeps the new first day',
+    [element('calendar-first-day').value, headers(element('calendar-grid').innerHTML)[0]], ['1', 'Mon']);
+  check('a successful save shows no toast', [element('toast').hidden, element('toast').textContent], [true, '']);
+  check('each save sends the week start', settingsSaves, [{ week_start: 'monday' }, { week_start: 'monday' }]);
+  process.exit(failures ? 1 : 0);
+});
