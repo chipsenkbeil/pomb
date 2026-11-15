@@ -287,3 +287,47 @@ async fn board_list_should_hide_a_joined_board_from_a_token_assigned_to_other_bo
             .all(|board| board["id"] != fx.board.as_str())
     );
 }
+
+#[tokio::test]
+async fn report_bookmarks_should_show_a_shared_one_to_members_and_neither_to_a_stranger() {
+    // Share one bookmark and keep one private
+    let fx = Fixture::new();
+    assert_eq!(fx.add("bob", "member").await.status, StatusCode::OK);
+    let uri = format!("/api/boards/{}/report-bookmarks", fx.board);
+    let shared = fx
+        .send(
+            &fx.owner,
+            "POST",
+            &uri,
+            Some(json!({"report": "burndown", "name": "Team", "shared": true})),
+        )
+        .await;
+    assert_eq!(shared.status, StatusCode::OK, "{}", shared.body);
+    let private = fx
+        .send(
+            &fx.owner,
+            "POST",
+            &uri,
+            Some(json!({"report": "burndown", "name": "Mine"})),
+        )
+        .await;
+    assert_eq!(private.status, StatusCode::OK, "{}", private.body);
+
+    // A member sees only the shared one
+    let listed = fx.send(&fx.friend, "GET", &uri, None).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    let seen = listed.body["bookmarks"].as_array().expect("array");
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0]["name"], "Team");
+    assert_eq!(seen[0]["shared"], true);
+    assert_eq!(seen[0]["own"], false);
+
+    // A stranger sees neither
+    let stranger = fx.send(&fx.stranger, "GET", &uri, None).await;
+    assert_eq!(stranger.status, StatusCode::NOT_FOUND, "{}", stranger.body);
+    let leaked = stranger.body.to_string();
+    assert!(
+        !leaked.contains("Team") && !leaked.contains("Mine"),
+        "{leaked}"
+    );
+}
