@@ -27222,47 +27222,15 @@ async fn create_child_token(
         ));
     }
     let name = submitted_token_name(&input.name)?;
-    let role = match input.role_id.as_deref() {
-        Some(id) => Some(
-            account
-                .agent_role(id)
-                .map_err(AppError::from)?
-                .ok_or_else(unknown_role_at_issue)?,
-        ),
-        None => None,
+    let role = child_role(&account, input.role_id.as_deref())?;
+    let ask = ChildAsk {
+        preset: input.preset.as_deref(),
+        permissions: input.permissions.as_deref(),
+        boards: input.boards,
     };
     let (scope, permissions, boards) = match &role {
-        Some(role) => role_child_grant(
-            &account,
-            &user,
-            role,
-            (input.preset.as_deref(), input.permissions.as_deref()),
-            input.boards,
-        )?,
-        None => {
-            let (scope, permissions) =
-                named_grant(input.preset.as_deref(), input.permissions.as_deref())?;
-            if let Some(extra) = permissions.difference(user.permissions()).next() {
-                return Err(AppError::forbidden(format!(
-                    "the calling token does not hold {}",
-                    extra.name()
-                )));
-            }
-            let requested = input.boards.unwrap_or_default();
-            let unreachable = || {
-                AppError::forbidden("the child asks for a board the calling token does not reach")
-            };
-            if let BoardsInput::Only(ids) = &requested
-                && ids.iter().any(|id| !user.boards().allows(id))
-            {
-                return Err(unreachable());
-            }
-            let boards = submitted_boards(&account, requested)?;
-            if !boards.within(user.boards()) {
-                return Err(unreachable());
-            }
-            (scope, permissions, boards)
-        }
+        Some(role) => role_child_grant(&account, &user, role, ask)?,
+        None => plain_child_grant(&account, &user, ask)?,
     };
     let hours = checked_token_hours(
         "expires_in_hours",
@@ -27320,8 +27288,62 @@ fn child_refusal(refusal: ChildTokenRefusal) -> AppError {
     }
 }
 
+/// What a child token request asks for.
+struct ChildAsk<'a> {
+    /// The preset the request names.
+    preset: Option<&'a str>,
+    /// The permission wire names the request lists.
+    permissions: Option<&'a [String]>,
+    /// The boards the request names.
+    boards: Option<BoardsInput>,
+}
+
+/// Returns the role a child token request names, or `None` when it names none.
+fn child_role(
+    account: &AccountDb,
+    role_id: Option<&str>,
+) -> Result<Option<AgentRoleRow>, AppError> {
+    role_id
+        .map(|id| {
+            account
+                .agent_role(id)
+                .map_err(AppError::from)?
+                .ok_or_else(unknown_role_at_issue)
+        })
+        .transpose()
+}
+
+/// Returns the grant of a child issued without a role: the named permissions, which the caller
+/// must hold, on the requested boards, which the caller must reach.
+fn plain_child_grant(
+    account: &AccountDb,
+    user: &AuthUser,
+    ask: ChildAsk<'_>,
+) -> Result<(AuthScope, BTreeSet<Permission>, BoardAccess), AppError> {
+    let (scope, permissions) = named_grant(ask.preset, ask.permissions)?;
+    if let Some(extra) = permissions.difference(user.permissions()).next() {
+        return Err(AppError::forbidden(format!(
+            "the calling token does not hold {}",
+            extra.name()
+        )));
+    }
+    let requested = ask.boards.unwrap_or_default();
+    let unreachable =
+        || AppError::forbidden("the child asks for a board the calling token does not reach");
+    if let BoardsInput::Only(ids) = &requested
+        && ids.iter().any(|id| !user.boards().allows(id))
+    {
+        return Err(unreachable());
+    }
+    let boards = submitted_boards(account, requested)?;
+    if !boards.within(user.boards()) {
+        return Err(unreachable());
+    }
+    Ok((scope, permissions, boards))
+}
+
 /// Returns the grant of a child issued as `role`: the role's template and the required permissions
-/// cut to what the caller holds, without `tokens.issue`, narrowed by what `input` lists, on the
+/// cut to what the caller holds, without `tokens.issue`, narrowed by what `ask` lists, on the
 /// caller's boards the role is granted on, narrowed the same way. A permission or board the cut
 /// leaves out is refused as `exceeds_grant`, and so is a cut that leaves none of the role's
 /// permissions beyond the required ones.
@@ -27329,9 +27351,13 @@ fn role_child_grant(
     account: &AccountDb,
     user: &AuthUser,
     role: &AgentRoleRow,
-    (preset, listed): (Option<&str>, Option<&[String]>),
-    boards: Option<BoardsInput>,
+    ask: ChildAsk<'_>,
 ) -> Result<(AuthScope, BTreeSet<Permission>, BoardAccess), AppError> {
+    let ChildAsk {
+        preset,
+        permissions: listed,
+        boards,
+    } = ask;
     let mut allowed: BTreeSet<Permission> = Permission::with_required(&role.permissions)
         .intersection(user.permissions())
         .copied()
