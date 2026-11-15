@@ -474,6 +474,7 @@ mod tests {
             role_id: None,
             role_name: None,
             label: None,
+            paid_by: None,
         };
         let event_bytes = serde_json::to_vec(&event).expect("json").len();
         let left = MAX_TASK_ROW_BYTES.saturating_sub(row_bytes(db, task));

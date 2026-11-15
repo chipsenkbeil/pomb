@@ -3240,6 +3240,10 @@ pub struct TaskEvent {
     /// The `agent-N` label of the token's issue, or null.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Id of the account whose stored-bytes quota this event's bytes count against. Null for the
+    /// board owner and for older events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paid_by: Option<String>,
 }
 
 /// The values a history event replaced and set, before they are cut for storage.

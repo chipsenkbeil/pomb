@@ -110,6 +110,7 @@ fn event(kind: HistoryKind, detail: &str, actor: &str, at: &str) -> TaskEvent {
         role_id: None,
         role_name: None,
         label: None,
+        paid_by: None,
     }
 }
 

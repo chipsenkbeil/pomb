@@ -162,7 +162,8 @@ fn bin_task_in(txn: &WriteTransaction, id: &str, actor: Actor<'_>) -> DbResult<O
     txn_queue_task_deleted(txn, &task, actor)?;
     let links = links_around(txn, id, &task)?;
     unlink_deleted_tasks(txn, &[id.to_string()])?;
-    txn_count_usage(txn, &owner, 0, freed)?;
+    txn_count_usage(txn, &owner, 0, freed.owner)?;
+    freed.release_payers(txn)?;
     let mut entries = Vec::new();
     {
         txn.open_table(TASKS)?.remove(id)?;

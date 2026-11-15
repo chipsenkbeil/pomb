@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use redb::{ReadTransaction, ReadableTable, Table, WriteTransaction};
 use serde::Serialize;
@@ -348,11 +348,19 @@ pub(crate) fn txn_write_task(
             txn_check_task(txn, task, before.as_ref(), bytes, held_bytes, allowance)?;
         }
         None => {
-            if held_bytes != bytes
-                && let Some(owner) = txn_column_owner(txn, &task.column_id)?
-            {
-                txn_count_usage(txn, &owner, bytes, held_bytes)?;
-            }
+            let owner = txn_column_owner(txn, &task.column_id)?;
+            let held = match before.as_ref() {
+                Some(before) => row_shares(before, held_bytes)?,
+                None => Shares::default(),
+            };
+            txn_charge_task(
+                txn,
+                owner.as_deref(),
+                &row_shares(task, bytes)?,
+                owner.as_deref(),
+                &held,
+                None,
+            )?;
         }
     }
     tasks.insert(task.id.as_str(), raw.as_slice())?;
@@ -382,32 +390,123 @@ fn txn_check_task(
         Some(_) => owner.clone(),
         None => None,
     };
-    let same_owner = held_owner == owner;
     if let Some(owner) = owner.as_deref() {
-        let removed = if same_owner { held_bytes } else { 0 };
         let held_subtasks = before.map_or(0, |row| row.subtasks.len());
         if task.subtasks.len() > held_subtasks {
             txn_refuse_over_quota(txn, owner, Quota::SubtasksPerTask, task.subtasks.len())?;
         }
-        txn_refuse_past_bytes(txn, owner, bytes.saturating_sub(removed), allowance)?;
-        txn_count_usage(txn, owner, bytes, removed)?;
     }
-    if let Some(held_owner) = held_owner.as_deref().filter(|_| !same_owner) {
-        txn_count_usage(txn, held_owner, 0, held_bytes)?;
+    let held = match before {
+        Some(before) => row_shares(before, held_bytes)?,
+        None => Shares::default(),
+    };
+    txn_charge_task(
+        txn,
+        owner.as_deref(),
+        &row_shares(task, bytes)?,
+        held_owner.as_deref(),
+        &held,
+        Some(allowance),
+    )
+}
+
+/// What a stored task takes, split by the account that holds each part.
+#[derive(Debug, Default)]
+pub(crate) struct Shares {
+    /// Bytes counted against the board owner: the row without the history events other accounts
+    /// paid for, plus its attachment files where they are counted.
+    pub(crate) owner: u64,
+    /// Bytes of the history events each paying account holds.
+    pub(crate) payers: BTreeMap<String, u64>,
+}
+
+impl Shares {
+    /// Takes every payer's share off its account, inside an open write transaction.
+    pub(crate) fn release_payers(&self, txn: &WriteTransaction) -> DbResult<()> {
+        for (payer, bytes) in &self.payers {
+            txn_count_usage(txn, payer, 0, *bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Adds `other` to these shares.
+    fn add(&mut self, other: Self) {
+        self.owner += other.owner;
+        for (payer, bytes) in other.payers {
+            *self.payers.entry(payer).or_default() += bytes;
+        }
+    }
+}
+
+/// Splits the `len` bytes of the stored row of `task`, without its attachment files, between its
+/// board owner and the accounts its history events name in `paid_by`.
+fn row_shares(task: &TaskRow, len: u64) -> DbResult<Shares> {
+    let mut payers: BTreeMap<String, u64> = BTreeMap::new();
+    for event in &task.history {
+        if let Some(payer) = &event.paid_by {
+            let bytes = serde_json::to_vec(event)?.len() as u64 + 1;
+            *payers.entry(payer.clone()).or_default() += bytes;
+        }
+    }
+    let paid: u64 = payers.values().sum();
+    Ok(Shares {
+        owner: len.saturating_sub(paid),
+        payers,
+    })
+}
+
+/// Counts the change from `held`, which `held_owner` held, to `after`, which `owner` holds, on
+/// every account that holds a part, inside an open write transaction. With an `allowance`, the
+/// write is first refused when it grows an account past its stored-bytes quota.
+fn txn_charge_task(
+    txn: &WriteTransaction,
+    owner: Option<&str>,
+    after: &Shares,
+    held_owner: Option<&str>,
+    held: &Shares,
+    allowance: Option<u64>,
+) -> DbResult<()> {
+    // Collect what each account adds and removes
+    let mut changes: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
+    if let Some(owner) = owner {
+        changes.entry(owner).or_default().0 += after.owner;
+    }
+    if let Some(held_owner) = held_owner {
+        changes.entry(held_owner).or_default().1 += held.owner;
+    }
+    for (payer, bytes) in &after.payers {
+        changes.entry(payer).or_default().0 += bytes;
+    }
+    for (payer, bytes) in &held.payers {
+        changes.entry(payer).or_default().1 += bytes;
+    }
+
+    // Refuse a write that grows an account past its quota
+    if let Some(allowance) = allowance {
+        for (account, (added, removed)) in &changes {
+            txn_refuse_past_bytes(txn, account, added.saturating_sub(*removed), allowance)?;
+        }
+    }
+
+    // Count the change on every account
+    for (account, (added, removed)) in changes {
+        txn_count_usage(txn, account, added, removed)?;
     }
     Ok(())
 }
 
-/// Returns the bytes a stored task row `raw` and its attachment files take, the files by the
-/// sizes the row records.
-fn task_bytes(raw: &[u8]) -> DbResult<u64> {
+/// Returns the shares a stored task row `raw` and its attachment files take, the files by the
+/// sizes the row records, and counts the files against the board owner.
+fn task_shares(raw: &[u8]) -> DbResult<Shares> {
     let task: TaskRow = serde_json::from_slice(raw)?;
     let files: u64 = task
         .attachments
         .iter()
         .map(TaskAttachment::stored_bytes)
         .sum();
-    Ok(raw.len() as u64 + files)
+    let mut shares = row_shares(&task, raw.len() as u64)?;
+    shares.owner += files;
+    Ok(shares)
 }
 
 /// Returns the bytes the board `board_id` counts against its owner: its tasks and layout rows,
@@ -422,7 +521,7 @@ pub(crate) fn txn_board_bytes(txn: &WriteTransaction, board_id: &str) -> DbResul
     for column_id in &column_ids {
         task_ids.extend(txn_mmap_get(txn, TASKS_BY_COLUMN, column_id)?);
     }
-    Ok(txn_task_bytes(txn, &task_ids)?
+    Ok(txn_task_bytes(txn, &task_ids)?.owner
         + txn_rows_bytes(txn, BOARDS, &[board_id.to_string()])?
         + txn_rows_bytes(txn, COLUMNS, &column_ids)?
         + txn_rows_bytes(txn, SWIMLANES, &swimlane_ids)?
@@ -430,17 +529,17 @@ pub(crate) fn txn_board_bytes(txn: &WriteTransaction, board_id: &str) -> DbResul
         + txn_rows_bytes(txn, FIELD_DEFS, &field_ids)?)
 }
 
-/// Returns the bytes the stored rows of `task_ids` and their attachment files take, read inside
+/// Returns the shares the stored rows of `task_ids` and their attachment files take, read inside
 /// an open write transaction, for a delete that removes them all.
-pub(crate) fn txn_task_bytes(txn: &WriteTransaction, task_ids: &[String]) -> DbResult<u64> {
+pub(crate) fn txn_task_bytes(txn: &WriteTransaction, task_ids: &[String]) -> DbResult<Shares> {
     let tasks = txn.open_table(TASKS)?;
-    let mut bytes = 0;
+    let mut shares = Shares::default();
     for id in task_ids {
         if let Some(guard) = tasks.get(id.as_str())? {
-            bytes += task_bytes(guard.value())?;
+            shares.add(task_shares(guard.value())?);
         }
     }
-    Ok(bytes)
+    Ok(shares)
 }
 
 /// Stores `entry`, inside an open write transaction, indexes it by its account and day, and
@@ -507,8 +606,12 @@ fn count_tasks(txn: &WriteTransaction, usage: &mut HashMap<String, u64>) -> DbRe
                 owner
             }
         };
+        let shares = task_shares(raw.value())?;
         if let Some(owner) = owner {
-            *usage.entry(owner).or_default() += task_bytes(raw.value())?;
+            *usage.entry(owner).or_default() += shares.owner;
+        }
+        for (payer, bytes) in shares.payers {
+            *usage.entry(payer).or_default() += bytes;
         }
     }
     Ok(())
@@ -619,11 +722,12 @@ mod tests {
     use super::*;
     use crate::db::{
         ColumnDeleteOutcome, ColumnPatch, EntryEdit, FieldCreateOutcome, META, NewWebhook,
-        OwnerChange, SCHEMA_VERSION_KEY, SwimlanePatch, WebhookPatch, WipCheck,
+        OwnerChange, SCHEMA_VERSION_KEY, SwimlanePatch, WebhookPatch, WipCheck, mutate_task_as,
+        push_column_event,
     };
     use crate::models::{
         AccountId, Actor, BIN_RETENTION_DAYS, BoardRole, FieldColumn, FieldKind, FieldOwner,
-        InstanceMode, LinkKind, SECONDS_PER_DAY, WebhookEvent,
+        HistoryKind, InstanceMode, LinkKind, SECONDS_PER_DAY, WebhookEvent,
     };
 
     /// An open database with its admin and a member with one column.
@@ -1272,5 +1376,172 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["bob", "carol"]
         );
+    }
+
+    /// Logs `count` history events on `task` that `payer` pays for, under `over`.
+    fn pay(
+        fx: &Fixture,
+        task: &str,
+        payer: &AccountId,
+        over: OverQuota,
+        count: usize,
+    ) -> DbResult<bool> {
+        mutate_task_as(&fx.db.db, task, over, Actor::SYSTEM, |row| {
+            for _ in 0..count {
+                push_column_event(
+                    row,
+                    HistoryKind::TimeLogged,
+                    "Logged 5m".to_string(),
+                    Actor::SYSTEM,
+                    None,
+                );
+                if let Some(event) = row.history.last_mut() {
+                    event.paid_by = Some(payer.as_str().to_string());
+                }
+            }
+        })
+    }
+
+    /// Returns the bytes of the stored row of `task`.
+    #[must_use]
+    fn row_len(db: &Db, task: &str) -> u64 {
+        let row = db.task(task).expect("read").expect("task");
+        serde_json::to_vec(&row).expect("json").len() as u64
+    }
+
+    #[test]
+    fn usage_should_charge_a_paid_history_event_to_its_payer() {
+        let fx = fixture();
+        let carol = fx.db.create_user("carol").expect("carol");
+        let task = fx
+            .db
+            .create_task(&fx.column, None, "Task", 1, None)
+            .expect("task");
+        let (owner_before, row_before) = (stored(&fx.db, &fx.member), row_len(&fx.db, &task));
+        assert_eq!(stored(&fx.db, &carol), 0);
+
+        assert!(pay(&fx, &task, &carol, OverQuota::Refuse, 1).expect("pay"));
+
+        let row = fx.db.task(&task).expect("read").expect("task");
+        let event = row.history.last().expect("event");
+        assert_eq!(event.paid_by.as_deref(), Some(carol.as_str()));
+        let paid = serde_json::to_vec(event).expect("json").len() as u64 + 1;
+        assert_eq!(stored(&fx.db, &carol), paid);
+        let grown = row_len(&fx.db, &task) - row_before;
+        assert_eq!(stored(&fx.db, &fx.member), owner_before + grown - paid);
+        assert_counts_match(&fx.db);
+    }
+
+    #[test]
+    fn usage_should_stay_true_when_a_paid_task_is_trimmed_deleted_or_purged() {
+        let fx = fixture();
+        let carol = fx.db.create_user("carol").expect("carol");
+        let task = fx
+            .db
+            .create_task(&fx.column, None, "Task", 1, None)
+            .expect("task");
+        let full = Db::MAX_HISTORY_EVENTS;
+        assert!(pay(&fx, &task, &carol, OverQuota::Allow, full).expect("pay"));
+        assert_counts_match(&fx.db);
+        assert!(stored(&fx.db, &carol) > 0);
+
+        assert!(pay(&fx, &task, &carol, OverQuota::Allow, 3).expect("pay"));
+        let row = fx.db.task(&task).expect("read").expect("task");
+        assert_eq!(row.history.len(), full);
+        assert_counts_match(&fx.db);
+
+        assert!(fx.db.delete_task(&task, Actor::SYSTEM).expect("delete"));
+        assert_eq!(stored(&fx.db, &carol), 0);
+        assert_counts_match(&fx.db);
+
+        let after = Utc::now().timestamp() + (BIN_RETENTION_DAYS + 1) * SECONDS_PER_DAY;
+        assert_eq!(fx.db.purge_bin(after).expect("purge"), Some(1));
+        assert_eq!(stored(&fx.db, &carol), 0);
+        assert_counts_match(&fx.db);
+    }
+
+    #[test]
+    fn usage_should_release_a_payers_share_when_its_board_goes_or_its_task_returns() {
+        let fx = fixture();
+        let carol = fx.db.create_user("carol").expect("carol");
+        let task = fx
+            .db
+            .create_task(&fx.column, None, "Task", 1, None)
+            .expect("task");
+        assert!(pay(&fx, &task, &carol, OverQuota::Refuse, 2).expect("pay"));
+        let paid = stored(&fx.db, &carol);
+        assert!(paid > 0);
+
+        assert!(fx.db.delete_task(&task, Actor::SYSTEM).expect("delete"));
+        assert_eq!(stored(&fx.db, &carol), 0);
+        let now = Utc::now().timestamp();
+        fx.db
+            .restore_task(&task, now, WipCheck::Force, Actor::SYSTEM)
+            .expect("restore");
+        assert!(stored(&fx.db, &carol) > 0);
+        assert_counts_match(&fx.db);
+
+        fx.db.create_board(&fx.member, "Other").expect("board");
+        fx.db.delete_board(&fx.board).expect("delete");
+        assert_eq!(stored(&fx.db, &carol), 0);
+        assert_counts_match(&fx.db);
+    }
+
+    #[test]
+    fn changing_the_board_owner_should_leave_a_payers_share_where_it_was() {
+        let fx = fixture();
+        let carol = fx.db.create_user("carol").expect("carol");
+        let dave = fx.db.create_user("dave").expect("dave");
+        let task = fx
+            .db
+            .create_task(&fx.column, None, "Task", 1, None)
+            .expect("task");
+        assert!(pay(&fx, &task, &dave, OverQuota::Refuse, 2).expect("pay"));
+        let paid = stored(&fx.db, &dave);
+        assert!(paid > 0);
+        fx.db
+            .set_board_member(&fx.board, "carol", BoardRole::Member)
+            .expect("join");
+        let outcome = fx
+            .db
+            .change_board_owner(&fx.board, &fx.member, "carol")
+            .expect("change");
+        assert!(matches!(outcome, OwnerChange::Changed(_)));
+        assert_eq!(stored(&fx.db, &dave), paid);
+        assert!(stored(&fx.db, &carol) > 0);
+        assert_counts_match(&fx.db);
+    }
+
+    #[test]
+    fn txn_store_task_should_refuse_a_payer_past_its_quota() {
+        let fx = fixture();
+        let carol = fx.db.create_user("carol").expect("carol");
+        let task = fx
+            .db
+            .create_task(&fx.column, None, "Task", 1, None)
+            .expect("task");
+        fx.db
+            .update_instance_settings(|settings| settings.quotas.stored_mib_per_account = 1)
+            .expect("quotas");
+        let txn = fx.db.db.begin_write().expect("write");
+        txn_count_usage(&txn, carol.as_str(), MIB - 8, 0).expect("fill");
+        txn.commit().expect("commit");
+        let held = stored(&fx.db, &carol);
+        let history = fx
+            .db
+            .task(&task)
+            .expect("read")
+            .expect("task")
+            .history
+            .len();
+
+        let refused = pay(&fx, &task, &carol, OverQuota::Refuse, 1).expect_err("past the quota");
+        assert!(refused.downcast_ref::<QuotaExceeded>().is_some());
+        assert_eq!(stored(&fx.db, &carol), held);
+        let row = fx.db.task(&task).expect("read").expect("task");
+        assert_eq!(row.history.len(), history);
+
+        assert!(pay(&fx, &task, &carol, OverQuota::Allow, 1).expect("server write"));
+        assert!(stored(&fx.db, &carol) > held);
     }
 }

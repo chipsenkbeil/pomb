@@ -1133,7 +1133,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 95;
+pub const SCHEMA_VERSION: u64 = 96;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1235,6 +1235,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "b8ee38bfa29f6aec24252d7f8440cbfbdb8cfe2f26e1b3243f898d7c0eaed996",
     "35f8c1333a5e1f3d3d0cee103fc3eeddce808a8543a8dad43b60448ef926eccd",
     "79a5f8988a4826ad121f959dfd9ea54a6c916d2e61bbcaaaf950ae7a5056a1e8",
+    "063a2fd6eedd4e0ed6668abad6b667fad127e276471373236394498472608931",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -3923,6 +3924,7 @@ pub fn push_column_event(
         role_id: actor.role_id.map(history_text),
         role_name: actor.role_name.map(history_text),
         label: actor.label.map(history_text),
+        paid_by: None,
     });
     let len = task.history.len();
     if len > Db::MAX_HISTORY_EVENTS {
@@ -4219,7 +4221,9 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<St
             task_ids.push(task_id);
         }
     }
-    let freed = txn_task_bytes(txn, &task_ids)?
+    let tasks_freed = txn_task_bytes(txn, &task_ids)?;
+    tasks_freed.release_payers(txn)?;
+    let freed = tasks_freed.owner
         + txn_rows_bytes(txn, BOARDS, &[id.to_string()])?
         + txn_rows_bytes(txn, COLUMNS, &column_ids)?
         + txn_rows_bytes(txn, SWIMLANES, &swimlane_ids)?
@@ -16722,6 +16726,7 @@ mod schema_version_tests {
                         role_id: None,
                         role_name: None,
                         label: None,
+                        paid_by: None,
                     });
                 }
             })
@@ -19265,6 +19270,7 @@ mod responsible_fill_tests {
                 role_id: None,
                 role_name: None,
                 label: None,
+                paid_by: None,
             });
         })
         .expect("log");
