@@ -36,9 +36,24 @@ function element(tag) {
     textContent: '',
     setAttribute: function (k, v) { attrs[k] = String(v); },
     getAttribute: function (k) { return k in attrs ? attrs[k] : null; },
-    appendChild: function (child) { el.children.push(child); return child; },
+    appendChild: (child) => { child.parentNode = el; el.children.push(child); return child; },
+    replaceChild: (next, prev) => {
+      el.children[el.children.indexOf(prev)] = next;
+      next.parentNode = el;
+      prev.parentNode = null;
+    },
+    focus: () => {},
+    value: '',
+    clickStops: 0,
+    key: (key) => {
+      const ev = { key: key, preventDefault: () => {}, stopPropagation: () => {} };
+      (listeners.keydown || []).forEach((handler) => handler(ev));
+    },
     addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-    click: function () { (listeners.click || []).forEach(function (fn) { fn(); }); },
+    click: () => {
+      const ev = { stopPropagation: () => { el.clickStops++; } };
+      (listeners.click || []).forEach((fn) => { fn(ev); });
+    },
     classList: { add: function () {}, remove: function () {} },
     label: function () {
       return el.textContent + el.children.map(function (c) { return c.text || ''; }).join('');
@@ -48,7 +63,7 @@ function element(tag) {
 }
 
 var epicHoverTried, hoveredAct, hideCount, trigger0;
-var calls, toasts, refreshed, reloads, menusClosed, replies, els, umbrellaLine, umbrellaNames, tmId, cardMenuCard, epicSubmenuLoading, opened;
+var floating, calls, toasts, refreshed, reloads, menusClosed, replies, els, umbrellaLine, umbrellaNames, tmId, cardMenuCard, epicSubmenuLoading, opened;
 let pageBoard, taskModal;
 var window = {};
 var CARD_SUB_ICONS = {};
@@ -56,6 +71,7 @@ var BoardChrome;
 const refreshBoardCard = (id) => { refreshed.push(id); };
 
 function reset() {
+  floating = 0;
   calls = [];
   toasts = [];
   refreshed = [];
@@ -105,6 +121,7 @@ function openCardSubmenu(btn, build) {
   opened.push(sub);
 }
 function boardId() { return pageBoard; }
+function hideFloatingMenus() { floating++; }
 function hideCardSubmenu() { hideCount++; }
 
 eval(fn('  function linkError(message) {'));
@@ -124,7 +141,11 @@ const arrowConst = (name) => {
 };
 const fetchBoardEpics = arrowConst('fetchBoardEpics');
 const epicChoiceList = arrowConst('epicChoiceList');
-eval(fn('  function appendEpicChoices(container, choices, makeButton, currentId) {'));
+eval(fn('  function toastRefusal(res, title) {'));
+eval(fn('  function postEpic(name) {'));
+eval(fn('  function createEpicThen(name, link) {'));
+eval(fn('  function newEpicRow(onNew) {'));
+eval(fn('  function appendEpicChoices(container, choices, makeButton, currentId, onNew) {'));
 eval(fn('  function addCardToEpic(card, epicId) {'));
 eval(fn('  function modalTaskBoard() {'));
 eval(fn('  function toggleModalEpicList(trigger) {'));
@@ -250,7 +271,7 @@ function trigger() {
   await flush();
   check('the modal list shows open epics, nested, minus the item', els['tm-epic-list'].children.map(function (b) {
     return b.label();
-  }), ['Alpha', '↳ Kid']);
+  }), ['Alpha', '↳ Kid', '+ New epic…']);
   check('the modal list opens', [els['tm-epic-list'].hidden, t.getAttribute('aria-expanded')], [false, 'true']);
   toggleModalEpicList(t);
   check('a second click closes the list', [els['tm-epic-list'].hidden, t.getAttribute('aria-expanded')], [true, 'false']);
@@ -300,7 +321,7 @@ function trigger() {
   await flush();
   check('an epic can pick another epic but not itself or its own descendants', els['tm-epic-list'].children.map(function (b) {
     return b.label();
-  }), ['Other']);
+  }), ['Other', '+ New epic…']);
 
   reset();
   BoardChrome.epics = [epic('e1', 'Alpha'), epic('e2', 'Kid', { parent_id: 'e1' })];
@@ -313,7 +334,7 @@ function trigger() {
     return [sub.dataset.for, sub.children.map(function (b) {
       return [b.getAttribute('data-card-sub'), b.getAttribute('data-epic-id'), b.label()];
     })];
-  }), [['epic', [['epic', 'e1', 'Alpha'], ['epic', 'e2', '↳ Kid']]]]);
+  }), [['epic', [['epic', 'e1', 'Alpha'], ['epic', 'e2', '↳ Kid'], [null, null, '+ New epic…']]]]);
   check('the loading guard is released', epicSubmenuLoading, false);
 
   reset();
@@ -334,7 +355,7 @@ function trigger() {
   await flush();
   check('an empty board shows the disabled item in the submenu', opened.map(function (sub) {
     return sub.children.map(function (b) { return [b.label(), b.disabled]; });
-  }), [[['No open epics', true]]]);
+  }), [[['No open epics', true], ['+ New epic…', false]]]);
 
   const labels = () => els['tm-epic-list'].children.map((b) => b.label());
   const otherEpics = [epic('o1', 'Other epic'), epic('o2', 'Other kid', { parent_id: 'o1' }), epic('o3', 'Other closed', { closed: true })];
@@ -376,7 +397,7 @@ function trigger() {
   await flush();
   check('modal_own_board_no_fetch: a task on the page board lists the loaded epics with no extra fetch', [
     calls.length, labels(),
-  ], [0, ['Page epic']]);
+  ], [0, ['Page epic', '+ New epic…']]);
 
   function hoverItem(act) {
     var item = {
@@ -469,6 +490,7 @@ function trigger() {
   check('the board submenu checks and disables the current epic only', rowState(opened[0]), [
     ['Alpha', true, 'true'],
     ['Gamma', false, null],
+    ['+ New epic…', false, null],
   ]);
 
   reset();
@@ -482,6 +504,7 @@ function trigger() {
   check('a card in no epic checks no board row', rowState(opened[0]), [
     ['Alpha', false, null],
     ['Gamma', false, null],
+    ['+ New epic…', false, null],
   ]);
 
   reset();
@@ -494,6 +517,7 @@ function trigger() {
   check('the modal list checks and disables the direct parent only', rowState(els['tm-epic-list']), [
     ['Alpha', true, 'true'],
     ['Gamma', false, null],
+    ['+ New epic…', false, null],
   ]);
   replies.push(response(true, '{}'));
   els['tm-epic-list'].children[1].click();
@@ -512,7 +536,133 @@ function trigger() {
   check('an ancestor above the direct parent checks no modal row', rowState(els['tm-epic-list']), [
     ['Alpha', false, null],
     ['Gamma', false, null],
+    ['+ New epic…', false, null],
   ]);
+
+  let reloadedEpics = 0;
+  BoardChrome.loadEpics = () => { reloadedEpics++; return Promise.resolve(); };
+  const lastOf = (box) => box.children[box.children.length - 1];
+  const typeName = (box, text) => {
+    lastOf(box).click();
+    const input = lastOf(box);
+    input.value = text;
+    return input;
+  };
+  const created = jsonResponse(true, { id: 'n1' });
+  const postBodies = () => calls.map((c) => [c.method, c.path, c.body]);
+
+  reset();
+  reloadedEpics = 0;
+  BoardChrome.epics = [epic('e1', 'Alpha')];
+  BoardChrome.epicsLoaded = true;
+  cardMenuCard = card(false);
+  els['card-ctx-menu'].hidden = false;
+  openEpicSubmenu({}, { id: 'c1' });
+  await flush();
+  let input = typeName(opened[0], '  Fresh  ');
+  replies.push(created, response(true, '{}'));
+  input.key('Enter');
+  await flush();
+  await flush();
+  await flush();
+  check('the board row creates the epic then links the card to it and refreshes the card', [postBodies(), refreshed, reloadedEpics, hideCount, floating], [
+    [['POST', '/api/tasks', '{"kind":"epic","board_id":"b1","name":"Fresh"}'],
+      ['POST', '/api/tasks/n1/links', '{"kind":"child","target_id":"c1"}'],
+    ],
+    ['c1'], 1, 1, 1,
+  ]);
+
+  reset();
+  BoardChrome.epics = [];
+  BoardChrome.epicsLoaded = true;
+  cardMenuCard = pillCard('e9');
+  els['card-ctx-menu'].hidden = false;
+  openEpicSubmenu({}, { id: 'c1' });
+  await flush();
+  input = typeName(opened[0], 'First');
+  replies.push(created, response(true, '{}'));
+  input.key('Enter');
+  await flush();
+  await flush();
+  await flush();
+  check('a card already in an epic moves to the new one by the umbrella route', postBodies().map((c) => c[1]), ['/api/tasks', '/api/tasks/c1/umbrella']);
+
+  reset();
+  BoardChrome.epics = [];
+  BoardChrome.epicsLoaded = true;
+  cardMenuCard = card(false);
+  els['card-ctx-menu'].hidden = false;
+  openEpicSubmenu({}, { id: 'c1' });
+  await flush();
+  const row = lastOf(opened[0]);
+  input = typeName(opened[0], '   ');
+  check('opening the row stops the click so the click-away handler leaves the menu open', row.clickStops, 1);
+  input.key('Enter');
+  await flush();
+  check('an empty name posts nothing, links nothing and toasts', [calls, toasts, refreshed], [[], ['Name the epic first.'], []]);
+  input.key('Escape');
+  check('escape puts the row back', [lastOf(opened[0]).tag, lastOf(opened[0]).label()], ['button', '+ New epic…']);
+
+  reset();
+  BoardChrome.epics = [];
+  BoardChrome.epicsLoaded = true;
+  cardMenuCard = card(false);
+  els['card-ctx-menu'].hidden = false;
+  openEpicSubmenu({}, { id: 'c1' });
+  await flush();
+  input = typeName(opened[0], 'Taken');
+  replies.push(response(false, '{"message":"name taken"}'));
+  input.key('Enter');
+  await flush();
+  await flush();
+  await flush();
+  check('a refused create adds no link and shows the refusal toast', [postBodies().map((c) => c[1]), toasts, refreshed], [['/api/tasks'], ['Could not create the epic.'], []]);
+
+  reset();
+  reloadedEpics = 0;
+  BoardChrome.epics = [epic('e1', 'Alpha')];
+  BoardChrome.epicsLoaded = true;
+  toggleModalEpicList(trigger());
+  await flush();
+  input = typeName(els['tm-epic-list'], 'Modal epic');
+  replies.push(created, response(true, '{}'));
+  input.key('Enter');
+  await flush();
+  await flush();
+  await flush();
+  check('the modal row closes the menus, creates the epic, links the card and refreshes the modal', [menusClosed, postBodies(), refreshed, reloadedEpics], [
+    1,
+    [['POST', '/api/tasks', '{"kind":"epic","board_id":"b1","name":"Modal epic"}'],
+      ['POST', '/api/tasks/n1/links', '{"kind":"child","target_id":"c1"}'],
+    ],
+    ['modal'], 1,
+  ]);
+
+  reset();
+  BoardChrome.epics = [];
+  BoardChrome.epicsLoaded = true;
+  toggleModalEpicList(trigger());
+  await flush();
+  check('the modal list of an empty board still ends with the new epic row', els['tm-epic-list'].children.map((b) => [b.label(), b.disabled]), [
+    ['No open epics', true], ['+ New epic…', false],
+  ]);
+  input = typeName(els['tm-epic-list'], '');
+  input.key('Enter');
+  await flush();
+  check('an empty modal name adds no link and toasts', [calls, toasts, menusClosed], [[], ['Name the epic first.'], 0]);
+
+  reset();
+  BoardChrome.epics = [];
+  BoardChrome.epicsLoaded = true;
+  toggleModalEpicList(trigger());
+  await flush();
+  input = typeName(els['tm-epic-list'], 'Refused');
+  replies.push(response(false, '{"message":"no"}'));
+  input.key('Enter');
+  await flush();
+  await flush();
+  await flush();
+  check('a refused modal create adds no link and toasts', [postBodies().map((c) => c[1]), toasts, refreshed], [['/api/tasks'], ['Could not create the epic.'], []]);
 
   if (failures) process.exit(1);
   console.log('ok');

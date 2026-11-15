@@ -3,6 +3,9 @@ var src = require('fs').readFileSync(process.argv[2], 'utf8');
 var start = src.indexOf('  var BoardChrome = {');
 var end = src.indexOf('\n  };', start) + '\n  };'.length;
 if (start < 0 || end < start) throw new Error('BoardChrome not found');
+const postFrom = src.indexOf('  function postEpic(name) {');
+if (postFrom < 0) throw new Error('postEpic not found');
+const postSrc = src.slice(postFrom, src.indexOf('\n  }\n', postFrom) + '\n  }\n'.length);
 
 function element(tag) {
   var el = {
@@ -90,6 +93,7 @@ function load() {
   };
   var EPICS_REFRESH_DEBOUNCE_MS = 150;
   var window = { setTimeout: function () { return 0; }, clearTimeout: clearTimeout };
+  eval(postSrc);
   var chrome = eval('(function () {' + src.slice(start, end) + '\n return BoardChrome; })()');
   chrome.epics = [];
   chrome.renderEpics();

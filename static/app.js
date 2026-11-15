@@ -1825,7 +1825,11 @@
           const pill = card.querySelector('.card-epic-tag');
           appendEpicChoices(sub, choices, function (label, epicId) {
             return cardSubmenuButton(label, CARD_SUBMENU.EPIC, { 'data-epic-id': epicId });
-          }, pill && pill.dataset.epicId);
+          }, pill && pill.dataset.epicId, (name) => {
+            hideCardSubmenu();
+            hideFloatingMenus();
+            createEpicThen(name, (epicId) => addCardToEpic(card, epicId));
+          });
         });
       }, function () { epicSubmenuLoading = false; });
     }
@@ -5227,6 +5231,63 @@
     });
   }
 
+  function postEpic(name) {
+    const board = boardId();
+    if (!name || !board) return Promise.resolve(null);
+    const panel = document.getElementById('epics-panel');
+    const epic = { kind: 'epic', board_id: board, name: name, description: panel ? panel.dataset.epicTemplate : undefined };
+    return withWip((force) => fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(withForce(epic, force)),
+    }), 'Add anyway')
+      .then((res) => {
+        if (!res) return null;
+        return res.ok ? res.json() : toastRefusal(res, 'Could not create the epic.');
+      })
+      .catch(() => {
+        toast('Could not create the epic.');
+        return null;
+      });
+  }
+
+  function createEpicThen(name, link) {
+    return postEpic(name).then((task) => {
+      if (!task) return;
+      BoardChrome.loadEpics();
+      link(task.id);
+    });
+  }
+
+  function newEpicRow(onNew) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = '+ New epic…';
+    button.addEventListener('click', (click) => {
+      click.stopPropagation();
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'epic-new-input';
+      input.maxLength = 500;
+      input.setAttribute('aria-label', 'Epic name');
+      input.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const name = input.value.trim();
+          if (name) onNew(name);
+          else toast('Name the epic first.');
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          input.parentNode.replaceChild(button, input);
+        }
+      });
+      button.parentNode.replaceChild(input, button);
+      input.focus();
+    });
+    return button;
+  }
+
   const fetchBoardEpics = (board) => {
     return fetch('/api/boards/' + encodeURIComponent(board) + '/epics', {
       headers: { 'Accept': 'application/json' },
@@ -5274,14 +5335,13 @@
     return choices;
   };
 
-  function appendEpicChoices(container, choices, makeButton, currentId) {
+  function appendEpicChoices(container, choices, makeButton, currentId, onNew) {
     if (!choices.length) {
       var none = document.createElement('button');
       none.type = 'button';
       none.disabled = true;
       none.textContent = 'No open epics';
       container.appendChild(none);
-      return;
     }
     choices.forEach(function (choice) {
       var button = makeButton((choice.depth ? '↳ ' : '') + choice.name, choice.id);
@@ -5292,6 +5352,7 @@
       }
       container.appendChild(button);
     });
+    if (onNew) container.appendChild(newEpicRow(onNew));
   }
 
   function addCardToEpic(card, epicId) {
@@ -5316,6 +5377,13 @@
       list.textContent = '';
       const umbrellaNames = document.querySelectorAll('#modal-root .tm-umbrella-line .tm-umbrella-name');
       const parentName = umbrellaNames[umbrellaNames.length - 1];
+      const onNew = task && task.id !== boardId() ? null : (name) => {
+        const hasParent = !!document.querySelector('#modal-root .tm-umbrella-line');
+        closeAllTmMenus();
+        createEpicThen(name, (epicId) => {
+          addToEpic(id, epicId, hasParent, refreshAfterLinkChange);
+        });
+      };
       appendEpicChoices(list, choices, function (label, epicId) {
         var button = document.createElement('button');
         button.type = 'button';
@@ -5326,7 +5394,7 @@
           addToEpic(id, epicId, hasParent, refreshAfterLinkChange);
         });
         return button;
-      }, parentName && parentName.getAttribute('data-open-task'));
+      }, parentName && parentName.getAttribute('data-open-task'), onNew);
       list.hidden = false;
       trigger.setAttribute('aria-expanded', 'true');
     });
@@ -18527,20 +18595,10 @@
     createEpic: function () {
       var self = this;
       var name = this.epicsNewText.trim();
-      var board = boardId();
-      if (!name || !board || this.epicsNewBusy) return Promise.resolve();
+      if (!name || !boardId() || this.epicsNewBusy) return Promise.resolve();
       this.epicsNewBusy = true;
       this.renderEpics();
-      const epic = { kind: 'epic', board_id: board, name: name, description: document.getElementById('epics-panel').dataset.epicTemplate };
-      return withWip((force) => fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify(withForce(epic, force)),
-      }), 'Add anyway')
-        .then(function (res) {
-          if (!res) return null;
-          return res.ok ? res.json() : toastRefusal(res, 'Could not create the epic.');
-        })
+      return postEpic(name)
         .then(function (task) {
           if (!task) return;
           self.epicsNewOpen = false;
