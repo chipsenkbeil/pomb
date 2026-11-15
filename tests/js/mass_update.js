@@ -1,10 +1,29 @@
 const { isoDate, previewCell } = require('../../static/pure.js');
+const prelude = require('./support/report_prelude.js');
 const src = require('fs').readFileSync(process.argv[2], 'utf8');
+const { fn } = prelude.extractors(src);
+const accountPrefs = prelude.accountPrefs(1);
+eval(fn('  function daysIntoWeek(d) {'));
+eval(fn('  function isoDay(d) {'));
+eval(fn('  function parseDueAt(s) {'));
+eval(fn('  function periodToRange(preset'));
+const dateMatchesFrom = src.indexOf('    dateMatches: function (value, dueAt, dueDone) {');
+const dateMatchesEnd = src.indexOf('\n    },\n', dateMatchesFrom) + '\n    },\n'.length;
+if (dateMatchesFrom < 0 || dateMatchesEnd < dateMatchesFrom) throw new Error('dateMatches not found');
+const BoardChrome = eval('({' + src.slice(dateMatchesFrom, dateMatchesEnd) + '})');
+const withForceFrom = src.indexOf('  const withForce = ') + '  const withForce = '.length;
+const withForce = eval(src.slice(withForceFrom, src.indexOf(';\n', withForceFrom)));
 const start = src.indexOf('  var MassUpdate = (function () {');
 const end = src.indexOf('\n  })();', start) + '\n  })();'.length;
 if (start < 0 || end < start) throw new Error('MassUpdate not found');
 
-const NOW = Date.parse('2026-11-14T00:00:00');
+const dayOffset = (days) => {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d;
+};
+const dayStr = (days) => isoDate(dayOffset(days));
+const dueOn = (days) => dayStr(days) + 'T12:00:00';
 const STEP_NAMES = ['filter', 'select', 'action', 'preview'];
 
 const makeEl = (tag) => {
@@ -38,11 +57,11 @@ const makeCard = (id, columnId, extra) => {
 };
 
 const fixtureCards = () => [
-  makeCard('a', 'c1', { labels: '["bug"]', memberIds: 'u1', dueAt: '2026-11-10T12:00:00', dueDone: '0' }),
+  makeCard('a', 'c1', { labels: '["bug"]', memberIds: 'u1', dueAt: dueOn(-10), dueDone: '0' }),
   makeCard('b', 'c1', { colorValue: 'blue', labels: '["ui"]' }),
-  makeCard('c', 'c2', { memberIds: 'u2', groupDay: '2026-11-05' }),
-  makeCard('d', 'c2', { colorValue: 'green', groupDay: '2026-10-01' }),
-  makeCard('e', 'c3', { colorValue: 'blue', labels: '["bug","ui"]', memberIds: 'u1,u2', dueAt: '2026-12-20T12:00:00', dueDone: '0' }),
+  makeCard('c', 'c2', { memberIds: 'u2', groupDay: dayStr(0) }),
+  makeCard('d', 'c2', { colorValue: 'green', groupDay: dayStr(-40) }),
+  makeCard('e', 'c3', { colorValue: 'blue', labels: '["bug","ui"]', memberIds: 'u1,u2', dueAt: dueOn(30), dueDone: '0' }),
 ];
 
 const load = () => {
@@ -78,20 +97,11 @@ const load = () => {
   };
   const fetchJson = () => Promise.resolve([]);
   const withWip = (send) => send(false);
-  const withForce = (body) => body;
   const boardId = () => 'b1';
   const boardNameFor = () => 'Board';
-  const cssEscape = (s) => s;
-  const parseDueAt = (s) => new Date(s);
-  const periodToRange = () => ['2026-11-01', '2026-11-30'];
   const showConfirmDialog = () => {};
-  const BoardChrome = {
-    dateMatches: (value, dueAt, dueDone) => {
-      if (value === 'none') return !dueAt;
-      return !!dueAt && !dueDone && Date.parse(dueAt) < NOW;
-    },
-  };
   const window = { location: { reload() {} } };
+  eval(fn('  function cssEscape(s) {'));
   const mu = eval('(function () {' + src.slice(start, end) + '\n return MassUpdate; })()');
   const byId = (id) => document.getElementById(id);
   const click = (id) => byId(id).handlers.click();
@@ -175,19 +185,19 @@ const tests = {
   mass_update_should_narrow_by_due_before_and_after_a_day: () => {
     check('before match', filtered((p) => {
       p.byId('mu-due').value = 'before';
-      p.byId('mu-due-day').value = '2026-11-30';
+      p.byId('mu-due-day').value = dayStr(20);
     }), ['a']);
     check('before non-match', filtered((p) => {
       p.byId('mu-due').value = 'before';
-      p.byId('mu-due-day').value = '2026-11-01';
+      p.byId('mu-due-day').value = dayStr(-20);
     }), []);
     check('after match', filtered((p) => {
       p.byId('mu-due').value = 'after';
-      p.byId('mu-due-day').value = '2026-11-30';
+      p.byId('mu-due-day').value = dayStr(20);
     }), ['e']);
     check('after non-match', filtered((p) => {
       p.byId('mu-due').value = 'after';
-      p.byId('mu-due-day').value = '2027-01-01';
+      p.byId('mu-due-day').value = dayStr(60);
     }), []);
     check('no day matches nothing', filtered((p) => { p.byId('mu-due').value = 'before'; }), []);
   },
