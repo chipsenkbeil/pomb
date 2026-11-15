@@ -19554,3 +19554,53 @@ mod stage_upgrade_tests {
         assert_eq!(stage_of(&db, &verify), None);
     }
 }
+
+#[cfg(test)]
+mod board_row_default_tests {
+    use super::*;
+
+    #[test]
+    fn board_row_without_report_bookmarks_should_decode_and_load() {
+        // Build a board and read its row
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let board_id = db
+            .create_board(&AccountId::ownerless(), "Work")
+            .expect("create board");
+        let row = db
+            .board(&board_id)
+            .expect("get board")
+            .expect("board exists");
+
+        // Strip report_bookmarks from the JSON
+        let mut value = serde_json::to_value(&row).expect("to value");
+        let removed = value
+            .as_object_mut()
+            .expect("object")
+            .remove("report_bookmarks");
+        assert!(removed.is_some());
+        let bytes = serde_json::to_vec(&value).expect("to bytes");
+
+        // Decode the old row
+        let decoded: BoardRow = serde_json::from_slice(&bytes).expect("old row decodes");
+        assert!(decoded.report_bookmarks.is_empty());
+
+        // Write it back and load it
+        let txn = db.db.begin_write().expect("write txn");
+        {
+            let mut table = txn.open_table(BOARDS).expect("boards table");
+            table
+                .insert(board_id.as_str(), bytes.as_slice())
+                .expect("write old row");
+        }
+        txn.commit().expect("commit");
+
+        let loaded = db
+            .board(&board_id)
+            .expect("get board")
+            .expect("board exists");
+        assert_eq!(loaded.id, board_id);
+        assert!(loaded.report_bookmarks.is_empty());
+    }
+}
