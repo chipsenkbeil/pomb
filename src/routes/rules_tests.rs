@@ -1188,6 +1188,30 @@ mod locked {
     }
 
     #[tokio::test]
+    async fn bulk_relations_should_link_related_to_a_locked_task() {
+        let fx = Fixture::new();
+        let locked = fx.locked_task().await;
+        let other = fx.task(&fx.backlog, json!({})).await;
+        let uri = format!("/api/boards/{}/tasks/bulk", fx.board);
+        let body = json!({
+            "task_ids": [other],
+            "action": "relations",
+            "add_links": [{"kind": "related", "target_id": locked}],
+        });
+        let (status, text) = fx.json(Who::Token, "POST", &uri, body).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let uri = format!("/api/tasks/{other}/links");
+        let (status, text) = fx.call(Who::Token, "GET", &uri, Body::Empty).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let stored = parse(&text)
+            .as_array()
+            .expect("links")
+            .iter()
+            .any(|link| link["kind"] == "related" && link["target_id"] == locked.as_str());
+        assert!(stored, "{text}");
+    }
+
+    #[tokio::test]
     async fn bulk_relations_should_still_refuse_a_link_that_changes_the_locked_card() {
         let fx = Fixture::new();
         let locked = fx.locked_task().await;
