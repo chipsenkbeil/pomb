@@ -129,10 +129,10 @@
     return text || document.title.replace(/ — Pomb$/, '');
   }
 
-  function api(path, method, data) {
+  function api(path, method, data, extra) {
     return fetch(path, {
       method: method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: Object.assign({ 'Content-Type': 'application/json' }, extra),
       body: data === undefined ? undefined : JSON.stringify(data),
     });
   }
@@ -3788,13 +3788,8 @@
   function ownerPanelSend(spec) {
     const id = modalTaskId();
     if (!id) return Promise.resolve();
-    const headers = { 'Content-Type': 'application/json' };
-    if (spec.fence) headers['If-Owner-Fence'] = spec.fence;
-    return fetch('/api/tasks/' + encodeURIComponent(id) + spec.path, {
-      method: spec.method,
-      headers,
-      body: spec.data === undefined ? undefined : JSON.stringify(spec.data),
-    })
+    const extra = spec.fence ? { 'If-Owner-Fence': spec.fence } : undefined;
+    return api('/api/tasks/' + encodeURIComponent(id) + spec.path, spec.method, spec.data, extra)
       .then((res) => {
         if (res.ok) {
           modalDirty = true;

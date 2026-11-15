@@ -51,6 +51,7 @@ function showConfirmDialog(title, message, okLabel, onConfirm) {
   confirms.push({ title: title, okLabel: okLabel, ok: onConfirm });
 }
 eval(fn('  function showOwnerPanelError(boxId, message) {'));
+eval(fn('  function api(path, method, data, extra) {'));
 eval(fn('  function ownerPanelSend(spec) {'));
 eval(fn('  function ownerPanelSpec(button) {'));
 eval(fn('  function runOwnerPanelAction(button) {'));
