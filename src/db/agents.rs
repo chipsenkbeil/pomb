@@ -425,8 +425,7 @@ impl Db {
         board_id: Option<&str>,
     ) -> DbResult<Option<u64>> {
         let txn = self.db.begin_write()?;
-        let held = txn_read_one::<AgentRoleRow>(&txn, AGENT_ROLES, role_id)?
-            .is_some_and(|role| role.account_id == account);
+        let held = txn_owned_role(&txn, account, role_id)?.is_some();
         if !held {
             return Ok(None);
         }
@@ -440,8 +439,7 @@ impl Db {
     /// deleted, or [`None`] when the account holds no such role.
     pub fn delete_agent_role(&self, account: &str, role_id: &str) -> DbResult<Option<u64>> {
         let txn = self.db.begin_write()?;
-        let held = txn_read_one::<AgentRoleRow>(&txn, AGENT_ROLES, role_id)?
-            .is_some_and(|role| role.account_id == account);
+        let held = txn_owned_role(&txn, account, role_id)?.is_some();
         if !held {
             return Ok(None);
         }
