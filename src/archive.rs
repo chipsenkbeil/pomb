@@ -436,6 +436,15 @@ struct CommentInfo {
     actor_kind: ActorKind,
     /// The name of the API token that wrote the comment, or null.
     token_name: Option<String>,
+    /// The id of the agent role the comment was written as, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role_id: Option<String>,
+    /// The name of that role when the token was issued, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role_name: Option<String>,
+    /// The `agent-N` label of the token's issue, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
     /// The comment's tag, such as `agent`, or null.
     kind: Option<String>,
     /// When the body was last edited, as RFC 3339, or null.
@@ -459,6 +468,15 @@ struct AttachmentInfo {
     /// The name of the API token that uploaded the file, or null.
     #[serde(default)]
     token_name: Option<String>,
+    /// The id of the agent role the file was uploaded as, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role_id: Option<String>,
+    /// The name of that role when the token was issued, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role_name: Option<String>,
+    /// The `agent-N` label of the token's issue, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
     /// When the file was uploaded, as RFC 3339.
     created_at: String,
     /// The address of a link attachment, or null for a file.
@@ -524,6 +542,15 @@ struct EventInfo {
     column_id: Option<String>,
     /// The name of the API token behind the event, or null.
     token_name: Option<String>,
+    /// The id of the agent role behind the event, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role_id: Option<String>,
+    /// The name of that role when the token was issued, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role_name: Option<String>,
+    /// The `agent-N` label of the token's issue, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
     /// The value the event replaced, or null.
     from: Option<String>,
     /// The value the event set, or null.
@@ -558,6 +585,12 @@ struct TimeInfo {
     role: Option<String>,
     /// The name of the API token that logged the entry, or null.
     token_name: Option<String>,
+    /// The id of the agent role the entry was logged as, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role_id: Option<String>,
+    /// The name of that role when the token was issued, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role_name: Option<String>,
     /// The name of the break activity the session was attributed to, or null.
     break_activity: Option<String>,
 }
@@ -735,6 +768,8 @@ fn time_info(lookup: &Lookup, entry: TimeEntryRow) -> TimeInfo {
         },
         role: entry.role,
         token_name: entry.token_name,
+        role_id: entry.role_id,
+        role_name: entry.role_name,
     }
 }
 
@@ -829,6 +864,9 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
             size: attachment.size,
             uploaded_by: attachment.uploaded_by,
             token_name: attachment.token_name,
+            role_id: attachment.role_id,
+            role_name: attachment.role_name,
+            label: attachment.label,
             created_at: attachment.created_at,
             url: attachment.url,
             edited_at: attachment.edited_at,
@@ -867,6 +905,9 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
             created_at: comment.created_at,
             actor_kind: comment.actor_kind,
             token_name: comment.token_name,
+            role_id: comment.role_id,
+            role_name: comment.role_name,
+            label: comment.label,
             kind: comment.kind,
             edited_at: comment.edited_at,
         })
@@ -881,6 +922,9 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
             created_at: event.created_at,
             column_id: lookup.column(event.column_id),
             token_name: event.token_name,
+            role_id: event.role_id,
+            role_name: event.role_name,
+            label: event.label,
             from: event.from,
             to: event.to,
         });
@@ -1677,6 +1721,151 @@ mod tests {
             .expect("import")
             .0;
         assert_eq!(snapshot.columns[0].stage, Some(ColumnStage::Verify));
+    }
+
+    #[test]
+    fn archive_should_round_trip_role_stamps() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+
+        // Seed a comment, an attachment and a time entry stamped with a role
+        let stamped = Actor {
+            name: API_TOKEN_ACTOR,
+            token_name: Some("worker"),
+            kind: ActorKind::ApiToken,
+            parent_token: None,
+            role_id: Some("role-1"),
+            role_name: Some("reviewer"),
+            label: Some("agent-3"),
+        };
+        let comment = NewComment {
+            author: "worker",
+            body: "stamped note",
+            actor_kind: ActorKind::ApiToken,
+            token_name: Some("worker"),
+            token_id: None,
+            kind: None,
+        };
+        seeded
+            .db
+            .add_comment(&seeded.task, comment, stamped, None)
+            .expect("comment");
+        seeded
+            .db
+            .add_attachment(
+                &seeded.task,
+                "stamped.txt",
+                "text/plain",
+                b"stamped bytes",
+                stamped,
+            )
+            .expect("attachment")
+            .expect("task");
+        seeded
+            .db
+            .log_task_time(
+                &seeded.account,
+                NewTimeEntry {
+                    task_id: Some(&seeded.task),
+                    started_at: "2026-10-29T10:00:00+00:00",
+                    minutes: 10,
+                    seconds: 600,
+                    note: "stamped entry",
+                    kind: EntryKind::Manual,
+                    interrupted: false,
+                    interrupt_reason: None,
+                    labels: &[],
+                    created_by: "worker",
+                    activity_id: None,
+                    role: None,
+                    token_name: Some("worker"),
+                    role_id: Some("role-1"),
+                    role_name: Some("reviewer"),
+                },
+                "Logged 10m",
+                stamped,
+            )
+            .expect("entry");
+
+        // Export, and check that unstamped rows omit the keys
+        let exported = document(&archive_of(&seeded));
+        let task = &exported["tasks"][0];
+        let named = |rows: &Value, key: &str, value: &str| -> Value {
+            rows.as_array()
+                .expect("rows")
+                .iter()
+                .find(|row| row[key] == value)
+                .cloned()
+                .expect("row")
+        };
+        let plain = named(&task["comments"], "body", "looks good");
+        for key in ["role_id", "role_name", "label"] {
+            assert!(plain.get(key).is_none(), "{key}");
+        }
+        let plain_entry = named(&task["time_entries"], "note", "first block");
+        for key in ["role_id", "role_name"] {
+            assert!(plain_entry.get(key).is_none(), "{key}");
+        }
+        assert_eq!(
+            named(&task["comments"], "body", "stamped note")["role_id"],
+            "role-1"
+        );
+
+        // Import the archive and check that every stamp survives
+        let spool_dir = tempfile::tempdir().expect("tempdir");
+        let spool = Spool::create(spool_dir.path()).expect("spool");
+        let account = AccountId::new("acc");
+        let importer = Importer {
+            handle: "chip",
+            account: &account,
+            max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
+            activities: &[],
+        };
+        let imported = read_board(&archive_bytes(&seeded), &importer, &spool)
+            .expect("import")
+            .0
+            .tasks
+            .remove(0);
+        let stamp = |role_id: &Option<String>, role_name: &Option<String>| {
+            (role_id.clone(), role_name.clone())
+        };
+        let expected = (Some("role-1".to_string()), Some("reviewer".to_string()));
+        let comment = imported
+            .row
+            .comments
+            .iter()
+            .find(|comment| comment.body == "stamped note")
+            .expect("comment");
+        assert_eq!(stamp(&comment.role_id, &comment.role_name), expected);
+        assert_eq!(comment.label.as_deref(), Some("agent-3"));
+        let attachment = imported
+            .row
+            .attachments
+            .iter()
+            .find(|attachment| attachment.name == "stamped.txt")
+            .expect("attachment");
+        assert_eq!(stamp(&attachment.role_id, &attachment.role_name), expected);
+        assert_eq!(attachment.label.as_deref(), Some("agent-3"));
+        let event = imported
+            .row
+            .history
+            .iter()
+            .find(|event| event.role_id.is_some())
+            .expect("stamped event");
+        assert_eq!(stamp(&event.role_id, &event.role_name), expected);
+        assert_eq!(event.label.as_deref(), Some("agent-3"));
+        let entry = imported
+            .entries
+            .iter()
+            .find(|entry| entry.note == "stamped entry")
+            .expect("entry");
+        assert_eq!(stamp(&entry.role_id, &entry.role_name), expected);
+        let first = imported
+            .entries
+            .iter()
+            .find(|entry| entry.note == "first block")
+            .expect("entry");
+        assert_eq!(stamp(&first.role_id, &first.role_name), (None, None));
     }
 
     #[test]

@@ -1069,6 +1069,15 @@ impl Builder<'_> {
                 if let Some(name) = &comment.token_name {
                     at_most_chars(name, MAX_HISTORY_TEXT_CHARS, "a token name")?;
                 }
+                for (text, what) in [
+                    (&comment.role_id, "a comment role id"),
+                    (&comment.role_name, "a comment role name"),
+                    (&comment.label, "a comment label"),
+                ] {
+                    if let Some(text) = text {
+                        at_most_chars(text, MAX_HISTORY_TEXT_CHARS, what)?;
+                    }
+                }
                 instant(
                     &comment.created_at,
                     &format!("created_at of a comment on {label}"),
@@ -1090,9 +1099,9 @@ impl Builder<'_> {
                     reactions: Vec::new(),
                     question: None,
                     parent_token: None,
-                    role_id: None,
-                    role_name: None,
-                    label: None,
+                    role_id: comment.role_id,
+                    role_name: comment.role_name,
+                    label: comment.label,
                 })
             })
             .collect()
@@ -1182,6 +1191,15 @@ impl Builder<'_> {
             if let Some(name) = &attachment.token_name {
                 at_most_chars(name, MAX_HISTORY_TEXT_CHARS, "a token name")?;
             }
+            for (text, what) in [
+                (&attachment.role_id, "an attachment role id"),
+                (&attachment.role_name, "an attachment role name"),
+                (&attachment.label, "an attachment label"),
+            ] {
+                if let Some(text) = text {
+                    at_most_chars(text, MAX_HISTORY_TEXT_CHARS, what)?;
+                }
+            }
             instant(
                 &attachment.created_at,
                 &format!("created_at of an attachment of {label}"),
@@ -1240,9 +1258,9 @@ impl Builder<'_> {
                 size: attachment.size,
                 uploaded_by: attachment.uploaded_by,
                 token_name: attachment.token_name,
-                role_id: None,
-                role_name: None,
-                label: None,
+                role_id: attachment.role_id,
+                role_name: attachment.role_name,
+                label: attachment.label,
                 created_at: attachment.created_at,
                 sha256: None,
                 url: attachment.url,
@@ -1408,6 +1426,9 @@ impl Builder<'_> {
                     (Some(event.detail.as_str()), "an event detail"),
                     (Some(event.actor.as_str()), "an event actor"),
                     (event.token_name.as_deref(), "an event token name"),
+                    (event.role_id.as_deref(), "an event role id"),
+                    (event.role_name.as_deref(), "an event role name"),
+                    (event.label.as_deref(), "an event label"),
                     (event.from.as_deref(), "an event from value"),
                     (event.to.as_deref(), "an event to value"),
                 ] {
@@ -1434,9 +1455,9 @@ impl Builder<'_> {
                     from: event.from,
                     to: event.to,
                     parent_token: None,
-                    role_id: None,
-                    role_name: None,
-                    label: None,
+                    role_id: event.role_id,
+                    role_name: event.role_name,
+                    label: event.label,
                     paid_by: None,
                 })
             })
@@ -1482,6 +1503,14 @@ impl Builder<'_> {
             if let Some(name) = &entry.token_name {
                 at_most_chars(name, MAX_HISTORY_TEXT_CHARS, "a time entry token name")?;
             }
+            for (text, what) in [
+                (&entry.role_id, "a time entry role id"),
+                (&entry.role_name, "a time entry role name"),
+            ] {
+                if let Some(text) = text {
+                    at_most_chars(text, MAX_HISTORY_TEXT_CHARS, what)?;
+                }
+            }
             let activity_id = match entry.break_activity.as_deref() {
                 None => None,
                 Some(name) => {
@@ -1512,8 +1541,8 @@ impl Builder<'_> {
                 account_id: self.importer.account.as_str().to_string(),
                 role: entry.role,
                 token_name: entry.token_name,
-                role_id: None,
-                role_name: None,
+                role_id: entry.role_id,
+                role_name: entry.role_name,
             });
         }
         Ok(rows)
@@ -2688,6 +2717,79 @@ mod tests {
         assert_eq!(entries[0].token_name.as_deref(), Some("ci-bot"));
         assert_eq!(entries[1].role, None);
         assert_eq!(entries[1].token_name, None);
+    }
+
+    #[test]
+    fn read_board_should_read_an_old_document_without_role_stamps() {
+        // Build a document whose rows carry no stamp keys
+        let mut document = base();
+        document["tasks"][0]["time_entries"] = json!([entry("n1", "2026-10-01T10:00:00Z")]);
+        document["tasks"][0]["comments"] = json!([{
+            "id": "c1", "author": "chip", "body": "hi", "created_at": "2026-10-01T10:00:00Z",
+            "actor_kind": "user", "token_name": null, "kind": null, "edited_at": null
+        }]);
+        document["tasks"][0]["history"] = json!([{
+            "id": "h1", "kind": "created", "detail": "Created", "actor": "chip",
+            "created_at": "2026-10-01T10:00:00Z", "column_id": null, "token_name": null,
+            "from": null, "to": null
+        }]);
+        document["tasks"][0]["attachments"] = json!([{
+            "id": "a1", "name": "notes.txt", "mime": "text/plain", "size": 3,
+            "uploaded_by": "chip", "created_at": "2026-10-01T10:00:00Z",
+            "file": "attachments/a1/notes.txt"
+        }]);
+
+        // Read it and check that every row has no stamp
+        let files: [(&str, &[u8]); 1] = [("attachments/a1/notes.txt", b"abc")];
+        let base_dir = tempfile::tempdir().expect("tempdir");
+        let spool = Spool::create(base_dir.path()).expect("spool");
+        let (import, _) = read_in(&document, &files, &[], &spool).expect("a board");
+        let task = &import.tasks[0];
+        let comment = &task.row.comments[0];
+        assert_eq!(
+            (&comment.role_id, &comment.role_name, &comment.label),
+            (&None, &None, &None)
+        );
+        let event = &task.row.history[0];
+        assert_eq!(
+            (&event.role_id, &event.role_name, &event.label),
+            (&None, &None, &None)
+        );
+        let attachment = &task.row.attachments[0];
+        assert_eq!(
+            (
+                &attachment.role_id,
+                &attachment.role_name,
+                &attachment.label
+            ),
+            (&None, &None, &None)
+        );
+        let entry = &task.entries[0];
+        assert_eq!((&entry.role_id, &entry.role_name), (&None, &None));
+    }
+
+    #[test]
+    fn read_board_should_refuse_an_overlong_role_stamp() {
+        // A time entry role name past the cap is refused
+        let mut document = base();
+        let mut tagged = entry("n1", "2026-10-01T10:00:00Z");
+        tagged["role_name"] = json!("r".repeat(5000));
+        document["tasks"][0]["time_entries"] = json!([tagged]);
+        let error = read(&document).expect_err("too long");
+        assert!(
+            error.to_string().contains("a time entry role name"),
+            "{error}"
+        );
+
+        // So is a comment role name
+        let mut document = base();
+        document["tasks"][0]["comments"] = json!([{
+            "id": "c1", "author": "chip", "body": "hi", "created_at": "2026-10-01T10:00:00Z",
+            "actor_kind": "user", "token_name": null, "kind": null, "edited_at": null,
+            "role_name": "r".repeat(5000)
+        }]);
+        let error = read(&document).expect_err("too long");
+        assert!(error.to_string().contains("a comment role name"), "{error}");
     }
 
     #[test]
