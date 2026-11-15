@@ -442,12 +442,17 @@ fn issuer(fx: &Fixture) -> ApiTokenRecord {
     record
 }
 
-fn child_as(fx: &Fixture, name: &str) -> ApiTokenRecord {
+#[must_use]
+fn child_record_of(fx: &Fixture, name: &str) -> (ApiTokenRecord, String) {
     let parent = issuer(fx);
-    let (mut record, _) = new_api_token_record(&fx.alice, name, AuthScope::Work, None);
+    let (mut record, raw) = new_api_token_record(&fx.alice, name, AuthScope::Work, None);
     record.parent_id = Some(parent.id);
     record.parent_name = Some(parent.name);
-    record
+    (record, raw)
+}
+
+fn child_as(fx: &Fixture, name: &str) -> ApiTokenRecord {
+    child_record_of(fx, name).0
 }
 
 fn issue_as(fx: &Fixture, role: &Value, name: &str) -> (ApiTokenRecord, String) {
@@ -455,10 +460,7 @@ fn issue_as(fx: &Fixture, role: &Value, name: &str) -> (ApiTokenRecord, String) 
 }
 
 fn issue_as_at(fx: &Fixture, role: &Value, name: &str, now: i64) -> (ApiTokenRecord, String) {
-    let parent = issuer(fx);
-    let (mut record, raw) = new_api_token_record(&fx.alice, name, AuthScope::Work, None);
-    record.parent_id = Some(parent.id);
-    record.parent_name = Some(parent.name);
+    let (record, raw) = child_record_of(fx, name);
     let role_id = role["id"].as_str().expect("role id");
     let stored = fx
         .db

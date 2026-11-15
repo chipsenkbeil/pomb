@@ -2823,6 +2823,21 @@ impl AccountDb {
         Ok(stored.map(|record| (record, raw)))
     }
 
+    /// Builds the unstored record and raw token for a child of token `parent`.
+    #[must_use]
+    fn child_record(
+        &self,
+        parent: &ParentToken,
+        name: &str,
+        grant: TokenGrant,
+    ) -> (ApiTokenRecord, String) {
+        let (mut record, raw) = new_api_token_record(&self.account, name, grant.scope, None);
+        grant.apply_to(&mut record);
+        record.parent_id = Some(parent.id.clone());
+        record.parent_name = Some(parent.name.clone());
+        (record, raw)
+    }
+
     /// Mints and stores a child API token issued by token `parent` that lives `hours`, returning
     /// its record and the raw token.
     ///
@@ -2844,10 +2859,7 @@ impl AccountDb {
         grant: TokenGrant,
         hours: i64,
     ) -> DbResult<Result<(ApiTokenRecord, String), ChildTokenRefusal>> {
-        let (mut record, raw) = new_api_token_record(&self.account, name, grant.scope, None);
-        grant.apply_to(&mut record);
-        record.parent_id = Some(parent.id.clone());
-        record.parent_name = Some(parent.name.clone());
+        let (record, raw) = self.child_record(parent, name, grant);
         let now = Utc::now().timestamp();
         let stored = self.db.create_child_api_token(record, hours, now)?;
         Ok(stored.map(|record| (record, raw)))
@@ -2877,10 +2889,7 @@ impl AccountDb {
         grant: TokenGrant,
         hours: i64,
     ) -> DbResult<Result<(ApiTokenRecord, String), RoleTokenRefusal>> {
-        let (mut record, raw) = new_api_token_record(&self.account, name, grant.scope, None);
-        grant.apply_to(&mut record);
-        record.parent_id = Some(parent.id.clone());
-        record.parent_name = Some(parent.name.clone());
+        let (record, raw) = self.child_record(parent, name, grant);
         let now = Utc::now().timestamp();
         let stored = self
             .db
