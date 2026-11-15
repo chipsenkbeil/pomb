@@ -3855,8 +3855,17 @@ fn txn_account_minutes(txn: &WriteTransaction, account: &str, task_id: &str) -> 
     Ok(total)
 }
 
+/// Who pays for a history event and whether a quota refuses the write that stores it.
+#[derive(Copy, Clone)]
+struct EventCharge<'a> {
+    /// The account that pays for the event, or [`None`] for the board owner.
+    paid_by: Option<&'a str>,
+    /// Whether a quota refuses the write.
+    over: OverQuota,
+}
+
 /// Appends a history event that changed a value to the task `task_id` inside `txn`, storing the
-/// task under `over`. Returns false, writing nothing, when the task does not exist.
+/// task under `charge`. Returns false, writing nothing, when the task does not exist.
 fn txn_push_task_event(
     txn: &WriteTransaction,
     task_id: &str,
@@ -3864,13 +3873,19 @@ fn txn_push_task_event(
     detail: &str,
     actor: Actor<'_>,
     change: EventChange,
-    over: OverQuota,
+    charge: EventCharge<'_>,
 ) -> DbResult<bool> {
+    let EventCharge { paid_by, over } = charge;
     let mut tasks = txn.open_table(TASKS)?;
     let Some(mut task) = task_in(&tasks, task_id)? else {
         return Ok(false);
     };
     push_change_event(&mut task, kind, detail.to_string(), actor, change);
+    if let Some(event) = task.history.last_mut() {
+        event.paid_by = paid_by
+            .filter(|payer| !payer.is_empty())
+            .map(str::to_string);
+    }
     task.updated_at = Some(Utc::now().to_rfc3339());
     txn_store_task(txn, &mut tasks, &task, over, actor)?;
     Ok(true)
@@ -12146,7 +12161,10 @@ impl Db {
                 &detail,
                 actor,
                 change,
-                OverQuota::Allow,
+                EventCharge {
+                    paid_by: None,
+                    over: OverQuota::Allow,
+                },
             )?;
         }
         txn.commit()?;
@@ -12696,7 +12714,10 @@ impl Db {
             detail,
             actor,
             change,
-            over,
+            EventCharge {
+                paid_by: Some(account.as_str()),
+                over,
+            },
         );
         match pushed {
             Ok(true) => {}
@@ -13015,7 +13036,10 @@ impl Db {
                 &detail,
                 actor,
                 change,
-                OverQuota::Refuse,
+                EventCharge {
+                    paid_by: Some(&row.account_id),
+                    over: OverQuota::Refuse,
+                },
             )?;
         }
         if let Some(old_before) = old_before {
@@ -13032,7 +13056,10 @@ impl Db {
                 &detail,
                 actor,
                 change,
-                OverQuota::Refuse,
+                EventCharge {
+                    paid_by: Some(&row.account_id),
+                    over: OverQuota::Refuse,
+                },
             )?;
         }
         txn.commit()?;

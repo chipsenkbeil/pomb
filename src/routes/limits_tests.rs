@@ -3929,6 +3929,7 @@ async fn timer_stop_should_be_refused_once_a_mib_past_the_stored_limit() {
     let account = fx.db.account(&fx.member);
     assert!(account.active_timer().expect("timer").is_some());
     assert!(fx.db.list_entries(&task).expect("entries").is_empty());
+    assert!(history_details(&fx, &task, HistoryKind::TimeLogged).is_empty());
 }
 
 #[tokio::test]

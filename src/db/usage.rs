@@ -721,13 +721,13 @@ mod tests {
 
     use super::*;
     use crate::db::{
-        ColumnDeleteOutcome, ColumnPatch, EntryEdit, FieldCreateOutcome, META, NewWebhook,
-        OwnerChange, SCHEMA_VERSION_KEY, SwimlanePatch, WebhookPatch, WipCheck, mutate_task_as,
-        push_column_event,
+        ColumnDeleteOutcome, ColumnPatch, EntryEdit, FieldCreateOutcome, META, NewTimeEntry,
+        NewWebhook, OwnerChange, SCHEMA_VERSION_KEY, SwimlanePatch, WebhookPatch, WipCheck,
+        mutate_task_as, push_column_event,
     };
     use crate::models::{
-        AccountId, Actor, BIN_RETENTION_DAYS, BoardRole, FieldColumn, FieldKind, FieldOwner,
-        HistoryKind, InstanceMode, LinkKind, SECONDS_PER_DAY, WebhookEvent,
+        AccountId, Actor, BIN_RETENTION_DAYS, BoardRole, EntryKind, FieldColumn, FieldKind,
+        FieldOwner, HistoryKind, InstanceMode, LinkKind, SECONDS_PER_DAY, TaskEvent, WebhookEvent,
     };
 
     /// An open database with its admin and a member with one column.
@@ -1543,5 +1543,195 @@ mod tests {
 
         assert!(pay(&fx, &task, &carol, OverQuota::Allow, 1).expect("server write"));
         assert!(stored(&fx.db, &carol) > held);
+    }
+
+    /// A board of `bob` with a task and a member `carol`, under a 1 MiB quota with `bob` within
+    /// 64 bytes of it.
+    fn full_owner() -> (Fixture, AccountId, String, u64) {
+        let fx = fixture();
+        let carol = fx.db.create_user("carol").expect("carol");
+        let task = fx
+            .db
+            .create_task(&fx.column, None, "Task", 1, None)
+            .expect("task");
+        fx.db
+            .set_board_member(&fx.board, "carol", BoardRole::Member)
+            .expect("join");
+        fx.db
+            .update_instance_settings(|settings| settings.quotas.stored_mib_per_account = 1)
+            .expect("quotas");
+        let room = MIB - stored(&fx.db, &fx.member) - 64;
+        fill(&fx, &fx.member, room);
+        (fx, carol, task, room)
+    }
+
+    /// Asserts that the kept counts match a count from scratch once the `filler` bytes counted
+    /// against `owner` are left out.
+    fn assert_counts_match_but(db: &Db, owner: &AccountId, filler: u64) {
+        let mut kept = db.stored_bytes_by_account().expect("usage");
+        if let Some(bytes) = kept.get_mut(owner.as_str()) {
+            *bytes -= filler;
+        }
+        kept.retain(|_, bytes| *bytes > 0);
+        assert_eq!(kept, recounted(db));
+    }
+
+    /// Counts `bytes` more against `account`.
+    fn fill(fx: &Fixture, account: &AccountId, bytes: u64) {
+        let txn = fx.db.db.begin_write().expect("write");
+        txn_count_usage(&txn, account.as_str(), bytes, 0).expect("fill");
+        txn.commit().expect("commit");
+    }
+
+    /// Logs a 5 minute entry of `kind` on `task` for `account`.
+    fn log_time(
+        fx: &Fixture,
+        account: &AccountId,
+        task: &str,
+        kind: EntryKind,
+    ) -> DbResult<Option<String>> {
+        fx.db.log_task_time(
+            account,
+            NewTimeEntry {
+                task_id: Some(task),
+                started_at: "2026-11-11T09:00:00Z",
+                minutes: 5,
+                seconds: 300,
+                note: "",
+                kind,
+                interrupted: false,
+                interrupt_reason: None,
+                labels: &[],
+                created_by: "",
+                activity_id: None,
+                role: None,
+                token_name: None,
+                role_id: None,
+                role_name: None,
+            },
+            "Logged time",
+            Actor::SYSTEM,
+        )
+    }
+
+    /// Edits `entry` to a longer note on `task`.
+    fn edit_time(fx: &Fixture, entry: &str, task: &str) -> DbResult<bool> {
+        fx.db.update_entry(
+            entry,
+            task,
+            EntryEdit {
+                seconds: 120,
+                note: "a longer note",
+                started_at: "2026-11-11T10:00:00Z",
+                labels: &[],
+            },
+            Actor::SYSTEM,
+        )
+    }
+
+    /// Returns the history events of `task` of `kind`.
+    #[must_use]
+    fn events_of(db: &Db, task: &str, kind: HistoryKind) -> Vec<TaskEvent> {
+        let row = db.task(task).expect("read").expect("task");
+        row.history
+            .into_iter()
+            .filter(|event| event.kind == kind)
+            .collect()
+    }
+
+    /// Asserts that `result` is a refusal at the stored-bytes quota.
+    fn assert_quota_refusal<T: std::fmt::Debug>(result: DbResult<T>) {
+        let refusal = result.expect_err("refused");
+        let refusal = refusal.downcast_ref::<QuotaExceeded>().expect("quota");
+        assert_eq!(refusal.bound, Bound::Quota(Quota::StoredMibPerAccount));
+    }
+
+    #[test]
+    fn a_member_should_log_edit_and_stop_a_timer_when_the_board_owner_is_full() {
+        let (fx, carol, task, filler) = full_owner();
+        let owner_before = stored(&fx.db, &fx.member);
+
+        let entry = log_time(&fx, &carol, &task, EntryKind::Manual)
+            .expect("logged")
+            .expect("entry");
+        assert!(edit_time(&fx, &entry, &task).expect("edited"));
+        log_time(&fx, &carol, &task, EntryKind::Stopwatch)
+            .expect("stopped")
+            .expect("entry");
+
+        assert_eq!(fx.db.list_entries(&task).expect("entries").len(), 2);
+        assert_eq!(events_of(&fx.db, &task, HistoryKind::TimeLogged).len(), 2);
+        assert_eq!(events_of(&fx.db, &task, HistoryKind::TimeEdited).len(), 1);
+        assert!(stored(&fx.db, &fx.member) <= MIB);
+        assert!(stored(&fx.db, &fx.member).abs_diff(owner_before) < 64);
+        assert_counts_match_but(&fx.db, &fx.member, filler);
+    }
+
+    #[test]
+    fn a_time_event_should_count_against_the_member_who_logged_it() {
+        let (fx, carol, task, filler) = full_owner();
+        let owner_before = stored(&fx.db, &fx.member);
+        let carol_before = stored(&fx.db, &carol);
+
+        let entry = log_time(&fx, &carol, &task, EntryKind::Manual)
+            .expect("logged")
+            .expect("entry");
+        let logged = events_of(&fx.db, &task, HistoryKind::TimeLogged);
+        assert_eq!(logged[0].paid_by.as_deref(), Some(carol.as_str()));
+        let paid = serde_json::to_vec(&logged[0]).expect("json").len() as u64 + 1;
+        let entry_bytes = serde_json::to_vec(&fx.db.entry(&entry).expect("read").expect("entry"))
+            .expect("json")
+            .len() as u64;
+        assert!(paid > 64);
+        assert!(stored(&fx.db, &carol) >= carol_before + paid);
+        assert!(stored(&fx.db, &carol) <= carol_before + paid + entry_bytes + 64);
+        assert!(stored(&fx.db, &fx.member).abs_diff(owner_before) < 64);
+
+        assert!(edit_time(&fx, &entry, &task).expect("edited"));
+        let edited = events_of(&fx.db, &task, HistoryKind::TimeEdited);
+        assert_eq!(edited[0].paid_by.as_deref(), Some(carol.as_str()));
+        assert!(stored(&fx.db, &fx.member).abs_diff(owner_before) < 64);
+        assert_counts_match_but(&fx.db, &fx.member, filler);
+    }
+
+    #[test]
+    fn a_member_at_their_own_quota_should_be_refused_on_a_log_an_edit_and_a_timer_stop() {
+        let (fx, carol, task, _) = full_owner();
+        let entry = log_time(&fx, &carol, &task, EntryKind::Manual)
+            .expect("logged")
+            .expect("entry");
+        let room = MIB - stored(&fx.db, &carol);
+        fill(&fx, &carol, room);
+
+        assert_quota_refusal(log_time(&fx, &carol, &task, EntryKind::Manual));
+        assert_quota_refusal(edit_time(&fx, &entry, &task));
+
+        fill(&fx, &carol, MIB);
+        assert_quota_refusal(log_time(&fx, &carol, &task, EntryKind::Stopwatch));
+        assert_eq!(fx.db.list_entries(&task).expect("entries").len(), 1);
+        assert_eq!(events_of(&fx.db, &task, HistoryKind::TimeLogged).len(), 1);
+        assert!(events_of(&fx.db, &task, HistoryKind::TimeEdited).is_empty());
+    }
+
+    #[test]
+    fn deleting_a_paid_entry_or_task_should_release_the_bytes_from_the_payer() {
+        let (fx, carol, task, filler) = full_owner();
+        let entry = log_time(&fx, &carol, &task, EntryKind::Manual)
+            .expect("logged")
+            .expect("entry");
+        let owner_before = stored(&fx.db, &fx.member);
+        let carol_before = stored(&fx.db, &carol);
+
+        assert!(fx.db.delete_entry(&entry, Actor::SYSTEM).expect("deleted"));
+        let deleted = events_of(&fx.db, &task, HistoryKind::TimeDeleted);
+        assert_eq!(deleted[0].paid_by, None);
+        assert!(stored(&fx.db, &carol) < carol_before);
+        assert!(stored(&fx.db, &carol) > 0);
+        assert!(stored(&fx.db, &fx.member) > owner_before);
+        assert_counts_match_but(&fx.db, &fx.member, filler);
+
+        assert!(fx.db.delete_task(&task, Actor::SYSTEM).expect("delete"));
+        assert_eq!(stored(&fx.db, &carol), 0);
+        assert_counts_match_but(&fx.db, &fx.member, filler);
     }
 }
