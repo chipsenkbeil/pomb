@@ -8,12 +8,12 @@ use uuid::Uuid;
 
 use super::{
     AGENT_ROLE_GRANTS, AGENT_ROLES, AGENT_ROLES_BY_ACCOUNT, BOARDS, Bound, Db, DbResult,
-    GRANTS_BY_BOARD, GRANTS_BY_ROLE, MAX_AGENT_ROLES_PER_ACCOUNT, QuotaExceeded, RoleTokenRefusal,
-    mmap_get, mmap_insert, mmap_remove, read_one, txn_check_child_token, txn_create_token,
-    txn_mmap_get, txn_read_one, txn_remove_token, txn_role_token_ids, write_one,
+    GRANTS_BY_BOARD, GRANTS_BY_ROLE, MAX_AGENT_ROLES_PER_ACCOUNT, OwnedBoard, QuotaExceeded,
+    RoleTokenRefusal, mmap_get, mmap_insert, mmap_remove, read_one, txn_check_child_token,
+    txn_create_token, txn_mmap_get, txn_read_one, txn_remove_token, txn_role_token_ids, write_one,
 };
 use crate::models::{AgentRoleGrantRow, AgentRoleRow, ApiTokenRecord, BoardRow};
-use crate::permissions::{Permission, STANDARD_ROLES};
+use crate::permissions::{Permission, STANDARD_ROLES, StandardKey, StandardRole};
 
 /// Refusal of an agent role whose name another role of the account already holds.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -123,18 +123,14 @@ pub(crate) fn txn_seed_standard_roles(txn: &WriteTransaction, account: &str) -> 
     }
     let now = Utc::now().timestamp();
     for standard in STANDARD_ROLES {
-        let role = AgentRoleRow {
-            id: Uuid::new_v4().to_string(),
-            account_id: account.to_string(),
-            name: standard.name.to_string(),
-            permissions: standard.permissions(),
-            created_at: now,
-            updated_at: now,
-            issued: 0,
-            standard: Some(standard.key),
-        };
-        write_one(txn, AGENT_ROLES, &role.id, &role)?;
-        mmap_insert(txn, AGENT_ROLES_BY_ACCOUNT, account, &role.id)?;
+        let role = new_agent_role(
+            account,
+            standard.name,
+            standard.permissions(),
+            Some(standard.key),
+            now,
+        );
+        txn_insert_role(txn, &role)?;
     }
     Ok(())
 }
@@ -168,6 +164,84 @@ fn txn_owned_role(
         account,
         txn_read_one::<AgentRoleRow>(txn, AGENT_ROLES, id)?,
     ))
+}
+
+/// Refuses with [`QuotaExceeded`] when `held` agent roles already reach
+/// [`MAX_AGENT_ROLES_PER_ACCOUNT`].
+fn refuse_role_count(held: usize) -> DbResult<()> {
+    if held >= MAX_AGENT_ROLES_PER_ACCOUNT {
+        return Err(Box::new(QuotaExceeded {
+            bound: Bound::AgentRoles,
+            limit: MAX_AGENT_ROLES_PER_ACCOUNT as u64,
+        }));
+    }
+    Ok(())
+}
+
+/// Returns a new agent role of `account` under a fresh id, named `name` and holding `permissions`,
+/// with no grants and no issued tokens, and keyed as `standard` when it is a standard role.
+#[must_use]
+fn new_agent_role(
+    account: &str,
+    name: &str,
+    permissions: BTreeSet<Permission>,
+    standard: Option<StandardKey>,
+    now: i64,
+) -> AgentRoleRow {
+    AgentRoleRow {
+        id: Uuid::new_v4().to_string(),
+        account_id: account.to_string(),
+        name: name.to_string(),
+        permissions,
+        created_at: now,
+        updated_at: now,
+        issued: 0,
+        standard,
+    }
+}
+
+/// Stores `role` and indexes it under its account, inside an open write transaction.
+fn txn_insert_role(txn: &WriteTransaction, role: &AgentRoleRow) -> DbResult<()> {
+    write_one(txn, AGENT_ROLES, &role.id, role)?;
+    mmap_insert(txn, AGENT_ROLES_BY_ACCOUNT, &role.account_id, &role.id)
+}
+
+/// Returns the agent roles `account` holds, read inside an open write transaction.
+fn txn_held_roles(txn: &WriteTransaction, account: &str) -> DbResult<Vec<AgentRoleRow>> {
+    let mut held = Vec::new();
+    for id in txn_mmap_get(txn, AGENT_ROLES_BY_ACCOUNT, account)? {
+        held.extend(txn_read_one::<AgentRoleRow>(txn, AGENT_ROLES, &id)?);
+    }
+    Ok(held)
+}
+
+/// Returns each standard role that `held` lacks, in the order of [`STANDARD_ROLES`], with the name
+/// its keyed role takes, where " (standard)" is added when another role holds the plain name.
+/// Refuses with [`QuotaExceeded`] past [`MAX_AGENT_ROLES_PER_ACCOUNT`] and with
+/// [`AgentRoleNameTaken`] when that name is taken, inside an open write transaction, and writes
+/// nothing.
+fn txn_missing_standard_roles(
+    txn: &WriteTransaction,
+    account: &str,
+    held: &[AgentRoleRow],
+) -> DbResult<Vec<(&'static StandardRole, String)>> {
+    let mut count = held.len();
+    let mut missing = Vec::new();
+    for standard in STANDARD_ROLES {
+        if held.iter().any(|role| role.standard == Some(standard.key)) {
+            continue;
+        }
+        refuse_role_count(count)?;
+        count += 1;
+        let name = if held.iter().any(|role| role.name == standard.name) {
+            format!("{} (standard)", standard.name)
+        } else {
+            standard.name.to_string()
+        };
+        txn_refuse_taken_name(txn, account, &name, None)?;
+        missing.push((standard, name));
+    }
+    Ok(missing)
 }
 
 impl Db {
@@ -257,27 +331,10 @@ impl Db {
         permissions: BTreeSet<Permission>,
     ) -> DbResult<AgentRoleRow> {
         let txn = self.db.begin_write()?;
-        if txn_mmap_get(&txn, AGENT_ROLES_BY_ACCOUNT, account)?.len() >= MAX_AGENT_ROLES_PER_ACCOUNT
-        {
-            return Err(Box::new(QuotaExceeded {
-                bound: Bound::AgentRoles,
-                limit: MAX_AGENT_ROLES_PER_ACCOUNT as u64,
-            }));
-        }
+        refuse_role_count(txn_mmap_get(&txn, AGENT_ROLES_BY_ACCOUNT, account)?.len())?;
         txn_refuse_taken_name(&txn, account, name, None)?;
-        let now = Utc::now().timestamp();
-        let role = AgentRoleRow {
-            id: Uuid::new_v4().to_string(),
-            account_id: account.to_string(),
-            name: name.to_string(),
-            permissions,
-            created_at: now,
-            updated_at: now,
-            issued: 0,
-            standard: None,
-        };
-        write_one(&txn, AGENT_ROLES, &role.id, &role)?;
-        mmap_insert(&txn, AGENT_ROLES_BY_ACCOUNT, account, &role.id)?;
+        let role = new_agent_role(account, name, permissions, None, Utc::now().timestamp());
+        txn_insert_role(&txn, &role)?;
         txn.commit()?;
         Ok(role)
     }
@@ -327,71 +384,46 @@ impl Db {
     /// Creates each standard role `account` lacks a keyed role for, from [`STANDARD_ROLES`], leaves
     /// every role it holds as it is, and grants every board in `boards` to all six, in one
     /// transaction. A custom role that holds a standard name stays as it is, and the keyed role is
-    /// named with " (standard)" added. Returns [`None`], storing nothing, when a board is not one
-    /// the account owns. A role count past [`MAX_AGENT_ROLES_PER_ACCOUNT`] is refused with
-    /// [`QuotaExceeded`].
+    /// named with " (standard)" added. A role count past [`MAX_AGENT_ROLES_PER_ACCOUNT`] is refused
+    /// with [`QuotaExceeded`].
     pub fn ensure_standard_roles(
         &self,
         account: &str,
-        boards: &[String],
-    ) -> DbResult<Option<StandardRoles>> {
+        boards: &[OwnedBoard],
+    ) -> DbResult<StandardRoles> {
         let txn = self.db.begin_write()?;
-        for board_id in boards {
-            let owned = txn_read_one::<BoardRow>(&txn, BOARDS, board_id)?
-                .is_some_and(|board| board.owner_id == account);
-            if !owned {
-                return Ok(None);
-            }
-        }
-        let mut held = Vec::new();
-        for id in txn_mmap_get(&txn, AGENT_ROLES_BY_ACCOUNT, account)? {
-            held.extend(txn_read_one::<AgentRoleRow>(&txn, AGENT_ROLES, &id)?);
-        }
-        let mut count = held.len();
+        let mut stored = txn_held_roles(&txn, account)?;
+        let missing = txn_missing_standard_roles(&txn, account, &stored)?;
         let now = Utc::now().timestamp();
-        let mut roles = Vec::new();
         let mut created = Vec::new();
-        for standard in STANDARD_ROLES {
-            let found = held.iter().find(|role| role.standard == Some(standard.key));
-            if let Some(role) = found {
-                roles.push(role.clone());
-                continue;
-            }
-            if count >= MAX_AGENT_ROLES_PER_ACCOUNT {
-                return Err(Box::new(QuotaExceeded {
-                    bound: Bound::AgentRoles,
-                    limit: MAX_AGENT_ROLES_PER_ACCOUNT as u64,
-                }));
-            }
-            count += 1;
-            let name = if held.iter().any(|role| role.name == standard.name) {
-                format!("{} (standard)", standard.name)
-            } else {
-                standard.name.to_string()
-            };
-            txn_refuse_taken_name(&txn, account, &name, None)?;
-            let role = AgentRoleRow {
-                id: Uuid::new_v4().to_string(),
-                account_id: account.to_string(),
-                name,
-                permissions: standard.permissions(),
-                created_at: now,
-                updated_at: now,
-                issued: 0,
-                standard: Some(standard.key),
-            };
-            write_one(&txn, AGENT_ROLES, &role.id, &role)?;
-            mmap_insert(&txn, AGENT_ROLES_BY_ACCOUNT, account, &role.id)?;
+        for (standard, name) in missing {
+            let role = new_agent_role(
+                account,
+                &name,
+                standard.permissions(),
+                Some(standard.key),
+                now,
+            );
+            txn_insert_role(&txn, &role)?;
             created.push(role.name.clone());
-            roles.push(role);
+            stored.push(role);
         }
+        let roles: Vec<AgentRoleRow> = STANDARD_ROLES
+            .iter()
+            .filter_map(|standard| {
+                stored
+                    .iter()
+                    .find(|role| role.standard == Some(standard.key))
+                    .cloned()
+            })
+            .collect();
         for role in &roles {
-            for board_id in boards {
-                txn_grant(&txn, account, &role.id, board_id)?;
+            for board in boards {
+                txn_grant(&txn, account, &role.id, &board.row().id)?;
             }
         }
         txn.commit()?;
-        Ok(Some(StandardRoles { roles, created }))
+        Ok(StandardRoles { roles, created })
     }
 
     /// Revokes agent role `role_id` of `account` on board `board_id`, and in the same write
@@ -480,8 +512,7 @@ mod tests {
 
         let standard = db
             .ensure_standard_roles(account.as_str(), &[])
-            .expect("ensure")
-            .expect("account");
+            .expect("ensure");
         assert_eq!(standard.roles.len(), STANDARD_ROLES.len());
         assert_eq!(standard.created.len(), STANDARD_ROLES.len());
         assert!(
@@ -508,8 +539,7 @@ mod tests {
 
         let again = db
             .ensure_standard_roles(account.as_str(), &[])
-            .expect("ensure again")
-            .expect("account");
+            .expect("ensure again");
         assert!(again.created.is_empty());
         assert!(again.roles.iter().any(|role| role.id == keyed.id));
     }

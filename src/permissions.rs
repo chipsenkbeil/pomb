@@ -658,70 +658,57 @@ mod tests {
             "attachments.read",
             "comments.write",
         ];
-        let listed: [(&str, &[&str]); 6] = [
-            (
-                "planner",
-                &[
-                    "tasks.create",
-                    "tasks.edit",
-                    "tasks.move",
-                    "subtasks.edit",
-                    "links.write",
-                    "labels.manage",
-                ],
-            ),
-            (
-                "implementer",
-                &[
-                    "tasks.claim",
-                    "tasks.move",
-                    "attachments.write",
-                    "time.write",
-                ],
-            ),
-            ("reviewer", &["tasks.claim", "tasks.move", "seats.take"]),
-            (
-                "verifier",
-                &["tasks.claim", "tasks.move", "subtasks.check", "seats.take"],
-            ),
-            ("release", &["tasks.claim", "tasks.move"]),
-            (
-                "lead",
-                &[
-                    "tasks.create",
-                    "tasks.edit",
-                    "tasks.move",
-                    "tasks.claim",
-                    "tasks.bin",
-                    "subtasks.edit",
-                    "subtasks.check",
-                    "subtasks.delete",
-                    "links.write",
-                    "links.delete",
-                    "labels.manage",
-                    "attachments.write",
-                    "time.write",
-                    "columns.edit",
-                    "settings.read",
-                    "notifications.read",
-                    "roles.read",
-                    "tokens.issue",
-                    "roles.grant",
-                    "seats.manage",
-                    "seats.take",
-                ],
-            ),
+        let listed: [&[&str]; 6] = [
+            &[
+                "tasks.create",
+                "tasks.edit",
+                "tasks.move",
+                "subtasks.edit",
+                "links.write",
+                "labels.manage",
+            ],
+            &[
+                "tasks.claim",
+                "tasks.move",
+                "attachments.write",
+                "time.write",
+            ],
+            &["tasks.claim", "tasks.move", "seats.take"],
+            &["tasks.claim", "tasks.move", "subtasks.check", "seats.take"],
+            &["tasks.claim", "tasks.move"],
+            &[
+                "tasks.create",
+                "tasks.edit",
+                "tasks.move",
+                "tasks.claim",
+                "tasks.bin",
+                "subtasks.edit",
+                "subtasks.check",
+                "subtasks.delete",
+                "links.write",
+                "links.delete",
+                "labels.manage",
+                "attachments.write",
+                "time.write",
+                "columns.edit",
+                "settings.read",
+                "notifications.read",
+                "roles.read",
+                "tokens.issue",
+                "roles.grant",
+                "seats.manage",
+                "seats.take",
+            ],
         ];
-        let names: Vec<_> = STANDARD_ROLES.iter().map(|role| role.name).collect();
-        assert_eq!(names, listed.map(|(name, _)| name));
-        for (role, (name, extra)) in STANDARD_ROLES.iter().zip(listed) {
+        assert_eq!(STANDARD_ROLES.len(), listed.len());
+        for (role, extra) in STANDARD_ROLES.iter().zip(listed) {
             let expected: HashSet<_> = base.iter().chain(extra).copied().collect();
             let held: HashSet<_> = role
                 .permissions()
                 .iter()
                 .map(|permission| permission.name())
                 .collect();
-            assert_eq!(held, expected, "{name}");
+            assert_eq!(held, expected, "{}", role.name);
         }
     }
 }

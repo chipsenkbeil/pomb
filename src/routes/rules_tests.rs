@@ -17,7 +17,7 @@ use crate::db::{
 use crate::models::{
     AccountId, Actor, ActorKind, AuthScope, ColumnStage, CommentQuestion, QuestionChoice,
 };
-use crate::permissions::Permission;
+use crate::permissions::{Permission, STANDARD_ROLES};
 
 const MAX_BODY_BYTES: usize = 1 << 22;
 const BOOTSTRAP_TOKEN: &str = "boot-secret";
@@ -115,8 +115,10 @@ impl Fixture {
         let mut role_tokens = BTreeMap::new();
         let mut role_ids = BTreeMap::new();
         for role in db.list_agent_roles(owner.as_str()).expect("roles") {
-            let name = ["implementer", "reviewer", "verifier", "release", "lead"]
-                .into_iter()
+            let name = STANDARD_ROLES
+                .iter()
+                .map(|standard| standard.name)
+                .filter(|name| *name != "planner")
                 .find(|name| *name == role.name);
             let Some(name) = name else { continue };
             let (record, raw) = new_api_token_record(&owner, name, AuthScope::Admin, None);

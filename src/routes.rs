@@ -72,18 +72,18 @@ use crate::db::{
     Commit, CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment,
     EntryEdit, EpicCloseOutcome, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome,
     FirstPasskeyOutcome, GrabRequest, InboundColumnMissing, InstanceDb, LargestUse, LinkAddOutcome,
-    LinkDeleteOutcome, LinkEdit, LinkReads, LinkRefusal, MAX_EVENTS_PER_BOARD,
-    MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME,
-    NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted,
-    OwnedBoard, OwnedColumn, OwnedTask, OwnerChange, OwnerOutcome, PaletteStrandsColor,
-    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuestionGuard, QuestionMove,
-    QuestionWrite, QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked,
-    RoleDenied, RoleTokenRefusal, RootAdminDb, SessionEndOutcome, SessionListing, SessionRefused,
-    SessionToken, SettingsDb, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch,
-    SwimlaneUpdateOutcome, TaskContext, TemplateDeleteOutcome, TokenEdit, TokenNameTaken,
-    UmbrellaChange, UmbrellaPart, UmbrellaRef, WebhookColumnMissing, WebhookPatch, WipCheck,
-    WipHeld, WipRefused, carry_fields, clean_labels, labels_event, local_day, merge_metadata,
-    push_change_event, push_column_event, push_event, round_estimate,
+    LinkDeleteOutcome, LinkEdit, LinkReads, LinkRefusal, MAX_AGENT_ROLES_PER_ACCOUNT,
+    MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards, MoveOutcome,
+    NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry,
+    NewWebhook, NumberingExhausted, OwnedBoard, OwnedColumn, OwnedTask, OwnerChange, OwnerOutcome,
+    PaletteStrandsColor, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome,
+    QuestionGuard, QuestionMove, QuestionWrite, QuotaExceeded, RecoverOutcome, RegisterOutcome,
+    RestoreOutcome, Revoked, RoleDenied, RoleTokenRefusal, RootAdminDb, SessionEndOutcome,
+    SessionListing, SessionRefused, SessionToken, SettingsDb, SwimlaneDeleteOutcome,
+    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext, TemplateDeleteOutcome,
+    TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart, UmbrellaRef, WebhookColumnMissing,
+    WebhookPatch, WipCheck, WipHeld, WipRefused, carry_fields, clean_labels, labels_event,
+    local_day, merge_metadata, push_change_event, push_column_event, push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -28000,7 +28000,7 @@ fn role_or_404(
         (status = 200, description = "The new role", body = AgentRoleView),
         (status = 400, description = "A name outside lowercase letters, digits and hyphens, longer than 32 characters or used by another role, or an unknown or empty `permissions`"),
         (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot create roles, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
-        (status = 409, description = "`quota_exceeded`: the account holds 50 roles already"),
+        (status = 409, description = format!("`quota_exceeded`: the account holds {} roles already", MAX_AGENT_ROLES_PER_ACCOUNT)),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -28110,7 +28110,7 @@ fn held_board(account: &AccountDb, id: &str) -> Result<OwnedBoard, AppError> {
         (status = 400, description = "A custom role already holds the name a keyed standard role would take, such as `reviewer (standard)`, and nothing was written"),
         (status = 403, description = "`permission_denied`: the caller lacks `roles.grant`, or `exceeds_grant`: a listed board is not one the calling token holds, and nothing was written"),
         (status = 404, description = "A listed board does not exist, and nothing was written"),
-        (status = 409, description = "`quota_exceeded`: creating the missing roles would pass the account's 50 roles"),
+        (status = 409, description = format!("`quota_exceeded`: creating the missing roles would pass the account's {} roles", MAX_AGENT_ROLES_PER_ACCOUNT)),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -28125,10 +28125,7 @@ async fn ensure_standard_roles(
         .into_iter()
         .map(|id| held_board(&account, id))
         .collect::<Result<Vec<_>, _>>()?;
-    let standard = account
-        .ensure_standard_roles(&boards)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("a listed board is not one of the account's own"))?;
+    let standard = account.ensure_standard_roles(&boards)?;
     let roles = standard
         .roles
         .into_iter()

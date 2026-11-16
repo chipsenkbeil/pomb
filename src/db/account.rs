@@ -2495,10 +2495,8 @@ impl AccountDb {
     }
 
     /// Creates the standard roles the account lacks and grants every board in `boards` to all six.
-    /// Returns [`None`], writing nothing, when a board is not one the account owns.
-    pub fn ensure_standard_roles(&self, boards: &[OwnedBoard]) -> DbResult<Option<StandardRoles>> {
-        let ids: Vec<String> = boards.iter().map(|board| board.row().id.clone()).collect();
-        self.db.ensure_standard_roles(self.account.as_str(), &ids)
+    pub fn ensure_standard_roles(&self, boards: &[OwnedBoard]) -> DbResult<StandardRoles> {
+        self.db.ensure_standard_roles(self.account.as_str(), boards)
     }
 
     /// Revokes agent role `role_id` on board `board_id` with the tokens issued as it that reach

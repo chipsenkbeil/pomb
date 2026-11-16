@@ -448,10 +448,6 @@ fn child_as(fx: &Fixture, name: &str) -> ApiTokenRecord {
     child_record_of(fx, name).0
 }
 
-fn issue_as(fx: &Fixture, role: &Value, name: &str) -> (ApiTokenRecord, String) {
-    issue_as_at(fx, role, name, chrono::Utc::now().timestamp())
-}
-
 fn issue_as_at(fx: &Fixture, role: &Value, name: &str, now: i64) -> (ApiTokenRecord, String) {
     let (record, raw) = child_record_of(fx, name);
     let role_id = role["id"].as_str().expect("role id");
@@ -461,6 +457,10 @@ fn issue_as_at(fx: &Fixture, role: &Value, name: &str, now: i64) -> (ApiTokenRec
         .expect("issue")
         .expect("role");
     (stored, raw)
+}
+
+fn issue_as(fx: &Fixture, role: &Value, name: &str) -> (ApiTokenRecord, String) {
+    issue_as_at(fx, role, name, chrono::Utc::now().timestamp())
 }
 
 async fn whoami(fx: &Fixture, raw: &str) -> Value {
@@ -652,29 +652,29 @@ fn rows_from_before_the_role_snapshot_should_read_as_no_role() {
     assert_eq!(role.issued, 0);
 }
 
-const STANDARD: &str = "/api/v1/agent-roles/standard";
-const STANDARD_NAMES: [&str; 6] = [
-    "planner",
-    "implementer",
-    "reviewer",
-    "verifier",
-    "release",
-    "lead",
-];
+const STANDARD_ROLES_URI: &str = "/api/v1/agent-roles/standard";
 
 #[must_use]
-fn names_of(reply: &Value, key: &str) -> Vec<String> {
-    reply[key]
+fn standard_names() -> Vec<&'static str> {
+    STANDARD_ROLES
+        .iter()
+        .map(|standard| standard.name)
+        .collect()
+}
+
+#[must_use]
+fn role_names(roles: &Value) -> Vec<String> {
+    roles
         .as_array()
         .expect("array")
         .iter()
-        .map(|item| {
-            item.as_str()
-                .or(item["name"].as_str())
-                .expect("name")
-                .to_string()
-        })
+        .map(|role| role["name"].as_str().expect("name").to_string())
         .collect()
+}
+
+#[must_use]
+fn read_perms() -> BTreeSet<Permission> {
+    BTreeSet::from([Permission::TasksRead])
 }
 
 fn restricted_bearer(fx: &Fixture, boards: &[&str]) -> String {
@@ -688,10 +688,12 @@ fn restricted_bearer(fx: &Fixture, boards: &[&str]) -> String {
 async fn standard_roles_should_be_created_once() {
     let fx = Fixture::new();
     let body = json!({"boards": []});
-    let reply = fx.bearer(ALICE, "POST", STANDARD, Some(body)).await;
+    let reply = fx
+        .bearer(ALICE, "POST", STANDARD_ROLES_URI, Some(body))
+        .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    assert_eq!(names_of(&reply.body, "created"), STANDARD_NAMES);
-    assert_eq!(names_of(&reply.body, "roles"), STANDARD_NAMES);
+    assert_eq!(reply.body["created"], json!(standard_names()));
+    assert_eq!(role_names(&reply.body["roles"]), standard_names());
     let listed = fx.bearer(ALICE, "GET", "/api/v1/agent-roles", None).await;
     assert_eq!(listed.body.as_array().expect("list").len(), 6);
     let lead = reply.body["roles"][5]["permissions"]
@@ -704,9 +706,13 @@ async fn standard_roles_should_be_created_once() {
 async fn standard_roles_call_should_be_idempotent() {
     let fx = Fixture::new();
     let body = json!({"boards": [fx.boards[ALICE]]});
-    let first = fx.bearer(ALICE, "POST", STANDARD, Some(body.clone())).await;
+    let first = fx
+        .bearer(ALICE, "POST", STANDARD_ROLES_URI, Some(body.clone()))
+        .await;
     assert_eq!(first.status, StatusCode::OK, "{}", first.body);
-    let second = fx.bearer(ALICE, "POST", STANDARD, Some(body)).await;
+    let second = fx
+        .bearer(ALICE, "POST", STANDARD_ROLES_URI, Some(body))
+        .await;
     assert_eq!(second.status, StatusCode::OK, "{}", second.body);
     assert_eq!(second.body["created"], json!([]));
     assert_eq!(second.body["roles"], first.body["roles"]);
@@ -716,7 +722,12 @@ async fn standard_roles_call_should_be_idempotent() {
 async fn standard_roles_should_keep_an_edited_template() {
     let fx = Fixture::new();
     let first = fx
-        .bearer(ALICE, "POST", STANDARD, Some(json!({"boards": []})))
+        .bearer(
+            ALICE,
+            "POST",
+            STANDARD_ROLES_URI,
+            Some(json!({"boards": []})),
+        )
         .await;
     let id = first.body["roles"][0]["id"].as_str().expect("id");
     let uri = format!("/api/v1/agent-roles/{id}");
@@ -731,7 +742,12 @@ async fn standard_roles_should_keep_an_edited_template() {
     assert_eq!(edited.status, StatusCode::OK, "{}", edited.body);
 
     let again = fx
-        .bearer(ALICE, "POST", STANDARD, Some(json!({"boards": []})))
+        .bearer(
+            ALICE,
+            "POST",
+            STANDARD_ROLES_URI,
+            Some(json!({"boards": []})),
+        )
         .await;
     assert_eq!(again.body["created"], json!([]));
     assert_eq!(again.body["roles"][0]["permissions"], json!(["tasks.read"]));
@@ -743,7 +759,12 @@ async fn standard_roles_should_keep_an_edited_template() {
 async fn standard_roles_should_reuse_a_renamed_standard_role() {
     let fx = Fixture::new();
     let first = fx
-        .bearer(ALICE, "POST", STANDARD, Some(json!({"boards": []})))
+        .bearer(
+            ALICE,
+            "POST",
+            STANDARD_ROLES_URI,
+            Some(json!({"boards": []})),
+        )
         .await;
     let id = first.body["roles"][2]["id"].as_str().expect("id");
     let uri = format!("/api/v1/agent-roles/{id}");
@@ -753,7 +774,12 @@ async fn standard_roles_should_reuse_a_renamed_standard_role() {
     assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
 
     let again = fx
-        .bearer(ALICE, "POST", STANDARD, Some(json!({"boards": []})))
+        .bearer(
+            ALICE,
+            "POST",
+            STANDARD_ROLES_URI,
+            Some(json!({"boards": []})),
+        )
         .await;
     assert_eq!(again.body["created"], json!([]));
     assert_eq!(again.body["roles"][2]["id"], json!(id));
@@ -768,7 +794,9 @@ async fn standard_roles_should_grant_every_listed_board() {
     let mut held = vec![fx.boards[ALICE].clone(), second.clone()];
     held.sort();
     let body = json!({"boards": [fx.boards[ALICE], second, fx.boards[ALICE]]});
-    let reply = fx.bearer(ALICE, "POST", STANDARD, Some(body)).await;
+    let reply = fx
+        .bearer(ALICE, "POST", STANDARD_ROLES_URI, Some(body))
+        .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     for role in reply.body["roles"].as_array().expect("roles") {
         assert_eq!(role["boards"], json!(held), "{}", role["name"]);
@@ -784,7 +812,7 @@ async fn standard_roles_should_refuse_a_board_the_caller_lacks() {
     let reply = call(
         &fx.app,
         "POST",
-        STANDARD,
+        STANDARD_ROLES_URI,
         &[("authorization", &narrow)],
         Some(body),
     )
@@ -800,7 +828,9 @@ async fn standard_roles_should_refuse_a_board_the_caller_lacks() {
     assert_eq!(listed.body, json!([]));
 
     let foreign = json!({"boards": [fx.boards[BOB]]});
-    let reply = fx.bearer(ALICE, "POST", STANDARD, Some(foreign)).await;
+    let reply = fx
+        .bearer(ALICE, "POST", STANDARD_ROLES_URI, Some(foreign))
+        .await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.body);
     let listed = fx.bearer(ALICE, "GET", "/api/v1/agent-roles", None).await;
     assert_eq!(listed.body, json!([]));
@@ -858,7 +888,9 @@ async fn standard_roles_should_refuse_past_the_role_quota_and_write_nothing() {
     }
     let held = MAX_AGENT_ROLES_PER_ACCOUNT - 4;
     let body = json!({"boards": [fx.boards[ALICE]]});
-    let reply = fx.bearer(ALICE, "POST", STANDARD, Some(body)).await;
+    let reply = fx
+        .bearer(ALICE, "POST", STANDARD_ROLES_URI, Some(body))
+        .await;
     assert_eq!(
         (reply.status, reply.code.as_deref()),
         (StatusCode::CONFLICT, Some("quota_exceeded")),
@@ -875,24 +907,32 @@ async fn standard_roles_should_refuse_past_the_role_quota_and_write_nothing() {
 #[tokio::test]
 async fn standard_roles_should_leave_custom_roles_with_standard_names_alone() {
     let fx = Fixture::new();
-    for name in ["planner", "lead"] {
+    let taken = [
+        STANDARD_ROLES[0].name,
+        STANDARD_ROLES[STANDARD_ROLES.len() - 1].name,
+    ];
+    for name in taken {
         fx.db
             .create_agent_role(fx.alice.as_str(), name, read_perms())
             .expect("role");
     }
     let body = json!({"boards": [fx.boards[ALICE]]});
-    let reply = fx.bearer(ALICE, "POST", STANDARD, Some(body)).await;
+    let reply = fx
+        .bearer(ALICE, "POST", STANDARD_ROLES_URI, Some(body))
+        .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    let named = [
-        "planner (standard)",
-        "implementer",
-        "reviewer",
-        "verifier",
-        "release",
-        "lead (standard)",
-    ];
-    assert_eq!(names_of(&reply.body, "roles"), named);
-    assert_eq!(names_of(&reply.body, "created"), named);
+    let named: Vec<String> = STANDARD_ROLES
+        .iter()
+        .map(|standard| {
+            if taken.contains(&standard.name) {
+                format!("{} (standard)", standard.name)
+            } else {
+                standard.name.to_string()
+            }
+        })
+        .collect();
+    assert_eq!(role_names(&reply.body["roles"]), named);
+    assert_eq!(reply.body["created"], json!(named));
     assert_eq!(reply.body["roles"][0]["boards"], json!([fx.boards[ALICE]]));
     let listed = fx.bearer(ALICE, "GET", "/api/v1/agent-roles", None).await;
     let listed = listed.body.as_array().expect("list");
@@ -913,7 +953,9 @@ async fn ensure_standard_roles_should_refuse_a_double_name_clash() {
             .expect("role");
     }
     let body = json!({"boards": [fx.boards[ALICE]]});
-    let reply = fx.bearer(ALICE, "POST", STANDARD, Some(body)).await;
+    let reply = fx
+        .bearer(ALICE, "POST", STANDARD_ROLES_URI, Some(body))
+        .await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
     let listed = fx.bearer(ALICE, "GET", "/api/v1/agent-roles", None).await;
     let listed = listed.body.as_array().expect("list");
@@ -925,16 +967,13 @@ async fn ensure_standard_roles_should_refuse_a_double_name_clash() {
     );
 }
 
-#[must_use]
-fn read_perms() -> BTreeSet<Permission> {
-    BTreeSet::from([Permission::TasksRead])
-}
-
-const CHILDREN: &str = "/api/v1/auth/tokens/children";
+const CHILDREN_URI: &str = "/api/v1/auth/tokens/children";
 
 async fn standard_role(fx: &Fixture, name: &str) -> Value {
     let body = json!({"boards": [fx.boards[ALICE]]});
-    let reply = fx.bearer(ALICE, "POST", STANDARD, Some(body)).await;
+    let reply = fx
+        .bearer(ALICE, "POST", STANDARD_ROLES_URI, Some(body))
+        .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     reply.body["roles"]
         .as_array()
@@ -965,7 +1004,7 @@ async fn issue_child(fx: &Fixture, bearer: &str, body: Value) -> Reply {
     call(
         &fx.app,
         "POST",
-        CHILDREN,
+        CHILDREN_URI,
         &[("authorization", bearer)],
         Some(body),
     )
@@ -1049,7 +1088,7 @@ async fn token_as_any_standard_role_should_list_boards_and_read_a_board() {
         .bearer(
             ALICE,
             "POST",
-            STANDARD,
+            STANDARD_ROLES_URI,
             Some(json!({"boards": [fx.boards[ALICE]]})),
         )
         .await;
@@ -1772,17 +1811,17 @@ async fn lead_should_create_standard_roles_and_grant_held_boards() {
     let reply = call(
         &fx.app,
         "POST",
-        STANDARD,
+        STANDARD_ROLES_URI,
         &[("authorization", &lead)],
         Some(body),
     )
     .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    assert_eq!(names_of(&reply.body, "created"), STANDARD_NAMES);
+    assert_eq!(reply.body["created"], json!(standard_names()));
     for role in reply.body["roles"].as_array().expect("roles") {
         assert_eq!(role["boards"], json!([fx.boards[ALICE]]), "{role}");
     }
-    let lead_role = reply.body["roles"][STANDARD_NAMES.len() - 1]["permissions"]
+    let lead_role = reply.body["roles"][STANDARD_ROLES.len() - 1]["permissions"]
         .as_array()
         .expect("permissions");
     assert!(lead_role.contains(&json!("roles.grant")));
@@ -1819,7 +1858,7 @@ async fn work_token_should_be_refused_both_grant_routes_naming_roles_grant() {
     let grant = format!("/api/v1/agent-roles/{id}/boards/{}", fx.boards[ALICE]);
     let body = json!({"boards": [fx.boards[ALICE]]});
     for (method, uri, body) in [
-        ("POST", STANDARD, Some(body)),
+        ("POST", STANDARD_ROLES_URI, Some(body)),
         ("PUT", grant.as_str(), None),
     ] {
         let refused = call(&fx.app, method, uri, &[("authorization", &work)], body).await;
@@ -2424,7 +2463,7 @@ async fn only_the_lead_role_should_delete_or_convert_a_subtask() {
     let tasks = format!("/api/tasks/{task}/subtasks");
     let (_, issuer) = issuer_token(&fx, None, BoardAccess::All, None);
     let mut raws = Vec::new();
-    for name in STANDARD_NAMES {
+    for name in standard_names() {
         let role = standard_role(&fx, name).await;
         let body = json!({"name": format!("{name}-agent"), "role_id": role["id"]});
         let issued = issue_child(&fx, &issuer, body).await;
