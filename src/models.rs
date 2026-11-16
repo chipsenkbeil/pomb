@@ -4332,13 +4332,13 @@ impl RateLimit {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimits {
-    /// Requests one API token can make at once from a full bucket, from 1 to 10000.
+    /// Requests one API token can make at once from a full bucket, from 1 to 100000.
     pub token_burst: u32,
-    /// Requests added back to an API token's bucket each second, from 1 to 1000.
+    /// Requests added back to an API token's bucket each second, from 1 to 10000.
     pub token_per_second: u32,
-    /// Requests one account's sessions and tokens together can make at once, from 1 to 10000.
+    /// Requests one account's sessions and tokens together can make at once, from 1 to 100000.
     pub account_burst: u32,
-    /// Requests added back to an account's bucket each second, from 1 to 1000.
+    /// Requests added back to an account's bucket each second, from 1 to 10000.
     pub account_per_second: u32,
     /// Requests one client address gets on each limited sign-in endpoint per minute, from 1 to
     /// 1000.
@@ -4347,21 +4347,21 @@ pub struct RateLimits {
 
 impl RateLimits {
     /// Burst of an account until the admin changes it.
-    pub const DEFAULT_ACCOUNT_BURST: u32 = 500;
+    pub const DEFAULT_ACCOUNT_BURST: u32 = 5000;
     /// Refill of an account until the admin changes it.
-    pub const DEFAULT_ACCOUNT_PER_SECOND: u32 = 100;
+    pub const DEFAULT_ACCOUNT_PER_SECOND: u32 = 1000;
     /// Requests per client address and minute until the admin changes it.
     pub const DEFAULT_IP_PER_MINUTE: u32 = 10;
     /// Burst of an API token until the admin changes it.
-    pub const DEFAULT_TOKEN_BURST: u32 = 100;
+    pub const DEFAULT_TOKEN_BURST: u32 = 1000;
     /// Refill of an API token until the admin changes it.
-    pub const DEFAULT_TOKEN_PER_SECOND: u32 = 20;
+    pub const DEFAULT_TOKEN_PER_SECOND: u32 = 200;
     /// Largest burst the admin may allow.
-    pub const MAX_BURST: u32 = 10_000;
+    pub const MAX_BURST: u32 = 100_000;
     /// Most requests per client address and minute the admin may allow.
     pub const MAX_IP_PER_MINUTE: u32 = 1000;
     /// Largest refill per second the admin may allow.
-    pub const MAX_PER_SECOND: u32 = 1000;
+    pub const MAX_PER_SECOND: u32 = 10_000;
     /// Smallest value of any rate limit.
     pub const MIN: u32 = 1;
 

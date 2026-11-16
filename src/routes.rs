@@ -8227,10 +8227,13 @@ impl From<InstanceSettings> for AdminSettingsView {
     }
 }
 
-/// Request body of `PUT /api/v1/admin/settings` in single mode, where only the disk limits apply.
+/// Request body of `PUT /api/v1/admin/settings` in single mode, where only the rate limits and the
+/// disk limits apply.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SingleSettingsInput {
+    /// How fast credentials, accounts and client addresses may send requests.
+    limits: RateLimits,
     /// When writes that grow the database stop.
     disk: DiskLimits,
 }
@@ -8240,8 +8243,8 @@ struct SingleSettingsInput {
 /// quotas from the next write. A member over a lowered quota keeps what it holds and cannot add
 /// more. The admin's account has no quotas. New prune settings apply from the next daily cleanup,
 /// which never touches the admin's boards and deletes nothing until a full warning period has
-/// passed since the change. In single mode the body holds only `disk`, the one section that
-/// applies there.
+/// passed since the change. In single mode the body holds only `limits` and `disk`, the two
+/// sections that apply there.
 #[utoipa::path(
     put,
     path = "/api/v1/admin/settings",
@@ -8265,9 +8268,13 @@ async fn update_admin_settings(
     require_cookie_auth(&user)?;
     if state.mode == InstanceMode::Single {
         let input: SingleSettingsInput = parse_body(&headers, body).await?;
+        input.limits.validate().map_err(AppError::bad_request)?;
         input.disk.validate().map_err(AppError::bad_request)?;
         let stored = state
-            .save_settings(&instance, |settings| settings.disk = input.disk)
+            .save_settings(&instance, |settings| {
+                settings.limits = input.limits;
+                settings.disk = input.disk;
+            })
             .map_err(AppError::from)?;
         return Ok(Json(stored.into()));
     }
@@ -8407,7 +8414,9 @@ impl StorageView {
 
 /// The Storage pane of the owner of a single-mode instance.
 struct StoragePane {
-    /// The stored limits.
+    /// The stored rate limits.
+    rates: RateLimits,
+    /// The stored disk limits.
     limits: DiskLimits,
     /// How full the database is.
     storage: StorageView,
@@ -25131,8 +25140,10 @@ async fn settings_page(
     let admin_link = multi && instance.is_some();
     let storage = match &instance {
         Some(instance) if !multi => {
-            let limits = instance.instance_settings()?.disk;
+            let settings = instance.instance_settings()?;
+            let limits = settings.disk;
             Some(StoragePane {
+                rates: settings.limits,
                 limits,
                 storage: StorageView::of(state.disk.latest(), limits),
                 usage: UsageView::of(&instance.largest_use()?),

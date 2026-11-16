@@ -1961,7 +1961,15 @@
         e.preventDefault();
         storageError.hidden = true;
         var max = storageForm.dataset.maxDatabaseMib;
+        const rate = (id) => parseInt(document.getElementById(id).value, 10);
         jsonRequest('PUT', '/api/v1/admin/settings', {
+          limits: {
+            token_burst: rate('storage-token-burst'),
+            token_per_second: rate('storage-token-per-second'),
+            account_burst: rate('storage-account-burst'),
+            account_per_second: rate('storage-account-per-second'),
+            ip_per_minute: rate('storage-ip-per-minute'),
+          },
           disk: {
             max_database_mib: max === '' ? null : parseInt(max, 10),
             min_free_mib: parseInt(document.getElementById('storage-min-free').value, 10),

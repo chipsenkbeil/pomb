@@ -682,6 +682,55 @@ async fn limits_should_follow_saved_settings() {
 }
 
 #[tokio::test]
+async fn single_mode_limits_should_follow_saved_settings_and_refuse_a_value_above_the_maximum() {
+    const LOWERED: u32 = 5;
+    let fx = Fixture::new(InstanceMode::Single, Clock::new().limits(), |_| roomy());
+    let whoami = || fx.member("GET", "/api/v1/auth/whoami", None);
+    let save = |limits: RateLimits| {
+        fx.put_settings(json!({"limits": limits, "disk": DiskLimits::default()}))
+    };
+    let lowered = RateLimits {
+        token_burst: LOWERED,
+        token_per_second: RateLimits::MIN,
+        ..RateLimits::default()
+    };
+    let saved = save(lowered).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    assert_eq!(fx.db.instance_settings().expect("read").limits, lowered);
+    for _ in 0..LOWERED {
+        assert_eq!(whoami().await.status, StatusCode::OK);
+    }
+    let refused = whoami().await;
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(refused.code.as_deref(), Some("rate_limited"));
+    let above = RateLimits {
+        token_burst: RateLimits::MAX_BURST + 1,
+        ..RateLimits::default()
+    };
+    let refused = save(above).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(fx.db.instance_settings().expect("read").limits, lowered);
+}
+
+#[tokio::test]
+async fn fresh_instance_should_allow_the_raised_default_limits() {
+    let limits = RateLimits::default();
+    assert_eq!(
+        (
+            limits.token_burst,
+            limits.token_per_second,
+            limits.account_burst,
+            limits.account_per_second
+        ),
+        (1000, 200, 5000, 1000)
+    );
+    let fx = Fixture::new(InstanceMode::Single, Clock::new().limits(), |_| roomy());
+    assert_eq!(fx.db.instance_settings().expect("read").limits, limits);
+    let reply = fx.member("GET", "/api/v1/auth/whoami", None).await;
+    assert_eq!(reply.status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn account_bucket_should_be_shared_by_sessions_and_tokens() {
     const CREDENTIALS: u32 = 3;
     const ROUNDS: u32 = 2;
@@ -1191,7 +1240,7 @@ fn cramped_except(roomy: &Path) -> DiskGuard {
 }
 
 #[tokio::test]
-async fn single_mode_should_edit_only_the_disk_limits() {
+async fn single_mode_should_edit_the_rate_and_disk_limits() {
     const FLOOR_MIB: u32 = 1024;
     let fx = Fixture::new(InstanceMode::Single, unthrottled_limits(), |_| roomy());
     let page = fx.admin("GET", "/settings", None).await;
@@ -1201,7 +1250,9 @@ async fn single_mode_should_edit_only_the_disk_limits() {
         min_free_mib: FLOOR_MIB,
         ..DiskLimits::default()
     };
-    let saved = fx.put_settings(json!({"disk": disk})).await;
+    let saved = fx
+        .put_settings(json!({"limits": RateLimits::default(), "disk": disk}))
+        .await;
     assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
     assert_eq!(
         fx.db.instance_settings().expect("read").disk.min_free_mib,
@@ -3653,6 +3704,8 @@ async fn the_single_mode_storage_pane_should_show_the_use_beside_its_limits() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     let html = page.body.as_str().expect("html");
     assert!(html.contains("id=\"storage-max-attachment\""), "{html}");
+    assert!(html.contains("id=\"storage-token-burst\""), "{html}");
+    assert!(html.contains("id=\"storage-account-per-second\""), "{html}");
     assert!(
         html.contains("Largest attachment right now: 1.5 MiB"),
         "{html}"

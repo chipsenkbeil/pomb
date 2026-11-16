@@ -13,7 +13,7 @@ use super::{REQUEST_TIMEOUT_SECS, router};
 use crate::auth::new_api_token_record;
 use crate::db::{Db, NewTaskPlacement, WipCheck};
 use crate::limit::Limits;
-use crate::models::{AccountId, Actor, ActorKind, AuthScope, InstanceMode};
+use crate::models::{AccountId, Actor, ActorKind, AuthScope, InstanceMode, RateLimits};
 use crate::{AppState, BODY_LIMIT_BYTES, markdown};
 
 /// Seconds a test waits for a reply that should come at once.
@@ -65,6 +65,14 @@ impl Fixture {
     }
 
     fn with_limits(limits: Limits) -> Self {
+        Self::build(limits, None)
+    }
+
+    fn throttled(rates: RateLimits) -> Self {
+        Self::build(Limits::new(), Some(rates))
+    }
+
+    fn build(limits: Limits, rates: Option<RateLimits>) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("events.redb");
         let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
@@ -83,6 +91,9 @@ impl Fixture {
             .with_disk(held_disk(&db))
             .with_mode(InstanceMode::Multi)
             .with_limits(limits);
+        if let Some(rates) = rates {
+            state.limits.apply(&rates);
+        }
         Self {
             work: token(&admin, "agent-1", AuthScope::Work),
             read: token(&admin, "reader", AuthScope::Read),
@@ -501,7 +512,11 @@ async fn a_size_only_edit_by_a_token_should_report_the_token() {
 #[tokio::test]
 async fn zero_timeout_waits_should_never_be_rate_limited() {
     const WAITS: usize = 500;
-    let fx = Fixture::with_limits(Limits::new());
+    let fx = Fixture::throttled(RateLimits {
+        token_burst: 100,
+        token_per_second: 20,
+        ..RateLimits::default()
+    });
     fx.add_task("One");
     for round in 0..WAITS {
         let got = fx.get(&fx.work, "after=1&timeout=0").await;

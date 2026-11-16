@@ -130,12 +130,12 @@ use crate::models::{
     InboundAddressRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS,
     MAX_CUSTOM_COLORS, MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
     MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NEEDS_HUMAN_LABEL, NUMBERING_KEY, Numbering, Owner,
-    OwnerHolder, PasskeyRow, QUESTION_KIND, QuestionAnswer, Quota, Quotas, RecoveryCodeRow,
-    ReportBookmark, Responsible, SECONDS_PER_HOUR, Seat, SeatSlot, SessionRow, Settings, Subtask,
-    SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskKind, TaskLink,
-    TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, WebhookRow, custom_color_hexes,
-    custom_color_value, format_minutes, is_custom_color, lighter_hex, normalize_hex,
-    standard_color, text_contrast,
+    OwnerHolder, PasskeyRow, QUESTION_KIND, QuestionAnswer, Quota, Quotas, RateLimits,
+    RecoveryCodeRow, ReportBookmark, Responsible, SECONDS_PER_HOUR, Seat, SeatSlot, SessionRow,
+    Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead,
+    TaskKind, TaskLink, TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, WebhookRow,
+    custom_color_hexes, custom_color_value, format_minutes, is_custom_color, lighter_hex,
+    normalize_hex, standard_color, text_contrast,
 };
 use crate::permissions::{Permission, Preset, STANDARD_ROLES, StandardKey};
 use crate::rules;
@@ -1133,7 +1133,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 96;
+pub const SCHEMA_VERSION: u64 = 97;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1235,6 +1235,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "b8ee38bfa29f6aec24252d7f8440cbfbdb8cfe2f26e1b3243f898d7c0eaed996",
     "35f8c1333a5e1f3d3d0cee103fc3eeddce808a8543a8dad43b60448ef926eccd",
     "79a5f8988a4826ad121f959dfd9ea54a6c916d2e61bbcaaaf950ae7a5056a1e8",
+    "063a2fd6eedd4e0ed6668abad6b667fad127e276471373236394498472608931",
     "063a2fd6eedd4e0ed6668abad6b667fad127e276471373236394498472608931",
 ];
 
@@ -1456,7 +1457,44 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 93) {
         grant_links_delete(txn)?;
     }
+    if from.is_none_or(|version| version < 97) {
+        raise_default_rate_limits(txn)?;
+    }
     Ok(())
+}
+
+/// Replaces each stored rate limit that still holds its old default with the raised default, and
+/// leaves `ip_per_minute` and any value the admin changed as it is.
+fn raise_default_rate_limits(txn: &WriteTransaction) -> DbResult<()> {
+    let raised = [
+        ("token_burst", 100, RateLimits::DEFAULT_TOKEN_BURST),
+        ("token_per_second", 20, RateLimits::DEFAULT_TOKEN_PER_SECOND),
+        ("account_burst", 500, RateLimits::DEFAULT_ACCOUNT_BURST),
+        (
+            "account_per_second",
+            100,
+            RateLimits::DEFAULT_ACCOUNT_PER_SECOND,
+        ),
+    ];
+    rewrite_rows(txn, SETTINGS, |key, settings| {
+        if key != INSTANCE_SETTINGS_KEY {
+            return false;
+        }
+        let Some(limits) = settings
+            .get_mut("limits")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            return false;
+        };
+        let mut changed = false;
+        for (name, old, new) in raised {
+            if limits.get(name).and_then(serde_json::Value::as_u64) == Some(old) {
+                limits.insert(name.to_string(), serde_json::json!(new));
+                changed = true;
+            }
+        }
+        changed
+    })
 }
 
 /// Gives `webhooks.manage` to every stored token and device request that holds every other
@@ -18503,6 +18541,45 @@ mod session_tests {
         assert!(session_rows(&db).is_empty());
         assert_eq!(db.list_api_tokens().expect("tokens").len(), 1);
         assert_eq!(db.passkeys_of(&account).expect("passkeys").len(), 1);
+    }
+
+    #[test]
+    fn upgrade_from_version_96_should_raise_only_default_rate_limits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("v96.redb");
+        let path = path.to_str().expect("utf8");
+        {
+            let db = Db::connect(path).expect("connect");
+            let settings = InstanceSettings {
+                limits: RateLimits {
+                    token_burst: 100,
+                    token_per_second: 7,
+                    account_burst: 500,
+                    account_per_second: 100,
+                    ip_per_minute: 100,
+                },
+                ..InstanceSettings::default()
+            };
+            let txn = db.db.begin_write().expect("write");
+            write_one(&txn, SETTINGS, INSTANCE_SETTINGS_KEY, &settings).expect("settings");
+            txn.open_table(META)
+                .expect("meta")
+                .insert(SCHEMA_VERSION_KEY, 96)
+                .expect("stamp");
+            txn.commit().expect("commit");
+        }
+        let db = Db::connect(path).expect("upgrade from version 96");
+        let limits = db.instance_settings().expect("settings").limits;
+        assert_eq!(
+            limits,
+            RateLimits {
+                token_burst: RateLimits::DEFAULT_TOKEN_BURST,
+                token_per_second: 7,
+                account_burst: RateLimits::DEFAULT_ACCOUNT_BURST,
+                account_per_second: RateLimits::DEFAULT_ACCOUNT_PER_SECOND,
+                ip_per_minute: 100,
+            }
+        );
     }
 
     #[test]

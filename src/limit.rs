@@ -737,14 +737,14 @@ mod tests {
     }
 
     #[test]
-    fn credential_should_refill_twenty_requests_a_second() {
+    fn credential_should_refill_the_default_requests_a_second() {
         let now = Instant::now();
         let limits = Buckets::new(now);
         for _ in 0..BURST {
             limits.check(&token("a"), now, rate()).expect("burst");
         }
         let later = now + Duration::from_millis(500);
-        for _ in 0..10 {
+        for _ in 0..RateLimits::DEFAULT_TOKEN_PER_SECOND / 2 {
             assert_eq!(limits.check(&token("a"), later, rate()), Ok(()));
         }
         assert!(limits.check(&token("a"), later, rate()).is_err());

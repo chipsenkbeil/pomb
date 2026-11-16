@@ -406,7 +406,7 @@
   </div>
   {% endif %}
 
-  {% if let Some(StoragePane { limits, storage, usage }) = storage %}
+  {% if let Some(StoragePane { rates, limits, storage, usage }) = storage %}
   <div id="storage" class="settings-pane">
   <section class="settings-section">
     <h2>Storage</h2>
@@ -414,6 +414,13 @@
       Pomb stops saving new changes and backups until there is room again. Deleting still works.</p>
     {% include "_storage_usage.html" %}
     <form id="storage-form" class="settings-form" data-max-database-mib="{% if let Some(max) = limits.max_database_mib %}{{ max }}{% endif %}">
+      <h3>Rate limits</h3>
+      <label>Requests at once per API token <input type="number" id="storage-token-burst" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_BURST }}" value="{{ rates.token_burst }}"></label>
+      <label>Requests per second per API token <input type="number" id="storage-token-per-second" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_PER_SECOND }}" value="{{ rates.token_per_second }}"></label>
+      <label>Requests at once per account <input type="number" id="storage-account-burst" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_BURST }}" value="{{ rates.account_burst }}"></label>
+      <label>Requests per second per account <input type="number" id="storage-account-per-second" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_PER_SECOND }}" value="{{ rates.account_per_second }}"></label>
+      <label>Requests per minute per address (sign-in, device) <input type="number" id="storage-ip-per-minute" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_IP_PER_MINUTE }}" value="{{ rates.ip_per_minute }}"></label>
+      <h3>Storage</h3>
       <label>Least free disk space in MiB, 0 for no floor
         <input type="number" id="storage-min-free" min="{{ DiskLimits::FLOOR_OFF_MIB }}" max="{{ DiskLimits::MAX_MIB }}" value="{{ limits.min_free_mib }}" required>
       </label>
