@@ -1843,3 +1843,125 @@ async fn kind_changed_detail_should_name_the_json_kind() {
         .collect();
     assert_eq!(details, [format!("Changed the kind to {kind}")]);
 }
+
+#[tokio::test]
+async fn a_timer_start_on_an_epic_should_be_refused_and_keep_the_running_timer() {
+    let (_dir, fx) = fixture();
+
+    // Create an epic and an ordinary card
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+
+    // Start a stopwatch on the card and snapshot it
+    let (status, started) = call(
+        &fx,
+        "POST",
+        "/api/timer/start",
+        Some(json!({"task_id": card, "mode": "stopwatch"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let (_, before) = call(&fx, "GET", "/api/timer/status", None).await;
+
+    // Refuse a pomodoro on the epic
+    let (status, refused) = call(
+        &fx,
+        "POST",
+        "/api/timer/start",
+        Some(json!({"task_id": epic, "mode": "pomodoro"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        refused
+            .as_str()
+            .is_some_and(|message| message.contains("epic")),
+        "{refused}"
+    );
+
+    // Check the running timer kept its task, mode and start
+    let (_, after) = call(&fx, "GET", "/api/timer/status", None).await;
+    assert_eq!(after["task_id"], card.as_str(), "{after}");
+    assert_eq!(after["mode"], before["mode"], "{after}");
+    assert_eq!(after["started_at"], before["started_at"], "{after}");
+}
+
+#[tokio::test]
+async fn a_timer_retarget_to_an_epic_should_be_refused_and_keep_the_old_task() {
+    let (_dir, fx) = fixture();
+
+    // Create an epic and an ordinary card
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+
+    // Start a stopwatch on the card and snapshot it
+    let (status, started) = call(
+        &fx,
+        "POST",
+        "/api/timer/start",
+        Some(json!({"task_id": card, "mode": "stopwatch"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let (_, before) = call(&fx, "GET", "/api/timer/status", None).await;
+
+    // Refuse retargeting the timer to the epic
+    let (status, refused) = call(
+        &fx,
+        "POST",
+        "/api/timer/retarget",
+        Some(json!({"task_id": epic})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        refused
+            .as_str()
+            .is_some_and(|message| message.contains("epic")),
+        "{refused}"
+    );
+
+    // Check the running timer kept its task, mode and start
+    let (_, after) = call(&fx, "GET", "/api/timer/status", None).await;
+    assert_eq!(after["task_id"], card.as_str(), "{after}");
+    assert_eq!(after["mode"], before["mode"], "{after}");
+    assert_eq!(after["started_at"], before["started_at"], "{after}");
+}
+
+#[tokio::test]
+async fn a_timer_on_an_ordinary_task_should_start_and_retarget() {
+    let (_dir, fx) = fixture();
+
+    // Create two ordinary cards
+    let first = create(&fx, json!({"column_id": fx.col_todo, "name": "First"})).await;
+    let second = create(&fx, json!({"column_id": fx.col_todo, "name": "Second"})).await;
+
+    // Start a stopwatch on the first card
+    let (status, started) = call(
+        &fx,
+        "POST",
+        "/api/timer/start",
+        Some(json!({"task_id": first, "mode": "stopwatch"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+
+    // Retarget the running timer to the second card
+    let (status, moved) = call(
+        &fx,
+        "POST",
+        "/api/timer/retarget",
+        Some(json!({"task_id": second})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    assert_eq!(moved["task_id"], second.as_str(), "{moved}");
+}

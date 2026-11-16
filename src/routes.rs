@@ -23289,6 +23289,16 @@ fn ensure_timer_task_unlocked(
     }
 }
 
+/// Refuses a timer on an epic, which holds no work of its own, so a running timer keeps its task.
+fn ensure_timer_task_holds_work(task: &OwnedTask) -> Result<(), AppError> {
+    if task.row().is_work() {
+        return Ok(());
+    }
+    Err(AppError::bad_request(
+        "an epic holds no work, so a timer cannot run on it",
+    ))
+}
+
 /// Returns the 422 that refuses a task entry to the column `column_name`, naming `found`.
 #[must_use]
 fn column_rule_error(column_name: &str, found: &[String]) -> AppError {
@@ -28587,7 +28597,7 @@ struct TimerStartInput {
     request_body = TimerStartInput,
     responses(
         (status = 200, description = "Timer status after starting", body = TimerStatusView),
-        (status = 400, description = "Unknown timer mode"),
+        (status = 400, description = "Unknown timer mode, or an epic task, which holds no work, so a timer cannot run on it and the running timer keeps running"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`lane_archived`: the task sits in an archived swimlane. `quota_exceeded`: a running session to replace could not be recorded, since the account is more than 1 MiB past its stored-bytes quota, holds its most time entries, or holds 500 entries that started that UTC day, so it keeps running"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -28603,12 +28613,9 @@ async fn timer_start(
     let db = &account;
 
     let mode: TimerMode = input.mode.parse().map_err(AppError::bad_request)?;
-    if let Some(task_id) = input.task_id.as_deref()
-        && db.task(task_id).map_err(AppError::from)?.is_none()
-    {
-        return Err(AppError::not_found("task not found"));
-    }
     if let Some(task_id) = input.task_id.as_deref() {
+        let task = found(db.task(task_id), "task not found")?;
+        ensure_timer_task_holds_work(&task)?;
         ensure_task_id_unlocked(db, &user, task_id)?;
     }
 
@@ -28966,6 +28973,7 @@ struct TimerRetargetInput {
     request_body = TimerRetargetInput,
     responses(
         (status = 200, description = "Timer status after retargeting", body = TimerStatusView),
+        (status = 400, description = "The task is an epic, which holds no work, so the timer keeps its old task"),
         (status = 404, description = "No active timer or task not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -28979,12 +28987,9 @@ async fn timer_retarget(
     let input: TimerRetargetInput = parse_body(&headers, body).await?;
     let db = &account;
 
-    if let Some(task_id) = input.task_id.as_deref()
-        && db.task(task_id).map_err(AppError::from)?.is_none()
-    {
-        return Err(AppError::not_found("task not found"));
-    }
     if let Some(task_id) = input.task_id.as_deref() {
+        let task = found(db.task(task_id), "task not found")?;
+        ensure_timer_task_holds_work(&task)?;
         ensure_task_id_unlocked(db, &user, task_id)?;
     }
     let _gate = db.lock_timer();
