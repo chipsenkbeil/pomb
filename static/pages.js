@@ -760,12 +760,32 @@
       closePickerMenu();
     }
   });
+  const pickerMenuItems = (node) => Array.from(node.querySelectorAll('button:not([disabled]), input:not([disabled])'));
+
   document.addEventListener('keydown', function (event) {
-    if (!pickerMenu || event.key !== 'Escape') return;
-    event.stopPropagation();
-    var anchor = pickerMenu.anchor;
-    closePickerMenu();
-    anchor.focus();
+    if (!pickerMenu) return;
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      const anchor = pickerMenu.anchor;
+      closePickerMenu();
+      anchor.focus();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const items = pickerMenuItems(pickerMenu.node);
+    if (!items.length) return;
+    if (event.target === pickerMenu.anchor) {
+      event.preventDefault();
+      (event.shiftKey ? items[items.length - 1] : items[0]).focus();
+    } else if (event.shiftKey && event.target === items[0]) {
+      event.preventDefault();
+      pickerMenu.anchor.focus();
+    } else if (!event.shiftKey && event.target === items[items.length - 1]) {
+      event.preventDefault();
+      const anchor = pickerMenu.anchor;
+      closePickerMenu();
+      anchor.focus();
+    }
   }, true);
   window.addEventListener('resize', closePickerMenu);
 
