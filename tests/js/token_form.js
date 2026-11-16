@@ -127,9 +127,9 @@ check('a custom set posts exactly the ticked names in catalog order',
   TokenForm.body(catalog, { name: 'x', ticked: ['tasks.create', 'boards.read', 'nope'], boards: null, expiryDays: 30 }),
   { name: 'x', permissions: ['boards.read', 'tasks.create'], boards: 'all', expires_in_days: 30 });
 check('the lifetime menu offers 1 to 8 hours and marks 1 hour as the default',
-  [TokenForm.lifetimeChoices().map((choice) => choice.days),
+  [TokenForm.lifetimeChoices().map((choice) => choice.value),
     TokenForm.lifetimeChoices()[0], TokenForm.lifetimeChoices()[7].label],
-  [[1, 2, 3, 4, 5, 6, 7, 8], { days: 1, label: '1 hour', ends: 'Default' }, '8 hours']);
+  [[1, 2, 3, 4, 5, 6, 7, 8], { value: 1, label: '1 hour', ends: 'Default' }, '8 hours']);
 check('a chosen child lifetime posts as child_lifetime_hours',
   TokenForm.body(catalog, { name: 'x', ticked: ['tasks.read'], boards: null, expiryDays: 0, childLifetimeHours: 4 }).child_lifetime_hours, 4);
 check('no chosen child lifetime posts no child_lifetime_hours',
@@ -159,11 +159,11 @@ check('toggling adds a board then removes it',
 
 var day = Date.UTC(2026, 10, 4);
 check('each expiry choice shows the date it ends on',
-  TokenForm.expiryChoices(day).map(function (choice) { return [choice.days, choice.label, choice.ends]; }),
+  TokenForm.expiryChoices(day).map(function (choice) { return [choice.value, choice.label, choice.ends]; }),
   [[0, 'Never', 'No end date'], [30, '30 days', 'Ends 2026-12-04 UTC'],
     [90, '90 days', 'Ends 2027-02-02 UTC'], [365, '1 year', 'Ends 2027-11-04 UTC']]);
 check('the default expiry is one of the choices',
-  TokenForm.expiryChoices(day).some(function (choice) { return choice.days === TokenForm.expiryDefault; }), true);
+  TokenForm.expiryChoices(day).some(function (choice) { return choice.value === TokenForm.expiryDefault; }), true);
 
 var asked = ['boards.read', 'tasks.read', 'tasks.create'];
 check('the device picker offers only the requested permissions',
@@ -192,19 +192,19 @@ check('a request without the required permission leaves no role',
   TokenForm.deviceRoles(catalog, deviceRoleList, ['tasks.read', 'tasks.create']), []);
 check('the device fields post the permissions in catalog order, the boards, the role and the expiry',
   TokenForm.deviceFields(catalog, {
-    userCode: 'ABCD-EFGH', ticked: ['tasks.create', 'boards.read'], boards: ['b1', 'b2'], roleId: 'r1', expiryDays: 2160,
+    userCode: 'ABCD-EFGH', ticked: ['tasks.create', 'boards.read'], boards: ['b1', 'b2'], roleId: 'r1', expiryHours: 2160,
   }),
   [['user_code', 'ABCD-EFGH'], ['permissions_listed', '1'], ['permissions', 'boards.read'],
     ['permissions', 'tasks.create'], ['boards', 'b1'], ['boards', 'b2'], ['role_id', 'r1'], ['expires_in_hours', '2160']]);
 check('the device fields post never for zero hours',
-  TokenForm.deviceFields(catalog, { userCode: 'X', ticked: [], boards: null, roleId: null, expiryDays: 0 }),
+  TokenForm.deviceFields(catalog, { userCode: 'X', ticked: [], boards: null, roleId: null, expiryHours: 0 }),
   [['user_code', 'X'], ['permissions_listed', '1'], ['expires_in_hours', 'never']]);
 check('the device fields post no boards for all boards and no role id for no role',
-  TokenForm.deviceFields(catalog, { userCode: 'X', ticked: [], boards: null, roleId: null, expiryDays: 24 }),
+  TokenForm.deviceFields(catalog, { userCode: 'X', ticked: [], boards: null, roleId: null, expiryHours: 24 }),
   [['user_code', 'X'], ['permissions_listed', '1'], ['expires_in_hours', '24']]);
 var deviceChoices = function (requested) {
   return TokenForm.deviceExpiryChoices(requested)(day).map(function (choice) {
-    return [choice.days, choice.label, choice.ends];
+    return [choice.value, choice.label, choice.ends];
   });
 };
 check('the device menu offers 1 hour, 8 hours, 1 day, 30 days, 90 days, 365 days and never for a request naming no hours',
@@ -222,7 +222,7 @@ check('a request for 48 hours offers the shorter choices and the 48 hours',
 check('every device choice stays within the request',
   deviceChoices(1000).every(function (choice) { return choice[0] <= 1000; }), true);
 check('the Settings choices stay without a one day choice',
-  TokenForm.expiryChoices(day).some(function (choice) { return choice.days === 1; }), false);
+  TokenForm.expiryChoices(day).some(function (choice) { return choice.value === 1; }), false);
 check('a role token reaches a board when it is all boards or holds it',
   TokenForm.reachingTokens(['all', 'b1,b2', 'b3', ''], 'b2'), 2);
 check('an all-boards role token reaches a board it does not list',

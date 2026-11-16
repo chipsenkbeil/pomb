@@ -250,7 +250,7 @@
     var pickerBox = document.getElementById('device-picker');
     var requested = pickerBox.dataset.requested.split(',');
     var boardPicker = mountBoardPicker(document.getElementById('device-boards'));
-    var expiryMenu = mountExpiryMenu(document.getElementById('device-expiry'), Number(pickerBox.dataset.expiryHours), TokenForm.deviceExpiryChoices(Number(pickerBox.dataset.requestedHours)));
+    var expiryMenu = mountChoiceMenu(document.getElementById('device-expiry'), Number(pickerBox.dataset.expiryHours), TokenForm.deviceExpiryChoices(Number(pickerBox.dataset.requestedHours)));
     var catalog = [];
     var picker = null;
     loadJson('/api/v1/agent-roles')
@@ -282,7 +282,7 @@
           ticked: picker.held(),
           roleId: picker.roleId(),
           boards: chosen,
-          expiryDays: expiryMenu.days(),
+          expiryHours: expiryMenu.value(),
         });
         if (!fields.some(function (field) { return field[0] === 'permissions'; })) throw new Error('tick at least one permission');
         if (chosen !== null && !chosen.length) throw new Error('pick at least one board');
@@ -654,7 +654,7 @@
       });
       (form.boards || []).forEach(function (id) { fields.push(['boards', id]); });
       if (form.roleId) fields.push(['role_id', form.roleId]);
-      fields.push(['expires_in_hours', form.expiryDays > 0 ? String(form.expiryDays) : 'never']);
+      fields.push(['expires_in_hours', form.expiryHours > 0 ? String(form.expiryHours) : 'never']);
       return fields;
     },
     boardMatches: function (boards, term) {
@@ -681,7 +681,7 @@
     expiryChoices: function (now) {
       return [[0, 'Never'], [30, '30 days'], [90, '90 days'], [365, '1 year']].map(function (entry) {
         return {
-          days: entry[0],
+          value: entry[0],
           label: entry[1],
           ends: entry[0] === 0
             ? 'No end date'
@@ -703,20 +703,22 @@
         hours.sort(function (a, b) { return a - b; });
         var choices = hours.map(function (value) {
           return {
-            days: value,
+            value: value,
             label: TokenForm.deviceHoursLabel(value),
             ends: 'Ends ' + new Date(now + value * 3600000).toISOString().slice(0, 10) + ' UTC',
           };
         });
-        if (!named) choices.push({ days: 0, label: 'Never', ends: 'No end date' });
+        if (!named) choices.push({ value: 0, label: 'Never', ends: 'No end date' });
         return choices;
       };
     },
     expiryDefault: 365,
-    lifetimeChoices: () => [1, 2, 3, 4, 5, 6, 7, 8].map((hours) => ({
-      days: hours,
+    lifetimeDefaultHours: 1,
+    lifetimeMaxHours: 8,
+    lifetimeChoices: () => Array.from({ length: TokenForm.lifetimeMaxHours }, (_, index) => index + 1).map((hours) => ({
+      value: hours,
       label: hours + (hours === 1 ? ' hour' : ' hours'),
-      ends: hours === 1 ? 'Default' : '',
+      ends: hours === TokenForm.lifetimeDefaultHours ? 'Default' : '',
     })),
     lifetimeField: { label: 'Child token lifetime', key: 'lifetime' },
   };
@@ -961,11 +963,11 @@
     };
   }
 
-  function mountExpiryMenu(root, first, choicesOf, field) {
+  function mountChoiceMenu(root, first, choicesOf, field) {
     var start = first === undefined ? TokenForm.expiryDefault : first;
     choicesOf = choicesOf || TokenForm.expiryChoices;
     field = field || { label: 'Expires', key: 'expiry' };
-    var days = start;
+    var value = start;
 
     function render() {
       root.textContent = '';
@@ -974,7 +976,7 @@
       label.htmlFor = root.id + '-choice';
       wrap.appendChild(label);
       var choices = choicesOf(Date.now());
-      var current = choices.filter(function (choice) { return choice.days === days; })[0];
+      var current = choices.filter(function (choice) { return choice.value === value; })[0];
       var button = pickerEl('button', 'pk-select');
       button.type = 'button';
       button.id = root.id + '-choice';
@@ -989,8 +991,8 @@
         var menu = pickerEl('div', 'pk-menu pk-menu-roles');
         menu.setAttribute('role', 'menu');
         choicesOf(Date.now()).forEach(function (choice) {
-          menu.appendChild(pickerOption(choice.label, choice.ends, choice.days === days, function () {
-            days = choice.days;
+          menu.appendChild(pickerOption(choice.label, choice.ends, choice.value === value, function () {
+            value = choice.value;
             render();
           }));
         });
@@ -1002,8 +1004,8 @@
 
     render();
     return {
-      days: function () { return days; },
-      reset: function () { days = start; render(); },
+      value: function () { return value; },
+      reset: function () { value = start; render(); },
     };
   }
 
@@ -1589,8 +1591,8 @@
     var picker = null;
     var roles = [];
     var boardPicker = mountBoardPicker(document.getElementById('token-boards'));
-    var expiryMenu = mountExpiryMenu(document.getElementById('token-expiry'));
-    const lifetimeMenu = mountExpiryMenu(document.getElementById('token-lifetime'), 1,
+    var expiryMenu = mountChoiceMenu(document.getElementById('token-expiry'));
+    const lifetimeMenu = mountChoiceMenu(document.getElementById('token-lifetime'), TokenForm.lifetimeDefaultHours,
       TokenForm.lifetimeChoices, TokenForm.lifetimeField);
     function renderCatalog(items) {
       catalog = items;
@@ -1624,8 +1626,8 @@
         ticked: picker ? picker.held() : [],
         roleId: picker ? picker.roleId() : null,
         boards: chosen,
-        expiryDays: expiryMenu.days(),
-        childLifetimeHours: lifetimeMenu.days(),
+        expiryDays: expiryMenu.value(),
+        childLifetimeHours: lifetimeMenu.value(),
       });
       if (!request.permissions.length) { showError('Tick at least one permission.'); return; }
       if (only && !request.boards.length) { showError('Pick at least one board.'); return; }
