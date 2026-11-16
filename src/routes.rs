@@ -12041,8 +12041,10 @@ struct RestoredTask {
 }
 
 /// Restores a task from the recycle bin with its time entries, id and attachments, at the end of
-/// its old column and swimlane, or of the board's first when they are gone. Its links are not
-/// restored. A task past 30 days in the bin is refused until the daily cleanup deletes it.
+/// its old column and swimlane, or of the board's first when they are gone. Its links come back
+/// when both ends are on the board again and the link still fits the link rules. A link whose
+/// other task is still in the bin waits in that task's row. A task past 30 days in the bin is
+/// refused until the daily cleanup deletes it.
 #[utoipa::path(
     post,
     path = "/api/bin/{id}/restore",
