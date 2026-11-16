@@ -582,7 +582,7 @@ impl Builder<'_> {
                 stage: column
                     .stage
                     .unwrap_or_else(|| ColumnStage::from_legacy_name(&column.name)),
-                clears_blockers: false,
+                clears_blockers: column.clears_blockers,
             });
         }
         Ok(rows)
@@ -3649,6 +3649,14 @@ mod tests {
         document["columns"][0]["stage"] = json!("verify");
         let (import, _) = read(&document).expect("a board");
         assert_eq!(import.columns[0].stage, Some(ColumnStage::Verify));
+    }
+
+    #[test]
+    fn read_board_should_read_a_column_without_clears_blockers_as_plain() {
+        let document = base();
+        assert!(document["columns"][0].get("clears_blockers").is_none());
+        let (import, _) = read(&document).expect("a board");
+        assert!(!import.columns[0].clears_blockers);
     }
 
     #[must_use]

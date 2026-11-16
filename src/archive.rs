@@ -177,6 +177,10 @@ struct ColumnInfo {
     /// key gets the stage its name maps to on import.
     #[serde(default, deserialize_with = "present")]
     stage: Option<Option<ColumnStage>>,
+    /// Whether a card in the column counts as met for the cards it blocks, as one in a Done column
+    /// does. An archive with no key reads as false.
+    #[serde(default)]
+    clears_blockers: bool,
     /// The column's settings bag.
     settings: Map<String, Value>,
 }
@@ -686,6 +690,7 @@ fn column_info(column: ColumnRow) -> ColumnInfo {
         collapsed: column.collapsed,
         former_names: column.former_names,
         stage: Some(column.stage),
+        clears_blockers: column.clears_blockers,
     }
 }
 
@@ -1721,6 +1726,36 @@ mod tests {
             .expect("import")
             .0;
         assert_eq!(snapshot.columns[0].stage, Some(ColumnStage::Verify));
+    }
+
+    #[test]
+    fn archive_round_trip_should_keep_clears_blockers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+        let first = seeded.db.list_columns(&seeded.board).expect("columns")[0]
+            .id
+            .clone();
+        let patch = ColumnPatch {
+            clears_blockers: Some(true),
+            ..ColumnPatch::default()
+        };
+        seeded.db.update_column(&first, &patch).expect("clears");
+        let exported = document(&archive_of(&seeded));
+        assert_eq!(exported["columns"][0]["clears_blockers"], true);
+
+        let spool_dir = tempfile::tempdir().expect("tempdir");
+        let spool = Spool::create(spool_dir.path()).expect("spool");
+        let account = AccountId::new("acc");
+        let importer = Importer {
+            handle: "chip",
+            account: &account,
+            max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
+            activities: &[],
+        };
+        let snapshot = read_board(&archive_bytes(&seeded), &importer, &spool)
+            .expect("import")
+            .0;
+        assert!(snapshot.columns[0].clears_blockers);
     }
 
     #[test]
