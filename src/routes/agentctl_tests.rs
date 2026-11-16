@@ -10705,6 +10705,56 @@ async fn timer_sessions_should_record_the_token_that_stopped_them() {
 }
 
 #[tokio::test]
+async fn timer_start_should_record_the_token_that_retired_the_session() {
+    let (_dir, fx) = fixture();
+    let (record, bot) = new_api_token_record(&fx.user_id, "timer-bot", AuthScope::Admin, None);
+    fx.db.create_api_token(&record).expect("token");
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Timed"})).await;
+    let running = || ActiveTimer {
+        task_id: Some(id.clone()),
+        mode: TimerMode::Pomodoro,
+        started_at: chrono::Utc::now().timestamp() - 120,
+        duration_secs: Some(25 * 60),
+    };
+    let start = json!({"task_id": id, "mode": "stopwatch"});
+
+    // Retire a running session with a start as the token
+    fx.db
+        .set_active_timer(&fx.user_id, &running())
+        .expect("timer");
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&bot),
+        "POST",
+        "/api/timer/start",
+        Some(start.clone()),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    // Retire the same kind of session with a start from the browser
+    fx.db
+        .set_active_timer(&fx.user_id, &running())
+        .expect("timer");
+    let (status, reply) = call(&fx, "POST", "/api/timer/start", Some(start)).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+
+    // Check both retired entries name their actor and carry the reason
+    let (status, entries) = call(&fx, "GET", &format!("/api/tasks/{id}/time"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = entries.as_array().expect("entries");
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    let mut names: Vec<&Value> = entries.iter().map(|entry| &entry["token_name"]).collect();
+    names.sort_by_key(|name| name.is_null());
+    assert_eq!(names, vec![&json!("timer-bot"), &Value::Null]);
+    for entry in entries {
+        assert_eq!(entry["interrupted"], true, "{entry}");
+        assert_eq!(entry["interrupt_reason"], "Switched task", "{entry}");
+    }
+}
+
+#[tokio::test]
 async fn time_entries_should_refuse_a_bad_duration_start_or_role() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Timed"})).await;
