@@ -375,3 +375,10 @@ pub(crate) fn named_standard_role(name: &str) -> &'static StandardRole {
         .find(|standard| standard.name == name)
         .expect("standard role")
 }
+
+pub(crate) fn drop_seeded_roles(db: &Db, account: &AccountId) {
+    for role in db.list_agent_roles(account.as_str()).expect("roles") {
+        db.delete_agent_role(account.as_str(), &role.id)
+            .expect("delete");
+    }
+}

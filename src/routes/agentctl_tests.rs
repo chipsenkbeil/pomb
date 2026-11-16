@@ -8,7 +8,9 @@ use tower::ServiceExt;
 use utoipa::OpenApi;
 
 use super::server::passkey_mode;
-use super::test_support::{held_disk, make_epic, make_plain, named_standard_role};
+use super::test_support::{
+    drop_seeded_roles, held_disk, make_epic, make_plain, named_standard_role,
+};
 use super::{ApiDoc, DeviceApproveForm, device_grant, router};
 use crate::auth::new_api_token_record;
 use crate::db::{
@@ -40,10 +42,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let path = dir.path().join("agentctl.redb");
     let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
     let user_id = db.create_user("admin").expect("create user");
-    for role in db.list_agent_roles(user_id.as_str()).expect("roles") {
-        db.delete_agent_role(user_id.as_str(), &role.id)
-            .expect("delete");
-    }
+    drop_seeded_roles(&db, &user_id);
     let session = db.create_session(&user_id, "").expect("session");
     let (record, read_token) = new_api_token_record(&user_id, "reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");

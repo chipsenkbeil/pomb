@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, held_disk};
+use super::test_support::{Reply, call, drop_seeded_roles, held_disk};
 use super::{history_actor, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
@@ -28,13 +28,6 @@ struct Fixture {
 
 const ALICE: usize = 0;
 const BOB: usize = 1;
-
-fn drop_seeded_roles(db: &Db, account: &AccountId) {
-    for role in db.list_agent_roles(account.as_str()).expect("roles") {
-        db.delete_agent_role(account.as_str(), &role.id)
-            .expect("delete");
-    }
-}
 
 impl Fixture {
     fn new() -> Self {
