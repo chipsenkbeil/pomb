@@ -4392,6 +4392,7 @@ async fn rename_attachment_should_write_nothing_for_a_missing_task_or_attachment
         .rename_attachment("no-such-task", first_id, "c", Actor::SYSTEM)
         .expect("rename");
     assert!(missing_task.is_none());
+    assert!(fx.db.task("no-such-task").expect("read").is_none());
     let after = fx.db.task(&task).expect("read").expect("task");
     let after = serde_json::to_vec(&after).expect("json");
     assert_eq!(after, before);
