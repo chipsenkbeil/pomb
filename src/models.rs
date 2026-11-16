@@ -3207,7 +3207,7 @@ pub struct TaskEvent {
     pub kind: HistoryKind,
     /// Human-readable one-liner, e.g. "Moved to Done".
     pub detail: String,
-    /// Who caused it (username or "API").
+    /// The username, `api-token` for an API token or `system` for the server.
     pub actor: String,
     /// RFC3339.
     pub created_at: String,

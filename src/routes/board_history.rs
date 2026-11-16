@@ -181,8 +181,10 @@ impl Filter {
 pub(crate) struct HistoryRow {
     /// RFC3339 time of the event.
     pub(crate) time: String,
-    /// The user who made the change, followed by the API token's name in parentheses when a token
-    /// made it.
+    /// Who made the change, as the page names it. A token issued as a role shows the role name,
+    /// followed by its label in parentheses when it has one. Any other token shows the username,
+    /// `api-token` or `system`, then the token's name in parentheses, with `token <- parent` for a
+    /// child token. Otherwise it is the username, `api-token` or `system` alone.
     pub(crate) user: String,
     /// The name of the task.
     pub(crate) task: String,
