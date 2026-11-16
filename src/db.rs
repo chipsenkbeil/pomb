@@ -12703,6 +12703,8 @@ impl Db {
             account.as_str().to_string(),
         );
         let before = txn_account_minutes(&txn, &entry.account_id, task_id)?;
+        txn_store_entry(&txn, &entry, over)?;
+        mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &entry.id)?;
         let change = EventChange {
             from: Some(format_minutes(before)),
             to: Some(format_minutes(before + entry.minutes)),
@@ -12729,8 +12731,6 @@ impl Db {
                         .is_some_and(|refusal| refusal.bound == Bound::TaskRowBytes) => {}
             Err(error) => return Err(error),
         }
-        txn_store_entry(&txn, &entry, over)?;
-        mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &entry.id)?;
         txn.commit()?;
         Ok(Some(entry.id))
     }
