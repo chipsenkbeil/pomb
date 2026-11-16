@@ -1227,8 +1227,10 @@ impl OwnerHolder {
                     token_id: None,
                     name,
                 },
-                Self::Agent { name: other, .. },
-            ) => name == other,
+                Self::Agent {
+                    name: other_name, ..
+                },
+            ) => name == other_name,
             _ => self == other,
         }
     }
@@ -1329,7 +1331,7 @@ fn lease_holds(end: Option<&str>, now: DateTime<Utc>) -> bool {
 /// Returns the owner whose lease holds at `now`, or for a live `claim` taken before the task had
 /// an owner field, the claim holder with the claim's lease. An `owner` with no `claim_fence`
 /// behind it holds nothing.
-fn live_holder_of(
+fn live_owner_or_claim_of(
     owner: Option<&Owner>,
     claim_fence: u64,
     claim: Option<&TaskClaim>,
@@ -1702,8 +1704,8 @@ impl TaskCard {
     /// Returns the live owner, or for a live claim taken before the task had an owner field, the
     /// claim holder with the claim's lease.
     #[must_use]
-    pub fn live_holder(&self, now: DateTime<Utc>) -> Option<Owner> {
-        live_holder_of(
+    pub fn live_owner_or_claim(&self, now: DateTime<Utc>) -> Option<Owner> {
+        live_owner_or_claim_of(
             self.owner.as_ref(),
             self.claim_fence,
             self.claim.as_ref(),
@@ -1915,9 +1917,9 @@ impl TaskRow {
     }
 
     /// Returns the owner whose lease holds at `now`. An owner with no claim fence behind it holds
-    /// nothing.
+    /// nothing, and a live claim with no owner does not count.
     #[must_use]
-    pub fn live_owner(&self, now: DateTime<Utc>) -> Option<&Owner> {
+    pub fn live_owner_only(&self, now: DateTime<Utc>) -> Option<&Owner> {
         self.owner
             .as_ref()
             .filter(|owner| self.claim_fence > 0 && owner.is_live(now))
@@ -1926,8 +1928,8 @@ impl TaskRow {
     /// Returns the live owner, or for a live claim taken before the task had an owner field, the
     /// claim holder with the claim's lease.
     #[must_use]
-    pub fn live_holder(&self, now: DateTime<Utc>) -> Option<Owner> {
-        live_holder_of(
+    pub fn live_owner_or_claim(&self, now: DateTime<Utc>) -> Option<Owner> {
+        live_owner_or_claim_of(
             self.owner.as_ref(),
             self.claim_fence,
             self.claim.as_ref(),
@@ -1938,7 +1940,7 @@ impl TaskRow {
     /// Returns false when `fence` is given, a live claim or owner lease holds the task, and
     /// `fence` is not the task's latest.
     pub fn fence_allows(&self, fence: Option<u64>) -> bool {
-        let held = self.live_claim().is_some() || self.live_owner(Utc::now()).is_some();
+        let held = self.live_claim().is_some() || self.live_owner_only(Utc::now()).is_some();
         match fence {
             Some(fence) if held => self.claim_fence == fence,
             _ => true,

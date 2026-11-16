@@ -3330,7 +3330,7 @@ impl SidePanel {
         let live_agent =
             |holder: &OwnerHolder, live: bool| live && matches!(holder, OwnerHolder::Agent { .. });
         let owner = row.face_owner();
-        let live = row.live_holder(now).is_some();
+        let live = row.live_owner_or_claim(now).is_some();
         let claim_role = row
             .owner
             .is_none()
@@ -4224,7 +4224,7 @@ impl TaskView {
     ) -> Result<Self, AppError> {
         let mut view = Self::from_card(row);
         view.owner_key = row
-            .live_holder(Utc::now())
+            .live_owner_or_claim(Utc::now())
             .map(|owner| owners.key(&owner.holder))
             .unwrap_or_default();
         if unit.is_points() {
@@ -22809,7 +22809,7 @@ async fn take_task_seat(
         .apply_task_change(&task, user.actor(), |row| {
             let now = Utc::now();
             let owns = row
-                .live_owner(now)
+                .live_owner_only(now)
                 .is_some_and(|owner| owner.holder.is_same_credential(&holder));
             if owns {
                 let refusal = AppError::conflict("the task's owner cannot take a seat on it")
@@ -22942,7 +22942,7 @@ async fn ask_task_seats_again(
     let outcome = account
         .apply_task_change(&task, user.actor(), |row| {
             let owns = row
-                .live_owner(Utc::now())
+                .live_owner_only(Utc::now())
                 .is_some_and(|owner| owner.holder == holder);
             if !owns {
                 let refusal = AppError::conflict("only the task's live owner can ask again")

@@ -11823,7 +11823,7 @@ impl Db {
                 OwnerHolder::Agent { name, .. } => *name == request.claimant,
                 OwnerHolder::Human { .. } => false,
             };
-            if let Some(owner) = task.live_owner(now).filter(|owner| !holds(owner)) {
+            if let Some(owner) = task.live_owner_only(now).filter(|owner| !holds(owner)) {
                 let write = if expired {
                     RowWrite::Stamp
                 } else {
@@ -11999,7 +11999,7 @@ impl Db {
             let now = Utc::now();
             let expired = expire_claim(task, now);
             let lease = request.ttl_seconds.map(|ttl| lease_end(now, ttl));
-            if let Some(live) = task.live_holder(now) {
+            if let Some(live) = task.live_owner_or_claim(now) {
                 if live.holder.is_same_as(&request.holder) {
                     let renewed = Owner {
                         holder: request.holder.clone(),
