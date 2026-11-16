@@ -21473,7 +21473,7 @@ fn check_webhook_events(events: Vec<WebhookEvent>) -> Result<Vec<WebhookEvent>, 
 }
 
 /// Returns `column_id` when it names a column of board `board_id` the account owns, or a 400.
-fn check_webhook_column(
+fn check_board_column(
     account: &AccountDb,
     board_id: &str,
     column_id: String,
@@ -21518,7 +21518,7 @@ async fn create_board_webhook(
     let events = check_webhook_events(required(input.events, "events")?)?;
     let column_id = input
         .column_id
-        .map(|column_id| check_webhook_column(&account, &board_id, column_id))
+        .map(|column_id| check_board_column(&account, &board_id, column_id))
         .transpose()?;
     let hook = NewWebhook {
         board_id,
@@ -21594,7 +21594,7 @@ async fn update_webhook(
     let column_id = match input.column_id {
         None => None,
         Some(None) => Some(None),
-        Some(Some(column_id)) => Some(Some(check_webhook_column(
+        Some(Some(column_id)) => Some(Some(check_board_column(
             &account,
             &stored.row().board_id,
             column_id,

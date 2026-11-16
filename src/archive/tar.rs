@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use super::ArchiveError;
 use super::import::ImportError;
 use super::spool::Spool;
+use crate::text::cut_to_bytes;
 
 /// Bytes in a tar block, which every header fills and every file's data pads to.
 pub(crate) const BLOCK: usize = 512;
@@ -41,11 +42,7 @@ pub(crate) fn entry_header(path: &str, size: u64, mtime: u64) -> Result<Vec<u8>,
         )?);
         out.extend_from_slice(record.as_bytes());
         out.extend_from_slice(&ZEROS[..padding(record.len() as u64)]);
-        let mut end = NAME_BYTES;
-        while !path.is_char_boundary(end) {
-            end -= 1;
-        }
-        name = &path[..end];
+        name = cut_to_bytes(path, NAME_BYTES);
     }
     out.extend_from_slice(&header(name, size, mtime, b'0')?);
     Ok(out)

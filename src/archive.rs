@@ -26,6 +26,7 @@ use crate::models::{
     SwimlaneRow, TaskClaim, TaskKind, TaskLink, TaskRow, TimeEntryRow,
 };
 use crate::taskjson::TaskArray;
+use crate::text::cut_to_bytes;
 
 /// Value of the `format` key of every archive's `board.json`.
 const FORMAT: &str = "pomb-board-archive";
@@ -1232,11 +1233,7 @@ fn safe_component(name: &str, fallback: &str, max_bytes: usize) -> String {
         .collect();
     let ends = |c: char| c == '.' || c.is_whitespace();
     let trimmed = mapped.trim_matches(ends);
-    let mut end = trimmed.len().min(max_bytes);
-    while !trimmed.is_char_boundary(end) {
-        end -= 1;
-    }
-    let cut = trimmed[..end].trim_end_matches(ends);
+    let cut = cut_to_bytes(trimmed, max_bytes).trim_end_matches(ends);
     if cut.is_empty() {
         fallback.to_string()
     } else {

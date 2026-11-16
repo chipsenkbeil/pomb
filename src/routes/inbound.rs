@@ -10,14 +10,18 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use super::{
-    AppError, check_members, check_webhook_column, ensure_entry_allowed, found, new_task_color,
+    AppError, check_board_column, check_members, ensure_entry_allowed, found, new_task_color,
     new_task_placement, parse_body, required,
 };
 use crate::db::{
-    AccountDb, IssuedInbound, MAX_PREFIX_CHARS, NewInbound, PublicDb, WipCheck, push_column_event,
+    AccountDb, IssuedInbound, MAX_PREFIX_CHARS, NewInbound, NewTaskPlacement, OwnedColumn,
+    PublicDb, WipCheck, push_column_event,
 };
 use crate::limit::{ClientIp, IpScope, rate_limited_response};
-use crate::models::{Actor, ActorKind, Cap, HistoryKind, InboundAddressRow, Responsible, TextCap};
+use crate::models::{
+    Actor, ActorKind, Cap, HistoryKind, InboundAddressRow, Responsible, TaskRow, TextCap,
+};
+use crate::text::cut_to_bytes;
 use crate::{AppState, api_error};
 
 /// Returns the path an inbound address receives mail on.
@@ -159,7 +163,7 @@ pub(crate) async fn create_inbound_address(
     let name = check_name(required(input.name.as_deref(), "name")?)?;
     let prefix = check_prefix(input.prefix.as_deref())?;
     let column_id =
-        check_webhook_column(&account, &board_id, required(input.column_id, "column_id")?)?;
+        check_board_column(&account, &board_id, required(input.column_id, "column_id")?)?;
     let new = NewInbound {
         board_id,
         name,
@@ -311,18 +315,6 @@ fn task_name(subject: Option<&str>) -> String {
     }
 }
 
-/// Returns `text` cut to at most `max` bytes at a character boundary.
-fn cut_to_bytes(text: &str, max: usize) -> &str {
-    if text.len() <= max {
-        return text;
-    }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
-}
-
 /// Returns the plain text of an HTML body: its script and style blocks dropped, its tags removed
 /// and its common entities decoded.
 fn text_of_html(html: &str) -> String {
@@ -451,6 +443,30 @@ pub(crate) async fn receive_inbound_mail(
     if let Err(refusal) = state.limits.check_inbound(&grant.row().id) {
         return Ok(rate_limited_response(refusal));
     }
+    let mail = read_mail(&headers, body).await?;
+    let account = public.inbound_account(&grant);
+    let Some(column) = account
+        .column(&grant.row().column_id)
+        .map_err(AppError::from)?
+    else {
+        return Ok(api_error::route_not_found(uri).await);
+    };
+    let (row, placement) = mail_task(&account, &column, &mail)?;
+    let task_id = account
+        .insert_task_checked(
+            &column,
+            row,
+            placement,
+            WipCheck::forcing(mail.force),
+            email_actor(),
+        )
+        .map_err(AppError::from)?
+        .map_err(AppError::bad_request)?;
+    Ok((StatusCode::CREATED, Json(ReceivedMail { task_id })).into_response())
+}
+
+/// Reads the body of a forwarded mail, which must be `application/json` and is read up to 1 MiB.
+async fn read_mail(headers: &HeaderMap, body: Body) -> Result<InboundMail, AppError> {
     let is_json = headers
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -461,17 +477,18 @@ pub(crate) async fn receive_inbound_mail(
             "the body must be application/json".to_string(),
         ));
     }
-    let bytes = read_capped(&headers, body).await?;
-    let mail: InboundMail = serde_json::from_slice(&bytes)
-        .map_err(|error| AppError::bad_request(format!("invalid JSON: {error}")))?;
+    let bytes = read_capped(headers, body).await?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| AppError::bad_request(format!("invalid JSON: {error}")))
+}
 
-    let account = public.inbound_account(&grant);
-    let Some(column) = account
-        .column(&grant.row().column_id)
-        .map_err(AppError::from)?
-    else {
-        return Ok(api_error::route_not_found(uri).await);
-    };
+/// Returns the row of the task `mail` makes in `column` and the place it goes, with the board's
+/// field defaults, default members and the column's entry rules applied.
+fn mail_task(
+    account: &AccountDb,
+    column: &OwnedColumn,
+    mail: &InboundMail,
+) -> Result<(TaskRow, NewTaskPlacement), AppError> {
     let board_id = column.row().board_id.clone();
     let swimlane_id = account
         .list_swimlanes(&board_id)
@@ -479,16 +496,16 @@ pub(crate) async fn receive_inbound_mail(
         .into_iter()
         .find(|lane| !lane.archived)
         .map(|lane| lane.id);
-    let (size, color_id) = new_task_color(&account, &board_id, None, None)?;
-    let placement = new_task_placement(&account, &board_id)?;
+    let (size, color_id) = new_task_color(account, &board_id, None, None)?;
+    let placement = new_task_placement(account, &board_id)?;
     let mut row = AccountDb::new_task_row(
-        &column,
+        column,
         swimlane_id.as_deref(),
         &task_name(mail.subject.as_deref()),
         size,
         color_id.as_deref(),
     );
-    row.description = description_of(&mail);
+    row.description = description_of(mail);
     for def in account.list_fields(&board_id).map_err(AppError::from)? {
         if let Some(default) = def.default {
             row.fields.entry(def.key).or_insert(default);
@@ -498,7 +515,7 @@ pub(crate) async fn receive_inbound_mail(
     let defaults = board
         .row()
         .default_member_ids(account.account_id().as_str());
-    if check_members(&account, &defaults).is_ok() {
+    if check_members(account, &defaults).is_ok() {
         row.set_members(defaults);
         if !board.row().default_member_responsible()
             && matches!(row.responsible, Some(Responsible::Member { .. }))
@@ -506,8 +523,21 @@ pub(crate) async fn receive_inbound_mail(
             row.responsible = None;
         }
     }
-    ensure_entry_allowed(&account, column.row(), &board_id, &row)?;
-    let actor = Actor {
+    ensure_entry_allowed(account, column.row(), &board_id, &row)?;
+    push_column_event(
+        &mut row,
+        HistoryKind::Created,
+        format!("Task created in {}", column.row().name),
+        email_actor(),
+        Some(&column.row().id),
+    );
+    Ok((row, placement))
+}
+
+/// Returns the actor that records a forwarded mail's changes, the server's `email` actor.
+#[must_use]
+fn email_actor() -> Actor<'static> {
+    Actor {
         name: "email",
         token_name: None,
         kind: ActorKind::System,
@@ -515,25 +545,7 @@ pub(crate) async fn receive_inbound_mail(
         role_id: None,
         role_name: None,
         label: None,
-    };
-    push_column_event(
-        &mut row,
-        HistoryKind::Created,
-        format!("Task created in {}", column.row().name),
-        actor,
-        Some(&column.row().id),
-    );
-    let task_id = account
-        .insert_task_checked(
-            &column,
-            row,
-            placement,
-            WipCheck::forcing(mail.force),
-            actor,
-        )
-        .map_err(AppError::from)?
-        .map_err(AppError::bad_request)?;
-    Ok((StatusCode::CREATED, Json(ReceivedMail { task_id })).into_response())
+    }
 }
 
 /// Returns the most a text cap allows.

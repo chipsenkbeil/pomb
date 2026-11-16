@@ -50,6 +50,7 @@ mod routes;
 mod rules;
 mod search;
 mod taskjson;
+mod text;
 mod webhook;
 
 use std::fmt;
