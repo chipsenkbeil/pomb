@@ -14957,6 +14957,59 @@ mod schema_version_tests {
         );
     }
 
+    #[test]
+    fn revoke_calls_should_refuse_a_foreign_role_and_keep_its_tokens() {
+        let (_dir, path) = temp_path();
+        let db = Db::connect(&path).expect("connect");
+        let owner = db.create_user("alice").expect("account");
+        let other = db.create_user("bob").expect("account");
+        drop_seeded_roles(&db, &owner);
+
+        // Set up the owner's role with a grant and a token
+        let board = db.create_board(&owner, "A").expect("board");
+        let role = db
+            .create_agent_role(owner.as_str(), "planner", BTreeSet::new())
+            .expect("role");
+        assert!(
+            db.grant_agent_role(owner.as_str(), &role.id, &board)
+                .expect("grant")
+        );
+        let token = role_token(&db, &owner, &role.id, "one", &[&board], 1);
+
+        // Refuse the foreign account and keep the role and token
+        assert_eq!(
+            db.revoke_role_tokens(other.as_str(), &role.id, None)
+                .expect("foreign"),
+            None
+        );
+        assert_eq!(
+            db.revoke_agent_role(other.as_str(), &role.id, &board)
+                .expect("foreign"),
+            None
+        );
+
+        // Check that the refusals left the token and the grant in place
+        let tokens = db.list_account_api_tokens(&owner).expect("tokens");
+        assert!(tokens.iter().any(|record| record.id == token.id));
+        assert_eq!(
+            db.agent_role_boards(&role.id).expect("boards"),
+            vec![board.clone()]
+        );
+
+        // Check that the owner's own revokes still return their token counts
+        assert_eq!(
+            db.revoke_role_tokens(owner.as_str(), &role.id, None)
+                .expect("revoke"),
+            Some(1)
+        );
+        role_token(&db, &owner, &role.id, "two", &[&board], 1);
+        assert_eq!(
+            db.revoke_agent_role(owner.as_str(), &role.id, &board)
+                .expect("revoke"),
+            Some(1)
+        );
+    }
+
     fn drop_seeded_roles(db: &Db, account: &AccountId) {
         for role in db.list_agent_roles(account.as_str()).expect("roles") {
             db.delete_agent_role(account.as_str(), &role.id)
