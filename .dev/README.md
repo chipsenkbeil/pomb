@@ -333,7 +333,7 @@ main and must not change the package version. A commit that adds a file under
 `.dev/standalone` needs the `standalone-ok` label on its card. Land takes the
 lock `.dev/land.lock` to allow one land at a time to apply, test and push. It
 waits for that lock and for `.dev/release.lock` to clear, up to
-`POMB_LAND_WAIT_BOUND` seconds each (default 5400, polled every
+`POMB_LAND_WAIT_BOUND` seconds each (default 21600, polled every
 `POMB_LAND_WAIT_INTERVAL`, default 30), and refuses attribution trailers. It
 skips the ci runs when the card's latest `dev-check` note passed `dev --remote
 lint` and `dev --remote test` on the same patch. Otherwise it runs `dev lint
