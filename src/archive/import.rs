@@ -434,6 +434,11 @@ impl Builder<'_> {
         let columns = self.columns(document.columns)?;
         let limit_groups = self.limit_groups(document.limit_groups, &columns)?;
         let mut swimlanes = self.swimlanes(document.swimlanes)?;
+        if swimlanes.iter().all(|lane| lane.archived)
+            && let Some(first) = swimlanes.iter_mut().min_by_key(|lane| lane.position)
+        {
+            first.archived = false;
+        }
         let mut settings = self.settings(document.board.settings, &document.tasks)?;
         if swimlanes.is_empty() {
             let id = fresh_id();
@@ -1763,6 +1768,14 @@ mod tests {
             "id": id, "name": id, "position": 0, "description": "", "limits": [],
             "collapsed": false, "height": null
         })
+    }
+
+    #[must_use]
+    fn archived_lane(id: &str, position: i64) -> Value {
+        let mut lane = lane(id);
+        lane["archived"] = json!(true);
+        lane["position"] = json!(position);
+        lane
     }
 
     fn base() -> Value {
@@ -3492,6 +3505,41 @@ mod tests {
             json!(import.swimlanes[0].id)
         );
         assert!(import.tasks[0].row.swimlane_id.is_none());
+    }
+
+    #[test]
+    fn read_board_should_unarchive_the_first_lane_when_every_lane_is_archived() {
+        let mut document = base();
+        document["swimlanes"] = json!([
+            archived_lane("s1", 2),
+            archived_lane("s2", 1),
+            archived_lane("s3", 1)
+        ]);
+        let (import, _) = read(&document).expect("a board");
+        let flags: Vec<(&str, bool)> = import
+            .swimlanes
+            .iter()
+            .map(|lane| (lane.name.as_str(), lane.archived))
+            .collect();
+        assert_eq!(flags, [("s1", true), ("s2", false), ("s3", true)]);
+    }
+
+    #[test]
+    fn read_board_should_keep_one_lane_unarchived_for_any_export() {
+        let exports = [
+            json!([]),
+            json!([archived_lane("s1", 0)]),
+            json!([archived_lane("s1", 0), archived_lane("s2", 1)]),
+        ];
+        for swimlanes in exports {
+            let mut document = base();
+            document["swimlanes"] = swimlanes;
+            let (import, _) = read(&document).expect("a board");
+            assert!(
+                import.swimlanes.iter().any(|lane| !lane.archived),
+                "no lane left open"
+            );
+        }
     }
 
     #[test]
