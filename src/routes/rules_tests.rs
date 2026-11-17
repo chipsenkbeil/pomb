@@ -758,6 +758,15 @@ mod entry {
 mod locked {
     use super::*;
 
+    fn assert_locked_refusal(status: StatusCode, text: &str) {
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        let body = parse(text);
+        assert_eq!(body["code"], "card_locked", "{text}");
+        let message = body["message"].as_str().expect("message");
+        assert!(message.contains("tasks.edit_locked"), "{message}");
+        assert!(!message.contains("only the owner"), "{message}");
+    }
+
     struct Ids {
         task: String,
         other: String,
@@ -1624,12 +1633,7 @@ mod locked {
                 json!({"name": "Renamed"}),
             )
             .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
-        let body = parse(&text);
-        assert_eq!(body["code"], "card_locked", "{text}");
-        let message = body["message"].as_str().expect("message");
-        assert!(message.contains("tasks.edit_locked"), "{message}");
-        assert!(!message.contains("only the owner"), "{message}");
+        assert_locked_refusal(status, &text);
     }
 
     #[tokio::test]
@@ -1645,12 +1649,7 @@ mod locked {
         assert_eq!(status, StatusCode::CREATED, "{text}");
         let uri = format!("/api/swimlanes/{}", fx.lane);
         let (status, text) = fx.call(Who::Token, "DELETE", &uri, Body::Empty).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
-        let body = parse(&text);
-        assert_eq!(body["code"], "card_locked", "{text}");
-        let message = body["message"].as_str().expect("message");
-        assert!(message.contains("tasks.edit_locked"), "{message}");
-        assert!(!message.contains("only the owner"), "{message}");
+        assert_locked_refusal(status, &text);
     }
 
     #[tokio::test]
@@ -1659,12 +1658,7 @@ mod locked {
         fx.locked_task().await;
         let uri = format!("/api/boards/{}", fx.board);
         let (status, text) = fx.call(Who::Token, "DELETE", &uri, Body::Empty).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
-        let body = parse(&text);
-        assert_eq!(body["code"], "card_locked", "{text}");
-        let message = body["message"].as_str().expect("message");
-        assert!(message.contains("tasks.edit_locked"), "{message}");
-        assert!(!message.contains("only the owner"), "{message}");
+        assert_locked_refusal(status, &text);
     }
 
     #[tokio::test]
