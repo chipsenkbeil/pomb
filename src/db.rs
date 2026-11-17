@@ -12234,7 +12234,7 @@ impl Db {
     /// Returns how many children of the epic `epic_id` sit in a column that is not a Done column,
     /// counting the same children as the epic move guard.
     pub fn open_children(&self, epic_id: &str) -> DbResult<usize> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin_read()?;
         txn_open_children(&txn, epic_id, &[])
     }
 
@@ -13395,6 +13395,59 @@ mod template_repeat_tests {
         let completed = |id: &str| db.task(id).expect("read").expect("task").completed_at;
         assert_eq!(completed(&epic), None);
         assert!(completed(&plain).is_some());
+    }
+}
+
+#[cfg(test)]
+mod open_children_tests {
+    use super::*;
+
+    #[test]
+    fn open_children_should_match_the_epic_move_guard_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let board = db
+            .create_board(&AccountId::ownerless(), "Board")
+            .expect("board");
+        let todo = db.create_column(&board, "Todo", None).expect("column");
+        let done = db.create_column(&board, "Done", None).expect("column");
+        db.set_column_done(&done, true).expect("done flag");
+        let epic = db.create_task(&todo, None, "Epic", 1, None).expect("epic");
+        db.apply_task_change(&epic, Actor::SYSTEM, |row| {
+            row.kind = TaskKind::Epic;
+            ((), true)
+        })
+        .expect("epic kind");
+        let open = db.create_task(&todo, None, "Open", 1, None).expect("task");
+        let finished = db
+            .create_task(&todo, None, "Finished", 1, None)
+            .expect("task");
+        for child in [&open, &finished] {
+            let outcome = db
+                .add_task_link(child, LinkKind::Parent, &epic, None, Actor::SYSTEM)
+                .expect("link");
+            assert!(matches!(outcome, LinkAddOutcome::Added(_)));
+        }
+        db.move_task(&finished, &done, None, 1.0)
+            .expect("finish child");
+
+        let open_count = db.open_children(&epic).expect("count");
+        assert_eq!(open_count, 1);
+        match db
+            .move_task_logged(
+                &epic,
+                &done,
+                None,
+                1.0,
+                MoveGuards::default(),
+                Actor::SYSTEM,
+            )
+            .expect("guard")
+        {
+            MoveOutcome::OpenChildren { count } => assert_eq!(count, open_count),
+            _ => panic!("the move guard should refuse the epic"),
+        }
     }
 }
 
