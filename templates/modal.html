@@ -196,9 +196,15 @@
           <div id="modal-attachments" class="tm-attachments" data-task-id="{{ task.id }}">
             {% for a in task.attachments %}
             <div class="tm-attachment" data-attachment-id="{{ a.id }}" data-attachment-name="{{ a.name }}" data-attachment-suffix="{{ a.suffix }}" data-attachment-refs="{{ a.references }}">
+              {% if a.is_image && a.url.is_empty() %}
+              <a class="tm-attachment-thumb" href="/api/tasks/{{ task.id }}/attachments/{{ a.id }}/file" data-image-preview="/api/tasks/{{ task.id }}/attachments/{{ a.id }}/file" data-image-title="{{ a.name }}" title="Preview"><img src="/api/tasks/{{ task.id }}/attachments/{{ a.id }}/file" alt="" loading="lazy"></a>
+              {% else %}
               <svg class="tm-attachment-icon" width="22" height="26" viewBox="0 0 22 26" aria-hidden="true" focusable="false"><path d="M3.5 1.5h10l5 5v18h-15z" fill="#ffffff" stroke="#b9c3d6" stroke-width="1.2"/><path d="M13.5 1.5v5h5" fill="none" stroke="#b9c3d6" stroke-width="1.2"/><path d="M6.5 11h9M6.5 14h9M6.5 17h9M6.5 20h6" stroke="#b9c3d6" stroke-width="1"/></svg>
+              {% endif %}
               <div class="tm-attachment-main">
-                {% if a.is_document %}
+                {% if a.is_image && a.url.is_empty() %}
+                <a class="tm-attachment-name" href="/api/tasks/{{ task.id }}/attachments/{{ a.id }}/file" data-image-preview="/api/tasks/{{ task.id }}/attachments/{{ a.id }}/file" data-image-title="{{ a.name }}" title="Preview">{{ a.name }}</a>
+                {% else if a.is_document %}
                 <a class="tm-attachment-name" href="/api/tasks/{{ task.id }}/attachments/{{ a.id }}/file" data-document-open="{{ a.id }}" title="Open">{{ a.name }}</a>
                 {% else if a.url.is_empty() %}
                 <a class="tm-attachment-name" href="/api/tasks/{{ task.id }}/attachments/{{ a.id }}/file" title="Download">{{ a.name }}</a>

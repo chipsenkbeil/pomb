@@ -36184,6 +36184,47 @@ mod tests {
         assert!(board.contains("card-ico-attach"), "{board}");
     }
 
+    /// An image attachment row shows a thumbnail of its file that opens the preview, and any other row keeps the file icon.
+    #[tokio::test]
+    async fn modal_should_show_image_attachment_thumbnail() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uploaded = format!("/api/tasks/{id}/attachments");
+
+        // A plain file keeps the icon
+        let note = serde_json::json!({"name": "note.txt", "mime": "text/plain", "data": "aGk="});
+        send(&fx, "POST", &uploaded, Some(note)).await;
+        let modal_uri = format!("/api/tasks/{id}/modal");
+        let (_, plain) = send(&fx, "GET", &modal_uri, None).await;
+        assert!(plain.contains("tm-attachment-icon"), "{plain}");
+        assert!(!plain.contains("tm-attachment-thumb"), "{plain}");
+        assert!(!plain.contains("data-image-preview"), "{plain}");
+
+        // An image shows a linked thumbnail
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        let shot = serde_json::json!({"name": "shot.png", "mime": "image/png", "data": png});
+        let (_, image) = send(&fx, "POST", &uploaded, Some(shot)).await;
+        let image: serde_json::Value = serde_json::from_str(&image).expect("json");
+        let file = format!(
+            "/api/tasks/{id}/attachments/{}/file",
+            image["id"].as_str().expect("id")
+        );
+        let (_, modal) = send(&fx, "GET", &modal_uri, None).await;
+        assert!(
+            modal.contains(&format!("<img src=\"{file}\" alt=\"\" loading=\"lazy\">")),
+            "{modal}"
+        );
+        assert!(
+            modal.contains(&format!(
+                "data-image-preview=\"{file}\" data-image-title=\"shot.png\""
+            )),
+            "{modal}"
+        );
+        assert_eq!(modal.matches("tm-attachment-thumb\"").count(), 1, "{modal}");
+        assert_eq!(modal.matches("tm-attachment-icon").count(), 1, "{modal}");
+    }
+
     /// The modal shows rendered and raw markdown side by side, while the API keeps the raw text.
     #[tokio::test]
     async fn markdown_should_render_in_the_modal_and_stay_raw_in_the_api() {

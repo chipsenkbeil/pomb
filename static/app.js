@@ -10738,6 +10738,133 @@
     document.getElementById('doc-name').focus();
   }
 
+  const IMAGE_PREVIEW_MAX = 8;
+  const IMAGE_PREVIEW_STEP = 1.25;
+  let imagePreview = null;
+
+  const closeImagePreview = () => {
+    if (!imagePreview) return;
+    document.removeEventListener('keydown', imagePreview.onKey, true);
+    imagePreview.overlay.remove();
+    imagePreview = null;
+  };
+
+  const openImagePreview = (imageUrl, title, downloadUrl) => {
+    closeImagePreview();
+    const make = (tag, className, text) => {
+      const node = document.createElement(tag);
+      node.className = className;
+      if (text) node.textContent = text;
+      return node;
+    };
+    const button = (label, text) => {
+      const node = make('button', 'image-preview-btn', text);
+      node.type = 'button';
+      node.setAttribute('aria-label', label);
+      node.setAttribute('title', label);
+      return node;
+    };
+    const overlay = make('div', 'dlg-overlay dlg-overlay-top image-preview');
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', 'Image preview');
+    const bar = make('div', 'image-preview-bar');
+    const name = make('span', 'image-preview-name', title);
+    const zoomOut = button('Zoom out', '−');
+    const zoomIn = button('Zoom in', '+');
+    const download = make('a', 'image-preview-btn image-preview-download', 'Download');
+    download.setAttribute('href', downloadUrl);
+    download.setAttribute('download', title || '');
+    const close = button('Close', '×');
+    [name, zoomOut, zoomIn, download, close].forEach((node) => bar.appendChild(node));
+    const stage = make('div', 'image-preview-stage');
+    const image = make('img', 'image-preview-img');
+    image.setAttribute('src', imageUrl);
+    image.setAttribute('alt', title || '');
+    image.setAttribute('draggable', 'false');
+    stage.appendChild(image);
+    overlay.appendChild(bar);
+    overlay.appendChild(stage);
+
+    const view = { scale: 1, x: 0, y: 0 };
+    const apply = () => {
+      image.style.transform = 'translate(' + view.x + 'px, ' + view.y + 'px) scale(' + view.scale + ')';
+      image.setAttribute('data-zoom', view.scale > 1 ? 'in' : 'fit');
+    };
+    const setScale = (scale) => {
+      view.scale = scale <= 1.001 ? 1 : Math.min(scale, IMAGE_PREVIEW_MAX);
+      if (view.scale === 1) { view.x = 0; view.y = 0; }
+      apply();
+    };
+    zoomIn.addEventListener('click', () => setScale(view.scale * IMAGE_PREVIEW_STEP));
+    zoomOut.addEventListener('click', () => setScale(view.scale / IMAGE_PREVIEW_STEP));
+    stage.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      setScale(e.deltaY < 0 ? view.scale * IMAGE_PREVIEW_STEP : view.scale / IMAGE_PREVIEW_STEP);
+    });
+
+    const pointers = new Map();
+    let pinchStart = null;
+    let dragged = false;
+    const spread = () => {
+      const [a, b] = Array.from(pointers.values());
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
+    image.addEventListener('pointerdown', (e) => {
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      dragged = false;
+      if (pointers.size === 2) pinchStart = { gap: spread() || 1, scale: view.scale };
+      if (image.setPointerCapture) image.setPointerCapture(e.pointerId);
+    });
+    image.addEventListener('pointermove', (e) => {
+      const last = pointers.get(e.pointerId);
+      if (!last) return;
+      const here = { x: e.clientX, y: e.clientY };
+      pointers.set(e.pointerId, here);
+      if (pointers.size === 2 && pinchStart) {
+        setScale(pinchStart.scale * spread() / pinchStart.gap);
+        dragged = true;
+      } else if (pointers.size === 1 && view.scale > 1) {
+        view.x += here.x - last.x;
+        view.y += here.y - last.y;
+        dragged = true;
+        apply();
+      }
+    });
+    const release = (e) => {
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) pinchStart = null;
+    };
+    image.addEventListener('pointerup', release);
+    image.addEventListener('pointercancel', release);
+
+    overlay.addEventListener('click', (e) => {
+      if (dragged) { dragged = false; return; }
+      if (e.target === overlay || e.target === stage) closeImagePreview();
+    });
+    close.addEventListener('click', closeImagePreview);
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      closeImagePreview();
+    };
+    document.addEventListener('keydown', onKey, true);
+    imagePreview = { overlay, onKey };
+    apply();
+    document.body.appendChild(overlay);
+    close.focus();
+    return overlay;
+  };
+
+  const imagePreviewTrigger = (target) => {
+    const link = target.closest('[data-image-preview]');
+    if (!link) return false;
+    const url = link.getAttribute('data-image-preview');
+    openImagePreview(url, link.getAttribute('data-image-title') || '', url);
+    return true;
+  };
+
   function openDocument(attachmentId) {
     var id = modalTaskId();
     if (!id || !attachmentId) return;
@@ -11096,6 +11223,7 @@
       if (cdel) { deleteModalComment(cdel.getAttribute('data-comment-delete')); }
       var adel = e.target.closest('[data-attachment-delete]');
       if (adel) { closeAllTmMenus(); deleteModalAttachment(adel.getAttribute('data-attachment-delete')); }
+      if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && imagePreviewTrigger(e.target)) e.preventDefault();
       var dopen = e.target.closest('[data-document-open]');
       if (dopen) { e.preventDefault(); openDocument(dopen.getAttribute('data-document-open')); }
       var acover = e.target.closest('[data-attachment-cover]');
