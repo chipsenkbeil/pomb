@@ -2494,8 +2494,10 @@ impl AccountDb {
             .grant_agent_role(self.account.as_str(), role_id, &board.row().id)
     }
 
-    /// Creates the standard roles the account lacks and grants every board in `boards` to all six.
-    pub fn ensure_standard_roles(&self, boards: &[OwnedBoard]) -> DbResult<StandardRoles> {
+    /// Creates the standard roles the account lacks and grants every board in `boards` to all six,
+    /// as [`Db::ensure_standard_roles`] does. Returns [`None`], storing nothing, when a board is
+    /// gone or no longer owned.
+    pub fn ensure_standard_roles(&self, boards: &[OwnedBoard]) -> DbResult<Option<StandardRoles>> {
         self.db.ensure_standard_roles(self.account.as_str(), boards)
     }
 

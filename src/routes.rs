@@ -28111,7 +28111,9 @@ async fn ensure_standard_roles(
         .into_iter()
         .map(|id| held_board(&account, id))
         .collect::<Result<Vec<_>, _>>()?;
-    let standard = account.ensure_standard_roles(&boards)?;
+    let standard = account
+        .ensure_standard_roles(&boards)?
+        .ok_or_else(|| AppError::not_found("a listed board is not one of the account's own"))?;
     let roles = standard
         .roles
         .into_iter()

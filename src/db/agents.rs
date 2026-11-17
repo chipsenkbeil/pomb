@@ -384,14 +384,22 @@ impl Db {
     /// Creates each standard role `account` lacks a keyed role for, from [`STANDARD_ROLES`], leaves
     /// every role it holds as it is, and grants every board in `boards` to all six, in one
     /// transaction. A custom role that holds a standard name stays as it is, and the keyed role is
-    /// named with " (standard)" added. A role count past [`MAX_AGENT_ROLES_PER_ACCOUNT`] is refused
-    /// with [`QuotaExceeded`].
+    /// named with " (standard)" added. Returns [`None`], storing nothing, when a board is gone or no
+    /// longer owned by `account`, as read inside the write transaction. A role count past
+    /// [`MAX_AGENT_ROLES_PER_ACCOUNT`] is refused with [`QuotaExceeded`].
     pub fn ensure_standard_roles(
         &self,
         account: &str,
         boards: &[OwnedBoard],
-    ) -> DbResult<StandardRoles> {
+    ) -> DbResult<Option<StandardRoles>> {
         let txn = self.db.begin_write()?;
+        for board in boards {
+            let owned = txn_read_one::<BoardRow>(&txn, BOARDS, &board.row().id)?
+                .is_some_and(|row| row.owner_id == account);
+            if !owned {
+                return Ok(None);
+            }
+        }
         let mut stored = txn_held_roles(&txn, account)?;
         let missing = txn_missing_standard_roles(&txn, account, &stored)?;
         let now = Utc::now().timestamp();
@@ -423,7 +431,7 @@ impl Db {
             }
         }
         txn.commit()?;
-        Ok(StandardRoles { roles, created })
+        Ok(Some(StandardRoles { roles, created }))
     }
 
     /// Revokes agent role `role_id` of `account` on board `board_id`, and in the same write
@@ -512,7 +520,8 @@ mod tests {
 
         let standard = db
             .ensure_standard_roles(account.as_str(), &[])
-            .expect("ensure");
+            .expect("ensure")
+            .expect("no board to recheck");
         assert_eq!(standard.roles.len(), STANDARD_ROLES.len());
         assert_eq!(standard.created.len(), STANDARD_ROLES.len());
         assert!(
@@ -539,8 +548,36 @@ mod tests {
 
         let again = db
             .ensure_standard_roles(account.as_str(), &[])
-            .expect("ensure again");
+            .expect("ensure again")
+            .expect("no board to recheck");
         assert!(again.created.is_empty());
         assert!(again.roles.iter().any(|role| role.id == keyed.id));
+    }
+
+    #[test]
+    fn ensure_standard_roles_should_store_nothing_for_a_board_deleted_after_its_proof() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let account = db.create_user("owner").expect("account");
+        let board_id = db.create_board(&account, "gone").expect("board");
+        let proof = db
+            .account(&account)
+            .board(&board_id)
+            .expect("read")
+            .expect("owned");
+        let roles_before = db.list_agent_roles(account.as_str()).expect("roles").len();
+        db.delete_board(&board_id).expect("delete");
+
+        let standard = db
+            .ensure_standard_roles(account.as_str(), &[proof])
+            .expect("ensure");
+        assert!(standard.is_none());
+        let roles = db.list_agent_roles(account.as_str()).expect("roles");
+        assert_eq!(roles.len(), roles_before);
+        for role in roles {
+            let boards = db.agent_role_boards(&role.id).expect("grants");
+            assert!(!boards.contains(&board_id));
+        }
     }
 }
