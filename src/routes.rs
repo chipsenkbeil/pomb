@@ -27117,7 +27117,7 @@ fn reauth_required() -> Response {
         (status = 200, description = "Created token (raw_token shown once)", body = CreateTokenResponse),
         (status = 400, description = "Invalid name, more or less than one of `scopes`, `preset` and `permissions` without a `role_id`, an unknown preset or permission, `unknown_role`: the account has no such role, `boards` empty or naming a board the account does not hold, or `child_lifetime_hours` outside 1 to 8"),
         (status = 403, description = "`exceeds_grant`: with a `role_id`, a permission outside the role's template and the required ones, which always come with a role, or `session_required`: needs the browser session cookie, so an API token cannot create a hand-made token, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
-        (status = 409, description = "`quota_exceeded`: the account holds 50 tokens already"),
+        (status = 409, description = "Another token of the account has the name, whatever its letter case, or `quota_exceeded`: the account holds 50 tokens already"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]

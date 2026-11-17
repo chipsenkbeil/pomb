@@ -121,7 +121,8 @@ impl Fixture {
                 .filter(|name| *name != "planner")
                 .find(|name| *name == role.name);
             let Some(name) = name else { continue };
-            let (record, raw) = new_api_token_record(&owner, name, AuthScope::Admin, None);
+            let role_token = format!("{name} role");
+            let (record, raw) = new_api_token_record(&owner, &role_token, AuthScope::Admin, None);
             db.create_owner_token_as_role(&role.id, record)
                 .expect("issue")
                 .expect("role");

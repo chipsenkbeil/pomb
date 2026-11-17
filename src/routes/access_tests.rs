@@ -2965,7 +2965,13 @@ async fn backup_routes_should_open_to_the_admin_token_and_refuse_every_other_cre
     let seeded = registered().await;
     let fx = open(&seeded);
     let mint = |scope: AuthScope| {
-        let (record, raw) = new_api_token_record(&seeded.b, "Backup agent", scope, None);
+        let issued = fx
+            .db
+            .list_account_api_tokens(&seeded.b)
+            .expect("tokens")
+            .len();
+        let name = format!("Backup agent {issued}");
+        let (record, raw) = new_api_token_record(&seeded.b, &name, scope, None);
         fx.db.create_api_token(&record).expect("token");
         raw
     };

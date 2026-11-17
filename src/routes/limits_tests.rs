@@ -6006,8 +6006,13 @@ async fn convert_subtask_should_respect_the_task_quota() {
 
 impl Fixture {
     fn token_lacking(&self, lacking: &[Permission]) -> String {
-        let (mut record, raw) =
-            new_api_token_record(&self.member, "limited", AuthScope::Admin, None);
+        let issued = self
+            .db
+            .list_account_api_tokens(&self.member)
+            .expect("tokens")
+            .len();
+        let name = format!("limited-{issued}");
+        let (mut record, raw) = new_api_token_record(&self.member, &name, AuthScope::Admin, None);
         for permission in lacking {
             record.permissions.remove(permission);
         }

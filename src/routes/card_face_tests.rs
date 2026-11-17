@@ -56,7 +56,13 @@ impl Fixture {
     }
 
     fn token(&self, role: Option<&str>) -> String {
-        let (record, raw) = new_api_token_record(&self.account, "agent", AuthScope::Work, None);
+        let issued = self
+            .db
+            .list_account_api_tokens(&self.account)
+            .expect("tokens")
+            .len();
+        let name = format!("agent-{issued}");
+        let (record, raw) = new_api_token_record(&self.account, &name, AuthScope::Work, None);
         match role {
             Some(name) => {
                 let role = self

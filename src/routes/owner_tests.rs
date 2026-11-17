@@ -37,7 +37,9 @@ impl Fixture {
         let done_column = db.create_column(&board, "Done", None).expect("column");
         db.set_column_done(&done_column, true).expect("done");
         let token = || {
-            let (record, raw) = new_api_token_record(&account, "agent", AuthScope::Admin, None);
+            let issued = db.list_account_api_tokens(&account).expect("tokens").len();
+            let name = format!("agent-{issued}");
+            let (record, raw) = new_api_token_record(&account, &name, AuthScope::Admin, None);
             db.create_api_token(&record).expect("token");
             raw
         };

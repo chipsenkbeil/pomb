@@ -4723,8 +4723,9 @@ fn txn_issue_as_role(
     Ok(true)
 }
 
-/// Stores a new `token` when its account is active and below the per-account token cap, inside an
-/// open write transaction.
+/// Stores a new `token` when its account is active, below the per-account token cap and holds no
+/// other live or suspended token of the same name, whatever its letter case, inside an open write
+/// transaction.
 fn txn_create_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<()> {
     let account = AccountId::new(token.account_id.as_str());
     txn_refuse_stranded(txn, &account)?;
@@ -4735,6 +4736,10 @@ fn txn_create_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<
         && let Some(refusal) = txn_token_cap_reached(txn, &token.account_id)?
     {
         return Err(Box::new(refusal));
+    }
+    let tokens = txn_account_tokens(txn, &token.account_id)?;
+    if txn_token_name_taken(&tokens, &token.name, None) {
+        return Err(Box::new(TokenNameTaken));
     }
     txn_store_token(txn, token)
 }
@@ -14782,6 +14787,24 @@ mod schema_version_tests {
     }
 
     #[test]
+    fn create_token_should_refuse_a_suspended_tokens_name() {
+        let (_dir, path) = temp_path();
+        let db = Db::connect(&path).expect("connect");
+        let account = AccountId::ownerless();
+        let (held, _) = new_api_token_record(&account, "lead", AuthScope::Work, None);
+        db.create_api_token(&held).expect("token");
+        let txn = db.db.begin_write().expect("write txn");
+        move_row_to(&txn, API_TOKENS, &held.id, SUSPENDED_TOKENS, &held.id).expect("suspend");
+        txn.commit().expect("commit");
+        let (again, _) = new_api_token_record(&account, "Lead", AuthScope::Work, None);
+        let refused = db.create_api_token(&again).expect_err("name held");
+        assert!(
+            refused.downcast_ref::<TokenNameTaken>().is_some(),
+            "{refused}"
+        );
+    }
+
+    #[test]
     fn version_68_file_should_give_standard_roles_boards_read_and_no_other_role() {
         let (_dir, path) = temp_path();
         let account = AccountId::ownerless();
@@ -15245,7 +15268,8 @@ mod schema_version_tests {
                 (AuthScope::Provision, Permission::BoardsDelete),
                 (AuthScope::Work, Permission::TasksDelete),
             ] {
-                let (mut record, _) = new_api_token_record(&account, "custom", scope, None);
+                let name = format!("custom-{}", scope.as_str());
+                let (mut record, _) = new_api_token_record(&account, &name, scope, None);
                 record.permissions.insert(extra);
                 db.create_api_token(&record).expect("token");
                 custom.push(record.id);
@@ -15638,7 +15662,8 @@ mod schema_version_tests {
             let db = Db::connect(&path).expect("connect");
             let mut ids = Vec::new();
             for scope in [AuthScope::Provision, AuthScope::Work, AuthScope::Provision] {
-                let (record, _) = new_api_token_record(&account, scope.as_str(), scope, None);
+                let name = format!("{}-{}", scope.as_str(), ids.len());
+                let (record, _) = new_api_token_record(&account, &name, scope, None);
                 db.create_api_token(&record).expect("token");
                 ids.push(record.id);
             }
@@ -15782,8 +15807,11 @@ mod schema_version_tests {
         let account = AccountId::ownerless();
         let (reader, other, role) = {
             let db = Db::connect(&path).expect("connect");
-            let make = |held: &[Permission]| {
-                let (mut record, _) = new_api_token_record(&account, "t", AuthScope::Read, None);
+            let mut made = 0;
+            let mut make = |held: &[Permission]| {
+                made += 1;
+                let name = format!("t-{made}");
+                let (mut record, _) = new_api_token_record(&account, &name, AuthScope::Read, None);
                 record.permissions = held.iter().copied().collect();
                 db.create_api_token(&record).expect("token");
                 record.id
@@ -15838,8 +15866,11 @@ mod schema_version_tests {
         let account = AccountId::ownerless();
         let (admin, short, work) = {
             let db = Db::connect(&path).expect("connect");
-            let make = |scope: AuthScope| {
-                let (record, _) = new_api_token_record(&account, "t", scope, None);
+            let mut made = 0;
+            let mut make = |scope: AuthScope| {
+                made += 1;
+                let name = format!("t-{made}");
+                let (record, _) = new_api_token_record(&account, &name, scope, None);
                 db.create_api_token(&record).expect("token");
                 record.id
             };
@@ -15931,8 +15962,11 @@ mod schema_version_tests {
                     BTreeSet::from([Permission::TasksRead]),
                 )
                 .expect("role");
-            let make = |scope: AuthScope| {
-                let (record, _) = new_api_token_record(&account, "t", scope, None);
+            let mut made = 0;
+            let mut make = |scope: AuthScope| {
+                made += 1;
+                let name = format!("t-{made}");
+                let (record, _) = new_api_token_record(&account, &name, scope, None);
                 db.create_api_token(&record).expect("token");
                 record.id
             };
@@ -16166,7 +16200,8 @@ mod schema_version_tests {
         fn seed_tokens(db: &Db, account: &AccountId) -> UpgradeTokens {
             let mut tokens = Vec::new();
             for scope in [AuthScope::Work, AuthScope::Provision, AuthScope::Work] {
-                let (record, _) = new_api_token_record(account, "old", scope, None);
+                let name = format!("old-{}", tokens.len());
+                let (record, _) = new_api_token_record(account, &name, scope, None);
                 db.create_api_token(&record).expect("token");
                 tokens.push(record.id);
             }

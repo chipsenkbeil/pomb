@@ -50,7 +50,9 @@ impl Fixture {
         ];
         db.set_board_seats(&board, slots).expect("seats");
         let token = |scope: AuthScope, without: Option<Permission>| {
-            let (mut record, raw) = new_api_token_record(&account, "agent", scope, None);
+            let issued = db.list_account_api_tokens(&account).expect("tokens").len();
+            let name = format!("agent-{issued}");
+            let (mut record, raw) = new_api_token_record(&account, &name, scope, None);
             if let Some(permission) = without {
                 record.permissions.remove(&permission);
             }

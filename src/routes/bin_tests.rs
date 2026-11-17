@@ -110,7 +110,13 @@ fn attach(fx: &Fixture, task: &str, bytes: &[u8]) -> String {
 }
 
 fn work_token(fx: &Fixture, scope: AuthScope) -> String {
-    let (record, raw) = new_api_token_record(&fx.user_id, "agent", scope, None);
+    let issued = fx
+        .db
+        .list_account_api_tokens(&fx.user_id)
+        .expect("tokens")
+        .len();
+    let name = format!("agent-{issued}");
+    let (record, raw) = new_api_token_record(&fx.user_id, &name, scope, None);
     fx.db.create_api_token(&record).expect("token");
     raw
 }

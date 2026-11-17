@@ -38,7 +38,8 @@ impl Fixture {
         let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
         let owner = db.create_user("alice").expect("alice");
         let mut tokens = [AuthScope::Provision, AuthScope::Work, AuthScope::Read].map(|scope| {
-            let (record, token) = new_api_token_record(&owner, "agent", scope, None);
+            let name = format!("agent-{}", scope.as_str());
+            let (record, token) = new_api_token_record(&owner, &name, scope, None);
             db.create_api_token(&record).expect("token");
             token
         });

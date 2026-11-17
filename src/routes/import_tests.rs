@@ -78,7 +78,8 @@ impl Fixture {
         let admin = db.create_user("admin").expect("admin");
         let member = db.create_user("bob").expect("member");
         let token = |account: &AccountId, scope: AuthScope| {
-            let (record, raw) = new_api_token_record(account, "agent", scope, None);
+            let name = format!("agent-{}", scope.as_str());
+            let (record, raw) = new_api_token_record(account, &name, scope, None);
             db.create_api_token(&record).expect("token");
             raw
         };

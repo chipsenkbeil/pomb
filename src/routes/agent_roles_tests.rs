@@ -990,7 +990,18 @@ fn issuer_token(
     boards: BoardAccess,
     expires_at: Option<i64>,
 ) -> (ApiTokenRecord, String) {
-    let (mut record, raw) = new_api_token_record(&fx.alice, "lead", AuthScope::Provision, None);
+    let held = live_names(fx);
+    let name = (1..)
+        .map(|n| {
+            if n == 1 {
+                "lead".to_string()
+            } else {
+                format!("lead-{n}")
+            }
+        })
+        .find(|name| !held.contains(name))
+        .expect("name");
+    let (mut record, raw) = new_api_token_record(&fx.alice, &name, AuthScope::Provision, None);
     if let Some(permissions) = permissions {
         record.permissions = permissions.iter().copied().collect();
     }
@@ -1798,7 +1809,12 @@ async fn role_wide_revoke_should_need_the_owner_session_and_keep_the_role() {
 }
 
 fn work_bearer(fx: &Fixture) -> String {
-    let (record, raw) = new_api_token_record(&fx.alice, "work", AuthScope::Work, None);
+    let (record, raw) = new_api_token_record(
+        &fx.alice,
+        &format!("work-{}", uuid::Uuid::new_v4()),
+        AuthScope::Work,
+        None,
+    );
     fx.db.create_api_token(&record).expect("token");
     format!("Bearer {raw}")
 }
@@ -1982,6 +1998,108 @@ async fn role_delete_should_keep_the_role_name_on_history_comments_and_time_entr
         .await;
     let html = modal.body.as_str().expect("html");
     assert!(html.contains(">via implementer</small>"), "{html}");
+}
+
+#[tokio::test]
+async fn create_token_should_refuse_a_name_another_token_holds() {
+    let fx = Fixture::new();
+    let first = fx
+        .browse(
+            ALICE,
+            "POST",
+            "/api/v1/auth/tokens",
+            Some(json!({"name": "lead", "permissions": ["tasks.read"]})),
+        )
+        .await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let again = fx
+        .browse(
+            ALICE,
+            "POST",
+            "/api/v1/auth/tokens",
+            Some(json!({"name": "LEAD", "permissions": ["tasks.read"]})),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
+    let stored = fx.db.list_account_api_tokens(&fx.alice).expect("list");
+    let leads = stored
+        .iter()
+        .filter(|token| token.name.eq_ignore_ascii_case("lead"))
+        .count();
+    assert_eq!(leads, 1);
+}
+
+#[tokio::test]
+async fn create_token_as_role_should_refuse_a_taken_name() {
+    let fx = Fixture::new();
+    let role = fx.create(ALICE, "planner").await;
+    let plain = fx
+        .browse(
+            ALICE,
+            "POST",
+            "/api/v1/auth/tokens",
+            Some(json!({"name": "lead", "permissions": ["tasks.read"]})),
+        )
+        .await;
+    assert_eq!(plain.status, StatusCode::OK, "{}", plain.body);
+    let clash = fx
+        .browse(
+            ALICE,
+            "POST",
+            "/api/v1/auth/tokens",
+            Some(json!({
+                "name": "Lead",
+                "role_id": role["id"],
+                "permissions": ["tasks.read"],
+            })),
+        )
+        .await;
+    assert_eq!(clash.status, StatusCode::CONFLICT, "{}", clash.body);
+    let made = fx
+        .browse(
+            ALICE,
+            "POST",
+            "/api/v1/auth/tokens",
+            Some(json!({
+                "name": "planner",
+                "role_id": role["id"],
+                "permissions": ["tasks.read"],
+            })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+}
+
+#[tokio::test]
+async fn token_create_route_should_answer_409_on_a_taken_name() {
+    let fx = Fixture::new();
+    let first = fx
+        .browse(
+            ALICE,
+            "POST",
+            "/api/v1/auth/tokens",
+            Some(json!({"name": "lead", "permissions": ["tasks.read"]})),
+        )
+        .await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let again = fx
+        .browse(
+            ALICE,
+            "POST",
+            "/api/v1/auth/tokens",
+            Some(json!({"name": "lead", "permissions": ["tasks.read"]})),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
+    let spec = fx.browse(ALICE, "GET", "/api/v1/openapi.json", None).await;
+    let responses = &spec.body["paths"]["/api/v1/auth/tokens"]["post"]["responses"];
+    assert!(
+        responses["409"]["description"]
+            .as_str()
+            .is_some_and(|text| text.contains("Another token of the account has the name")),
+        "{}",
+        spec.body
+    );
 }
 
 #[tokio::test]

@@ -68,7 +68,12 @@ impl Fixture {
     }
 
     fn scoped_token(&self, account: &AccountId) -> String {
-        let (mut record, raw) = new_api_token_record(account, "scoped", AuthScope::Admin, None);
+        let (mut record, raw) = new_api_token_record(
+            account,
+            &format!("scoped-{}", uuid::Uuid::new_v4()),
+            AuthScope::Admin,
+            None,
+        );
         record.boards = BoardAccess::Only(BTreeSet::from(["other-board".to_string()]));
         self.db.create_api_token(&record).expect("token");
         raw

@@ -799,7 +799,12 @@ async fn bulk_should_queue_one_webhook_event_for_each_changed_task_and_none_for_
 
 impl Fixture {
     fn token_of(&self, scope: AuthScope) -> String {
-        let (record, token) = new_api_token_record(&self.admin, "scoped", scope, None);
+        let (record, token) = new_api_token_record(
+            &self.admin,
+            &format!("scoped-{}", uuid::Uuid::new_v4()),
+            scope,
+            None,
+        );
         self.db.create_api_token(&record).expect("token");
         token
     }

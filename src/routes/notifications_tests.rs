@@ -454,7 +454,12 @@ async fn notifications_read_should_list_notifications_without_settings_read() {
 }
 
 fn seeded_token(fx: &Fixture, scope: AuthScope) -> String {
-    let (record, token) = new_api_token_record(&fx.admin, "scoped", scope, None);
+    let (record, token) = new_api_token_record(
+        &fx.admin,
+        &format!("scoped-{}", uuid::Uuid::new_v4()),
+        scope,
+        None,
+    );
     fx.db.create_api_token(&record).expect("token");
     token
 }

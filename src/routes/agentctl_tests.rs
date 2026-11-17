@@ -1336,7 +1336,7 @@ async fn link_as(fx: &Fixture, who: As<'_>, task: &str, kind: &str, target: &str
 async fn a_work_token_should_delete_a_link_it_created_and_get_403_on_any_other() {
     let (_dir, fx) = fixture();
     let mine = token_with(&fx, "agent", AuthScope::Work);
-    let theirs = token_with(&fx, "agent", AuthScope::Work);
+    let theirs = token_with(&fx, "other", AuthScope::Work);
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
     let c = create(&fx, json!({"column_id": fx.col_todo, "name": "C"})).await;
@@ -1428,7 +1428,7 @@ async fn subtask_names(fx: &Fixture, task: &str) -> Vec<String> {
 async fn a_work_token_should_get_403_deleting_any_subtask_including_its_own() {
     let (_dir, fx) = fixture();
     let mine = token_with(&fx, "agent", AuthScope::Work);
-    let theirs = token_with(&fx, "agent", AuthScope::Work);
+    let theirs = token_with(&fx, "other", AuthScope::Work);
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
 
     let own = subtask_as(&fx, As::Bearer(&mine), &a, "own").await;
@@ -5586,7 +5586,7 @@ async fn a_work_token_should_be_refused_every_route_that_needs_a_delete_permissi
 async fn a_cross_board_move_should_need_only_tasks_move_and_keep_the_task() {
     let (_dir, fx) = fixture();
     let work = token_with(&fx, "worker", AuthScope::Work);
-    let reader = token_with(&fx, "reader", AuthScope::Read);
+    let reader = token_with(&fx, "scanner", AuthScope::Read);
     let lead = token_with(&fx, "lead", AuthScope::Provision);
     let other = board_by(&fx, &lead, "Other").await;
     let to = column_ids_of(&fx, &other).await[0].clone();
@@ -8309,7 +8309,12 @@ async fn column_ids_of(fx: &Fixture, board: &str) -> Vec<String> {
 
 /// Mints a token of `scope` assigned only to `boards`, and returns its id and raw value.
 fn assigned_token(fx: &Fixture, scope: AuthScope, boards: &[&str]) -> (String, String) {
-    let (mut record, raw) = new_api_token_record(&fx.user_id, "assigned", scope, None);
+    let (mut record, raw) = new_api_token_record(
+        &fx.user_id,
+        &format!("assigned-{}", uuid::Uuid::new_v4()),
+        scope,
+        None,
+    );
     record.boards = BoardAccess::Only(boards.iter().map(ToString::to_string).collect());
     fx.db.create_api_token(&record).expect("token");
     (record.id, raw)
@@ -9089,10 +9094,10 @@ async fn a_work_or_provision_token_should_edit_and_delete_its_own_comment() {
 }
 
 #[tokio::test]
-async fn a_token_should_get_403_on_another_tokens_comment_even_with_the_same_name() {
+async fn a_token_should_get_403_on_another_tokens_comment() {
     let (_dir, fx) = fixture();
     let mine = token_with(&fx, "agent", AuthScope::Work);
-    let theirs = token_with(&fx, "agent", AuthScope::Work);
+    let theirs = token_with(&fx, "other", AuthScope::Work);
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
     let comment = post_comment(&fx, As::Bearer(&theirs), &id, json!({"body": "theirs"})).await;
     let uri = format!(
@@ -9318,7 +9323,12 @@ async fn post_tick(
 }
 
 fn work_token(fx: &Fixture) -> String {
-    let (record, token) = new_api_token_record(&fx.user_id, "worker", AuthScope::Work, None);
+    let (record, token) = new_api_token_record(
+        &fx.user_id,
+        &format!("worker-{}", uuid::Uuid::new_v4()),
+        AuthScope::Work,
+        None,
+    );
     fx.db.create_api_token(&record).expect("token");
     token
 }
@@ -11753,9 +11763,8 @@ async fn token_edit_should_keep_names_unique_on_the_account() {
 }
 
 #[tokio::test]
-async fn token_edit_should_accept_an_unchanged_name_next_to_a_same_named_token() {
+async fn token_edit_should_accept_an_unchanged_name() {
     let (_dir, fx) = fixture();
-    token_record(&fx, "ci", AuthScope::Read);
     let (id, _) = token_record(&fx, "ci", AuthScope::Read);
     let uri = format!("/api/v1/auth/tokens/{id}");
     let (status, reply) = call(&fx, "PATCH", &uri, Some(json!({"name": "ci"}))).await;
@@ -14273,7 +14282,7 @@ fn is_token_invalid(status: StatusCode, text: &str) -> bool {
 #[tokio::test]
 async fn a_token_should_revoke_itself_without_a_permission_and_then_answer_token_invalid() {
     let (_dir, fx) = fixture();
-    let (id, reader) = token_record(&fx, "reader", AuthScope::Read);
+    let (id, reader) = token_record(&fx, "viewer", AuthScope::Read);
     let (status, text) = bare(&fx, &reader, "GET", "/api/boards").await;
     assert_eq!(status, StatusCode::OK, "{text}");
 
