@@ -10,11 +10,7 @@ function escapeHtml(s) {
 }
 eval(block('  var ReportFilter = (function () {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 var data = {
   users: [{ id: 'u1', username: 'ann' }, { id: 'u2', username: 'bob' }],
@@ -132,5 +128,4 @@ var before = host4.innerHTML;
 drawn.apply({ user: 'u1' });
 check('apply redraws the panel with the new value', host4.innerHTML !== before && /value="u1" selected/.test(host4.innerHTML), true);
 
-if (failures) process.exit(1);
-console.log('report_filter: all checks passed');
+finish();

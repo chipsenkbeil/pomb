@@ -46,11 +46,7 @@ function load(sessionStorage, localStorage) {
   return { chrome: chrome, boxes: boxes, remember: remember, els: els, list: els['filter-labels-list'] };
 }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 var session = store(), local = store();
 
@@ -96,5 +92,4 @@ page.chrome.restoreFilter();
 page.chrome.restoreLabelFilter();
 check('remember restores in a new tab', [page.chrome.filterLabels(), page.remember.checked], [['x'], true]);
 
-if (failures) process.exit(1);
-console.log('filter_restore ok');
+finish();

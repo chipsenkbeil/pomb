@@ -100,12 +100,7 @@ function load() {
   return { chrome, cards, list, els };
 }
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got);
-  const w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-};
+const { check, finish } = require('./support/check.js');
 
 let page = load();
 page.list.scrollTop = 450;
@@ -184,5 +179,4 @@ check('opening a fold at the top leaves the column at the top', page.list.scroll
 page.chrome.closeFold();
 check('closing a fold at the top leaves the column at the top', page.list.scrollTop, 0);
 
-if (failures) process.exit(1);
-console.log('ok');
+finish();

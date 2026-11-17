@@ -63,11 +63,7 @@ const menuClick = (act) => {
   onMenuClick({ target: { closest: () => btn } });
 };
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-};
+const { check, finish } = require('./support/check.js');
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const run = async () => {
@@ -115,6 +111,5 @@ const run = async () => {
 };
 
 run().then(() => {
-  if (failures) process.exit(1);
-  console.log('ok');
+  finish();
 });

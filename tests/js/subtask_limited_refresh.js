@@ -7,11 +7,7 @@ const slice = (from, to) => {
   return src.slice(start, end);
 };
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-};
+const { check, finish } = require('./support/check.js');
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const refreshed = [];
@@ -51,6 +47,5 @@ const tick = async (subAll) => {
 (async () => {
   check('a limited section refreshes its card with the task id', await tick('false'), ['t1']);
   check('an all-subtasks section does not refresh its card', await tick('true'), []);
-  if (failures) process.exit(1);
-  console.log('subtask_limited_refresh ok');
+  finish();
 })();

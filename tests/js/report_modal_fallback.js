@@ -87,11 +87,7 @@ var copySource = null;
 eval(fn('  function openMoveDialog(taskId, anchorCard, bulkIds) {'));
 eval(fn('  function doMoveTask() {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function tick() { return new Promise(function (resolve) { setTimeout(resolve, 0); }); }
 
 openCopyDialog();
@@ -143,6 +139,5 @@ tick().then(tick).then(tick).then(function () {
   });
 }).then(function () {
   check('a late column load does not overwrite another board choice', elements['mt-col'].value, '');
-  console.log('failures=' + failures);
-  process.exit(failures ? 1 : 0);
+  finish();
 }).catch(function (e) { console.log('ERROR ' + e.stack); process.exit(1); });

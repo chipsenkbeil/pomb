@@ -59,11 +59,7 @@ function load() {
   };
 }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 var page = load();
 page.chrome.openFilter();
@@ -100,5 +96,4 @@ check('close x closes Epics', [page.els['epics-panel'].hidden, page.els['epics-b
 page.chrome.openEpics();
 check('panels dock below the toolbar row', [page.els['epics-panel'].style.top, page.els['filter-panel'].style.top], ['80px', '80px']);
 
-if (failures) process.exit(1);
-console.log('epics_toggle ok');
+finish();

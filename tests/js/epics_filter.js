@@ -120,11 +120,7 @@ function load(sessionStorage, localStorage) {
   return { chrome: chrome, cards: cards, funnels: funnels, rows: rows, btn: btn, els: els, panel: panel, epicsPanel: epicsPanel };
 }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 function shown(page) {
   return page.cards.map(function (c) { return c.style.display === 'none' ? 0 : 1; });
@@ -216,5 +212,4 @@ page = load(session, local);
 page.chrome.restoreFilter();
 check('reset is saved', page.chrome.epicFilter, '');
 
-if (failures) process.exit(1);
-console.log('ok');
+finish();

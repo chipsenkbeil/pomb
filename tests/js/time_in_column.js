@@ -15,11 +15,7 @@ var MIN = 60000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 var NOW = Date.parse('2026-02-01T00:00:00Z');
 function iso(ms) { return new Date(ms).toISOString(); }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 var columns = [
   { id: 'todo', name: 'To-do', former_names: [] },
@@ -195,5 +191,4 @@ check('unparsable generated_at leaves the browser clock', TimeInColumnPage.clock
 Date.now = realNow;
 const modalSrc = src.slice(src.indexOf('function openTaskTimeInColumn()'), src.indexOf('TimeInColumnPage.taskRows(data, task, now)'));
 check('task modal aligns now to the server clock', modalSrc.indexOf('TimeInColumnPage.clockOffset(data)') > 0, true);
-console.log('failures=' + failures);
-if (failures) throw new Error(failures + ' time in column check(s) failed');
+finish();

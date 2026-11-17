@@ -30,11 +30,7 @@ function element(attrs) {
   return el;
 }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 function flush() {
   return new Promise(function (resolve) { setImmediate(resolve); });
@@ -303,6 +299,5 @@ eval(fn('  function wireNewChild(overlay) {'));
   check('new_child_without_epic_card inserts and counts nothing', [processed.length, columnCounts.length], [0, 0]);
   check('new_child_without_epic_card still refreshes the modal without an error', [refreshes, toasts], [1, []]);
 
-  console.log('failures=' + failures);
-  if (failures) throw new Error(failures + ' new child check(s) failed');
+  finish();
 })();

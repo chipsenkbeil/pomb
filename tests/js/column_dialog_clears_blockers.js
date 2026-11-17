@@ -27,12 +27,7 @@ let editColumnId = null;
 const window = { location: { reload: () => {} } };
 eval(slice('  function openEditColumnDialog(id) {', '\n  // ---------- swimlanes'));
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got);
-  const w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-};
+const { check, finish } = require('./support/check.js');
 
 const run = async () => {
   openEditColumnDialog('c1');
@@ -48,7 +43,6 @@ const run = async () => {
   openEditColumnDialog('c1');
   check('column_dialog_should_save_clears_blockers: an unflagged column loads unchecked', element('ec-clears-blockers').checked, false);
 
-  if (failures) process.exit(1);
-  console.log('column_dialog_clears_blockers ok');
+  finish();
 };
 run();

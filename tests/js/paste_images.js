@@ -24,11 +24,7 @@ function fetch(url) {
 eval(slice("  var PASTE_IMAGE_TYPE", "  function uploadAttachments"));
 eval(slice("  function deleteAttachmentMessage", "  function deleteModalAttachment"));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 var files = [{ type: 'image/png', name: 'a' }, { type: 'text/plain', name: 'b' }, { type: 'image/svg+xml', name: 'c' }, { type: 'image/webp', name: 'd' }];
 check('only the four image types are taken', imageFiles(files).map(function (f) { return f.name; }), ['a', 'd']);
@@ -97,6 +93,5 @@ var png = { type: 'image/png', name: 'image.png' };
   var plain = el.fire('drop', { dataTransfer: { files: [pdf] } });
   check('a drop without images is left alone', plain.prevented, undefined);
 
-  if (failures) process.exit(1);
-  console.log('ok');
+  finish();
 })();

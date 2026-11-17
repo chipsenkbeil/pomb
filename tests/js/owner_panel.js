@@ -5,11 +5,7 @@ function fn(start) {
   return src.slice(from, src.indexOf('\n  }\n', from) + '\n  }\n'.length);
 }
 
-let failures = 0;
-function check(name, got, want) {
-  const g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 function flush() {
   return new Promise((resolve) => { setImmediate(resolve); });
@@ -123,7 +119,6 @@ async function main() {
   toggleSeatsFold(fold);
   check('seats_fold_should_close_the_rows_again', [boxes['tm-seat-rows'].hidden, attrs['aria-expanded']], [true, 'false']);
 
-  console.log('failures=' + failures);
-  if (failures) throw new Error(failures + ' owner panel check(s) failed');
+  finish();
 }
 main();

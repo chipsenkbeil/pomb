@@ -7,11 +7,7 @@ function escapeHtml(s) { return String(s); }
 var document = {};
 eval(src.slice(from, to));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function day(d) { return d && [d.getFullYear(), d.getMonth() + 1, d.getDate()].join('-'); }
 function range(period, now, f, t) {
   var r = BoardHistoryPage.periodRange(period, now, f, t);
@@ -202,6 +198,5 @@ testCase(async () => {
 });
 
 cases.reduce((chain, fn) => chain.then(fn), Promise.resolve()).then(() => {
-  console.log('failures=' + failures);
-  process.exit(failures ? 1 : 0);
+  finish();
 });

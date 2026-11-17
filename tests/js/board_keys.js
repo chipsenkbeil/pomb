@@ -48,11 +48,7 @@ var document = {
 };
 eval(slice('  var columnKeyHints = [];', '  var MODAL_LETTER_ACTS'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function press(k, shift) {
   var event = { key: k, shiftKey: !!shift, prevented: false, preventDefault: function () { this.prevented = true; } };
   var handled = onBoardShortcut(event, k.toLowerCase());
@@ -142,5 +138,4 @@ check('other keys are left to the menu', arrow('Enter'), false);
 sub.hidden = true;
 check('arrows are left alone while the reports menu is closed', arrow('ArrowDown'), false);
 
-if (failures) process.exit(1);
-console.log('ok');
+finish();

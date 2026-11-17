@@ -24,11 +24,7 @@ eval(block('  var ReportValue = (function () {'));
 eval(block('  var ReportFilter = (function () {'));
 eval(block('  var CumulativeFlowPage = (function () {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function at(offset, h) {
   var d = new Date();
   d.setDate(d.getDate() + offset);
@@ -118,5 +114,4 @@ check('an invalid period clears the chart, legend and says why',
   [page['cumulative-flow-status'].textContent, page['cumulative-flow-chart'].innerHTML, page['cumulative-flow-legend'].innerHTML],
   ['Pick a valid period of at most 3 years that starts on or before today.', '', '']);
 
-if (failures) process.exit(1);
-console.log('cumulative_flow_filter: all checks passed');
+finish();

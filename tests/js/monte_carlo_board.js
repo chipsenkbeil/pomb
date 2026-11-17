@@ -14,11 +14,7 @@ eval(block('  var ReportBreakdown = (function () {'));
 eval(block('  var ReportFile = (function () {'));
 eval(block('  var MonteCarloPage = (function () {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 var tasks = [
   { id: 'a', column_id: 'todo', member_ids: ['u1'], color_id: 'red', labels: ['bug'] },
@@ -90,5 +86,4 @@ check('more options reveal user, colour and label', ['mc-user', 'mc-color', 'mc-
 check('period has six choices', (page.match(/<option value="(30|60|90|6m|12m|custom)"/g) || []).length, 6);
 check('export buttons', [/id="mc-export-pdf"/.test(page), /id="mc-export-xlsx"/.test(page)], [true, true]);
 
-console.log('failures=' + failures);
-if (failures) throw new Error(failures + ' Monte Carlo board check(s) failed');
+finish();

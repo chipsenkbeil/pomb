@@ -24,11 +24,7 @@ eval(fn('  function reportEscapeHref() {'));
 eval(fn('  function boardId() {'));
 eval(fn('  function modalBoardId() {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function ticks(svg) {
   var out = [];
   var re = /class="chart-tick">([^<]*)<\/text>/g, m;
@@ -169,5 +165,4 @@ check('a non-report shell page has no modal board', modalBoardId(), null);
 currentDocument = pageWith({ '.board-wrap': { dataset: { boardId: 'xyz' } }, '.board-settings-page[data-board-id]': shellPage });
 check('the board page keeps its own board id', modalBoardId(), 'xyz');
 
-console.log('failures=' + failures);
-if (failures) throw new Error(failures + ' report chart check(s) failed');
+finish();

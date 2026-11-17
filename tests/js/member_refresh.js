@@ -17,11 +17,7 @@ function renderMembersList(filter) { calls.push('list:' + filter); }
 function openModal(id) { calls.push('modal:' + id); }
 eval(src.slice(start, end));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 refreshAfterMemberChange('t1');
 check('refresh re-renders the list and the card when the modal is closed',
@@ -40,5 +36,4 @@ modal = 't2';
 refreshAfterMemberChange('t1');
 check('refresh skips the modal when it shows another task', calls, ['list:ann', 'card:t1']);
 
-if (failures) process.exit(1);
-console.log('member_refresh ok');
+finish();

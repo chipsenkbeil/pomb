@@ -40,11 +40,7 @@ const makeName = (text) => ({
 });
 eval(slice('    function startSubtaskEdit(nameEl) {', '\n  }\n\n  // ---------- Members dialog'));
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-};
+const { check, finish } = require('./support/check.js');
 const key = (edit, k) => {
   let prevented = false;
   edit.listeners.keydown({ key: k, preventDefault: () => { prevented = true; } });
@@ -84,6 +80,5 @@ check('the subtask name wraps long words', /overflow-wrap:\s*anywhere/.test(name
 check('the subtask row aligns items to the first line', /align-items:\s*flex-start/.test(rule('.tm-subtask')), true);
 
 Promise.resolve().then(() => {
-  if (failures) process.exit(1);
-  console.log('subtask_wrap ok');
+  finish();
 });

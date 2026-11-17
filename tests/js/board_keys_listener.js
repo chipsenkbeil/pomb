@@ -49,11 +49,7 @@ const listener = (type, capture) => {
 const keydown = listener('keydown', false);
 const click = listener('click', true);
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 const press = (k, shift) => {
   const event = { key: k, shiftKey: !!shift, prevented: false, target: null, preventDefault() { this.prevented = true; } };
   keydown(event);
@@ -111,5 +107,4 @@ select.value = 'u1';
 check('U prevents the default', press('u'), true);
 check('U sets the member select to all and dispatches change', [select.value, select.events], ['all', ['change']]);
 
-if (failures) process.exit(1);
-console.log('ok');
+finish();

@@ -9,11 +9,7 @@ function escapeHtml(s) {
 var document = {};
 eval(src.slice(from, to));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 var board = {
   board: { name: 'Work <1>' },
@@ -73,5 +69,4 @@ check('an empty result says so', PrintBoard.sheetHtml(board, {
   columns: [], props: [], user: '', color: '', label: '', period: 'all',
 }, now).indexOf('No tasks match the filters.') >= 0, true);
 
-console.log('failures=' + failures);
-process.exit(failures ? 1 : 0);
+finish();

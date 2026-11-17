@@ -41,11 +41,7 @@ function list(done, groups) {
   };
 }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 var card = { dataset: { taskId: 't1', taskName: 'Write the docs' } };
 var single = dragHelper(card);
@@ -69,5 +65,4 @@ markDoneTarget(list(true, [earlier, today]));
 markDoneTarget(null);
 check('the end of the drag clears the underline', today.marked, false);
 
-if (failures) process.exit(1);
-console.log('drag_helper ok');
+finish();

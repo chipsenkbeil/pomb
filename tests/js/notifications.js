@@ -12,11 +12,7 @@ function jsonIfJson(res) { return res; }
 function fetch(url) { return Promise.resolve(replies[url]); }
 var Notifications = eval('(' + src.slice(start, end).trim().replace(/^var Notifications = /, '').replace(/;\s*$/, '') + ')');
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 check('no unread notifications keep the break badge text', Notifications.badgeText(), '1');
 Notifications.setUnread(3);
@@ -124,6 +120,5 @@ Notifications.markRead([1, 2]).then(function () {
     check('clear all zeroes the unread count', Notifications.unread, 0);
   });
 }).then(function () {
-  if (failures) process.exit(1);
-  console.log('notifications ok');
+  finish();
 });

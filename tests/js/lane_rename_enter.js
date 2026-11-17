@@ -26,11 +26,7 @@ function patchLane(id, patch) { patches.push([id, patch.name]); }
 eval(slice('  function doSaveLane() {', '\n  function refreshLaneCounts'));
 eval(slice('  function onLaneNameKeydown(', '\n  }\n') + '\n  }\n');
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function press(key) {
   var prevented = false;
   onLaneNameKeydown({ key: key, preventDefault: function () { prevented = true; } });
@@ -69,5 +65,4 @@ check('another key saves nothing', patches, []);
 check('the name field is wired to the handler',
   /getElementById\('le-name'\)\.addEventListener\('keydown', onLaneNameKeydown\)/.test(src), true);
 
-if (failures) process.exit(1);
-console.log('lane_rename_enter ok');
+finish();

@@ -5,11 +5,7 @@ function fn(start) {
   return src.slice(from, src.indexOf('\n  }\n', from) + '\n  }\n'.length);
 }
 
-let failures = 0;
-function check(name, got, want) {
-  const g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 const hiddenDd = { hidden: true, dataset: { row: 'due' }, previousElementSibling: { textContent: 'Due' } };
 const shownDd = { hidden: false, dataset: { row: 'labels' }, previousElementSibling: { textContent: 'Labels' } };
@@ -90,5 +86,4 @@ metadata.hidden = true;
 renderAddFieldMenu(fieldGroupModel());
 check('menu_should_drop_metadata_once_the_block_is_shown', [shownAfterEdit, listedAfterEdit, listsMetadata()], [false, false, true]);
 
-console.log('failures=' + failures);
-if (failures) throw new Error(failures + ' add field menu check(s) failed');
+finish();

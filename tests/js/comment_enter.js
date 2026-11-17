@@ -10,12 +10,7 @@ let posts = 0;
 const addModalComment = () => { posts++; };
 const { fitCommentBox, onCommentKeydown } = eval('(() => {' + slice('  const fitCommentBox', '  // Comments: the modal body') + 'return { fitCommentBox, onCommentKeydown };})()');
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got);
-  const w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-};
+const { check, finish } = require('./support/check.js');
 const press = (init) => {
   let prevented = false;
   const e = Object.assign({ key: 'Enter', preventDefault: () => { prevented = true; } }, init);
@@ -55,5 +50,4 @@ fitOpenCommentBox();
 check('opening the Comments tab sizes the box to its lines', tabBox.style.height, '90px');
 check('selecting the Comments tab sizes the box', slice('  function selectModalTab', '  const fitOpenCommentBox').includes("if (name === 'comments') fitOpenCommentBox();"), true);
 
-if (failures) process.exit(1);
-console.log('ok');
+finish();

@@ -80,11 +80,7 @@ chrome.refreshFilteredCounts = function () {};
 chrome.syncFilterBtn = function () {};
 chrome.initColumnLabels();
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function hidden() {
   return cards.map(function (c) { return c.style.display === 'none'; });
 }
@@ -128,5 +124,4 @@ check('counts follow the cards in each column', headers.map(function (h) { retur
 check('a chip with no cards hides', headers.map(function (h) { return h.buttons[0].hidden; }), [true, false]);
 check('a header with no chips hides its row', headers.map(function (h) { return h.marks.hidden; }), [true, false]);
 
-if (failures) process.exit(1);
-console.log('column_label_filter ok');
+finish();

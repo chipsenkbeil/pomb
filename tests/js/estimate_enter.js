@@ -27,12 +27,7 @@ const document = { getElementById: (id) => elements[id] || null };
 
 const { initTaskDialogs } = eval('(() => {' + fn('  function initTaskDialogs() {') + 'return { initTaskDialogs };})()');
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got);
-  const w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-};
+const { check, finish } = require('./support/check.js');
 const press = (init) => {
   let prevented = false;
   const e = Object.assign({ key: 'Enter', preventDefault: () => { prevented = true; } }, init);
@@ -47,5 +42,4 @@ check('Enter saves the estimate once', adds, 1);
 check('another key is not consumed', press({ key: 'a' }), false);
 check('another key does not save', adds, 1);
 
-if (failures) process.exit(1);
-console.log('ok');
+finish();

@@ -37,15 +37,7 @@ const load = (headers, bands) => {
   return eval('(function () {' + src.slice(start, end) + '\n return refreshGroupCounts; })()');
 };
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got);
-  const w = JSON.stringify(want);
-  if (g !== w) {
-    failures++;
-    console.log('FAIL ' + name + ': got ' + g + ' want ' + w);
-  }
-};
+const { check, finish } = require('./support/check.js');
 
 const a = header('g1', 3, 1);
 const b = header('g1', 3, 1);
@@ -74,5 +66,4 @@ refresh();
 check('over the limit colours every member header', [a, b].map((h) => h.classes.has('columnHeader--groupedOver')), [true, true]);
 check('another group keeps its member rule', other.classes.has('columnHeader--groupedOver'), false);
 
-if (failures) process.exit(1);
-console.log('group counts ok');
+finish();

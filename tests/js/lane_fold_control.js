@@ -31,11 +31,7 @@ eval(slice('  function openLaneMenu(', '\n  function initBoardMenus'));
 eval('function onFoldClick(e) {' + slice("var foldToggle = e.target.closest('[data-lane-fold-toggle]');", "if (e.target.closest('[data-lane-names-toggle]'))") + '}');
 eval('function onMenuClick(e) {' + slice("var btn = e.target.closest('[data-lane-act]');", "\n    });\n\n    // ---------- card context menu") + '}');
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-};
+const { check, finish } = require('./support/check.js');
 const sent = () => patches.map((p) => p.slice(0, 2));
 const chevronClick = (id) => {
   const chevron = { getAttribute: () => id };
@@ -65,5 +61,4 @@ check('menu on a folded lane reads Expand', foldItem.textContent, 'Expand');
 menuClick('fold');
 check('menu Expand unfolds the folded lane', sent(), [['lane2', { collapsed: false }]]);
 
-if (failures) process.exit(1);
-console.log('ok');
+finish();

@@ -37,11 +37,7 @@ var modal = {
 };
 eval(slice('  var MODAL_LETTER_ACTS = {', '  document.addEventListener(\'keydown\''));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 var wanted = {
   c: 'pick-color', d: 'add-description', f: 'add-attachment', k: 'add-comment', l: 'add-label',
@@ -84,5 +80,4 @@ check('other clicks do not print', printed, 0);
 listeners.click({ target: { closest: function (sel) { return sel === '#shortcuts-print' ? {} : null; } } });
 check('the Print list button prints', printed, 1);
 
-if (failures) process.exit(1);
-console.log('ok');
+finish();

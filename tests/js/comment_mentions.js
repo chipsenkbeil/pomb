@@ -37,11 +37,7 @@ var document = {
 var SETTLE_MS = 20;
 eval(slice('  var MENTION_LIST_MAX = 8;', '  function wireModalTaskRefs'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 check('an @ at the start is a mention', mentionAt('@a', 2), { start: 0, query: 'a' });
 check('an @ after a space is a mention', mentionAt('hi @Ad', 6), { start: 3, query: 'ad' });
@@ -107,6 +103,5 @@ Promise.resolve().then(function () { return Promise.resolve(); }).then(function 
     check('an already watched task is not watched again', posts, [['POST', '/api/tasks/t1/comments']]);
   });
 }).then(function () {
-  if (failures) process.exit(1);
-  console.log('ok');
+  finish();
 });

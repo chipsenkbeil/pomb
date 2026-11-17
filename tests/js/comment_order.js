@@ -43,11 +43,7 @@ var document = {
 };
 eval(slice("  var COMMENT_ORDER_KEY", "  function wireModalTaskRefs"));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function names() { return list.children.map(function (r) { return r.name; }); }
 function layout() { return section.children.map(function (c) { return c.name; }); }
 
@@ -77,5 +73,4 @@ storageBroken = true;
 toggleCommentOrder();
 check('a broken storage keeps the choice for the page', loadCommentsNewestFirst(), true);
 
-if (failures) process.exit(1);
-console.log('ok');
+finish();

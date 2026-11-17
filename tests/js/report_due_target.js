@@ -39,11 +39,7 @@ function fetchJson(url) {
   return Promise.resolve([{ id: 'c1', name: 'A' }, { id: 'c2', name: 'B' }, { id: 'c3', name: 'Done' }]);
 }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function tick() { return new Promise(function (resolve) { setTimeout(resolve, 0); }); }
 
 DueDateDialog.renderColumnList('t1', 'c3');
@@ -58,6 +54,5 @@ tick().then(tick).then(tick).then(function () {
   return tick().then(tick).then(tick);
 }).then(function () {
   check('a late column load for another task is dropped', sel.options.map(function (o) { return o.value; }), ['']);
-  console.log('failures=' + failures);
-  process.exit(failures ? 1 : 0);
+  finish();
 }).catch(function (e) { console.log('ERROR ' + e.stack); process.exit(1); });

@@ -10,11 +10,7 @@ var chromeStart = src.indexOf('  var BoardChrome = {');
 var chromeEnd = src.indexOf('\n  };', chromeStart) + '\n  };'.length;
 if (chromeStart < 0 || chromeEnd < chromeStart) throw new Error('BoardChrome not found');
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function flush() {
   return new Promise(function (resolve) { setImmediate(resolve); });
 }
@@ -664,6 +660,5 @@ function trigger() {
   await flush();
   check('a refused modal create adds no link and toasts', [postBodies().map((c) => c[1]), toasts, refreshed], [['/api/tasks'], ['Could not create the epic.'], []]);
 
-  if (failures) process.exit(1);
-  console.log('ok');
+  finish();
 })();

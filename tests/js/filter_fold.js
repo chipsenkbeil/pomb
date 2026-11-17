@@ -134,11 +134,7 @@ function over(page, where) {
   };
 }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 function shown(page) {
   return page.cards.map(function (c) { return c.style.display === 'none' ? 0 : 1; });
@@ -365,5 +361,4 @@ strip.children.push(moved);
 onEnd({ item: moved, to: strip, from: strip, oldIndex: 5, oldDraggableIndex: 3 });
 check('a drop on a collapsed strip restores the card by its index among cards, not fold rows', strip.children.map(function (el) { return el.dataset.taskId; }), ['1', '2', '3', '4', '5', '6', '7']);
 
-if (failures) { console.log(failures + ' failed'); process.exit(1); }
-console.log('ok');
+finish();

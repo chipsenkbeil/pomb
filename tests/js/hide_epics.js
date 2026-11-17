@@ -57,11 +57,7 @@ function load(sessionStorage, localStorage) {
   return { chrome: chrome, cards: cards, els: els };
 }
 
-let failures = 0;
-function check(name, got, want) {
-  let g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function shown(page) {
   return page.cards.filter(function (c) { return c.style.display !== 'none'; }).map(function (c) { return c.dataset.taskId; });
 }
@@ -95,5 +91,4 @@ check('reset turns the switch off', page.els['f-hide-epics'].checked, false);
 check('reset shows the epic cards', shown(page), ['e1', 'e2', '1', '2', '3']);
 check('reset hides the reset link', page.els['filter-reset'].hidden, true);
 
-if (failures) process.exit(1);
-console.log('hide epics ok');
+finish();

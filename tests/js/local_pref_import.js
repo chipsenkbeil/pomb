@@ -5,12 +5,7 @@ if (start < 0 || end < start) { console.log('FAIL not found: importLocalPrefs');
 const body = src.slice(start, end) + '\nimportLocalPrefs();';
 const importer = new Function('accountButton', 'accountPrefs', 'window', 'document', 'fetch', body);
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got);
-  const w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-};
+const { check, finish } = require('./support/check.js');
 
 const run = (stored, ok) => {
   const data = Object.assign({}, stored);
@@ -53,6 +48,5 @@ const run = (stored, ok) => {
   r = await run({}, true);
   check('no old keys send nothing', r.requests, []);
 
-  if (failures) process.exit(1);
-  console.log('ok');
+  finish();
 })();

@@ -46,12 +46,7 @@ eval(slice('  function closeModal() {', '  function saveModalName() {'));
 eval(slice('    function openTaskFromHash() {', "    window.addEventListener('hashchange', openTaskFromHash);"));
 handlers.hashchange = openTaskFromHash;
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got);
-  const w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-};
+const { check, finish } = require('./support/check.js');
 
 location.hash = '#task-t1';
 openTaskFromHash();
@@ -76,5 +71,4 @@ check('an unrelated hash with no modal open keeps the URL', location.hash, '#lay
 check('an unrelated hash with no modal open leaves the root empty', root.innerHTML, '');
 check('no reload when nothing was open', reloads, 0);
 
-console.log('failures=' + failures);
-process.exit(failures ? 1 : 0);
+finish();

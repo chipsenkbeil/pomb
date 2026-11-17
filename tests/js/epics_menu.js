@@ -5,11 +5,7 @@ function fn(start) {
   return src.slice(from, src.indexOf('\n  }\n', from) + '\n  }\n'.length);
 }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 function flush() {
   return new Promise(function (resolve) { setImmediate(resolve); });
@@ -222,6 +218,5 @@ var JSON_HEADERS = { 'Content-Type': 'application/json', 'Accept': 'application/
   deleteModalTask();
   check('with no epic modal open nothing happens', [confirms.length, calls.length], [0, 0]);
 
-  console.log('failures=' + failures);
-  if (failures) throw new Error(failures + ' epic menu check(s) failed');
+  finish();
 })();

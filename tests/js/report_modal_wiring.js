@@ -30,11 +30,7 @@ var taskDialogsInitialized = false;
 eval(fn('  function initTaskDialogs() {'));
 eval(fn('  function initReportModal() {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function count(key) { return (listeners[key] || []).length; }
 
 ['mt-move-btn', 'cp-copy-btn', 'cp-name', 'move-task-dialog', 'est-add', 'est-input', 'estimate-dialog', 'duedate-dialog'].forEach(function (id) {
@@ -74,5 +70,4 @@ boardMenus = boardMenus.slice(0, boardMenus.indexOf('\n  }\n'));
 check('the board wiring goes through initTaskDialogs', boardMenus.indexOf('initTaskDialogs();') >= 0, true);
 check('the board wiring does not bind the move button itself', boardMenus.indexOf("'mt-move-btn'"), -1);
 
-console.log('failures=' + failures);
-process.exit(failures ? 1 : 0);
+finish();

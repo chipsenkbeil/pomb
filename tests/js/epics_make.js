@@ -5,11 +5,7 @@ function fn(start) {
   return src.slice(from, src.indexOf('\n  }\n', from) + '\n  }\n'.length);
 }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 function flush() {
   return new Promise(function (resolve) { setImmediate(resolve); });
@@ -247,6 +243,5 @@ function dialogBoxes() {
   check('the modal path refreshes and toasts a failure', [finishes, toasts],
     [['refresh'], ['These subtasks could not become cards and stay subtasks: "Write docs" (card is locked).']]);
 
-  console.log('failures=' + failures);
-  if (failures) throw new Error(failures + ' make-epic check(s) failed');
+  finish();
 })();

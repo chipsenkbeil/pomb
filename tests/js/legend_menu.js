@@ -47,11 +47,7 @@ var chrome = {
 eval('Object.assign(chrome, {' + slice('    toggleDark: function', '    // the help dialog, from the top-bar').replace(/,\s*$/, '') + '});');
 eval('Object.assign(chrome, {' + slice('    syncLegendFilter: function', '    initLegend: function').replace(/,\s*$/, '') + '});');
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 check('the three toggles keep the Menu open', [MENU_KEEPS_OPEN.dark, MENU_KEEPS_OPEN.legend, MENU_KEEPS_OPEN['large-names'], MENU_KEEPS_OPEN.help], [true, true, true, undefined]);
 
@@ -81,6 +77,5 @@ attrs.legend = 'false';
 chrome.toggleLegend();
 setTimeout(function () {
   check('the legend toggle shows the footer without a reload or a toast', [footer.hidden, reloads, toasts, requests[0][2]], [false, 0, [], { legend_visible: true }]);
-  if (failures) process.exit(1);
-  console.log('ok');
+  finish();
 }, 20);

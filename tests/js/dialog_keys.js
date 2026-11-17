@@ -53,11 +53,7 @@ function modalAction(act) { calls.push(act); }
 function boardLetter(key) { calls.push('board-' + key); return true; }
 eval(slice('  var SHORTCUT_DIALOGS =', '  // ---------- Task extras'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function press(key, shift) {
   calls.length = 0;
   shortcuts.hidden = true;
@@ -86,5 +82,4 @@ check('Delete deletes the task once the dialog closes', press('Delete'), ['delet
 check('? opens the shortcuts once the dialog closes', press('?'), ['shortcuts']);
 check('t opens the timer menu once the dialog closes', press('t'), ['timer-menu']);
 
-if (failures) process.exit(1);
-console.log('ok');
+finish();

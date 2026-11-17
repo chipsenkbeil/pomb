@@ -63,11 +63,7 @@ eval(fn('  function modalTaskBoard() {'));
 eval(fn('  function boardNameFor(id) {'));
 eval(fn('  function openMoveDialog(taskId, anchorCard, bulkIds) {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function settle() {
   return new Promise(function (r) { setTimeout(r, 0); }).then(function () {
     return new Promise(function (r) { setTimeout(r, 0); });
@@ -107,6 +103,5 @@ settle().then(function () {
   return settle();
 }).then(function () {
   check('the board page reads its bar title', labels(boardSel), ['Beta']);
-  console.log('failures=' + failures);
-  process.exit(failures ? 1 : 0);
+  finish();
 }).catch(function (e) { console.log('ERROR ' + e.stack); process.exit(1); });

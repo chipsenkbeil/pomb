@@ -83,11 +83,7 @@ var d1 = card('d1', 3, 'L', 0);
 var x1 = card('x1', 0, 'M', 0);
 boardCardOrder = function () { return cards; };
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function click(entry, mods) {
   var event = { target: entry.el, metaKey: false, ctrlKey: false, shiftKey: false, prevented: false, stopped: false,
     preventDefault: function () { this.prevented = true; }, stopPropagation: function () { this.stopped = true; } };
@@ -245,13 +241,11 @@ Promise.all(pending).then(function () {
   setTimeout(function () {
     check('a failed bulk move shows a toast', toasts, ['Could not move the selected tasks.']);
     check('a failed bulk move does not reload at once', requests.filter(function (r) { return r[0] === 'reload'; }).length, 0);
-    if (failures) process.exit(1);
-    console.log('task_selection bulk ok');
+    finish();
     process.exit(0);
   }, 0);
 });
 
 setTimeout(function () {
-  if (failures) process.exit(1);
-  console.log('task_selection ok');
+  finish();
 }, 0);

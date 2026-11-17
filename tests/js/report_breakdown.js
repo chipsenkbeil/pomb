@@ -12,11 +12,7 @@ const { isoDate } = require('../../static/pure.js');
 eval(block('  var ReportBreakdown = (function () {'));
 eval(block('  var TimeEstimatePage = (function () {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 var now = new Date(2026, 10, 15, 13, 0);
 function at(y, m, d) { return new Date(y, m - 1, d, 12).toISOString(); }
@@ -76,5 +72,4 @@ check('both reports include the sidebar', ['task_count', 'time_estimate'].every(
   return fs.readFileSync('templates/' + n + '.html', 'utf8').indexOf('_report_breakdown.html') > 0;
 }), true);
 
-console.log('failures=' + failures);
-if (failures) throw new Error(failures + ' report breakdown check(s) failed');
+finish();

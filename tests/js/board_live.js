@@ -1,11 +1,6 @@
 const { boardEventPlan } = require('../../static/pure.js');
 
-let failures = 0;
-function check(name, got, want) {
-  const g = JSON.stringify(got);
-  const w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 const cards = { t1: 'c1', t2: 'c2' };
 
@@ -28,5 +23,4 @@ check('plan_should_merge_refresh_and_reload',
   { refresh: ['t1'], reload: true });
 check('plan_should_give_nothing_for_an_empty_list', boardEventPlan([], cards), { refresh: [], reload: false });
 
-if (failures) process.exit(1);
-console.log('board_live: all checks passed');
+finish();

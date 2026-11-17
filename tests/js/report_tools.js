@@ -13,11 +13,7 @@ var saveBlob = function () {};
 var toast = function () {};
 eval(block('  var ReportTools = (function () {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 check('the list endpoint', ReportTools.endpoint('b 1'), '/api/boards/b%201/report-bookmarks');
 check('a bookmark endpoint', ReportTools.endpoint('b1', 'k/2'), '/api/boards/b1/report-bookmarks/k%2F2');
@@ -46,6 +42,5 @@ Promise.all([
   check('a delete returns nothing', out[1], null);
   check('a refusal carries the server message', out[2], 'name too long');
   check('the requests', calls, [['/x', 'POST', '{"a":1}'], ['/y', 'DELETE', null], ['/z', 'PATCH', '{}']]);
-  if (failures) process.exit(1);
-  console.log('report_tools: all checks passed');
+  finish();
 });

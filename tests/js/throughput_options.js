@@ -24,11 +24,7 @@ eval(block('  var ReportValue = (function () {'));
 eval(block('  var ReportFilter = (function () {'));
 eval(block('  var ThroughputPage = (function () {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 var now = new Date(2026, 10, 15, 14, 0, 0);
 function span(values) {
@@ -119,5 +115,4 @@ check('tooltip holds the date and the value', ThroughputPage.tipFor(s, 1),
 check('tooltip counts tasks', ThroughputPage.tipFor(run({ group: '2w' }), 2),
   { title: '5 October 12:00 AM', rows: [{ label: 'Task count', value: '1 task' }] });
 
-if (failures) process.exit(1);
-console.log('throughput_options: all checks passed');
+finish();

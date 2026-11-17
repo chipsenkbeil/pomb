@@ -27,11 +27,7 @@ eval(fn('  function modalTaskBoard() {'));
 eval(fn('  function paintPickerChip() {'));
 eval(fn('  function openLinkPicker(mode, onPick) {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 
 pageBoard = { id: 'page', name: 'Page board' };
 modal = { dataset: { boardId: 'task', boardName: 'Task board' } };
@@ -49,5 +45,4 @@ openLinkPicker('child', function () {});
 check('with neither there is no chip', linkPicker.board, null);
 check('with neither the chip is hidden', chip.hidden, true);
 
-console.log('failures=' + failures);
-if (failures) throw new Error(failures + ' link picker board check(s) failed');
+finish();

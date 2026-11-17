@@ -61,11 +61,7 @@ function load(sessionStorage) {
   return { chrome: chrome, cards: cards, input: input };
 }
 
-let failures = 0;
-function check(name, got, want) {
-  let g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function shown(page) {
   return page.cards.filter(function (c) { return c.style.display !== 'none'; }).map(function (c) { return c.dataset.taskId; });
 }
@@ -104,5 +100,4 @@ page.chrome.resetFilter();
 check('reset clears the owner', page.input.value, '');
 check('reset shows every card', shown(page), ['1', '2', '3', '4', '5']);
 
-if (failures) process.exit(1);
-console.log('owner filter ok');
+finish();

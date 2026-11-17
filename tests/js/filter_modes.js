@@ -78,11 +78,7 @@ function load() {
   return { chrome: chrome, cards: cards, boxes: boxes, stage: stage, mode: mode, count: count, button: button, reset: reset, panelReset: panelReset, panel: panel };
 }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function shown(page) {
   return page.cards.filter(function (c) { return c.style.display !== 'none'; }).map(function (c) { return c.dataset.taskId; });
 }
@@ -145,5 +141,4 @@ page.chrome.setFilterFields(state.fields);
 check('the label mode round trips', page.mode.value, 'or');
 check('the field choice round trips', page.stage.value, 'Draft');
 
-if (failures) process.exit(1);
-console.log('filter modes ok');
+finish();

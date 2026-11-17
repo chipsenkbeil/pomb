@@ -52,12 +52,7 @@ const makeList = (cards) => {
   return list;
 };
 
-let failures = 0;
-const check = (name, got, want) => {
-  const g = JSON.stringify(got);
-  const w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-};
+const { check, finish } = require('./support/check.js');
 
 const toasts = [];
 const toastRefusal = (res, title) => {
@@ -133,6 +128,5 @@ const chrome = eval('(function () { const window = winLocal;' + src.slice(start,
   check('the chosen epic card is lit with its toggle pressed', [lit.classList.contains('is-lit'), lit.toggle.attrs['aria-pressed']], [true, 'true']);
   check('another epic card stays unlit', [plain.classList.contains('is-lit'), plain.toggle.attrs['aria-pressed']], [false, 'false']);
 
-  if (failures) process.exit(1);
-  console.log('epic cards ok');
+  finish();
 })();

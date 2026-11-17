@@ -17,11 +17,7 @@ var window = {
 var Finder = eval('({ RECENT_KEY: "k", RECENT_MAX_ENTRIES: 2, MATCH: { TITLE: "title" },\n' +
   src.slice(start, end).replace(/,\s*$/, '') + '\n})');
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function ids() { return JSON.parse(store.k).map(function (e) { return e.task_id; }); }
 
 check('the finder has one recent-list save helper', typeof Finder.saveRecent, 'function');
@@ -43,5 +39,4 @@ Finder.forget('c');
 failWrites = false;
 check('a failed write leaves the stored list as it was', ids(), ['c']);
 
-if (failures) process.exit(1);
-console.log('finder_recent ok');
+finish();

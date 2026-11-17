@@ -22,11 +22,7 @@ eval(block('  var ReportValue = (function () {'));
 eval(block('  var ReportFilter = (function () {'));
 eval(block('  var BurndownPage = (function () {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function at(offset, h) {
   var d = new Date();
   d.setDate(d.getDate() + offset);
@@ -138,5 +134,4 @@ check('a start date older than 3 years draws nothing', status({ start: isoDate(d
 check('an empty From selection draws nothing', status({ from: [] }), ['Choose at least one From column.', '']);
 check('an empty start date draws nothing', status({ start: '' }), ['Pick a start date on or before today.', '']);
 
-if (failures) process.exit(1);
-console.log('burndown_filter: all checks passed');
+finish();

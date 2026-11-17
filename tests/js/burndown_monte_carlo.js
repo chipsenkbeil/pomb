@@ -15,11 +15,7 @@ eval(block('  var ReportValue = (function () {'));
 eval(block('  var BurndownPage = (function () {'));
 eval(block('  var MonteCarloPage = (function () {'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-}
+const { check, finish } = require('./support/check.js');
 function ticks(svg) {
   var out = [];
   var re = /class="chart-tick">([^<]*)<\/text>/g, m;
@@ -80,5 +76,4 @@ check('the simulations box is gone', /mc-sims/.test(page), false);
 check('the Getting started box is in the page', /id="mc-getting-started"[^>]*>\s*<h3>Getting started/.test(page), true);
 check('the charts wait for the first run', [/id="mc-basis-title" hidden/.test(page), /id="mc-chart-title" hidden/.test(page)], [true, true]);
 
-console.log('failures=' + failures);
-if (failures) throw new Error(failures + ' burndown and Monte Carlo check(s) failed');
+finish();
