@@ -393,6 +393,12 @@ struct OwnerInfo {
     /// The RFC 3339 time the lease ends, or null when it never ends.
     #[serde(default)]
     lease_expires_at: Option<String>,
+    /// The role the holder plays, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    /// The RFC 3339 time the holder last changed, or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    since: Option<String>,
 }
 
 /// Who holds a task, as `board.json` describes it.
@@ -840,6 +846,8 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
             holder.map(|holder| OwnerInfo {
                 holder,
                 lease_expires_at: owner.lease_expires_at.clone(),
+                role: owner.role.clone(),
+                since: owner.since.clone(),
             })
         }
         None => None,
@@ -1592,6 +1600,37 @@ mod tests {
             read_back(&seeded),
             Some(Responsible::Member {
                 id: "acc".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn export_should_write_an_owner_role_and_since() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+        seeded
+            .db
+            .apply_task_change(&seeded.task, Actor::SYSTEM, |row| {
+                row.owner = Some(Owner {
+                    holder: OwnerHolder::Agent {
+                        token_id: None,
+                        name: "builder".to_string(),
+                    },
+                    lease_expires_at: Some("2026-10-01T11:00:00Z".to_string()),
+                    role: Some("reviewer".to_string()),
+                    since: Some("2026-10-01T10:00:00Z".to_string()),
+                });
+                ((), true)
+            })
+            .expect("agent owner");
+
+        assert_eq!(
+            document(&archive_of(&seeded))["tasks"][0]["owner"],
+            json!({
+                "holder": {"kind": "agent", "name": "builder"},
+                "lease_expires_at": "2026-10-01T11:00:00Z",
+                "role": "reviewer",
+                "since": "2026-10-01T10:00:00Z"
             })
         );
     }

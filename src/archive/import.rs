@@ -1602,8 +1602,8 @@ impl Builder<'_> {
         holder.map(|holder| Owner {
             holder,
             lease_expires_at: info.lease_expires_at,
-            role: None,
-            since: None,
+            role: info.role,
+            since: info.since,
         })
     }
 
@@ -2609,6 +2609,30 @@ mod tests {
         document["tasks"][0]["owner"] = json!({"holder": {"kind": "human", "handle": "ann"}});
         let (import, _) = read(&document).expect("a board");
         assert_eq!(import.tasks[0].row.owner, None);
+    }
+
+    #[test]
+    fn read_board_should_keep_an_archived_owner_role_and_since() {
+        let mut document = base();
+        document["tasks"][0]["owner"] = json!({
+            "holder": {"kind": "agent", "name": "builder"},
+            "lease_expires_at": "2026-10-01T11:00:00Z",
+            "role": "reviewer",
+            "since": "2026-10-01T10:00:00Z"
+        });
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(
+            import.tasks[0].row.owner,
+            Some(Owner {
+                holder: OwnerHolder::Agent {
+                    token_id: None,
+                    name: "builder".to_string()
+                },
+                lease_expires_at: Some("2026-10-01T11:00:00Z".to_string()),
+                role: Some("reviewer".to_string()),
+                since: Some("2026-10-01T10:00:00Z".to_string()),
+            })
+        );
     }
 
     #[test]
