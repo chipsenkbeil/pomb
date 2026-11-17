@@ -1,3 +1,4 @@
+local board_check = require("dev.board.check")
 local devos = require("dev.os")
 local fs = require("dev.fs")
 local t = require("dev.testing")
@@ -134,20 +135,43 @@ local function lines(fix, name)
     return found
 end
 
-local function check_note(fix, commit, rows, mode)
-    local text = {
-        ("2d2adabc  agents  status  -  2026-11-09 18:58  dev-check: commit=%s change=- mode=%s\n"):format(
-            commit,
-            mode or "run"
-        ),
-    }
-    for i, row in ipairs(rows) do
-        text[#text + 1] = ("%s%d %s - %s\n"):format((" "):rep(40), i, row[1], row[2])
+local function check_notes(fix, checks, records)
+    local text = { "checks:" }
+    for _, command in ipairs(checks) do
+        text[#text + 1] = ("- %s"):format(command)
     end
-    assert(fs.write(fix.dir .. "/check-note", table.concat(text)))
+    text[#text + 1] = ""
+    for _, record in ipairs(records) do
+        text[#text + 1] = ("2d2adabc  agents  status  -  2026-11-09 18:58  dev-check: commit=%s change=- mode=%s rows=%d sum=%s"):format(
+            record.commit,
+            record.mode or "run",
+            #record.rows,
+            record.sum or board_check.fingerprint(checks)
+        )
+        for i, result in ipairs(record.rows) do
+            text[#text + 1] = ("%s%d %s %s"):format(
+                (" "):rep(40),
+                i,
+                result,
+                result == "pass" and "34b701" or "-"
+            )
+        end
+    end
+    text[#text + 1] = ""
+    assert(fs.write(fix.dir .. "/check-note", table.concat(text, "\n")))
 end
 
-local PASSED = { { "pass", "dev --remote lint" }, { "pass", "dev --remote test" } }
+local function check_note(fix, commit, rows, mode, checks)
+    local commands, results = {}, {}
+    for i, row in ipairs(rows) do
+        results[i] = row[1]
+        commands[i] = row[2]
+    end
+    check_notes(fix, checks or commands, { { commit = commit, mode = mode, rows = results } })
+end
+
+local LINT, TEST = "dev --remote lint", "dev --remote test"
+local PASSED = { { "pass", LINT }, { "pass", TEST } }
 
 local function refuse_pushes(fix, count)
     assert(fs.write(fix.dir .. "/refuse", tostring(count)))
@@ -415,8 +439,8 @@ gated("when a check row failed", function(fix, cand)
 end, "its latest dev-check has no pass for dev --remote test")
 
 gated("when a check row is missing", function(fix, cand)
-    check_note(fix, cand, { { "pass", "dev --remote lint" } })
-end, "its latest dev-check has no pass for dev --remote test")
+    check_note(fix, cand, { { "pass", LINT } }, nil, { LINT, TEST })
+end, "its latest dev-check has no result for row 2, dev --remote test")
 
 gated("when the check was not a run", function(fix, cand)
     check_note(fix, cand, PASSED, "expect-fail")
@@ -430,6 +454,67 @@ end, "its latest dev-check commit ")
 gated("when the check names a commit that cannot be read", function(fix)
     check_note(fix, ("0"):rep(40), PASSED)
 end, "its latest dev-check commit ")
+
+t.test("land_should_skip_gates_for_board_show_rows", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    check_notes(fix, { LINT, TEST, "rg -c x y" }, {
+        { commit = cand, rows = { "pass", "pass", "pass" } },
+    })
+    local out, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.eq(#lines(fix, "calls"), 0)
+    t.ok(out:find("The gates are skipped because", 1, true), out)
+    done(fix)
+end)
+
+t.test("land_should_ignore_an_expect_fail_note_after_a_passing_run", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    check_notes(fix, { LINT, TEST }, {
+        { commit = cand, rows = { "pass", "pass" } },
+        { commit = cand, mode = "expect-fail", rows = { "fail", "pass" } },
+    })
+    local out, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.eq(#lines(fix, "calls"), 0)
+    t.ok(out:find("The gates are skipped because", 1, true), out)
+    done(fix)
+end)
+
+t.test("land_should_name_the_judged_check_commit_and_mode", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    local other = candidate(fix, { ["other.txt"] = "other" }, "add other")
+    check_note(fix, other, PASSED)
+    local out, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.ok(out:find("commit " .. other .. " is not this patch (mode run)", 1, true), out)
+    done(fix)
+end)
+
+t.test("land_should_gate_when_the_checks_rows_changed_since_the_note", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    check_notes(fix, { LINT, TEST }, {
+        { commit = cand, rows = { "pass", "pass" }, sum = board_check.fingerprint({ "a", "b" }) },
+    })
+    local out, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    eq_list(lines(fix, "calls"), { "lint", "test" })
+    t.ok(out:find("checks rows changed", 1, true), out)
+    done(fix)
+end)
+
+t.test("land_should_name_the_failed_row_by_position", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    check_note(fix, cand, { { "pass", LINT }, { "fail", TEST } })
+    local out, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.ok(out:find("no pass for dev --remote test (row 2,", 1, true), out)
+    done(fix)
+end)
 
 t.test("land_should_run_nixcheck_for_a_change_under_tests_or_dev", function()
     for _, path in ipairs({ "tests/a.txt", ".dev/b.txt", "extra/Cargo.toml" }) do
