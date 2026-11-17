@@ -1912,6 +1912,63 @@ where
     deserializer.deserialize_seq(Count)
 }
 
+/// A task shape that sits in a column and has a kind.
+pub trait ColumnTask {
+    /// Returns whether the task's kind holds work.
+    #[must_use]
+    fn holds_work(&self) -> bool;
+
+    /// Returns the id of the column the task sits in.
+    #[must_use]
+    fn column(&self) -> &str;
+}
+
+impl ColumnTask for TaskRow {
+    fn holds_work(&self) -> bool {
+        self.is_work()
+    }
+
+    fn column(&self) -> &str {
+        &self.column_id
+    }
+}
+
+impl<T> ColumnTask for &T
+where
+    T: ColumnTask,
+{
+    fn holds_work(&self) -> bool {
+        (**self).holds_work()
+    }
+
+    fn column(&self) -> &str {
+        (**self).column()
+    }
+}
+
+impl ColumnTask for TaskCard {
+    fn holds_work(&self) -> bool {
+        self.is_work()
+    }
+
+    fn column(&self) -> &str {
+        &self.column_id
+    }
+}
+
+/// Yields the tasks of `tasks` that hold work, leaving epics out.
+pub fn work_tasks<T: ColumnTask>(tasks: &[T]) -> impl Iterator<Item = &T> {
+    tasks.iter().filter(|task| task.holds_work())
+}
+
+/// Yields the tasks of `tasks` that hold work and sit in column `column_id`.
+pub fn column_work_tasks<'a, T: ColumnTask>(
+    tasks: &'a [T],
+    column_id: &'a str,
+) -> impl Iterator<Item = &'a T> {
+    work_tasks(tasks).filter(move |task| task.column() == column_id)
+}
+
 impl TaskRow {
     /// Returns whether the task's kind holds work.
     #[must_use]

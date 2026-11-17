@@ -292,6 +292,131 @@ async fn a_move_should_ignore_an_epic_in_the_target_columns_wip_count() {
 }
 
 #[tokio::test]
+async fn every_column_count_should_ignore_an_epic_in_the_column() {
+    let (_dir, fx) = fixture();
+    let extra = fx
+        .db
+        .create_column(&fx.board_id, "Extra", Some(1))
+        .expect("column");
+    create(
+        &fx,
+        json!({
+            "column_id": extra, "swimlane_id": fx.lane_a, "name": "Epic", "kind": "epic",
+            "estimate_hours": 10, "due_at": "2020-01-01T10:00:00Z",
+        }),
+    )
+    .await;
+    create(
+        &fx,
+        json!({
+            "column_id": extra, "swimlane_id": fx.lane_a, "name": "Held", "estimate_hours": 2,
+        }),
+    )
+    .await;
+
+    // The board page's column and cell counts leave the epic out
+    let page = board_page(&fx).await;
+    let head = header_chunk(&page, &extra);
+    assert_eq!(
+        attribute(head, "data-task-count"),
+        "1",
+        "the board page's column count leaves the epic out"
+    );
+    assert_eq!(
+        attribute(head, "data-estimate-minutes"),
+        "120",
+        "the column estimate total leaves the epic out"
+    );
+    assert_eq!(
+        attribute(head, "data-overdue-count"),
+        "0",
+        "the column overdue count leaves the epic out"
+    );
+    let (label, _) = cell_label(&page, &extra, &fx.lane_a);
+    assert_eq!(label.trim(), "1", "the lane cell count leaves the epic out");
+
+    // The limit group count of the column leaves the epic out
+    assert_eq!(fx.db.count_tasks_in_column(&extra).expect("count"), 1);
+
+    // The column delete refusal counts the work task only
+    let (status, error) = call(&fx, "DELETE", &format!("/api/columns/{extra}"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert!(
+        error
+            .as_str()
+            .is_some_and(|text| text.contains("1 task(s)")),
+        "the column delete refusal leaves the epic out: {error}"
+    );
+
+    // The WIP refusal counts the work task only
+    let other = create(&fx, json!({"column_id": fx.col_todo, "name": "Other"})).await;
+    let (status, error) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{other}/move"),
+        Some(json!({"column_id": extra, "position": 0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert_eq!(
+        error, "column WIP limit reached (1/1)",
+        "the WIP refusal leaves the epic out"
+    );
+}
+
+#[tokio::test]
+async fn a_drop_into_a_done_cell_should_ignore_an_epic_in_its_on_screen_order() {
+    let (_dir, fx) = fixture();
+    let finished = fx
+        .db
+        .create_column(&fx.board_id, "Finished", None)
+        .expect("column");
+    let (status, patched) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/columns/{finished}"),
+        Some(json!({"is_done": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{patched}");
+    create(
+        &fx,
+        json!({"column_id": finished, "swimlane_id": fx.lane_a, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let older = create(
+        &fx,
+        json!({"column_id": finished, "swimlane_id": fx.lane_a, "name": "Older"}),
+    )
+    .await;
+    let (status, patched) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{older}"),
+        Some(json!({"grouping_date": "2020-01-01"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{patched}");
+    let dropped = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "swimlane_id": fx.lane_a, "name": "Dropped"}),
+    )
+    .await;
+
+    // The drop index counts the work task on screen, not the epic beside it
+    let (status, moved) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{dropped}/move"),
+        Some(json!({"column_id": finished, "position": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    let row = fx.db.task(&dropped).expect("read").expect("task");
+    assert_eq!(row.position, 1.0, "the card lands above the older group");
+}
+
+#[tokio::test]
 async fn a_claim_should_refuse_an_epic_with_an_open_child_and_grant_it_once_all_are_done() {
     let (_dir, fx) = fixture();
     let (status, done) = call(

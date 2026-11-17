@@ -2146,6 +2146,16 @@ struct CellTask {
     kind: TaskKind,
 }
 
+impl ColumnTask for CellTask {
+    fn holds_work(&self) -> bool {
+        self.kind.is_work()
+    }
+
+    fn column(&self) -> &str {
+        &self.column_id
+    }
+}
+
 /// One page of `GET /api/boards/{id}/tasks`.
 #[derive(serde::Serialize, ToSchema)]
 struct TaskSummaryPage {
@@ -6006,20 +6016,14 @@ fn board_template(
     let column_heads: Vec<ColumnHead> = columns
         .iter()
         .map(|col| {
-            let count = tasks
-                .iter()
-                .filter(|t| t.is_work() && t.column_id == col.id)
-                .count();
+            let count = column_work_tasks(&tasks, &col.id).count();
 
             // Overdue means the due time has passed and the task is not completed, and the count
             // feeds the collapsed-strip indicator
             let now = Local::now();
-            let overdue_count = tasks
-                .iter()
+            let overdue_count = column_work_tasks(&tasks, &col.id)
                 .filter(|t| {
-                    t.is_work()
-                        && t.column_id == col.id
-                        && t.completed_at.is_none()
+                    t.completed_at.is_none()
                         && !t.due_done
                         && t.due_at
                             .as_deref()
@@ -6028,9 +6032,7 @@ fn board_template(
                             .unwrap_or(false)
                 })
                 .count();
-            let estimate_total: i64 = tasks
-                .iter()
-                .filter(|t| t.is_work() && t.column_id == col.id)
+            let estimate_total: i64 = column_work_tasks(&tasks, &col.id)
                 .map(|t| estimate_minutes(t.estimate_hours))
                 .sum();
 
@@ -6132,7 +6134,7 @@ fn board_template(
                 })
                 .collect();
             sort_cell_tasks(&mut rows, settings.sorting, &color_rank);
-            let cell_count = rows.iter().filter(|task| task.is_work()).count();
+            let cell_count = work_tasks(&rows).count();
             let cell_tasks: Vec<TaskView> = rows
                 .into_iter()
                 .map(|task| {
@@ -10700,19 +10702,26 @@ async fn move_task(
                 .map(|lane| lane.id),
             None => before.row().swimlane_id.clone(),
         };
-        let mut cell: Vec<(f64, String, Option<chrono::NaiveDate>)> = Vec::new();
+        let mut held: Vec<CellTask> = Vec::new();
         db.visit_board_tasks(&to_column.row().board_id, |t: CellTask| {
-            if t.kind.is_work() && t.column_id == to_column.row().id && t.swimlane_id == lane {
-                let date = done_group_date(
-                    t.grouping_date.as_deref(),
-                    t.completed_at.as_deref(),
-                    t.column_entered_at.as_deref(),
-                );
-                cell.push((t.position, t.id, date));
+            if t.column_id == to_column.row().id {
+                held.push(t);
             }
             Ok(())
         })
         .map_err(AppError::from)?;
+        let mut cell: Vec<(f64, String, Option<chrono::NaiveDate>)> =
+            column_work_tasks(&held, &to_column.row().id)
+                .filter(|t| t.swimlane_id == lane)
+                .map(|t| {
+                    let date = done_group_date(
+                        t.grouping_date.as_deref(),
+                        t.completed_at.as_deref(),
+                        t.column_entered_at.as_deref(),
+                    );
+                    (t.position, t.id.clone(), date)
+                })
+                .collect();
         cell.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
         let current = cell.iter().position(|(_, task, _)| *task == id);
         let siblings: Vec<Option<chrono::NaiveDate>> = cell

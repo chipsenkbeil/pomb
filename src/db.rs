@@ -134,8 +134,8 @@ use crate::models::{
     RecoveryCodeRow, ReportBookmark, Responsible, SECONDS_PER_HOUR, Seat, SeatSlot, SessionRow,
     Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead,
     TaskKind, TaskLink, TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, WebhookRow,
-    custom_color_hexes, custom_color_value, format_minutes, is_custom_color, lighter_hex,
-    normalize_hex, standard_color, text_contrast,
+    column_work_tasks, custom_color_hexes, custom_color_value, format_minutes, is_custom_color,
+    lighter_hex, normalize_hex, standard_color, text_contrast,
 };
 use crate::permissions::{Permission, Preset, STANDARD_ROLES, StandardKey};
 use crate::rules;
@@ -5579,10 +5579,11 @@ fn txn_lane_archived(txn: &WriteTransaction, lane_id: Option<&str>) -> DbResult<
 /// Returns the work tasks of column `column_id` that count toward its limits, which leaves out
 /// those in an archived swimlane, read inside an open write transaction.
 pub(crate) fn txn_wip_cards(txn: &WriteTransaction, column_id: &str) -> DbResult<Vec<TaskRow>> {
+    let held: Vec<TaskRow> = txn_indexed_rows(txn, TASKS_BY_COLUMN, column_id, TASKS)?;
     let mut cards = Vec::new();
-    for task in txn_indexed_rows::<TaskRow>(txn, TASKS_BY_COLUMN, column_id, TASKS)? {
-        if task.is_work() && !txn_lane_archived(txn, task.swimlane_id.as_deref())? {
-            cards.push(task);
+    for task in column_work_tasks(&held, column_id) {
+        if !txn_lane_archived(txn, task.swimlane_id.as_deref())? {
+            cards.push(task.clone());
         }
     }
     Ok(cards)
@@ -8157,7 +8158,7 @@ impl Db {
             return Ok(ColumnDeleteOutcome::RefusedLast);
         }
         let held: Vec<TaskRow> = txn_indexed_rows(&txn, TASKS_BY_COLUMN, id, TASKS)?;
-        let work = held.iter().filter(|task| task.is_work()).count();
+        let work = column_work_tasks(&held, id).count();
         if work > 0 {
             return Ok(ColumnDeleteOutcome::RefusedHasTasks(work));
         }
@@ -8243,16 +8244,17 @@ impl Db {
     }
 
     pub fn count_tasks_in_column(&self, column_id: &str) -> DbResult<usize> {
-        let mut work = 0;
+        let mut held: Vec<TaskRow> = Vec::new();
         for id in mmap_get(&self.db, TASKS_BY_COLUMN, column_id)? {
-            let Some(task) = read_one::<TaskRow>(&self.db, TASKS, &id)? else {
-                continue;
-            };
+            held.extend(read_one::<TaskRow>(&self.db, TASKS, &id)?);
+        }
+        let mut work = 0;
+        for task in column_work_tasks(&held, column_id) {
             let frozen = match task.swimlane_id.as_deref() {
                 Some(lane) => self.swimlane(lane)?.is_some_and(|lane| lane.archived),
                 None => false,
             };
-            work += usize::from(task.is_work() && !frozen);
+            work += usize::from(!frozen);
         }
         Ok(work)
     }

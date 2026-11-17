@@ -188,6 +188,21 @@ async fn copy_should_be_refused_when_a_column_ends_over_its_limit_unless_forced(
 }
 
 #[tokio::test]
+async fn copy_should_count_work_tasks_only_against_a_column_limit() {
+    let fx = Fixture::new();
+    fx.limit(1, 1);
+    fx.task(&fx.columns[1], "one").await;
+    let epic = json!({"column_id": fx.columns[1], "name": "epic", "kind": "epic"});
+    let made = fx.send("POST", "/api/tasks", Some(epic)).await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+
+    let body = json!({"name": "Copy", "copy_board_id": fx.board, "copy_tasks": true});
+    let reply = fx.send("POST", "/api/boards", Some(body)).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+}
+
+#[tokio::test]
 async fn copy_should_succeed_when_every_column_fits_its_limit() {
     let fx = Fixture::new();
     fx.limit(1, 2);
