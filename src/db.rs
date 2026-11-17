@@ -1634,54 +1634,14 @@ fn assign_column_stages(txn: &WriteTransaction) -> DbResult<()> {
     })
 }
 
-/// Adds `seats.manage` to each stored role named `lead` whose permissions are exactly the lead
-/// standard role without it and without `seats.take`, and leaves any other lead role as the owner
-/// set it.
-fn grant_lead_role_seats_manage(txn: &WriteTransaction) -> DbResult<()> {
-    let added = Permission::SeatsManage.name();
-    let old: BTreeSet<&str> = STANDARD_ROLES
-        .iter()
-        .filter(|standard| standard.name == "lead")
-        .flat_map(|standard| standard.permissions())
-        .map(Permission::name)
-        .filter(|name| *name != added && *name != Permission::SeatsTake.name())
-        .collect();
-    rewrite_rows(txn, AGENT_ROLES, |_, role| {
-        if role.get("name").and_then(serde_json::Value::as_str) != Some("lead") {
-            return false;
-        }
-        let Some(held) = role
-            .get_mut("permissions")
-            .and_then(serde_json::Value::as_array_mut)
-        else {
-            return false;
-        };
-        let names: BTreeSet<&str> = held.iter().filter_map(serde_json::Value::as_str).collect();
-        if names != old || names.len() != held.len() {
-            return false;
-        }
-        held.push(serde_json::Value::from(added));
-        true
-    })
-}
-
-/// Adds `seats.take` to each stored role named `reviewer`, `verifier` or `lead` whose permissions
-/// are exactly its standard role without it, and leaves any other role as the owner set it.
-fn grant_standard_roles_seats_take(txn: &WriteTransaction) -> DbResult<()> {
-    let added = Permission::SeatsTake.name();
-    let old: Vec<(&str, BTreeSet<&str>)> = STANDARD_ROLES
-        .iter()
-        .filter(|standard| standard.extra.contains(&Permission::SeatsTake))
-        .map(|standard| {
-            let names = standard
-                .permissions()
-                .into_iter()
-                .map(Permission::name)
-                .filter(|name| *name != added)
-                .collect();
-            (standard.name, names)
-        })
-        .collect();
+/// Adds `added` to each stored role whose name pairs with a set in `old` and whose permissions are
+/// exactly that set, and leaves any other role as the owner set it.
+fn grant_permission(
+    txn: &WriteTransaction,
+    added: Permission,
+    old: &[(&str, BTreeSet<&str>)],
+) -> DbResult<()> {
+    let added = added.name();
     rewrite_rows(txn, AGENT_ROLES, |_, role| {
         let Some(name) = role.get("name").and_then(serde_json::Value::as_str) else {
             return false;
@@ -1702,6 +1662,41 @@ fn grant_standard_roles_seats_take(txn: &WriteTransaction) -> DbResult<()> {
         held.push(serde_json::Value::from(added));
         true
     })
+}
+
+/// Adds `seats.manage` to each stored role named `lead` whose permissions are exactly the lead
+/// standard role without it and without `seats.take`, and leaves any other lead role as the owner
+/// set it.
+fn grant_lead_role_seats_manage(txn: &WriteTransaction) -> DbResult<()> {
+    let added = Permission::SeatsManage.name();
+    let old: BTreeSet<&str> = STANDARD_ROLES
+        .iter()
+        .filter(|standard| standard.name == "lead")
+        .flat_map(|standard| standard.permissions())
+        .map(Permission::name)
+        .filter(|name| *name != added && *name != Permission::SeatsTake.name())
+        .collect();
+    grant_permission(txn, Permission::SeatsManage, &[("lead", old)])
+}
+
+/// Adds `seats.take` to each stored role named `reviewer`, `verifier` or `lead` whose permissions
+/// are exactly its standard role without it, and leaves any other role as the owner set it.
+fn grant_standard_roles_seats_take(txn: &WriteTransaction) -> DbResult<()> {
+    let added = Permission::SeatsTake.name();
+    let old: Vec<(&str, BTreeSet<&str>)> = STANDARD_ROLES
+        .iter()
+        .filter(|standard| standard.extra.contains(&Permission::SeatsTake))
+        .map(|standard| {
+            let names = standard
+                .permissions()
+                .into_iter()
+                .map(Permission::name)
+                .filter(|name| *name != added)
+                .collect();
+            (standard.name, names)
+        })
+        .collect();
+    grant_permission(txn, Permission::SeatsTake, &old)
 }
 
 /// Gives each account that holds no agent role the standard roles.
@@ -16274,6 +16269,30 @@ mod schema_version_tests {
                 .expect("read")
                 .expect("row");
             assert!(!kept.permissions.contains(&Permission::SeatsTake));
+        }
+
+        #[test]
+        fn should_not_give_a_version_77_lead_role_holding_seats_take_seats_manage() {
+            let (_dir, path) = temp_path();
+            let held = {
+                let mut held = lead_role_permissions();
+                held.remove(&Permission::SeatsManage);
+                held
+            };
+            let id = {
+                let db = Db::connect(&path).expect("connect");
+                db.create_agent_role("a", "lead", held.clone())
+                    .expect("lead")
+                    .id
+            };
+            stamp(&path, 77);
+
+            let db = Db::connect(&path).expect("open version 77");
+            let role: AgentRoleRow = read_one(&db.db, AGENT_ROLES, &id)
+                .expect("read")
+                .expect("row");
+            assert_eq!(role.permissions, held);
+            assert!(!role.permissions.contains(&Permission::SeatsManage));
         }
     }
 
