@@ -1,0 +1,14 @@
+id: js-tracker-id
+snapshots:
+  "// Move target from GM-164.\n":
+    labels:
+    - source: "// Move target from GM-164."
+      style: primary
+      start: 0
+      end: 27
+  "/* Dark bar, KF-233. */\nvar a = 1;\n":
+    labels:
+    - source: "/* Dark bar, KF-233. */"
+      style: primary
+      start: 0
+      end: 23

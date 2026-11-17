@@ -2467,8 +2467,8 @@
   }
 
   // column-delete confirmation with verbatim KanbanFlow text and the
-  // "Move the tasks to the column" move-target option (GM-164). Deleting a
-  // non-empty column requires choosing a move target — no "Delete anyway".
+  // "Move the tasks to the column" move-target option. Deleting a
+  // non-empty column requires choosing a move target (no "Delete anyway").
   function deleteColumn(id) {
     var th = document.querySelector('.columnHeader[data-column-id="' + cssEscape(id) + '"]');
     var count = th ? parseInt(th.dataset.taskCount, 10) || 0 : 0;
@@ -2543,7 +2543,7 @@
         return;
       }
 
-      // Non-empty column: a move target is required (GM-164 — no "Delete anyway").
+      // Non-empty column: a move target is required (no "Delete anyway").
       if (!moveCheck || !moveCheck.checked) {
         toast('Choose a column to move the tasks to.');
         return;
@@ -6250,7 +6250,7 @@
       handle.className = 'tm-subtask-handle';
       handle.setAttribute('aria-label', 'Subtask options');
       handle.setAttribute('aria-haspopup', 'menu');
-      // muted-gray vertical ellipsis sampled from GM-085
+      // muted-gray vertical ellipsis sampled from the KanbanFlow reference
       // (4px dots, #b1a286) replacing the old × delete button.
       handle.innerHTML = '<svg width="6" height="16" viewBox="0 0 6 16" aria-hidden="true" focusable="false">' +
         '<ellipse cx="3" cy="2.5" rx="2.0" ry="2.25" fill="currentColor"/>' +
@@ -7619,7 +7619,7 @@
         });
       }
       // right-click context menu on the timer area (KanbanFlow
-      // parity, GM-109): Comment / Label / Edit / Delete act on the
+      // parity): Comment / Label / Edit / Delete act on the
       // currently-timed task. The items are disabled while no task is
       // timed (KanbanFlow grays inapplicable items).
       var timerMenu = document.getElementById('timer-ctx-menu');
@@ -8464,7 +8464,7 @@
     },
 
     // actions for the timer-area right-click context menu (KanbanFlow
-    // parity, GM-109). They act on the currently-timed task: Comment and
+    // parity). They act on the currently-timed task: Comment and
     // Label open the task modal and trigger the matching Add-menu item,
     // Edit opens the task modal, and Delete removes the task with the
     // standard in-page confirmation.
@@ -9094,7 +9094,7 @@
 
   // Shared calendar renderer for the manual-time and edit-entry dialogs:
   // Sun–Sat grid, selected day blue.
-  // three-letter weekday names (KanbanFlow GM-122/GM-171) and quick
+  // three-letter weekday names (KanbanFlow) and quick
   // buttons "Today", "yesterday", "This month" under the grid.
   function renderCalPopup(popup, input, year, month) {
     var first = new Date(year, month, 1);
@@ -9258,7 +9258,7 @@
       positionCalendar(input, popup);
       popup.hidden = false;
     },
-    // "Add comment" is a checkbox expander (GM-082); visibility
+    // "Add comment" is a checkbox expander; visibility
     // follows the checkbox state.
     toggleComment: function () {
       var check = document.getElementById('mt-comment-check');
@@ -9387,7 +9387,7 @@
       positionCalendar(input, popup);
       popup.hidden = false;
     },
-    // "Add comment" is a checkbox expander (GM-084); visibility
+    // "Add comment" is a checkbox expander; visibility
     // follows the checkbox state.
     toggleComment: function () {
       var check = document.getElementById('ee-comment-check');
@@ -9802,7 +9802,7 @@
         cur.appendChild(chip);
       });
       // KanbanFlow's fully-empty labels dialog shows a single body
-      // text "No recently used labels exist" (GM-080, GM-158) — there is no
+      // text "No recently used labels exist". There is no
       // separate "current labels" empty note, so render chips only when
       // labels exist and nothing otherwise.
       var sug = document.getElementById('labels-suggestions');
@@ -9836,7 +9836,7 @@
           all.appendChild(row);
         });
       // KanbanFlow's suggestions-area empty text is verbatim
-      // "No recently used labels exist" (GM-080, GM-158).
+      // "No recently used labels exist".
       if (!sug.children.length) {
         sug.innerHTML = '<span class="empty-note">No recently used labels exist</span>';
       }
@@ -9850,7 +9850,7 @@
       if (!label || this.labels.indexOf(label) !== -1) return;
       this.labels.push(label);
       this.render();
-      // KanbanFlow applies label changes immediately (GM-080 has
+      // KanbanFlow applies label changes immediately (the dialog has
       // no Save button) — persist on every add/remove.
       this.persist();
     },
@@ -9960,7 +9960,7 @@
               self.loaded = { dueAt: detail.due_at, date: dateInput.value, time: timeInput.value };
             }
           }
-          // KanbanFlow's repeat is a checkbox (GM-081), not free text.
+          // KanbanFlow's repeat is a checkbox, not free text.
           document.getElementById('dd-repeat').checked = !!detail.due_repeat;
           document.getElementById('dd-delete').hidden = !detail.due_at;
           document.getElementById('dd-title').textContent =
@@ -10027,7 +10027,7 @@
     collect: function () {
       var date = document.getElementById('dd-date').value;
       var time = document.getElementById('dd-time').value;
-      // KanbanFlow's repeat is a checkbox (GM-081).
+      // KanbanFlow's repeat is a checkbox.
       var repeat = document.getElementById('dd-repeat').checked ? 'every week' : null;
       if (!date || !time) return null;
       var target = document.getElementById('dd-column').value || null;
@@ -10997,7 +10997,7 @@
         var input = inputEl();
         if (input) input.value = '';
       },
-      // "Add labels" is a checkbox expander (GM-082/GM-084); the
+      // "Add labels" is a checkbox expander; the
       // section visibility follows the checkbox state.
       toggle: function () {
         var wrap = wrapEl();
@@ -11412,7 +11412,7 @@
     }
 
     // ---------- custom absolute range dialog ----------
-    // KanbanFlow (GM-121): nested "Custom (absolute)" dialog with Start/End
+    // KanbanFlow: nested "Custom (absolute)" dialog with Start/End
     // fields, two side-by-side month calendars with the selected dates
     // highlighted, and a green Done button. The chosen range is stored in the
     // hidden log-custom-from/to inputs that currentFilters() already reads.
@@ -11802,7 +11802,7 @@
             html += '</div></td></tr>';
           }
         });
-        // Footer totals rows (KanbanFlow GM-123): "8h 4m / 100% / Total".
+        // Footer totals rows (KanbanFlow): "8h 4m / 100% / Total".
         var totalPct = 100;
         html += '</tbody><tfoot>' +
           '<tr class="spent-footer"><td>Total</td><td></td>' +
@@ -12084,7 +12084,7 @@
       qs('spent-color').addEventListener('change', loadSpent);
       qs('spent-group').addEventListener('change', loadSpent);
       qs('spent-print').addEventListener('click', openSpentPrintSheet);
-      // "Print" sheet (GM-169) — the report's Print button opens a
+      // "Print" sheet: the report's Print button opens a
       // sheet titled "Print" with the report's task table and Filter / Print
       // buttons top-left. The sheet's Print button fires window.print() with
       // print CSS scoped to the sheet; Filter closes the sheet back to the
@@ -12108,8 +12108,8 @@
         var overlay = qs('spent-print-overlay');
         if (overlay && !overlay.hidden) closeSpentPrintSheet();
       });
-      // Time spent Export dropdown — verbatim KanbanFlow items
-      // (GM-170): "Excel (Detailed)", "Excel (Summary)", "PDF (Summary)".
+      // Time spent Export dropdown, verbatim KanbanFlow items:
+      // "Excel (Detailed)", "Excel (Summary)", "PDF (Summary)".
       var spentExportBtn = qs('spent-export');
       var spentExportMenu = qs('spent-export-menu');
       spentExportBtn.addEventListener('click', function (e) {

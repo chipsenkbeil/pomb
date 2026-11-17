@@ -454,6 +454,18 @@ if lint:have("ast-grep", "brew install ast-grep", "ast-grep scan") then
         "tests/js",
     })
 end
+if lint:have("ast-grep", "brew install ast-grep", "ast-grep scan") then
+    lint:check("js tracker ids", {
+        "ast-grep",
+        "scan",
+        "--config",
+        "sgconfig.yml",
+        "--filter",
+        "js-tracker-id",
+        "static",
+        "tests/js",
+    })
+end
 
 local function script_hits(name, message, argv)
     local code = dev_os.run(argv, { cwd = root })

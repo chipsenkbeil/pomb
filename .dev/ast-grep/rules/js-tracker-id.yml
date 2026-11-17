@@ -1,0 +1,8 @@
+id: js-tracker-id
+language: javascript
+severity: error
+message: Remove the GM or KF tracker id from this comment and keep what the comment says.
+note: "A tracker id names a row in a tracker a reader cannot see. Say what the code does instead."
+rule:
+  kind: comment
+  regex: '\b(GM|KF)-[0-9]+\b'
