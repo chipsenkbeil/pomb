@@ -35,4 +35,4 @@ if [[ -n "${BAD:-}" ]]; then
   chmod 755 "$cur/pomb"
   cp "$prev/commit" "$cur/commit"
 fi
-echo "nightly: current -> $(basename "$(readlink "$base/current")")"
+echo "The nightly release is now $(basename "$(readlink "$base/current")")."

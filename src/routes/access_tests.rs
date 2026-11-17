@@ -1504,6 +1504,24 @@ fn token_writable_task_routes_should_reach_the_lock_check() {
     }
 }
 
+#[test]
+fn restage_status_echo_should_be_a_sentence() {
+    let source = include_str!("../../.dev/__site_restage.sh");
+    assert!(
+        !source.contains("echo \"nightly: current"),
+        "the restage script still prints the prefixed status echo"
+    );
+    let last = source
+        .lines()
+        .rev()
+        .find(|line| line.trim_start().starts_with("echo "))
+        .expect("the restage script ends with an echo");
+    assert!(
+        last.trim_end().ends_with(".\""),
+        "the last echo line does not end in a period: {last}"
+    );
+}
+
 /// Returns every (method, path) the router registers, read from its source, the public routes
 /// included.
 fn registered_routes() -> Vec<(String, String)> {
