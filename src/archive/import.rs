@@ -942,7 +942,7 @@ impl Builder<'_> {
             task.claim.as_ref(),
             responsible.as_ref(),
             &member_ids,
-        );
+        )?;
         let row = TaskRow {
             id,
             column_id,
@@ -1584,11 +1584,21 @@ impl Builder<'_> {
         claim: Option<&TaskClaim>,
         responsible: Option<&Responsible>,
         member_ids: &[String],
-    ) -> Option<Owner> {
+    ) -> Result<Option<Owner>, ImportError> {
         let Some(info) = archived else {
-            return Owner::from_holders(claim, responsible, member_ids, Utc::now());
+            return Ok(Owner::from_holders(
+                claim,
+                responsible,
+                member_ids,
+                Utc::now(),
+            ));
         };
-        let info = info?;
+        let Some(info) = info else {
+            return Ok(None);
+        };
+        if let Some(role) = &info.role {
+            capped(role, TextCap::OWNER_ROLE, "the owner role")?;
+        }
         let holder = match info.holder {
             OwnerHolderInfo::Agent { name } if name.trim().is_empty() => None,
             OwnerHolderInfo::Agent { name } => Some(OwnerHolder::Agent {
@@ -1604,12 +1614,12 @@ impl Builder<'_> {
             }
             OwnerHolderInfo::Human { .. } => None,
         };
-        holder.map(|holder| Owner {
+        Ok(holder.map(|holder| Owner {
             holder,
             lease_expires_at: info.lease_expires_at,
             role: info.role,
             since: info.since,
-        })
+        }))
     }
 
     /// Returns the ids of the accounts a task is assigned to, which is the importing account when
@@ -2646,6 +2656,44 @@ mod tests {
                 since: Some("2026-10-01T10:00:00Z".to_string()),
             })
         );
+    }
+
+    #[test]
+    fn read_board_should_refuse_an_owner_role_over_the_api_limit() {
+        let mut document = base();
+        document["tasks"][0]["owner"] = json!({
+            "holder": {"kind": "agent", "name": "builder"},
+            "role": "r".repeat(41)
+        });
+        let error = read(&document).expect_err("too long");
+        assert!(error.to_string().contains("the owner role"), "{error}");
+    }
+
+    #[test]
+    fn read_board_should_keep_an_owner_role_at_the_api_limit() {
+        let mut document = base();
+        document["tasks"][0]["owner"] = json!({
+            "holder": {"kind": "agent", "name": "builder"},
+            "role": "r".repeat(40)
+        });
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(
+            import.tasks[0]
+                .row
+                .owner
+                .as_ref()
+                .and_then(|owner| owner.role.as_deref()),
+            Some("r".repeat(40).as_str())
+        );
+    }
+
+    #[test]
+    fn read_board_should_keep_an_owner_without_a_role() {
+        let mut document = base();
+        document["tasks"][0]["owner"] = json!({"holder": {"kind": "agent", "name": "builder"}});
+        let (import, _) = read(&document).expect("a board");
+        let owner = import.tasks[0].row.owner.as_ref().expect("an owner");
+        assert_eq!(owner.role, None);
     }
 
     #[test]
