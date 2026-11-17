@@ -1995,42 +1995,54 @@ impl From<WipRefused> for AppError {
     }
 }
 
+/// Returns the first `T` in the chain that starts at `error`, which a context wrapper leaves
+/// reachable through its source.
+#[must_use]
+fn in_chain<'a, T: std::error::Error + 'static>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a T> {
+    std::iter::successors(Some(error), |link| link.source())
+        .find_map(|link| link.downcast_ref::<T>())
+}
+
 impl From<Box<dyn std::error::Error>> for AppError {
     fn from(error: Box<dyn std::error::Error>) -> Self {
-        if let Some(refusal) = error.downcast_ref::<BoardDenied>() {
+        let chain: &(dyn std::error::Error + 'static) = &*error;
+        if let Some(refusal) = in_chain::<BoardDenied>(chain) {
             return refusal.clone().into();
         }
-        if let Some(refusal) = error.downcast_ref::<RoleDenied>() {
+        if let Some(refusal) = in_chain::<RoleDenied>(chain) {
             return Self::forbidden(refusal.to_string());
         }
-        if let Some(refusal) = error.downcast_ref::<QuotaExceeded>() {
+        if let Some(refusal) = in_chain::<QuotaExceeded>(chain) {
             return (*refusal).into();
         }
-        if error.downcast_ref::<WebhookColumnMissing>().is_some()
-            || error.downcast_ref::<InboundColumnMissing>().is_some()
-            || error.downcast_ref::<AgentRoleNameTaken>().is_some()
+        if let Some(message) = in_chain::<WebhookColumnMissing>(chain)
+            .map(ToString::to_string)
+            .or_else(|| in_chain::<InboundColumnMissing>(chain).map(ToString::to_string))
+            .or_else(|| in_chain::<AgentRoleNameTaken>(chain).map(ToString::to_string))
         {
-            return Self::bad_request(error.to_string());
+            return Self::bad_request(message);
         }
-        if let Some(refusal) = error.downcast_ref::<PaletteStrandsColor>() {
+        if let Some(refusal) = in_chain::<PaletteStrandsColor>(chain) {
             return Self::bad_request(refusal.to_string());
         }
-        if error.downcast_ref::<TokenNameTaken>().is_some() {
-            return Self::conflict(error.to_string());
+        if let Some(refusal) = in_chain::<TokenNameTaken>(chain) {
+            return Self::conflict(refusal.to_string());
         }
-        if error.downcast_ref::<NumberingExhausted>().is_some() {
-            return Self::conflict(error.to_string());
+        if let Some(refusal) = in_chain::<NumberingExhausted>(chain) {
+            return Self::conflict(refusal.to_string());
         }
-        if let Some(refusal) = error.downcast_ref::<WipRefused>() {
+        if let Some(refusal) = in_chain::<WipRefused>(chain) {
             return (*refusal).into();
         }
-        if let Some(duplicate) = error.downcast_ref::<DuplicateAttachment>() {
+        if let Some(duplicate) = in_chain::<DuplicateAttachment>(chain) {
             return Self::conflict(duplicate.to_string()).with_code(ErrorCode::DuplicateAttachment);
         }
-        if let Some(refusal) = error.downcast_ref::<TooLong>() {
+        if let Some(refusal) = in_chain::<TooLong>(chain) {
             return refusal.clone().into();
         }
-        if let Some(refusal) = error.downcast_ref::<CeremoniesFull>() {
+        if let Some(refusal) = in_chain::<CeremoniesFull>(chain) {
             return Self::with_status(StatusCode::TOO_MANY_REQUESTS, refusal.to_string())
                 .with_code(ErrorCode::Busy);
         }
@@ -15217,9 +15229,8 @@ impl From<AppError> for PartFailure {
 
 impl From<Box<dyn std::error::Error>> for PartFailure {
     fn from(error: Box<dyn std::error::Error>) -> Self {
-        let existing_id = error
-            .downcast_ref::<DuplicateAttachment>()
-            .map(|duplicate| duplicate.existing_id.clone());
+        let existing_id =
+            in_chain::<DuplicateAttachment>(&*error).map(|duplicate| duplicate.existing_id.clone());
         let refusal = AppError::from(error);
         Self::File(UploadRefusal {
             code: refusal.code,
@@ -30790,6 +30801,60 @@ mod server;
 
 #[cfg(test)]
 mod units_tests;
+
+#[cfg(test)]
+mod wrapped_marker_tests {
+    use super::*;
+    use crate::db::{DbContext, DbResult};
+
+    #[must_use]
+    fn markers() -> Vec<Box<dyn std::error::Error>> {
+        vec![
+            Box::new(BoardDenied {
+                board_id: "b1".to_string(),
+                permission: Permission::EpicsManage,
+            }),
+            Box::new(RoleDenied {
+                board_id: "b1".to_string(),
+                needs: BoardRole::Member,
+            }),
+            Box::new(QuotaExceeded::of(Quota::BoardsPerAccount, 3)),
+            Box::new(WebhookColumnMissing),
+            Box::new(InboundColumnMissing),
+            Box::new(AgentRoleNameTaken),
+            Box::new(PaletteStrandsColor {
+                value: "custom1".to_string(),
+            }),
+            Box::new(TokenNameTaken),
+            Box::new(NumberingExhausted),
+            Box::new(WipRefused::Group { count: 2, limit: 2 }),
+            Box::new(DuplicateAttachment {
+                existing_id: "a1".to_string(),
+                name: "a.txt".to_string(),
+            }),
+            Box::new(TooLong {
+                field: "name",
+                cap: Cap::Chars(5),
+            }),
+            Box::new(CeremoniesFull),
+        ]
+    }
+
+    #[test]
+    fn wrapped_markers_map_like_bare_markers() {
+        let count = markers().len();
+        for index in 0..count {
+            let bare = AppError::from(markers().swap_remove(index));
+            let failed: DbResult<()> = Err(markers().swap_remove(index));
+            let wrapped = AppError::from(failed.context("Failed to act").unwrap_err());
+            assert_ne!(bare.status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(wrapped.status, bare.status);
+            assert_eq!(wrapped.code, bare.code);
+            assert_eq!(wrapped.message, bare.message);
+            assert_eq!(wrapped.denied_board, bare.denied_board);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

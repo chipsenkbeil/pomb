@@ -143,6 +143,49 @@ use crate::webhook::{Prober, is_public_address};
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+/// An error that names what failed and keeps the original as its source.
+#[derive(Debug)]
+pub struct Contextual {
+    /// The "Failed to X" text this error displays.
+    message: String,
+    /// The error this one wraps.
+    source: Box<dyn Error>,
+}
+
+impl fmt::Display for Contextual {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for Contextual {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&*self.source)
+    }
+}
+
+/// Adds a "Failed to X" message to the error of a result without hiding the original, which
+/// stays reachable through its source chain.
+pub trait DbContext<T> {
+    /// Wraps the error as `message` with the original as its source.
+    fn context(self, message: impl Into<String>) -> DbResult<T>;
+}
+
+impl<T, E> DbContext<T> for Result<T, E>
+where
+    E: Into<Box<dyn Error>>,
+{
+    fn context(self, message: impl Into<String>) -> DbResult<T> {
+        self.map_err(|error| {
+            Contextual {
+                message: message.into(),
+                source: error.into(),
+            }
+            .into()
+        })
+    }
+}
+
 /// A table of JSON rows keyed by id.
 type Rows = TableDefinition<'static, &'static str, &'static [u8]>;
 
@@ -6430,7 +6473,12 @@ impl Db {
             if err.is::<SchemaTooNew>() {
                 err
             } else {
-                format!("database {path}: {err}").into()
+                let chain: &(dyn Error + 'static) = &*err;
+                let detail = std::iter::successors(Some(chain), |&link| link.source())
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(": ");
+                format!("database {path}: {detail}").into()
             }
         })
     }
@@ -6440,7 +6488,7 @@ impl Db {
         if let Some(parent) = Path::new(&path).parent()
             && !parent.as_os_str().is_empty()
         {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent).context("Failed to create the database directory")?;
         }
 
         let repaired = preflight_schema_version(path)?;
@@ -19907,5 +19955,20 @@ mod board_row_default_tests {
             .expect("board exists");
         assert_eq!(loaded.id, board_id);
         assert!(loaded.report_bookmarks.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::{DbContext, DbResult, TokenNameTaken};
+
+    #[test]
+    fn context_keeps_the_error_as_source() {
+        let failed: DbResult<()> = Err(Box::new(TokenNameTaken));
+        let wrapped = failed.context("Failed to name the token").unwrap_err();
+        assert_eq!(wrapped.to_string(), "Failed to name the token");
+        let source = wrapped.source().expect("source");
+        assert!(source.downcast_ref::<TokenNameTaken>().is_some());
+        assert_eq!(source.to_string(), TokenNameTaken.to_string());
     }
 }

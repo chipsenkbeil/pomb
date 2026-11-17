@@ -1867,20 +1867,22 @@ mod local_time;
 mod time;
 ```
 
-### P9. Apply rule 48 to main.rs and the CLI paths only
+### P9. Apply rule 48 to main.rs, the CLI paths and src/db
 
-Rule 48 covers `main.rs` and the CLI paths, which take `anyhow`. Library code,
-such as the db module, keeps its own error type and never takes `anyhow`. This
-overrides rule 48 for library code.
+Rule 48 covers `main.rs` and the CLI paths, which take `anyhow`, and it covers
+`src/db`, which takes the `DbContext` extension instead and never `anyhow`.
+Library code outside the db module keeps its own error type. This overrides
+rule 48 for that library code.
 
 Review
 
 ```rust
 // Good
 let board = client.board(&id).context("Failed to load the board")?;
+let row = self.read_row(&id).context("Failed to read the row")?;
 
 // Bad
-let board = db.board(&id).context("Failed to load the board")?;
+let row = self.read_row(&id)?;
 ```
 
 ### P10. Keep schema history out of doc comments
@@ -2180,4 +2182,23 @@ response.headers_mut().insert(CACHE_CONTROL, HeaderValue::from_static("private, 
 
 // Bad
 const IMAGE_CACHE: &str = "private, no-cache";
+```
+
+### P25. Refuse with a marker error and find it through the chain
+
+A db refusal that has a status of its own is a marker type that implements
+`Error`, such as `BoardDenied` or `QuotaExceeded`. `AppError::from` looks for
+each marker anywhere in the source chain, so a `.context("Failed to X")` on the
+result wraps the error without hiding the marker, and the reply keeps the
+marker's own message. A new marker type joins the `From` conversion and the
+`wrapped_markers_map_like_bare_markers` test.
+
+Review
+
+```rust
+// Good
+db.rename_token(&id, name).context("Failed to rename the token")?;
+
+// Bad
+db.rename_token(&id, name).map_err(|error| format!("Failed to rename the token: {error}"))?;
 ```
