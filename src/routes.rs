@@ -22765,6 +22765,53 @@ fn seat_lease_end(now: DateTime<Utc>, ttl_seconds: i64) -> String {
     (now + Duration::seconds(ttl_seconds)).to_rfc3339()
 }
 
+/// A seat request body, which names the agent that sends it.
+trait SeatRequest {
+    /// The agent's name, required for a token.
+    fn agent_name(&self) -> Option<&str>;
+}
+
+impl SeatRequest for TakeSeatInput {
+    fn agent_name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+}
+
+impl SeatRequest for SeatVerdictInput {
+    fn agent_name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+}
+
+impl SeatRequest for AskAgainInput {
+    fn agent_name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+}
+
+/// Runs one seat handler on a task, refusing a locked task before `check` and `change` run, and
+/// returns the seats `change` leaves.
+async fn seat_change<I: DeserializeOwned + SeatRequest, P>(
+    account: &AccountDb,
+    user: &AuthUser,
+    id: &str,
+    headers: &HeaderMap,
+    body: Bytes,
+    check: impl FnOnce(&I, &AuthUser) -> Result<P, AppError>,
+    change: impl FnOnce(P, OwnerHolder, &mut TaskRow) -> (Result<Vec<Seat>, AppError>, bool),
+) -> Result<Json<Vec<Seat>>, AppError> {
+    let task = found(account.task(id), "task not found")?;
+    ensure_unlocked(account, user, task.board_id(), task.row())?;
+    let input: I = parse_body(headers, body).await?;
+    let checked = check(&input, user)?;
+    let holder = owner_holder(user, input.agent_name())?;
+    let outcome = account
+        .apply_task_change(&task, user.actor(), |row| change(checked, holder, row))
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(Json(outcome?))
+}
+
 /// Takes a seat on one task, as a reviewer starting its review.
 ///
 /// A seat nobody holds, or whose
@@ -22796,17 +22843,24 @@ async fn take_task_seat(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Vec<Seat>>, AppError> {
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
-    let input: TakeSeatInput = parse_body(&headers, body).await?;
-    if input.take_over && user.kind != CredentialKind::Session {
-        return Err(AppError::forbidden("only a signed-in member can take over"));
-    }
-    let name = seat_name(input.seat.as_deref())?;
-    let holder = owner_holder(&user, input.name.as_deref())?;
-    let ttl_seconds = claim_ttl(input.ttl_seconds)?;
-    let outcome = account
-        .apply_task_change(&task, user.actor(), |row| {
+    seat_change(
+        &account,
+        &user,
+        &id,
+        &headers,
+        body,
+        |input: &TakeSeatInput, user| {
+            if input.take_over && user.kind != CredentialKind::Session {
+                return Err(AppError::forbidden("only a signed-in member can take over"));
+            }
+            let name = seat_name(input.seat.as_deref())?.to_string();
+            Ok((name, input.take_over, input.ttl_seconds))
+        },
+        |(name, take_over, ttl), holder, row| {
+            let ttl_seconds = match claim_ttl(ttl) {
+                Ok(ttl_seconds) => ttl_seconds,
+                Err(error) => return (Err(error), false),
+            };
             let now = Utc::now();
             let owns = row
                 .live_owner_only(now)
@@ -22816,11 +22870,11 @@ async fn take_task_seat(
                     .with_code(ErrorCode::OwnerSeat);
                 return (Err(refusal), false);
             }
-            let Some(seat) = find_seat(&mut row.seats, name) else {
+            let Some(seat) = find_seat(&mut row.seats, &name) else {
                 return (Err(AppError::not_found("the task has no such seat")), false);
             };
             let own = seat.holder.as_ref() == Some(&holder);
-            if !own && !input.take_over && !seat.is_takeable(now) {
+            if !own && !take_over && !seat.is_takeable(now) {
                 let held = seat.holder.as_ref().map(OwnerHolder::label);
                 let refusal = format!(
                     "seat \"{}\" is held by {}",
@@ -22832,16 +22886,11 @@ async fn take_task_seat(
                     false,
                 );
             }
-            seat.holder = Some(holder.clone());
-            seat.lease_expires_at = ttl_seconds.map(|ttl| seat_lease_end(now, ttl));
-            seat.idle = false;
-            seat.verdict = None;
-            seat.revision = None;
+            seat.sit(holder, ttl_seconds.map(|ttl| seat_lease_end(now, ttl)));
             (Ok(row.seats.clone()), true)
-        })
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
-    Ok(Json(outcome?))
+        },
+    )
+    .await
 }
 
 /// Records the verdict of a seat's holder.
@@ -22873,20 +22922,24 @@ async fn set_task_seat_verdict(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Vec<Seat>>, AppError> {
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
-    let input: SeatVerdictInput = parse_body(&headers, body).await?;
-    let name = seat_name(input.seat.as_deref())?;
-    let verdict = input
-        .verdict
-        .ok_or_else(|| AppError::bad_request("verdict is required"))?;
-    if let Some(revision) = input.revision.as_deref() {
-        TextCap::SEAT_REVISION.check(revision)?;
-    }
-    let holder = owner_holder(&user, input.name.as_deref())?;
-    let outcome = account
-        .apply_task_change(&task, user.actor(), |row| {
-            let Some(seat) = find_seat(&mut row.seats, name) else {
+    seat_change(
+        &account,
+        &user,
+        &id,
+        &headers,
+        body,
+        |input: &SeatVerdictInput, _| {
+            let name = seat_name(input.seat.as_deref())?.to_string();
+            let verdict = input
+                .verdict
+                .ok_or_else(|| AppError::bad_request("verdict is required"))?;
+            if let Some(revision) = input.revision.as_deref() {
+                TextCap::SEAT_REVISION.check(revision)?;
+            }
+            Ok((name, verdict, input.revision.clone()))
+        },
+        |(name, verdict, revision), holder, row| {
+            let Some(seat) = find_seat(&mut row.seats, &name) else {
                 return (Err(AppError::not_found("the task has no such seat")), false);
             };
             if !seat.is_held_by(&holder, Utc::now()) {
@@ -22896,15 +22949,11 @@ async fn set_task_seat_verdict(
                     false,
                 );
             }
-            seat.verdict = Some(verdict);
-            seat.revision = input.revision.clone();
-            seat.idle = true;
-            seat.lease_expires_at = None;
+            seat.answer(verdict, revision);
             (Ok(row.seats.clone()), true)
-        })
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
-    Ok(Json(outcome?))
+        },
+    )
+    .await
 }
 
 /// Asks for a fresh review of the task.
@@ -22935,12 +22984,14 @@ async fn ask_task_seats_again(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Vec<Seat>>, AppError> {
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
-    let input: AskAgainInput = parse_body(&headers, body).await?;
-    let holder = owner_holder(&user, input.name.as_deref())?;
-    let outcome = account
-        .apply_task_change(&task, user.actor(), |row| {
+    seat_change(
+        &account,
+        &user,
+        &id,
+        &headers,
+        body,
+        |_: &AskAgainInput, _| Ok::<(), AppError>(()),
+        |(), holder, row| {
             let owns = row
                 .live_owner_only(Utc::now())
                 .is_some_and(|owner| owner.holder == holder);
@@ -22951,18 +23002,12 @@ async fn ask_task_seats_again(
             }
             let mut reset = false;
             for seat in &mut row.seats {
-                if seat.verdict == Some(SeatVerdict::ChangesNeeded) {
-                    seat.verdict = None;
-                    seat.revision = None;
-                    seat.idle = true;
-                    reset = true;
-                }
+                reset |= seat.reset_changes_needed();
             }
             (Ok(row.seats.clone()), reset)
-        })
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
-    Ok(Json(outcome?))
+        },
+    )
+    .await
 }
 
 /// Parameters of `DELETE /api/tasks/{id}/seats`.

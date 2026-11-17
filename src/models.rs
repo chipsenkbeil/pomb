@@ -1548,6 +1548,37 @@ impl Seat {
     pub fn is_takeable(&self, now: DateTime<Utc>) -> bool {
         self.holder.is_none() || (!self.idle && !lease_holds(self.lease_expires_at.as_deref(), now))
     }
+
+    /// Sits `holder` in the seat with `lease_expires_at`, which starts a new review: the verdict
+    /// and revision of the last one go.
+    pub fn sit(&mut self, holder: OwnerHolder, lease_expires_at: Option<String>) {
+        self.holder = Some(holder);
+        self.lease_expires_at = lease_expires_at;
+        self.idle = false;
+        self.verdict = None;
+        self.revision = None;
+    }
+
+    /// Records the holder's `verdict` and `revision`. The seat then waits with no lease and keeps
+    /// its holder.
+    pub fn answer(&mut self, verdict: SeatVerdict, revision: Option<String>) {
+        self.verdict = Some(verdict);
+        self.revision = revision;
+        self.idle = true;
+        self.lease_expires_at = None;
+    }
+
+    /// Sends a seat that answered Changes needed back to waiting with no verdict and no revision,
+    /// and returns whether it did.
+    pub fn reset_changes_needed(&mut self) -> bool {
+        if self.verdict != Some(SeatVerdict::ChangesNeeded) {
+            return false;
+        }
+        self.verdict = None;
+        self.revision = None;
+        self.idle = true;
+        true
+    }
 }
 
 /// The parts of a stored task its board card and its calendar entry show. The description is
