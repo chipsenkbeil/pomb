@@ -14649,6 +14649,30 @@ async fn the_upkeep_should_delete_expired_issued_tokens_and_keep_hand_made_ones(
 }
 
 #[tokio::test]
+async fn the_upkeep_should_delete_the_subtree_of_an_expired_middle_child() {
+    let (_dir, fx) = fixture();
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (status, middle) = issue(&fx, &lead, json!({"name": "middle", "preset": "lead"})).await;
+    assert_eq!(status, StatusCode::OK, "{middle}");
+    let middle_raw = raw_of(&middle);
+    let (status, grandchild) =
+        issue(&fx, &middle_raw, json!({"name": "grandchild", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::OK, "{grandchild}");
+    let grandchild_raw = raw_of(&grandchild);
+    let before = token_count(&fx);
+    let now = chrono::Utc::now().timestamp() + 2 * SECONDS_PER_HOUR;
+
+    assert_eq!(fx.db.prune_expired_issued_tokens(now).expect("prune"), 2);
+    assert_eq!(token_count(&fx), before - 2);
+    let (status, text) = bare(&fx, &middle_raw, "GET", "/api/v1/auth/whoami").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{text}");
+    let (status, text) = bare(&fx, &grandchild_raw, "GET", "/api/v1/auth/whoami").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{text}");
+    let (status, text) = bare(&fx, &lead, "GET", "/api/v1/auth/whoami").await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+}
+
+#[tokio::test]
 async fn the_token_list_should_name_the_parent_of_each_child() {
     let (_dir, fx) = fixture();
     let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
