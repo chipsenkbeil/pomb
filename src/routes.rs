@@ -11685,8 +11685,7 @@ async fn watch_task(
     };
 
     // The flag and its history event are one write
-    let owned = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    let owned = writable_task(&account, &user, &id, "task not found")?;
     account
         .apply_task_change(&owned, user.actor(), |task| {
             task.watched = input.watched;
@@ -11754,8 +11753,7 @@ async fn set_checklist_item(
     body: Bytes,
 ) -> Result<Json<ChecklistResponse>, AppError> {
     let input: ChecklistInput = parse_body(&headers, body).await?;
-    let owned = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    let owned = writable_task(&account, &user, &id, "task not found")?;
     if input.description_hash.trim().is_empty() {
         return Err(AppError::bad_request("description_hash is required"));
     }
@@ -11848,8 +11846,7 @@ async fn delete_task(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task not found")?;
     for link in account
         .list_task_links(&id)
         .map_err(AppError::from)?
@@ -12385,8 +12382,7 @@ async fn create_task_link(
 ) -> Result<Json<TaskLink>, AppError> {
     let input: CreateLinkInput = parse_body(&headers, body).await?;
     let missing = "Task or target not found";
-    let task = found(account.task(&id), missing)?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, missing)?;
     let kind =
         LinkKind::parse(&input.kind).ok_or_else(|| AppError::bad_request("unknown link kind"))?;
     if input.target_id == id {
@@ -12454,13 +12450,11 @@ async fn change_task_umbrella(
 ) -> Result<Json<TaskLink>, AppError> {
     let input: ChangeUmbrellaInput = parse_body(&headers, body).await?;
     let missing = "Task or target not found";
-    let task = found(account.task(&id), missing)?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, missing)?;
     if input.target_id == id {
         return Err(AppError::bad_request("target is the task itself"));
     }
-    let target = found(account.task(&input.target_id), missing)?;
-    ensure_unlocked(&account, &user, target.board_id(), target.row())?;
+    let target = writable_task(&account, &user, &input.target_id, missing)?;
     let old_umbrella = account
         .list_task_links(&id)
         .map_err(AppError::from)?
@@ -12540,8 +12534,7 @@ async fn delete_task_link(
     Extension(user): Extension<AuthUser>,
     Path((id, link_id)): Path<(String, String)>,
 ) -> Result<StatusCode, AppError> {
-    let task = found(account.task(&id), "link not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "link not found")?;
     let link = account
         .list_task_links(&id)
         .map_err(AppError::from)?
@@ -12719,8 +12712,7 @@ fn set_epic_closed(
     if !user.has(Permission::EpicsManage) {
         return Err(AppError::permission_denied(Permission::EpicsManage));
     }
-    let owned = found(account.task(id), "task not found")?;
-    ensure_unlocked(account, user, owned.board_id(), owned.row())?;
+    let owned = writable_task(account, user, id, "task not found")?;
     match account
         .set_epic_closed(&owned, closed, user.actor())
         .map_err(AppError::from)?
@@ -12797,8 +12789,7 @@ async fn claim_task(
     body: Bytes,
 ) -> Result<Json<TaskClaim>, AppError> {
     let input: ClaimInput = parse_body(&headers, body).await?;
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task not found")?;
     ensure_epic_claimable(&account, &task)?;
     let claimant = input
         .claimant
@@ -12858,8 +12849,7 @@ async fn heartbeat_claim(
     body: Bytes,
 ) -> Result<Json<TaskClaim>, AppError> {
     let input: HeartbeatInput = parse_body(&headers, body).await?;
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task not found")?;
     let fence = input
         .fence
         .ok_or_else(|| AppError::bad_request("fence is required"))?;
@@ -12901,8 +12891,7 @@ async fn release_claim(
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
     let input: ReleaseInput = parse_body(&headers, body).await?;
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task not found")?;
     let fence = input
         .fence
         .ok_or_else(|| AppError::bad_request("fence is required"))?;
@@ -13072,8 +13061,7 @@ async fn grab_owner(
     body: Bytes,
 ) -> Result<Json<OwnerView>, AppError> {
     let input: GrabInput = parse_body(&headers, body).await?;
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task not found")?;
     ensure_epic_claimable(&account, &task)?;
     if input.take_over && user.kind != CredentialKind::Session {
         return Err(AppError::forbidden("only a signed-in member can take over"));
@@ -13120,8 +13108,7 @@ async fn renew_owner(
     body: Bytes,
 ) -> Result<Json<OwnerView>, AppError> {
     let input: RenewInput = parse_body(&headers, body).await?;
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task not found")?;
     let fence = owner_fence_required(&headers)?;
     let holder = owner_holder(&user, input.name.as_deref())?;
     let ttl_seconds = claim_ttl(input.ttl_seconds)?
@@ -13163,8 +13150,7 @@ async fn release_owner(
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
     let input: OwnerReleaseInput = parse_body(&headers, body).await?;
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task not found")?;
     let fence = owner_fence_required(&headers)?;
     let holder = owner_holder(&user, input.name.as_deref())?;
     match account
@@ -13312,8 +13298,7 @@ async fn create_subtask(
     body: Bytes,
 ) -> Result<Json<SubtaskDetail>, AppError> {
     let input: CreateSubtaskInput = parse_body(&headers, body).await?;
-    let owned = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    let owned = writable_task(&account, &user, &id, "task not found")?;
     ensure_outcomes_editable(&account, &user, owned.board_id(), owned.row())?;
     if input.name.trim().is_empty() {
         return Err(AppError::bad_request("subtask name is required"));
@@ -13391,8 +13376,7 @@ async fn reorder_subtasks(
 ) -> Result<Json<Vec<String>>, AppError> {
     let input: ReorderSubtasksInput = parse_body(&headers, body).await?;
     let db = &account;
-    let task = found(db.task(&id), "task not found")?;
-    ensure_unlocked(db, &user, task.board_id(), task.row())?;
+    let task = writable_task(db, &user, &id, "task not found")?;
     ensure_outcomes_editable(db, &user, task.board_id(), task.row())?;
     let ok = db
         .reorder_subtasks(&task, &input.order)
@@ -13444,8 +13428,7 @@ async fn update_subtask(
             return Err(AppError::permission_denied(needed));
         }
     }
-    let owned = found(account.task(&id), "task or subtask not found")?;
-    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    let owned = writable_task(&account, &user, &id, "task or subtask not found")?;
     if input.name.is_some() {
         ensure_outcomes_editable(&account, &user, owned.board_id(), owned.row())?;
     }
@@ -13606,8 +13589,7 @@ async fn convert_subtask(
     let input: ConvertSubtaskInput = parse_body(&headers, body).await?;
     let db = &account;
     let missing = "task or subtask not found";
-    let parent = found(db.task(&id), missing)?;
-    ensure_unlocked(db, &user, parent.board_id(), parent.row())?;
+    let parent = writable_task(db, &user, &id, missing)?;
     ensure_outcomes_editable(db, &user, parent.board_id(), parent.row())?;
     let sub = parent
         .row()
@@ -13796,8 +13778,7 @@ async fn delete_subtask(
     Path((id, sub_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
     // The removal and its history event are one write, and an unknown subtask writes nothing
-    let owned = found(account.task(&id), "task or subtask not found")?;
-    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    let owned = writable_task(&account, &user, &id, "task or subtask not found")?;
     ensure_outcomes_editable(&account, &user, owned.board_id(), owned.row())?;
     let entry_rule = entry_rule_of(&account, owned.board_id(), &owned.row().column_id)?;
     let outcome = account
@@ -13851,8 +13832,7 @@ async fn delete_all_subtasks(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let owned = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    let owned = writable_task(&account, &user, &id, "task not found")?;
     ensure_outcomes_editable(&account, &user, owned.board_id(), owned.row())?;
     let entry_rule = entry_rule_of(&account, owned.board_id(), &owned.row().column_id)?;
     account
@@ -14018,8 +13998,7 @@ async fn add_subtasks_from_template(
     body: Bytes,
 ) -> Result<Json<Vec<SubtaskDetail>>, AppError> {
     let input: AddSubtasksFromTemplateInput = parse_body(&headers, body).await?;
-    let owned = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    let owned = writable_task(&account, &user, &id, "task not found")?;
     ensure_outcomes_editable(&account, &user, owned.board_id(), owned.row())?;
     let entry_rule = entry_rule_of(&account, owned.board_id(), &owned.row().column_id)?;
     let template = account
@@ -14761,8 +14740,7 @@ async fn edit_comment(
     body: Bytes,
 ) -> Result<Json<TaskComment>, AppError> {
     let input: EditCommentInput = parse_body(&headers, body).await?;
-    let task = found(account.task(&id), "task or comment not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task or comment not found")?;
     let text = comment_text(&input.body)?;
     match account
         .edit_comment(
@@ -14803,8 +14781,7 @@ async fn delete_comment(
     Extension(user): Extension<AuthUser>,
     Path((id, comment_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
-    let task = found(account.task(&id), "task or comment not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task or comment not found")?;
     match account
         .delete_comment(
             &task,
@@ -14860,8 +14837,7 @@ async fn react_to_comment(
             "emoji must be one of the five comment reactions",
         ));
     }
-    let task = found(account.task(&id), "task or comment not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task or comment not found")?;
     match account
         .toggle_comment_reaction(&task, &comment_id, &input.emoji, &user.handle, user.actor())
         .map_err(AppError::from)?
@@ -14932,7 +14908,7 @@ async fn answer_comment_question(
     let task = found(account.task(&id), "task or comment not found")?;
     let mut unlocked = task.row().clone();
     unlocked.labels.retain(|label| label != NEEDS_HUMAN_LABEL);
-    ensure_unlocked(&account, &user, task.board_id(), &unlocked)?;
+    lock_task(&account, &user, &task, &unlocked)?;
     let comment = task
         .row()
         .comments
@@ -15030,8 +15006,7 @@ async fn escalate_task(
         .and_then(EscalationTier::parse)
         .ok_or_else(|| AppError::bad_request("tier must be lead or planner"))?;
     let text = comment_text(input.reason.as_deref().unwrap_or_default())?;
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task not found")?;
     let fence = write_fence_header(&headers)?;
     let new = NewComment {
         author: &user.username,
@@ -15145,8 +15120,7 @@ async fn upload_attachment(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, AppError> {
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task not found")?;
     let limit = state.max_attachment_bytes();
     if multipart::is_multipart(&headers) {
         let results = store_multipart_upload(&account, &task, &user, &headers, body, limit).await?;
@@ -15819,8 +15793,7 @@ async fn rename_attachment(
     body: Bytes,
 ) -> Result<Json<TaskAttachment>, AppError> {
     let input: RenameAttachmentInput = parse_body(&headers, body).await?;
-    let task = found(account.task(&id), "task or attachment not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task or attachment not found")?;
     let name = input.name.trim();
     if name.is_empty() {
         return Err(AppError::bad_request("file name is required"));
@@ -15857,8 +15830,7 @@ async fn delete_attachment(
     Extension(user): Extension<AuthUser>,
     Path((id, attachment_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
-    let task = found(account.task(&id), "task or attachment not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task or attachment not found")?;
     let deleted = account
         .delete_attachment(&task, &attachment_id, user.actor())
         .map_err(AppError::from)?;
@@ -15905,8 +15877,7 @@ async fn attach_link(
     body: Bytes,
 ) -> Result<Json<TaskAttachment>, AppError> {
     let input: AttachLinkInput = parse_body(&headers, body).await?;
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task not found")?;
     let name = input.name.trim();
     if name.is_empty() {
         return Err(AppError::bad_request("link name is required"));
@@ -15986,8 +15957,7 @@ async fn create_document(
     body: Bytes,
 ) -> Result<Json<TaskAttachment>, AppError> {
     let input: CreateDocumentInput = parse_body(&headers, body).await?;
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task not found")?;
     let name = document_name(&input.name)?;
     let mut document = account
         .add_document(&task, name, &input.text, user.actor())
@@ -16027,8 +15997,7 @@ async fn save_document(
     body: Bytes,
 ) -> Result<Json<TaskAttachment>, AppError> {
     let input: SaveDocumentInput = parse_body(&headers, body).await?;
-    let task = found(account.task(&id), "task or attachment not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task or attachment not found")?;
     let held = task
         .row()
         .attachments
@@ -16175,8 +16144,7 @@ async fn change_cover(
     attachment_id: &str,
     cover: CoverChange,
 ) -> Result<Json<TaskAttachment>, AppError> {
-    let task = found(account.task(id), "task or attachment not found")?;
-    ensure_unlocked(account, user, task.board_id(), task.row())?;
+    let task = writable_task(account, user, id, "task or attachment not found")?;
     let mut attachment = task
         .row()
         .attachments
@@ -16785,8 +16753,7 @@ async fn log_time(
 ) -> Result<Response, AppError> {
     let input: LogTimeInput = parse_body(&headers, body).await?;
     let db = &account;
-    let task = found(db.task(&id), "task not found")?;
-    ensure_unlocked(db, &user, task.board_id(), task.row())?;
+    let task = writable_task(db, &user, &id, "task not found")?;
 
     let seconds = logged_seconds(input.minutes, input.seconds)?;
     let started_at = logged_start(input.started_at.as_deref(), Utc::now())?;
@@ -17929,8 +17896,7 @@ async fn create_manual_time(
 ) -> Result<Json<IdMinutesResult>, AppError> {
     let input: ManualTimeInput = parse_body(&headers, body).await?;
     let db = &account;
-    let task = found(db.task(&input.task_id), "task not found")?;
-    ensure_unlocked(db, &user, task.board_id(), task.row())?;
+    let task = writable_task(db, &user, &input.task_id, "task not found")?;
 
     let (started_at, seconds) = parse_manual_range(&input.date, &input.from, &input.to)?;
     let minutes = seconds / 60;
@@ -18054,8 +18020,7 @@ async fn update_time_entry(
     }
     let task = match input.task_id.as_deref().filter(|task| !task.is_empty()) {
         Some(task_id) => {
-            let task = found(db.task(task_id), "task not found")?;
-            ensure_unlocked(db, &user, task.board_id(), task.row())?;
+            let task = writable_task(db, &user, task_id, "task not found")?;
             Some(task)
         }
         None if existing.row().task_id.is_empty() => None,
@@ -22683,8 +22648,7 @@ async fn add_task_seat(
 ) -> Result<Json<Vec<Seat>>, AppError> {
     let input: SeatSlot = parse_body(&headers, body).await?;
     let slot = input.normalized().map_err(AppError::bad_request)?;
-    let task = found(account.task(&id), "task not found")?;
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let task = writable_task(&account, &user, &id, "task not found")?;
     let outcome = account
         .apply_task_change(&task, user.actor(), |row| {
             if row
@@ -22800,8 +22764,7 @@ async fn seat_change<I: DeserializeOwned + SeatRequest, P>(
     check: impl FnOnce(&I, &AuthUser) -> Result<P, AppError>,
     change: impl FnOnce(P, OwnerHolder, &mut TaskRow) -> (Result<Vec<Seat>, AppError>, bool),
 ) -> Result<Json<Vec<Seat>>, AppError> {
-    let task = found(account.task(id), "task not found")?;
-    ensure_unlocked(account, user, task.board_id(), task.row())?;
+    let task = writable_task(account, user, id, "task not found")?;
     let input: I = parse_body(headers, body).await?;
     let checked = check(&input, user)?;
     let holder = owner_holder(user, input.agent_name())?;
@@ -23047,7 +23010,7 @@ async fn drop_task_seat(
     if !user.has(Permission::SeatsManage) {
         return Err(AppError::permission_denied(Permission::SeatsManage));
     }
-    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    lock_task(&account, &user, &task, task.row())?;
     let name = query
         .name
         .as_deref()
@@ -23146,6 +23109,29 @@ fn ensure_unlocked(
 ) -> Result<(), AppError> {
     ensure_lane_open(db, task)?;
     ensure_labels_unlocked(db, user, board_id, task)
+}
+
+/// Loads the task `id` names for a write, refusing it with `missing` when no task has that id, and
+/// otherwise refusing the write [`ensure_unlocked`] refuses.
+fn writable_task(
+    db: &AccountDb,
+    user: &AuthUser,
+    id: &str,
+    missing: &str,
+) -> Result<OwnedTask, AppError> {
+    let task = found(db.task(id), missing)?;
+    lock_task(db, user, &task, task.row())?;
+    Ok(task)
+}
+
+/// Refuses a write to `task` that would leave it as `row`, when [`ensure_unlocked`] refuses it.
+fn lock_task(
+    db: &AccountDb,
+    user: &AuthUser,
+    task: &OwnedTask,
+    row: &TaskRow,
+) -> Result<(), AppError> {
+    ensure_unlocked(db, user, task.board_id(), row)
 }
 
 /// Refuses a token without `tasks.edit_locked` the write to `task` when one of its labels locks

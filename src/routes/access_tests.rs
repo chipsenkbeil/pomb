@@ -9,7 +9,7 @@ use tower::ServiceExt;
 use super::multi_tests::admin_settings;
 use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{Reply, SoftAuthenticator, add_passkey, call, held_disk, session_of};
-use super::{ROUTE_ACCESS, RouteClass, router};
+use super::{ROUTE_ACCESS, RouteClass, Writes, router};
 use crate::AppState;
 use crate::auth::{PENDING_ROUTES, new_api_token_record, required_permission, required_role};
 use crate::db::{
@@ -28,6 +28,9 @@ const MAX_BODY_BYTES: usize = 16 << 20;
 
 /// Fewest Board, Task and Entity routes the cross-account matrix must attack.
 const MIN_MATRIX_ROUTES: usize = 60;
+
+/// Fewest token-writable task routes the lock-check test must read.
+const MIN_TOKEN_WRITABLE_TASK_ROUTES: usize = 40;
 
 /// Fewest routes the router source must yield, so a broken parse cannot pass the coverage test.
 const MIN_REGISTERED_ROUTES: usize = 130;
@@ -1402,6 +1405,101 @@ fn routes_should_be_registered_only_where_the_coverage_parser_reads() {
         assert!(
             PARSED_METHODS.iter().any(|method| calls(call, method) > 0),
             "{path}: no method router the coverage parser reads"
+        );
+    }
+}
+
+/// The calls a token-writable task route may make to take its task through the lock check.
+const LOCK_STEPS: &[&str] = &[
+    "writable_task(",
+    "lock_task(",
+    "ensure_unlocked(",
+    "ensure_task_id_unlocked(",
+    "ensure_timer_task_unlocked(",
+];
+
+/// The shared handler preludes a task route may delegate to, each of which must make a lock step.
+const LOCK_DELEGATES: &[&str] = &["seat_change", "set_epic_closed", "change_cover"];
+
+/// The token-writable task handlers that write nothing to their task, so need no lock step: one
+/// reads the task's subtask names and saves them as an account's template.
+const LOCK_EXEMPT: &[&str] = &["save_subtask_template"];
+
+/// Returns the name of the handler the router registers for `method` on `path`, read from its
+/// source.
+#[must_use]
+fn handler_of(source: &str, path: &str, method: &str) -> String {
+    let start = source.find("pub fn router(").expect("router fn");
+    let end = start + source[start..].find(".fallback(").expect("fallback");
+    let call = source[start..end]
+        .split(".route(")
+        .skip(1)
+        .find(|call| call.split('"').nth(1) == Some(path))
+        .expect("the router registers the path");
+    let handlers = &call[call.find(path).expect("path") + path.len()..];
+    let needle = format!("{method}(");
+    let at = handlers
+        .match_indices(&needle)
+        .map(|(at, _)| at)
+        .find(|at| {
+            handlers[..*at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+        })
+        .expect("the route's handler for the method");
+    let rest = &handlers[at + needle.len()..];
+    let name = &rest[..rest.find(')').expect("the handler's closing paren")];
+    name.rsplit("::")
+        .next()
+        .expect("a handler name")
+        .to_string()
+}
+
+/// Returns the source of the function `name` in `source`, from its signature to its closing brace.
+#[must_use]
+fn fn_body<'a>(source: &'a str, name: &str) -> &'a str {
+    let start = ["(", "<"]
+        .iter()
+        .find_map(|open| source.find(&format!("fn {name}{open}")))
+        .unwrap_or_else(|| panic!("routes.rs defines fn {name}"));
+    let end = source[start..]
+        .find("\n}\n")
+        .expect("the fn's closing brace");
+    &source[start..start + end]
+}
+
+#[test]
+fn token_writable_task_routes_should_reach_the_lock_check() {
+    let source = include_str!("../routes.rs");
+    let mut checked = 0;
+    for (method, path, class, writes) in ROUTE_ACCESS {
+        if *class != RouteClass::Task || *writes == Writes::No {
+            continue;
+        }
+        let handler = handler_of(source, path, &method.as_str().to_lowercase());
+        let body = fn_body(source, &handler);
+        let reaches = LOCK_STEPS.iter().any(|step| body.contains(step));
+        let delegated = LOCK_DELEGATES
+            .iter()
+            .any(|delegate| body.contains(&format!("{delegate}(")));
+        let exempt = LOCK_EXEMPT.contains(&handler.as_str());
+        assert!(
+            reaches || delegated || exempt,
+            "{method} {path} runs {handler}, which takes no lock check"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > MIN_TOKEN_WRITABLE_TASK_ROUTES,
+        "checked only {checked} token-writable task routes"
+    );
+    for delegate in LOCK_DELEGATES {
+        assert!(
+            LOCK_STEPS
+                .iter()
+                .any(|step| fn_body(source, delegate).contains(step)),
+            "{delegate} takes its task through a lock step"
         );
     }
 }
