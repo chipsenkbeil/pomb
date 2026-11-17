@@ -44,7 +44,7 @@ var chrome = {
   setPref: function (k, on) { prefs[k] = on; },
   filterValue: function () { return select.value; },
 };
-eval('Object.assign(chrome, {' + slice('    toggleDark: function', '    // KF-379: the help dialog').replace(/,\s*$/, '') + '});');
+eval('Object.assign(chrome, {' + slice('    toggleDark: function', '    // the help dialog, from the top-bar').replace(/,\s*$/, '') + '});');
 eval('Object.assign(chrome, {' + slice('    syncLegendFilter: function', '    initLegend: function').replace(/,\s*$/, '') + '});');
 
 var failures = 0;

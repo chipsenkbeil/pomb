@@ -39,7 +39,7 @@ TimerUI.closePopup = () => { calls.push('close'); };
 TimerUI.selectTask = (id) => { calls.push('select:' + id); };
 eval(slice('  var columnKeyHints = [];', '  // ---------- Task extras'));
 const self = TimerUI;
-eval(slice("      document.addEventListener('click', function (e) {\n        if (!self.selecting)", '      // KF-010'));
+eval(slice("      document.addEventListener('click', function (e) {\n        if (!self.selecting)", '      // the panel stays open beside a task modal'));
 
 const listener = (type, capture) => {
   const found = listeners.filter((l) => l.type === type && l.capture === capture);

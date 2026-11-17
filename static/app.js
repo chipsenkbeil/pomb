@@ -96,7 +96,7 @@
 
   var dragging = false;   // true while a Sortable drag is in flight (suppresses card clicks)
   var modalDirty = false; // set when the modal changed something; reloads the board on close
-  // KF-334: the Move task dialog's task and target, held between
+  // the Move task dialog's task and target, held between
   // openMoveDialog() and doMoveTask().
   var moveTargetColumnId = null;
   var moveSwimlaneId = null;
@@ -137,7 +137,7 @@
     });
   }
 
-  // KF-517: read the response body before the page reloads, so the reload
+  // read the response body before the page reloads, so the reload
   // does not abort the request ("net::ERR_ABORTED" in the browser).
   function drained(res) {
     return res.text().then(function () { return res; }, function () { return res; });
@@ -200,7 +200,7 @@
           var card = evt.item;
           var toList = evt.to;
           var fromList = evt.from;
-          // KF-441: a collapsed strip takes no cards, so a drop on it puts
+          // a collapsed strip takes no cards, so a drop on it puts
           // the card back where it was and moves nothing.
           if (droppedOnCollapsedStrip()) {
             var cardsHere = Array.prototype.filter.call(fromList.querySelectorAll('.task-card'), function (el) { return el !== card; });
@@ -208,7 +208,7 @@
             else if (cardsHere.length) cardsHere[cardsHere.length - 1].after(card);
             return;
           }
-          // KF-371: a sorted column's order is its sort order, so a drop
+          // a sorted column's order is its sort order, so a drop
           // within it snaps straight back.
           if (toList === fromList && toList.dataset.sorted === '1') {
             if (evt.oldDraggableIndex !== evt.newDraggableIndex) {
@@ -233,7 +233,7 @@
           var toCol = toList.dataset.columnId;
           // Done-column date grouping can't be fixed by swapping one card;
           // reload the board when the move crosses the Done boundary.
-          // KF-371: a drop into a sorted column reloads to its sorted place.
+          // a drop into a sorted column reloads to its sorted place.
           var crossesDone = (toList.closest('[data-done-column="true"]') != null) ||
                             (fromList.closest('[data-done-column="true"]') != null) ||
                             toList.dataset.sorted === '1';
@@ -265,7 +265,7 @@
             if (fresh) card.replaceWith(fresh);
             if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
             paintSelection();
-            // KF-199: the server-rendered card carries no client-side timer
+            // the server-rendered card carries no client-side timer
             // state — re-apply the timer outline and live badge immediately
             // so a move while the timer runs re-renders at once instead of
             // waiting for the next 15s status poll.
@@ -355,7 +355,7 @@
   // Note: htmx inserts new cards inside the existing .task-list containers,
   // which already have Sortable attached, so no re-init is needed.
 
-  // KF-441: where the pointer was last seen during a card drag.
+  // where the pointer was last seen during a card drag.
   var lastDragPoint = null;
   ['dragover', 'pointermove', 'mousemove'].forEach(function (type) {
     document.addEventListener(type, function (e) { lastDragPoint = { x: e.clientX, y: e.clientY }; }, true);
@@ -371,12 +371,12 @@
     return !!(el && el.closest('td.board-cell--collapsed, th.columnHeader--collapsed'));
   }
 
-  // KF-371: a card's hour estimate in minutes (0 when unset).
+  // a card's hour estimate in minutes (0 when unset).
   function cardEstimateMinutes(card) {
     return card ? parseInt(card.dataset.estimateMinutes, 10) || 0 : 0;
   }
 
-  // KF-371: an "Estimated hours" column sum; mirrors format_column_hours
+  // an "Estimated hours" column sum; mirrors format_column_hours
   // in src/routes.rs.
   function formatColumnHours(minutes) {
     if (!(minutes > 0)) return '0h';
@@ -395,7 +395,7 @@
     };
   }
 
-  // KF-208/KF-371: the right-edge badge shows the count, or the estimated
+  // the right-edge badge shows the count, or the estimated
   // hours for Column sum "Estimated hours".
   function setSumBadge(th, count, minutes) {
     var badge = th.querySelector('.columnHeader-countBadge');
@@ -435,7 +435,7 @@
     var estimate = (parseInt(th.dataset.estimateMinutes, 10) || 0) + (minutes || 0);
     th.dataset.estimateMinutes = String(estimate);
     refreshGroupCounts();
-    // KF-161: if a filter is active, the header shows the visible subset —
+    // if a filter is active, the header shows the visible subset —
     // recompute it rather than stamping the true total.
     if (window.BoardChrome && BoardChrome.isFiltering && BoardChrome.isFiltering()) {
       BoardChrome.refreshFilteredCounts();
@@ -447,11 +447,11 @@
     refreshLaneCounts();
     setSumBadge(th, count, estimate);
     var badge = th.querySelector('.columnHeader-countBadge');
-    // KF-035: the warning is a *violation* — it fires only when the count
+    // the warning is a *violation* — it fires only when the count
     // exceeds the limit, not when it merely reaches it.
     var warn = limit.warn;
     if (badge) {
-      // KF-241: the collapsed strip's violated count must toggle the darkred
+      // the collapsed strip's violated count must toggle the darkred
       // --over class along with the warning classes below.
       badge.classList.toggle('columnHeader-countBadge--over', warn);
     }
@@ -460,7 +460,7 @@
     syncWarningLine(th, warn);
   }
 
-  // KF-223/KF-362: overdue tasks also keep the line.
+  // overdue tasks also keep the line.
   function syncWarningLine(th, warn, overdue) {
     if (overdue == null) overdue = parseInt(th.dataset.overdueCount, 10) || 0;
     var show = warn || overdue > 0;
@@ -772,7 +772,7 @@
     document.addEventListener('htmx:afterSwap', paintSelection);
   }
 
-  // KF-103: once a session logs its time, the card shows the server's new
+  // once a session logs its time, the card shows the server's new
   // total (only a discard reverts to the old one).
   function refreshBoardCard(taskId) {
     if (!taskId) return;
@@ -807,7 +807,7 @@
       animation: 150,
       draggable: '.columnHeader',
       ghostClass: 'sortable-placeholder',
-      // KF-048: the dragged column renders blank/empty mid-drag
+      // the dragged column renders blank/empty mid-drag
       // (KanbanFlow parity); the placeholder marks the drop position.
       dragClass: 'column-drag-ghost',
       // Let the header buttons work normally instead of starting a drag.
@@ -835,7 +835,7 @@
     });
   }
 
-  // ---------- layout-view arrange lists (KF-180) ----------
+  // ---------- layout-view arrange lists ----------
 
   // The layout-edit view lists the existing columns and swimlanes with
   // drag-reorder (SortableJS), persisted via the same move endpoints the
@@ -891,7 +891,7 @@
     });
   }
 
-  // KF-208: clamp a fixed-position popup so it always opens fully in view.
+  // clamp a fixed-position popup so it always opens fully in view.
   function placePopup(popup, x, y) {
     popup.style.left = '0px';
     popup.style.top = '0px';
@@ -901,7 +901,7 @@
     popup.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
   }
 
-  // ---------- KF-302: add-task dialog ----------
+  // ---------- add-task dialog ----------
 
   // KanbanFlow's column "+" opens one centred dialog tinted with the chosen
   // colour: name, colour select, shortcuts row, and three save actions.
@@ -928,7 +928,7 @@
       return a.length === b.length && a.every(function (id) { return b.indexOf(id) !== -1; });
     }
 
-    // KF-481: the Members button opens a popover inside the dialog; the
+    // the Members button opens a popover inside the dialog; the
     // picked members are assigned once the task exists.
     function renderMembers() {
       var q = membersSearch.value.trim().toLowerCase();
@@ -994,7 +994,7 @@
     var moreBtn = form.querySelector('[data-add-more]');
     var moreMenu = document.getElementById('add-more-menu');
 
-    // KF-481: the Labels button opens a popover; the chosen labels are sent
+    // the Labels button opens a popover; the chosen labels are sent
     // with the task.
     function renderLabels() {
       labelsChosen.innerHTML = '';
@@ -1293,12 +1293,12 @@
       var tpl = document.createElement('template');
       tpl.innerHTML = html.trim();
       var card = tpl.content.firstElementChild;
-      // Insert into the column's first visible task-list (unhiding per
-      // KF-206 when every lane is folded).
+      // Insert into the column's first visible task-list (unhiding
+      // when every lane is folded).
       var list = openList(colId, form.elements.swimlane_id.value);
       if (list && card) {
         list.removeAttribute('hidden');
-        // KF-403: the board's "Position of new tasks", bottom by default.
+        // the board's "Position of new tasks", bottom by default.
         var wrap = document.querySelector('.board-wrap');
         if (wrap && wrap.dataset.newTasksAtTop === '1') {
           list.insertBefore(card, list.querySelector('.task-card'));
@@ -1307,7 +1307,7 @@
         }
         if (window.htmx) window.htmx.process(card);
         if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
-        refreshCardSecStates(); // KF-224: new card honors section state
+        refreshCardSecStates(); // new card honors section state
       }
       updateColumnCount(colId, 1, cardEstimateMinutes(card));
       return card;
@@ -1484,7 +1484,7 @@
         return;
       }
       if (e.key !== 'Enter') return;
-      // KF-481: Enter in the Members search only filters the list.
+      // Enter in the Members search only filters the list.
       if (e.target === membersSearch) { e.preventDefault(); return; }
       if (e.target === labelsInput) { e.preventDefault(); addLabel(labelsInput.value); return; }
       if (e.target === descText && !(e.ctrlKey || e.metaKey || e.shiftKey)) return;
@@ -1504,7 +1504,7 @@
     document.querySelectorAll('.menu-pop.menu-floating, .details-popup').forEach(function (m) {
       if (!m.hidden) { m.hidden = true; any = true; }
     });
-    // KF-310: keep the popover triggers' aria state in sync when a floating
+    // keep the popover triggers' aria state in sync when a floating
     // menu is closed centrally (e.g. via the unified Escape handler).
     ['notifications-btn', 'account-btn'].forEach(function (id) {
       var b = document.getElementById(id);
@@ -1572,7 +1572,7 @@
   }
 
   function initBoardMenus() {
-    // KF-038/KF-230: no ⋮ button on column headers (KanbanFlow parity) —
+    // no ⋮ button on column headers (KanbanFlow parity) —
     // the column menu (Edit / Collapse / Show details / Delete) opens on
     // right-click. The lane ⋮ menu is unchanged.
     document.addEventListener('click', function (e) {
@@ -1592,7 +1592,7 @@
       if (!e.target.closest('.tm-action')) closeAllTmMenus();
     });
 
-    // Card right-click menu (KanbanFlow parity, KF-050).
+    // Card right-click menu (KanbanFlow parity).
     document.addEventListener('contextmenu', function (e) {
       var card = e.target.closest('.task-card');
       if (card) {
@@ -1601,7 +1601,7 @@
         else openCardMenu(card, e.clientX, e.clientY);
         return;
       }
-      // KF-038/KF-230: no ⋮ button on column headers (KanbanFlow parity) —
+      // no ⋮ button on column headers (KanbanFlow parity) —
       // the 4-item column menu (Edit / Collapse / Show details / Delete)
       // opens on right-click.
       var laneLabel = e.target.closest('th.swimlane-label');
@@ -1614,7 +1614,7 @@
       if (!th) return;
       e.preventDefault();
       colMenuColumnId = th.dataset.columnId;
-      // KF-223: the Collapse item reads "Expand" for an already-collapsed column.
+      // the Collapse item reads "Expand" for an already-collapsed column.
       var collapseBtn = document.getElementById('column-menu').querySelector('[data-col-act="collapse"]');
       if (collapseBtn) collapseBtn.textContent = th.dataset.collapsed === '1' ? 'Expand' : 'Collapse';
       var watchBtn = document.getElementById('column-menu').querySelector('[data-col-act="watch"]');
@@ -1647,7 +1647,7 @@
         .catch(function () { toast('Could not update the column.'); });
     }
 
-    // KF-223: flip a column's collapsed state (persisted per board via the
+    // flip a column's collapsed state (persisted per board via the
     // column PATCH endpoint), then reload so the strip renders.
     function toggleColumnCollapsed(id) {
       var th = document.querySelector('.columnHeader[data-column-id="' + id + '"]');
@@ -1663,7 +1663,7 @@
         .catch(function () { toast('Could not update the column.'); });
     }
 
-    // KF-223: "Show details" — popover centred under the column header,
+    // "Show details" — popover centred under the column header,
     // its top edge on the header's bottom rule.
     function showColumnDetails(id) {
       var th = document.querySelector('.columnHeader[data-column-id="' + id + '"]');
@@ -1682,10 +1682,10 @@
       if (openMenu && openMenu.id === 'column-details-popup') openMenu = null;
     });
 
-    // KF-223: clicking anywhere on a collapsed strip expands the column
+    // clicking anywhere on a collapsed strip expands the column
     // (KanbanFlow parity). Right-click still opens the column menu.
     document.getElementById('column-headers-row').addEventListener('click', function (e) {
-      // KF-543: a click on an expanded column's name collapses it; a drag
+      // a click on an expanded column's name collapses it; a drag
       // starts from the same header but never fires this click.
       var nameEl = e.target.closest('.columnHeader-name');
       if (nameEl) {
@@ -1697,7 +1697,7 @@
       if (!th || e.target.closest('button')) return;
       toggleColumnCollapsed(th.dataset.columnId);
     });
-    // KF-441: Enter and Space expand a focused strip.
+    // Enter and Space expand a focused strip.
     document.getElementById('column-headers-row').addEventListener('keydown', function (e) {
       if ((e.key !== 'Enter' && e.key !== ' ') || e.metaKey || e.ctrlKey || e.altKey) return;
       var th = e.target.closest('.columnHeader--collapsed');
@@ -1705,7 +1705,7 @@
       e.preventDefault();
       toggleColumnCollapsed(th.dataset.columnId);
     });
-    // KF-223: the strip's body cells expand it too.
+    // the strip's body cells expand it too.
     document.querySelectorAll('.board-table tbody').forEach(function (body) {
       body.addEventListener('click', function (e) {
         var td = e.target.closest('td.board-cell--collapsed');
@@ -1729,7 +1729,7 @@
       else if (act === 'delete') deleteSwimlane(id);
     });
 
-    // ---------- card context menu (KF-050) ----------
+    // ---------- card context menu ----------
     var cardMenuCard = null;
     var cardMenuPoint = { x: 0, y: 0 };
     var groupingDateTaskId = null;
@@ -1754,7 +1754,7 @@
       placeMenu(document.getElementById('card-ctx-menu'), x, y);
     }
 
-    // KF-334: the card's column comes from its list; cards carry no column id.
+    // the card's column comes from its list; cards carry no column id.
     function cardColumnId(card) {
       var list = card ? card.closest('.task-list') : null;
       return list ? list.dataset.columnId : null;
@@ -1766,7 +1766,7 @@
       if (sub) { sub.hidden = true; sub.innerHTML = ''; sub.classList.remove('card-sub--color', 'card-sub--epics'); sub.dataset.for = ''; }
     }
 
-    // KF-334: the submenu opens beside the card menu, which stays open
+    // the submenu opens beside the card menu, which stays open
     // (KanbanFlow shows both side by side).
     function openCardSubmenu(btn, buildItems) {
       var sub = document.getElementById('card-ctx-submenu');
@@ -1783,7 +1783,7 @@
       }
     }
 
-    // KF-334: Move submenu icons (16px line icons like the card menu's).
+    // Move submenu icons (16px line icons like the card menu's).
     var CARD_SUB_ICONS = {
       'move-right': '<path d="M2.5 8h11M9.5 4l4 4-4 4"/>',
       'move-top': '<path d="M8 14V5M4.5 8.5L8 5l3.5 3.5M3 2h10"/>',
@@ -1862,7 +1862,7 @@
       var act = btn.getAttribute('data-card-act');
       var task = cardMenuTask();
       if (act === CARD_ACT.TIMER) {
-        // KF-329: KanbanFlow's "Start timer" is a direct action — no submenu,
+        // KanbanFlow's "Start timer" is a direct action — no submenu,
         // no "Select in timer" entry.
         hideCardSubmenu();
         hideFloatingMenus();
@@ -1873,7 +1873,7 @@
         }
       } else if (act === CARD_ACT.MOVE) {
         openCardSubmenu(btn, function (sub) {
-          // KF-334: KanbanFlow-style relative-move submenu.
+          // KanbanFlow-style relative-move submenu.
           var card = cardMenuCard;
           if (!card) return;
           var currentColumnId = cardColumnId(card);
@@ -1896,7 +1896,7 @@
         openEpicSubmenu(btn, task);
       } else if (act === CARD_ACT.COLOR) {
         openCardSubmenu(btn, function (sub) {
-          // KF-333: each row is tinted with its colour; the card's own colour
+          // each row is tinted with its colour; the card's own colour
           // is bold.
           sub.classList.add('card-sub--color');
           var current = cardMenuCard ? cardMenuCard.dataset.colorValue : '';
@@ -1905,7 +1905,7 @@
             Array.prototype.forEach.call(src.querySelectorAll('span[data-id]'), function (s) {
               var b = cardSubmenuButton(s.dataset.label || s.dataset.value, CARD_SUBMENU.COLOR,
                 { 'data-color-id': s.dataset.id, 'data-color-value': s.dataset.value,
-                  // KF-142: carry the human label so the card's title can be re-synced.
+                  // carry the human label so the card's title can be re-synced.
                   'data-color-label': s.dataset.label || '' });
               b.style.backgroundColor = s.dataset.bg || '#fff';
               if (s.dataset.value === current) b.classList.add('card-color-current');
@@ -2030,7 +2030,7 @@
       if (sub === CARD_SUBMENU.EPIC) {
         addCardToEpic(cardMenuCard, btn.getAttribute('data-epic-id'));
       } else if (sub === 'move-right') {
-        // KF-334: move to the column to the right, placed per the board's setting.
+        // move to the column to the right, placed per the board's setting.
         var colId = btn.getAttribute('data-column-id');
         var curList = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
         var curLane = curList ? (curList.dataset.swimlaneId || null) : null;
@@ -2046,7 +2046,7 @@
             else toastRefusal(res, 'Could not move task.');
           });
       } else if (sub === 'move-bottom' || sub === 'move-top') {
-        // KF-334: move to the top or bottom of the current column.
+        // move to the top or bottom of the current column.
         var curList = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
         var curLane = curList ? (curList.dataset.swimlaneId || null) : null;
         var colId = cardColumnId(cardMenuCard);
@@ -2063,7 +2063,7 @@
             else toastRefusal(res, 'Could not move task.');
           });
       } else if (sub === 'move-advanced') {
-        // KF-334/KF-141: the "Move task" popover, anchored at the card.
+        // the "Move task" popover, anchored at the card.
         openMoveDialog(task.id, cardMenuCard);
       } else if (sub === CARD_SUBMENU.COLOR) {
         api('/api/tasks/' + encodeURIComponent(task.id), 'PATCH',
@@ -2079,7 +2079,7 @@
               cardMenuCard.classList.add('taskColor-' + value, 'taskBorderColor-' + value);
               cardMenuCard.dataset.colorValue = value;
             }
-            // KF-142: the card's title is the color label — re-sync it so the
+            // the card's title is the color label — re-sync it so the
             // accessible title doesn't go stale after a recolor.
             var colorLabel = btn.getAttribute('data-color-label');
             if (colorLabel) cardMenuCard.title = colorLabel;
@@ -2120,14 +2120,14 @@
 
     function deleteCardTask(task) {
       if (!task) return;
-      // KF-184: styled in-page confirmation (KanbanFlow parity); the native
+      // styled in-page confirmation (KanbanFlow parity); the native
       // window.confirm() auto-dismisses under automation, silently no-op'ing.
       showConfirmDialog('Delete task', deleteConfirmMessage(task.name, cardMenuCard), 'Delete', function () {
         api('/api/tasks/' + encodeURIComponent(task.id), 'DELETE')
           .then(drained)
           .then(function (res) {
             if (!res.ok) { toast('Could not delete task.'); return; }
-            // KF-193: the header count went stale after context-menu deletes —
+            // the header count went stale after context-menu deletes —
             // capture the column before detaching the card, then refresh it
             // (mirrors the add-task and drag/drop paths via updateColumnCount).
             var list = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
@@ -2144,7 +2144,7 @@
       });
     }
 
-    // KF-501: deleting the timed task idles the timer; the open board
+    // deleting the timed task idles the timer; the open board
     // follows now instead of at the next poll.
     function syncTimerAfterDelete() {
       if (!window.TimerUI) return;
@@ -2152,7 +2152,7 @@
       window.TimerUI.broadcastTimer();
     }
 
-    // KF-122: toolbar buttons removed; guard for null (layout view calls
+    // toolbar buttons removed; guard for null (layout view calls
     // openAddColumnDialog/addSwimlane directly).
     var addColBtn = document.getElementById('add-column-btn');
     if (addColBtn) addColBtn.addEventListener('click', function () {
@@ -2163,7 +2163,7 @@
       addSwimlane();
     });
     document.getElementById('ac-add').addEventListener('click', doAddColumn);
-    // KF-156: swimlane dialog wiring.
+    // swimlane dialog wiring.
     var swSaveBtn = document.getElementById('sw-save');
     if (swSaveBtn) swSaveBtn.addEventListener('click', doSaveSwimlane);
     var swNameInput = document.getElementById('sw-name');
@@ -2189,7 +2189,7 @@
     initLaneResize();
     document.getElementById('ec-save').addEventListener('click', doSaveColumn);
     initTaskDialogs();
-    // KF-367: the layout view's "Save board as template" opens the dialog.
+    // the layout view's "Save board as template" opens the dialog.
     var saveTplBtn = document.getElementById('save-template-btn');
     if (saveTplBtn) saveTplBtn.addEventListener('click', openSaveTemplateDialog);
     document.getElementById('st-save').addEventListener('click', doSaveTemplate);
@@ -2216,7 +2216,7 @@
     document.getElementById('est-input').addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); doAddEstimate(); }
     });
-    // KF-334: a click outside the card-anchored popover closes it.
+    // a click outside the card-anchored popover closes it.
     document.getElementById('move-task-dialog').addEventListener('click', function (e) {
       if (e.target === e.currentTarget && e.currentTarget.classList.contains('dlg-overlay--popover')) {
         e.currentTarget.hidden = true;
@@ -2224,11 +2224,11 @@
     });
     document.getElementById('est-add').addEventListener('click', doAddEstimate);
     initRelationDialog();
-    // KF-547: a click outside the estimate popover closes it.
+    // a click outside the estimate popover closes it.
     document.getElementById('estimate-dialog').addEventListener('click', function (e) {
       if (e.target === e.currentTarget) e.currentTarget.hidden = true;
     });
-    // KF-505: a click outside the due popover closes it.
+    // a click outside the due popover closes it.
     document.getElementById('duedate-dialog').addEventListener('click', function (e) {
       if (e.target === e.currentTarget) e.currentTarget.hidden = true;
     });
@@ -2251,7 +2251,7 @@
       .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not move column.'); });
   }
 
-  // KF-047: styled confirmation dialog replacing window.confirm().
+  // styled confirmation dialog replacing window.confirm().
   // Calls `onConfirm` when the user clicks the confirm button.
   function showConfirmDialog(title, message, okLabel, onConfirm) {
     document.getElementById('confirm-title').textContent = title;
@@ -2280,14 +2280,14 @@
     return message;
   }
 
-  // KF-417: KanbanFlow-style alert box with a single OK.
+  // KanbanFlow-style alert box with a single OK.
   function showAlertDialog(message) {
     document.getElementById('alert-message').textContent = message;
     document.getElementById('alert-dialog').hidden = false;
     document.getElementById('alert-ok').focus();
   }
 
-  // KF-432: KanbanFlow's confirm before a past due date is used. Cancel
+  // KanbanFlow's confirm before a past due date is used. Cancel
   // has focus, as in golden modal/26, and leaves the due date dialog open.
   function showPastDueConfirm(onOk) {
     var dlg = document.getElementById('past-due-dialog');
@@ -2301,7 +2301,7 @@
     dlg.hidden = false;
     document.getElementById('past-due-cancel').focus();
   }
-  // KF-371: "Load more tasks" in an archiving column shows its next page
+  // "Load more tasks" in an archiving column shows its next page
   // of 20 tasks and the date labels that now have a visible task.
   document.addEventListener('click', function (e) {
     var more = e.target.closest ? e.target.closest('[data-load-more]') : null;
@@ -2320,7 +2320,7 @@
     }
   });
 
-  // KF-304/KF-305: delete-board page — styled delete confirm and Archive board.
+  // delete-board page — styled delete confirm and Archive board.
   var boardDeleteInitialized = false;
   function initBoardDeletePage() {
     var section = document.querySelector('.delete-board-confirm');
@@ -2368,8 +2368,8 @@
     });
   }
 
-  // KF-554: General tab. Edit opens the rename form; Archive board runs the
-  // delete page's archive call (its 400 refusals, KF-407/KF-492, show inline);
+  // General tab. Edit opens the rename form; Archive board runs the
+  // delete page's archive call (its 400 refusals, show inline);
   // Delete board opens the delete page, which owns the delete refusals.
   var boardGeneralInitialized = false;
   function initBoardGeneralActions() {
@@ -2466,7 +2466,7 @@
     });
   }
 
-  // KF-306: column-delete confirmation with verbatim KanbanFlow text and the
+  // column-delete confirmation with verbatim KanbanFlow text and the
   // "Move the tasks to the column" move-target option (GM-164). Deleting a
   // non-empty column requires choosing a move target — no "Delete anyway".
   function deleteColumn(id) {
@@ -2479,7 +2479,7 @@
       .filter(function (h) { return h.dataset.columnId !== id; })
       .map(function (h) { return { id: h.dataset.columnId, name: h.dataset.columnName }; });
 
-    // KF-479: a board keeps at least one column.
+    // a board keeps at least one column.
     if (!targets.length) {
       toast('A board needs at least one column.');
       return;
@@ -2562,7 +2562,7 @@
       );
       cleanup();
 
-      // KF-405: each task keeps its lane and joins the end of the target
+      // each task keeps its lane and joins the end of the target
       // column's cell there, in its current order.
       var nextPosition = {};
       var chain = Promise.resolve();
@@ -2585,7 +2585,7 @@
     overlay.querySelector('#dc-ok').focus();
   }
 
-  // KF-041: placement is 'beginning', 'end', or { anchor: <column id>,
+  // placement is 'beginning', 'end', or { anchor: <column id>,
   // side: 'left'|'right' } to insert the new column adjacent to the column
   // whose menu opened the dialog.
   var addColumnPlacement = 'end';
@@ -2616,7 +2616,7 @@
   function doAddColumn() {
     var name = document.getElementById('ac-name').value.trim();
     if (!name) { toast('Column name is required.'); return; }
-    // KF-181: honor the Position combobox's CURRENT value. The dialog may
+    // honor the Position combobox's CURRENT value. The dialog may
     // have been opened with one placement and the user may have changed the
     // combobox since; the stale dialog-open-time value must not win. The
     // anchor-object placement (label hidden, hint shown) bypasses this.
@@ -2658,7 +2658,7 @@
 
   var editColumnId = null;
 
-  // KF-043: the six "Task properties to display on board" dropdowns. Values
+  // the six "Task properties to display on board" dropdowns. Values
   // live in the column's opaque config_json bag, surfaced to the dialog via
   // the header's data-column-config attribute.
   var COLUMN_PROP_DEFAULTS = {
@@ -2699,15 +2699,15 @@
     document.getElementById('ec-blocked').checked = th.dataset.isBlocked === '1';
     document.getElementById('ec-clears-blockers').checked = th.dataset.clearsBlockers === '1';
     document.getElementById('ec-stage').value = th.dataset.stage || '';
-    // KF-042: the remaining fields live in the column's opaque config_json
+    // the remaining fields live in the column's opaque config_json
     // bag — load the saved values so editing a name doesn't wipe them.
     var cfg = columnConfigBag(th);
     document.getElementById('ec-sorting').value = cfg.sorting || 'none';
-    // KF-045: column sum is a dropdown ("None"/"Show sum"), not a checkbox.
+    // column sum is a dropdown ("None"/"Show sum"), not a checkbox.
     document.getElementById('ec-column-sum').value =
       cfg.column_sum === true ? 'count' : (cfg.column_sum === 'count' || cfg.column_sum === 'hours' ? cfg.column_sum : 'none');
-    // KF-384: Archiving shows the saved value, else on for the Done column
-    // (the server applies the same default, KF-371).
+    // Archiving shows the saved value, else on for the Done column
+    // (the server applies the same default).
     document.getElementById('ec-group-by-date').checked =
       typeof cfg.group_by_date === 'boolean' ? cfg.group_by_date : th.dataset.isDone === '1';
     var props = columnPropConfig(th);
@@ -2732,10 +2732,10 @@
     var config = {
       wip_limit_type: document.getElementById('ec-wip-type').value,
       sorting: document.getElementById('ec-sorting').value,
-      // KF-371: Column sum is stored as "none", "count" or "hours".
+      // Column sum is stored as "none", "count" or "hours".
       column_sum: document.getElementById('ec-column-sum').value,
       group_by_date: document.getElementById('ec-group-by-date').checked,
-      // KF-043: per-property display dropdowns, persisted into the
+      // per-property display dropdowns, persisted into the
       // column's opaque config_json bag.
       prop_description: document.getElementById('ec-prop-description').value,
       prop_labels: document.getElementById('ec-prop-labels').value,
@@ -3273,7 +3273,7 @@
         // labels/due-date save the board still needs a reload on close).
         modalDirty = !!keepDirty;
         modalSubviewOpen = false;
-        // KF-250: lock the board behind the modal so it cannot scroll.
+        // lock the board behind the modal so it cannot scroll.
         document.body.classList.add('modal-open');
         showTaskHash(taskId);
         wireModal();
@@ -4210,7 +4210,7 @@
     root.innerHTML = '';
     modalSubviewOpen = false;
     modalTab = 'description';
-    document.body.classList.remove('modal-open'); // KF-250: release the board scroll lock.
+    document.body.classList.remove('modal-open'); // release the board scroll lock.
     clearTaskHash();
     if (modalDirty) window.location.reload();
   }
@@ -4226,7 +4226,7 @@
         if (res.ok) {
           modalDirty = true;
           input.defaultValue = name;
-          // KF-185: the rename no longer reloads the board (the save is
+          // the rename no longer reloads the board (the save is
           // async, so closeModal on Ctrl+Enter races it), so update the
           // card DOM in place — title text and the data attribute the
           // context menu reads.
@@ -4945,7 +4945,7 @@
     syncMdToggle();
   });
 
-  // KF-253: the description is a static text block (click-to-edit); edits
+  // the description is a static text block (click-to-edit); edits
   // go through the description editor dialog, never an inline textarea.
   function openDescriptionEditor() {
     var id = modalTaskId();
@@ -5421,7 +5421,7 @@
     if (!id) return;
     var epic = epicModalFacts();
     if (epic) { deleteModalEpic(id, epic); return; }
-    // KF-184: styled in-page confirmation (KanbanFlow parity); the native
+    // styled in-page confirmation (KanbanFlow parity); the native
     // window.confirm() auto-dismisses under automation, silently no-op'ing.
     showConfirmDialog('Delete task', 'Delete this task? It stays in the Recycle bin for 30 days.', 'Delete', function () {
       api('/api/tasks/' + encodeURIComponent(id), 'DELETE')
@@ -5475,7 +5475,7 @@
         Array.prototype.forEach.call(
           document.querySelectorAll('#modal-color-picker .tm-color-dot'),
           function (d) { d.classList.toggle('selected', d === btn); });
-        // KF-257: keep the Color row's dot + name text in sync with the pick.
+        // keep the Color row's dot + name text in sync with the pick.
         // The board's default color renders dot-only (no name), matching the
         // server-side contract; any other color renders dot + name.
         var label = btn.title || '';
@@ -5507,7 +5507,7 @@
       });
   }
 
-  // KF-071: the More-menu Watch toggle is a persisted flag (KanbanFlow
+  // the More-menu Watch toggle is a persisted flag (KanbanFlow
   // parity), rendered by the server and mirrored here for the live toggle.
   function modalWatchedState() {
     var btn = document.getElementById('tm-watch-btn');
@@ -5531,7 +5531,7 @@
       if (bare) bare.classList.remove('tm-bare');
     }
     if (act === 'pick-color') {
-      // KF-257: the Color row shows dot + color name; clicking the dot toggles the full picker.
+      // the Color row shows dot + color name; clicking the dot toggles the full picker.
       var picker = document.getElementById('modal-color-picker');
       if (picker) picker.hidden = !picker.hidden;
     } else if (act === 'manual-time') {
@@ -5554,7 +5554,7 @@
     } else if (act === 'time-in-column') {
       openTaskTimeInColumn();
     } else if (act === 'watch') {
-      // KF-071: Watch actually toggles a persisted flag on the task
+      // Watch actually toggles a persisted flag on the task
       // (KanbanFlow parity); the menu item flips Watch/Unwatch live.
       var wantWatched = !modalWatchedState();
       api('/api/tasks/' + encodeURIComponent(id) + '/watch', 'POST', { watched: wantWatched })
@@ -5584,14 +5584,14 @@
     } else if (act === 'make-epic') {
       makeModalEpic(id);
     } else if (act === 'add-description') {
-      // KF-253: opens the description editor dialog (the description is a
+      // opens the description editor dialog (the description is a
       // static text block now, never an inline textarea).
       if (showModalTab('description')) return;
       openDescriptionEditor();
     } else if (act === 'add-member') {
       openMembersDialog(id);
     } else if (act === 'add-label') {
-      // KF-144: was openLabelsDialog() (undefined) — the dialog object is LabelsDialog.
+      // was openLabelsDialog() (undefined) — the dialog object is LabelsDialog.
       LabelsDialog.open(source);
     } else if (act === 'add-subtask') {
       if (showModalTab('subtasks')) return;
@@ -5600,7 +5600,7 @@
     } else if (act === 'add-timeline' || act === 'edit-timeline') {
       TimelineDialog.open();
     } else if (act === 'add-duedate') {
-      // KF-145: was openDueDateDialog() (undefined) — the dialog object is DueDateDialog.
+      // was openDueDateDialog() (undefined) — the dialog object is DueDateDialog.
       DueDateDialog.open(source);
     } else if (act === 'due-done-toggle') {
       var wasDone = source.getAttribute('data-done') === 'true';
@@ -5709,7 +5709,7 @@
     }).catch(function () { toast('Could not copy task.'); }).then(function () { copyBtn.disabled = false; });
   }
 
-  // KF-070/KF-334: the "Move task" dialog for `taskId` (default: the open
+  // the "Move task" dialog for `taskId` (default: the open
   // modal's task). Given `anchorCard`, it opens as a popover at that card.
   function openMoveDialog(taskId, anchorCard, bulkIds) {
     var id = taskId || modalTaskId();
@@ -5837,7 +5837,7 @@
       });
   }
 
-  // KF-547: a 184 px popover beside the modal's Add button (golden modal/27).
+  // a 184 px popover beside the modal's Add button (golden modal/27).
   function openEstimateDialog() {
     var overlay = document.getElementById('estimate-dialog');
     var dlg = overlay.querySelector('.dlg');
@@ -5864,7 +5864,7 @@
 
   // "Add time estimate": the estimate is stored hour-based (KanbanFlow
 
-  // parity, KF-216); the server derives the pomodoro size from it.
+  // parity); the server derives the pomodoro size from it.
   function doAddEstimate() {
     var id = modalTaskId();
     if (!id) return;
@@ -6131,7 +6131,7 @@
     var nameInput = document.getElementById('modal-name');
     if (nameInput) {
       nameInput.addEventListener('change', saveModalName);
-      // KF-524: the title is a textarea that grows to its wrapped lines;
+      // the title is a textarea that grows to its wrapped lines;
       // Enter saves instead of adding a line.
       var fitTitle = function () {
         nameInput.style.height = 'auto';
@@ -6156,7 +6156,7 @@
       bindDescriptionBlock(descBlock);
     }
     syncMdToggle();
-    // KF-254: the composer submits on Enter (no Add button), Shift+Enter adds a line.
+    // the composer submits on Enter (no Add button), Shift+Enter adds a line.
     var commentInput = document.getElementById('modal-comment-input');
     if (commentInput) {
       wireMentions(commentInput);
@@ -6189,7 +6189,7 @@
     wireOwnerPanel(overlay);
     wireMetadata(overlay);
 
-    // KF-278: Time spent hover menu with tooltip and action menu
+    // Time spent hover menu with tooltip and action menu
     wireTimeSpentHover();
     wireModalScrollShadow(overlay);
   }
@@ -6205,12 +6205,12 @@
     }, true);
   }
 
-  // ---------- Subtasks (KF-058) ----------
+  // ---------- Subtasks ----------
   //
   // Wired per modal open: Enter in the "Add subtask..." row creates one,
   // checkboxes toggle done, clicking a name edits it inline, and the
-  // ⋮ handle opens a small menu with "Delete subtask" (KF-264), deleted
-  // via the styled in-page confirm (KF-047 pattern), never window.confirm.
+  // ⋮ handle opens a small menu with "Delete subtask", deleted
+  // via the styled in-page confirm, never window.confirm.
 
   function wireSubtasks() {
     var wrap = document.getElementById('modal-subtasks');
@@ -6219,7 +6219,7 @@
     var taskId = modalTaskId();
     if (!taskId) return;
 
-    // KF-262: keep the "N / M" count in the section header band in sync
+    // keep the "N / M" count in the section header band in sync
     // whenever subtasks change (toggle, add, delete) — no page reload.
     var countEl = document.getElementById('modal-subtask-count');
     function updateSubtaskCount() {
@@ -6250,7 +6250,7 @@
       handle.className = 'tm-subtask-handle';
       handle.setAttribute('aria-label', 'Subtask options');
       handle.setAttribute('aria-haspopup', 'menu');
-      // KF-264: muted-gray vertical ellipsis sampled from GM-085
+      // muted-gray vertical ellipsis sampled from GM-085
       // (4px dots, #b1a286) replacing the old × delete button.
       handle.innerHTML = '<svg width="6" height="16" viewBox="0 0 6 16" aria-hidden="true" focusable="false">' +
         '<ellipse cx="3" cy="2.5" rx="2.0" ry="2.25" fill="currentColor"/>' +
@@ -6673,7 +6673,7 @@
         });
     });
 
-    // KF-264: shared per-row handle menu with "Delete subtask". Created
+    // shared per-row handle menu with "Delete subtask". Created
     // once per modal open, moved into the clicked row so it hangs off the
     // handle at the row's right edge; carries .tm-menu so click-away and
     // Escape (closeAllTmMenus) dismiss it like the other modal menus.
@@ -6759,7 +6759,7 @@
       if (name) startSubtaskEdit(name);
     });
 
-    // KF-273: keyboard navigation and reorder for subtask rows, as documented
+    // keyboard navigation and reorder for subtask rows, as documented
     // in the shortcuts dialog ("↑ ↓ — Navigate subtask list",
     // "Cmd + ↑ ↓ — Move subtask in list"). Arrow keys inside the inline
     // .tm-subtask-edit input are left alone (caret navigation).
@@ -6872,7 +6872,7 @@
     }
   }
 
-  // ---------- Members dialog (KF-060) ----------
+  // ---------- Members dialog ----------
   //
   // Shared by the task-modal Add menu and the card context menu. Shows the
   // board roster with a Search... filter; clicking a row toggles that
@@ -7098,7 +7098,7 @@
       });
   }
 
-  // ---------- Timer settings modal (KF-074, KF-079) ----------
+  // ---------- Timer settings modal ----------
 
   var TimerSettings = {
     settings: null,
@@ -7199,7 +7199,7 @@
       this.setToggle('ts-sounds', !this.getToggle('ts-sounds'));
     },
 
-    // KF-076: Interruptions tab — ⋮⋮ drag-reorder handles (SortableJS),
+    // Interruptions tab — ⋮⋮ drag-reorder handles (SortableJS),
     // inline rename (click → yellow-highlighted input), green "Add reason"
     // button. Every mutation persists immediately via PUT /api/settings.
     renderReasons: function () {
@@ -7305,7 +7305,7 @@
         .catch(function (e) { toast('Could not save reasons: ' + e.message); });
     },
 
-    // Green "Add reason" (KF-076): appends a blank row already in rename
+    // Green "Add reason": appends a blank row already in rename
     // mode; committing an empty name discards the row.
     addReason: function () {
       if (!this.settings) return;
@@ -7324,7 +7324,7 @@
       this.saveReasons();
     },
 
-    // KF-075: break activities are persisted in settings.break_activities.
+    // break activities are persisted in settings.break_activities.
     addActivity: function () {
       var dlg = document.getElementById('activity-dialog');
       if (!dlg) { toast('Break activities are not available here.'); return; }
@@ -7476,7 +7476,7 @@
     },
   };
 
-  // Distinct Web-Audio alarm sounds (KF-079): bell, chime, beeps, blip,
+  // Distinct Web-Audio alarm sounds: bell, chime, beeps, blip,
   // glass, microwave, egg_timer, grandpa_clock, melodic.
   function playAlarmSound(name, volumePct) {
     try {
@@ -7523,7 +7523,7 @@
 
   // ---------- Timer UI (header pill + popup) ----------
 
-  // KF-129: only treat a fetch body as JSON when the server actually sent
+  // only treat a fetch body as JSON when the server actually sent
   // JSON. `res.ok` alone is not enough: on a fresh database every /api/*
   // request 303-redirects to /setup, and fetch follows the redirect to a
   // 200-OK HTML page — calling .json() on that body throws an uncaught
@@ -7571,7 +7571,7 @@
     pollHandle: null,
     tickHandle: null,
     lastStatus: null,
-    // KF-006: the started_at of the pomodoro whose 00:00 chime has played.
+    // the started_at of the pomodoro whose 00:00 chime has played.
     chimedFor: null,
     // why-stop flow
     whyOriginal: null,
@@ -7582,10 +7582,10 @@
     whySeconds: 0,
     whyStartWall: null,
     whyTaskName: 'Pomodoro',
-    // KF-194: true while the why-stop menu is up for a session that has not
+    // true while the why-stop menu is up for a session that has not
     // been finalized yet; dismissing the menu then still stops the timer.
     whyPending: false,
-    // KF-078: Picture-in-Picture — a hidden canvas feeds a hidden video;
+    // Picture-in-Picture — a hidden canvas feeds a hidden video;
     // the video goes into a floating PiP window showing the live countdown.
     pipVideo: null,
     pipCanvas: null,
@@ -7597,7 +7597,7 @@
       // toggles the popup open then shut on a single click.
       if (this.initialized) return;
       this.initialized = true;
-      // KF-380: pages without the timer UI (/login, /setup) are signed out,
+      // pages without the timer UI (/login, /setup) are signed out,
       // where the timer endpoints answer 401.
       if (!document.getElementById('timer-popup')) return;
       var self = this;
@@ -7618,10 +7618,10 @@
           self.togglePopup();
         });
       }
-      // KF-282: right-click context menu on the timer area (KanbanFlow
+      // right-click context menu on the timer area (KanbanFlow
       // parity, GM-109): Comment / Label / Edit / Delete act on the
       // currently-timed task. The items are disabled while no task is
-      // timed (KanbanFlow grays inapplicable items; precedent: KF-332).
+      // timed (KanbanFlow grays inapplicable items).
       var timerMenu = document.getElementById('timer-ctx-menu');
       if (timerMenu) {
         document.addEventListener('contextmenu', function (e) {
@@ -7647,7 +7647,7 @@
           if (taskId) self.timerMenuAction(act, taskId, taskName);
         });
       }
-      // KF-001: in "Select task" mode the next card click picks that card
+      // in "Select task" mode the next card click picks that card
       // instead of opening it.
       document.addEventListener('click', function (e) {
         if (!self.selecting) return;
@@ -7657,7 +7657,7 @@
         e.stopPropagation();
         self.selectTask(card.dataset.taskId);
       }, true);
-      // KF-010: the panel stays open beside a task modal (it closes only from
+      // the panel stays open beside a task modal (it closes only from
       // its collapse button or the pill), and its task-row link follows the
       // modal: "Select open task" while another task's modal is open.
       var modalRoot = document.getElementById('modal-root');
@@ -7677,7 +7677,7 @@
         .then(function (status) {
           if (!status) return;
           self.updateFromStatus(status);
-          // KF-001: another tab or an API client may have deleted the
+          // another tab or an API client may have deleted the
           // selected task; every status poll re-checks it.
           if (self.selectedTask && String(status.task_id || '') !== String(self.selectedTask.id)) {
             self.validateSelection();
@@ -7687,7 +7687,7 @@
 
     updateFromStatus: function (status) {
       this.lastStatus = status;
-      // KF-006: a session already at 00:00 when this page first sees it
+      // a session already at 00:00 when this page first sees it
       // (a reload) does not chime again.
       var prevStart = this.state ? this.state.startedAt : null;
       if (status.mode && status.mode !== 'stopwatch' && status.remaining_seconds === 0 &&
@@ -7704,7 +7704,7 @@
         remainingSeconds: status.remaining_seconds,
         totalSeconds: status.total_seconds,
         startedAt: status.started_at,
-        // KF-006: the server's elapsed time plus a monotonic local delta, so
+        // the server's elapsed time plus a monotonic local delta, so
         // a skewed browser clock cannot shorten or end a session.
         elapsedAtSync: status.elapsed_seconds != null ? status.elapsed_seconds
           : (status.total_seconds || 0) - (status.remaining_seconds || 0),
@@ -7714,29 +7714,29 @@
         sessionId: status.session_id,
         pomodoroCount: status.pomodoro_count,
       };
-      // KF-001: a work session's task becomes the selected task, so it stays
+      // a work session's task becomes the selected task, so it stays
       // selected after the session stops.
       if (status.phase !== 'idle' && status.task_id &&
           (status.mode === 'pomodoro' || status.mode === 'stopwatch')) {
         this.setSelectedTask({ id: String(status.task_id), name: status.task_name || '', color: this.state.taskColor });
       }
-      // KF-465: a new break opens on its own (Pomodoro) tab.
+      // a new break opens on its own (Pomodoro) tab.
       var breakNow = status.mode === 'short_break' || status.mode === 'long_break';
       if (breakNow && status.started_at !== prevStart && this.currentModeTab !== 'pomodoro') {
         this.setModeTab('pomodoro');
       }
       this.renderPill();
       this.syncPip();
-      this.syncTick(); // KF-197: tick runs while a session is live, popup or not
+      this.syncTick(); // tick runs while a session is live, popup or not
       if (document.getElementById('timer-popup') &&
           !document.getElementById('timer-popup').hidden) {
         this.renderPopup();
       }
       this.updateCardIndicators();
-      this.updateCardLive(); // KF-103: live card badge / revert on idle
+      this.updateCardLive(); // live card badge / revert on idle
     },
 
-    // KF-001: the task the next session runs on. It survives stops, breaks
+    // the task the next session runs on. It survives stops, breaks
     // and reloads (a per-viewer convenience, so browser storage suffices).
     selectedTask: null,
 
@@ -7750,7 +7750,7 @@
       }
     },
 
-    // KF-001: drop a stored selection whose task is gone — checked on load
+    // drop a stored selection whose task is gone — checked on load
     // and whenever the selected card leaves the board (a delete; a move
     // re-adds it within the debounce).
     watchSelectedCard: function () {
@@ -7829,7 +7829,7 @@
       return ((s && s.totalSeconds) || 0) - this.elapsed();
     },
 
-    // KF-451: the elapsed time a stop would log, as the server caps it: an
+    // the elapsed time a stop would log, as the server caps it: an
     // hour past a timed session's duration, 12 hours for a stopwatch.
     loggableElapsed: function () {
       var s = this.state;
@@ -7837,7 +7837,7 @@
       return Math.min(this.elapsed(), cap);
     },
 
-    // KF-197: the 1s tick used to start only inside renderPopup() and die in
+    // the 1s tick used to start only inside renderPopup() and die in
     // closePopup(), so the header pill froze whenever the popup was closed
     // (updating only on the 15s server poll). The tick lifecycle now follows
     // the timer state instead: ticking while any session is live, stopped
@@ -7852,8 +7852,8 @@
       }
     },
 
-    // KF-052: the timer's task gets a dashed outline on its card — the
-    // selected task too while the timer is idle (KanbanFlow). KF-378: while
+    // the timer's task gets a dashed outline on its card — the
+    // selected task too while the timer is idle (KanbanFlow). While
     // a work session runs or waits for its break, the board-header avatar
     // and the timed card's avatar carry a play badge; a timed card without
     // the user's avatar shows one for the session.
@@ -7892,7 +7892,7 @@
       });
     },
 
-    // KF-103: while a work session runs or waits for its break, the task's
+    // while a work session runs or waits for its break, the task's
     // card time reads "2h 46m + 42m / 8h" with the live part inline. A card
     // without a time badge gains one after the first minute. Stopping or
     // discarding drops the live part (hideCardLive).
@@ -7973,13 +7973,13 @@
       return mins * 60;
     },
 
-    // KF-098: idle pill shows the configured duration with a green play
+    // idle pill shows the configured duration with a green play
     // triangle (pomodoro tab) or a red stop square + 00:00 (stopwatch tab);
     // a running session shows a red stop square + live countdown/count-up.
     renderPill: function () {
       var pill = document.getElementById('timer-pill');
       if (!pill) return;
-      // KF-097: the pill is the timer dropdown control, but KanbanFlow
+      // the pill is the timer dropdown control, but KanbanFlow
       // hides it while the timer popup panel is open. Update the
       // icon/label spans in place so the pill's own click listener
       // survives re-renders.
@@ -8002,36 +8002,36 @@
           label = this.fmt(this.pomodoroSeconds());
         }
       } else if (s.mode === 'short_break' || s.mode === 'long_break') {
-        // KF-426: a break shows a solid green ▶ (golden 28), counting down.
+        // a break shows a solid green ▶ (golden 28), counting down.
         glyph = '';
         cls = 'timer-pill-icon timer-pill-playbox';
         label = this.fmt(this.remaining());
       } else {
-        // KF-325: a running session shows KanbanFlow's solid red square.
+        // a running session shows KanbanFlow's solid red square.
         glyph = '';
         cls = 'timer-pill-icon timer-pill-stopbox';
         label = this.fmt(s.mode === 'stopwatch' ? this.elapsed() : this.remaining());
       }
-      // KF-020: the tab title counts down/up with the live timer
-      // ("00:00 General — Pomb", KanbanFlow parity). KF-375: the title
+      // the tab title counts down/up with the live timer
+      // ("00:00 General — Pomb", KanbanFlow parity). The title
       // keeps ticking while the popup hides the pill.
       if (!this._baseTitle) this._baseTitle = document.title;
       // An idle timer with a selected task shows its duration too (ref 03).
-      // KF-427: while a pomodoro waits for its break the title alternates
+      // while a pomodoro waits for its break the title alternates
       // "00:00" and "--------" (golden 26).
       var titleLabel = this.waitingForBreak() && !this.blinkOn() ? '--------' : label;
       document.title = active || this.selectedTask ? titleLabel + ' ' + this._baseTitle : this._baseTitle;
-      // KF-239: idle shows the header clock icon, a session shows the chip.
+      // idle shows the header clock icon, a session shows the chip.
       pill.classList.toggle('timer-pill--idle', !active);
       if (icon) { icon.innerHTML = glyph; icon.className = cls; }
       if (timeEl) timeEl.textContent = label;
-      // KF-027: the running state must be visibly distinct from idle.
-      // KF-426: a break's chip is not in the running style (golden 28).
+      // the running state must be visibly distinct from idle.
+      // a break's chip is not in the running style (golden 28).
       pill.classList.toggle('running', active && cls.indexOf('stopbox') !== -1);
       this.syncBell();
     },
 
-    // KF-552: the bell carries a badge while a finished pomodoro waits for
+    // the bell carries a badge while a finished pomodoro waits for
     // its break (golden timer/26).
     syncBell: function () {
       var badge = document.querySelector('#notifications-btn .notification-badge');
@@ -8040,7 +8040,7 @@
       badge.textContent = Notifications.badgeText();
     },
 
-    // KF-001/KF-366: KanbanFlow's panel — a clock row (big time + Start,
+    // KanbanFlow's panel — a clock row (big time + Start,
     // Stop or Take break), the task row ("● Task ×" or "No task selected")
     // with its link, then the TODAY log.
     renderPopup: function () {
@@ -8054,7 +8054,7 @@
       var isBreak = mode === 'short_break' || mode === 'long_break';
       var titleEl = document.getElementById('timer-popup-title');
       var labelEl = document.getElementById('timer-popup-label');
-      // KF-424: a break keeps the "Pomodoro" title and reads "Break time"
+      // a break keeps the "Pomodoro" title and reads "Break time"
       // (golden 27).
       if (titleEl) titleEl.textContent = mode === 'stopwatch' ? 'Stopwatch' : 'Pomodoro';
       if (labelEl) {
@@ -8063,13 +8063,13 @@
       var clock;
       var button;
       if (this.waitingForBreak()) {
-        // KF-006: a finished pomodoro keeps running (its time still counts)
-        // until Take break. KF-427: its "00:00" blinks beside the green
+        // a finished pomodoro keeps running (its time still counts)
+        // until Take break. Its "00:00" blinks beside the green
         // button (golden 26).
         clock = '00:00';
         button = '<button type="button" class="timer-btn timer-btn-green" id="tp-take-break">Take break</button>';
       } else if (active && isBreak) {
-        // KF-424: a break offers the green ▶ Start, which skips to the next
+        // a break offers the green ▶ Start, which skips to the next
         // pomodoro.
         clock = this.fmt(this.remaining());
         button = '<button type="button" class="timer-btn" id="tp-break-start">' +
@@ -8096,7 +8096,7 @@
       } else {
         html += '<div class="timer-task-row timer-task-none">No task selected</div>';
       }
-      // KF-010: "Select open task" while a different task's modal is open.
+      // "Select open task" while a different task's modal is open.
       var openId = modalTaskId();
       var link = openId && (!task || String(openId) !== String(task.id)) ? 'Select open task' :
         task ? 'Change task' : 'Select task';
@@ -8116,7 +8116,7 @@
       this.renderTodayList();
     },
 
-    // KF-279: KanbanFlow's TODAY log — "TODAY 58m 1 Pomodoro" (the total
+    // KanbanFlow's TODAY log — "TODAY 58m 1 Pomodoro" (the total
     // and count appear once something is logged), the live session first as
     // "10:35 PM – pending", then logged entries as "10:27 PM – 10:28 PM",
     // each with a task-colored dot and a ⋮ menu. Two rows show until "•••"
@@ -8265,14 +8265,14 @@
     },
 
     tick: function () {
-      // KF-138: the server reports the mode string as phase ('pomodoro',
+      // the server reports the mode string as phase ('pomodoro',
       // 'stopwatch', …) — 'running' never occurs, so the old check meant the
       // tick never fired. Any non-idle phase is live.
       var s = this.state;
       if (!s || s.phase === 'idle') return;
-      // KF-103: keep the running task's card badge live on every tick.
+      // keep the running task's card badge live on every tick.
       this.updateCardLive();
-      // KF-079: ticking sound per the Ticking mode setting.
+      // ticking sound per the Ticking mode setting.
       var mode = this.settings && this.settings.ticking_mode;
       if (mode === 'always') {
         this.tickSound();
@@ -8296,7 +8296,7 @@
       }
     },
 
-    // ----- KF-078: Picture-in-Picture -----
+    // ----- Picture-in-Picture -----
     //
     // When the toggle is on and a session runs, open a small always-on-top
     // window (browser Picture-in-Picture) fed by a canvas showing the
@@ -8417,7 +8417,7 @@
       if (popup.hidden) {
         popup.hidden = false;
         this.renderPopup();
-        // KF-097: anchor after rendering so the height is known; renderPill
+        // anchor after rendering so the height is known; renderPill
         // then hides the pill while the panel is open.
         this.positionPopup();
         this.renderPill();
@@ -8426,7 +8426,7 @@
       }
     },
 
-    // KF-366: KanbanFlow drops the panel from the board-header row (6 px
+    // KanbanFlow drops the panel from the board-header row (6 px
     // below its top), right edge 6 px left of the filter button.
     positionPopup: function () {
       var popup = document.getElementById('timer-popup');
@@ -8453,17 +8453,17 @@
     closePopup: function () {
       var popup = document.getElementById('timer-popup');
       if (popup) popup.hidden = true;
-      // KF-097: the pill returns once the popup closes.
+      // the pill returns once the popup closes.
       var pill = document.getElementById('timer-pill');
       if (pill) pill.hidden = false;
-      // KF-232: refresh the pill (icon, label, tab title) the popup hid.
+      // refresh the pill (icon, label, tab title) the popup hid.
       this.renderPill();
-      // KF-197: keep the 1s tick alive while a session runs — the pill must
+      // keep the 1s tick alive while a session runs — the pill must
       // keep counting down with the popup closed. syncTick stops it on idle.
       this.syncTick();
     },
 
-    // KF-282: actions for the timer-area right-click context menu (KanbanFlow
+    // actions for the timer-area right-click context menu (KanbanFlow
     // parity, GM-109). They act on the currently-timed task: Comment and
     // Label open the task modal and trigger the matching Add-menu item,
     // Edit opens the task modal, and Delete removes the task with the
@@ -8480,7 +8480,7 @@
       } else if (act === 'edit') {
         openModal(taskId);
       } else if (act === 'delete') {
-        // Mirrors the card context menu's delete (KF-184): styled in-page
+        // Mirrors the card context menu's delete: styled in-page
         // confirmation, card removal, and a column-count refresh.
         var timedCard = document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
         showConfirmDialog('Delete task', deleteConfirmMessage(taskName, timedCard), 'Delete', function () {
@@ -8549,7 +8549,7 @@
 
     currentModeTab: 'pomodoro',
 
-    // KF-009: the footer's first tab switches the idle timer between
+    // the footer's first tab switches the idle timer between
     // Pomodoro and Stopwatch and names the other mode.
     setModeTab: function (mode) {
       this.currentModeTab = mode;
@@ -8562,7 +8562,7 @@
       }
       var popup = document.getElementById('timer-popup');
       if (popup && !popup.hidden) this.renderPopup();
-      // The idle pill reflects the selected tab (KF-098: stopwatch idle).
+      // The idle pill reflects the selected tab (stopwatch idle).
       this.renderPill();
     },
 
@@ -8570,9 +8570,9 @@
       this.setModeTab(this.currentModeTab === 'pomodoro' ? 'stopwatch' : 'pomodoro');
     },
 
-    // KF-001: the green Start runs the selected task, or no task.
-    // KF-001: a selected task deleted elsewhere is dropped before Start
-    // ("No task selected"), so Start never posts a stale id. KF-450: the
+    // the green Start runs the selected task, or no task.
+    // a selected task deleted elsewhere is dropped before Start
+    // ("No task selected"), so Start never posts a stale id. The
     // drop is announced, and the next Start runs without a task.
     startClicked: function () {
       var self = this;
@@ -8584,7 +8584,7 @@
       });
     },
 
-    // keepPopup: the panel stays open (KF-553: Take break, golden timer/27).
+    // keepPopup: the panel stays open (Take break).
     start: function (mode, taskId, keepPopup) {
       var self = this;
       if (taskId && (mode === 'pomodoro' || mode === 'stopwatch')) {
@@ -8604,7 +8604,7 @@
           refreshBoardCard(retiredTask);
         } else if (res.status === 404 && taskId && self.selectedTask &&
                    String(self.selectedTask.id) === String(taskId)) {
-          self.dropSelection(); // KF-001: the task was deleted meanwhile
+          self.dropSelection(); // the task was deleted meanwhile
           self.announceDeletedTask();
         } else {
           toastRefusal(res, 'Could not start the timer');
@@ -8616,7 +8616,7 @@
       toast('The selected task was deleted', 'Press Start again to run without a task');
     },
 
-    // KF-424: Start during a break ends it and runs the next pomodoro on the
+    // Start during a break ends it and runs the next pomodoro on the
     // selected task (golden 27).
     skipBreak: function () {
       this.setModeTab('pomodoro');
@@ -8638,8 +8638,8 @@
       var s = this.state;
       if (!s || s.phase === 'idle') return;
       // KanbanFlow: sessions under 20s are discarded with a toast and no
-      // "why did you stop?" menu (KF-007).
-      // KF-516: a stopwatch stops without a reason menu (golden timer/24).
+      // "why did you stop?" menu.
+      // a stopwatch stops without a reason menu (golden timer/24).
       if (this.elapsed() < 20 || s.mode === 'stopwatch') {
         this.whyOriginal = s;
         this.stopAndLog(null);
@@ -8648,7 +8648,7 @@
       this.beginWhy(s.sessionId, s.taskId, s.taskName, s.mode, s.remainingSeconds, s.totalSeconds);
     },
 
-    // KF-465: the panel shows the idle timer when nothing runs, and the
+    // the panel shows the idle timer when nothing runs, and the
     // idle stopwatch when the Stopwatch tab is picked during a break (its
     // Start then ends the break).
     panelShowsIdle: function () {
@@ -8658,18 +8658,18 @@
       return isBreak && this.currentModeTab === 'stopwatch';
     },
 
-    // KF-427: the waiting "00:00" shows on even seconds, hides on odd ones.
+    // the waiting "00:00" shows on even seconds, hides on odd ones.
     blinkOn: function () {
       return this.elapsed() % 2 === 0;
     },
 
-    // KF-006: a pomodoro past its duration waits for "Take break".
+    // a pomodoro past its duration waits for "Take break".
     waitingForBreak: function () {
       var s = this.state;
       return !!(s && s.phase !== 'idle' && s.mode === 'pomodoro' && this.remaining() <= 0);
     },
 
-    // KF-006/KF-425: at 00:00 a session chimes once and stays: a pomodoro
+    // at 00:00 a session chimes once and stays: a pomodoro
     // waits for "Take break", a break stays on "Break time 00:00" with
     // Start (golden 29). The server keeps both running, so a reload lands
     // in the same state.
@@ -8682,15 +8682,15 @@
       if (popup && !popup.hidden) this.renderPopup();
     },
 
-    // Stop the live session; resolves to the stop result or null. KF-015: a
-    // completed session carries no stop reason. KF-453: the request names
+    // Stop the live session; resolves to the stop result or null. A
+    // completed session carries no stop reason. The request names
     // the session, so a stop another tab already made reads as success.
     stopSession: function (completed) {
       var payload = completed ? { completed: true } : {};
       if (this.state && this.state.startedAt != null) payload.started_at = this.state.startedAt;
-      // KF-499: the session id tells apart two sessions started in one second.
+      // the session id tells apart two sessions started in one second.
       if (this.state && this.state.sessionId != null) payload.session_id = this.state.sessionId;
-      // KF-535: a stop that names no session is never sent; the tab has none to stop.
+      // a stop that names no session is never sent; the tab has none to stop.
       if (payload.started_at == null && payload.session_id == null) {
         return Promise.resolve({ already_stopped: true });
       }
@@ -8703,7 +8703,7 @@
         .catch(function () { return null; /* the next status poll resyncs */ });
     },
 
-    // KF-453: other tabs resync the moment this one starts, stops or
+    // other tabs resync the moment this one starts, stops or
     // retargets the timer (a storage event fires in every other tab).
     broadcastTimer: function () {
       try {
@@ -8711,7 +8711,7 @@
       } catch (e) { /* the 15 s poll still resyncs */ }
     },
 
-    // KF-453: follow another tab's timer changes and task selection.
+    // follow another tab's timer changes and task selection.
     watchOtherTabs: function () {
       var self = this;
       window.addEventListener('storage', function (e) {
@@ -8727,7 +8727,7 @@
       });
     },
 
-    // KF-006: log the finished pomodoro, then start the due break. Only
+    // log the finished pomodoro, then start the due break. Only
     // completed pomodori count toward "Long break interval: Every Nth
     // break" (the server's pomodoro_count), so stopped ones never make a
     // break long.
@@ -8752,7 +8752,7 @@
       });
     },
 
-    // ----- "why did you stop?" flow (KF-005) -----
+    // ----- "why did you stop?" flow -----
 
     beginWhy: function (sessionId, taskId, taskName, mode, remainingSeconds, totalSeconds) {
       var self = this;
@@ -8762,11 +8762,11 @@
       this.whyTaskName = taskName || 'Pomodoro';
       this.whyMode = mode;
       this.whyEntryId = null;
-      this.whyPending = true; // KF-194: a stop is in flight until finalized
+      this.whyPending = true; // a stop is in flight until finalized
       var menu = document.getElementById('why-stop-menu');
       // The menu lists the configured interruption reasons; make sure the
       // settings payload arrived before rendering it.
-      // KF-366: the menu takes the panel's place (KanbanFlow "‹ Why did you stop?").
+      // the menu takes the panel's place (KanbanFlow "‹ Why did you stop?").
       var popup = document.getElementById('timer-popup');
       if (popup && !popup.hidden && popup.style.left) {
         menu.style.left = popup.style.left;
@@ -8781,11 +8781,11 @@
       this.closePopup();
     },
 
-    // Populate the menu from the configured interruption reasons (KF-005).
+    // Populate the menu from the configured interruption reasons.
     // KanbanFlow's verbatim item order: the 15 defaults, "Add new reason…",
-    // then "Task done" as the final item (KF-011). "Task done" seeded in
+    // then "Task done" as the final item. "Task done" seeded in
     // older databases is filtered out of the reason list since it is now
-    // always the final menu item (KF-077).
+    // always the final menu item.
     renderWhyReasons: function () {
       var wrap = document.getElementById('why-stop-reasons');
       if (!wrap) return;
@@ -8828,7 +8828,7 @@
 
     closeWhyMenu: function () {
       var menu = document.getElementById('why-stop-menu');
-      // KF-194: dismissing the why menu without picking a reason (‹/Esc)
+      // dismissing the why menu without picking a reason (‹/Esc)
       // must still finalize the stop — otherwise the server timer keeps
       // running while the UI looks idle (pill and popup disagree).
       if (this.whyPending) {
@@ -8841,20 +8841,20 @@
     stopAndLog: function (reason) {
       var self = this;
       var loggedTask = this.workTaskId();
-      // KF-452: a stop finished from the why menu returns to the panel.
+      // a stop finished from the why menu returns to the panel.
       var menu = document.getElementById('why-stop-menu');
       var fromMenu = !!(menu && !menu.hidden);
       self.whyPending = false; // the stop is being finalized; a later
       // closeWhyMenu (e.g. from the fetch callback) must not re-trigger it.
       var payload = {};
       if (reason) payload.reason = reason;
-      // KF-453: name the session being stopped (the one the why menu opened
+      // name the session being stopped (the one the why menu opened
       // for), so a stop another tab already made reads as success.
       var session = this.whyOriginal || this.state;
       if (session && session.startedAt != null) payload.started_at = session.startedAt;
       if (session && session.sessionId != null) payload.session_id = session.sessionId;
       this.whyOriginal = null;
-      // KF-535: a stop that names no session is never sent; the tab has none to stop.
+      // a stop that names no session is never sent; the tab has none to stop.
       var request = payload.started_at == null && payload.session_id == null
         ? Promise.resolve({ already_stopped: true })
         : fetch('/api/timer/stop', {
@@ -8867,12 +8867,12 @@
         .then(function (data) {
           if (!data) { self.refresh(); return; }
           self.closeWhyMenu();
-          self.hideCardLive(); // KF-103: session over — badge reverts
+          self.hideCardLive(); // session over — badge reverts
           self.refresh().then(function () {
             var popup = document.getElementById('timer-popup');
             if (fromMenu && popup && popup.hidden) self.togglePopup();
           });
-          // KF-007: the server discards sessions under 20s — say so with
+          // the server discards sessions under 20s — say so with
           // KanbanFlow's toast instead of pretending the stop was logged.
           if (data && !data.already_stopped) self.broadcastTimer();
           if (data && data.discarded) {
@@ -8890,7 +8890,7 @@
         ? String(s.taskId) : null;
     },
 
-    // KF-021: the Add button must read the input instead of posting undefined.
+    // the Add button must read the input instead of posting undefined.
     addWhyReason: function () {
       var input = document.getElementById('why-stop-new');
       var reason = input ? input.value.trim() : '';
@@ -8901,13 +8901,13 @@
       this.stopAndLog(reason);
     },
 
-    // KF-011: KanbanFlow's "Task done" is just a stop reason — it logs the
+    // KanbanFlow's "Task done" is just a stop reason — it logs the
     // session with reason "Task done" and never moves the task anywhere.
     whyTaskDone: function () {
       this.stopAndLog('Task done');
     },
 
-    // KF-010: the task-row link. "Select open task" picks the task whose
+    // the task-row link. "Select open task" picks the task whose
     // modal is open; "Select task" and "Change task" enter select mode.
     changeTask: function () {
       var openId = modalTaskId();
@@ -8921,7 +8921,7 @@
 
     selecting: false,
 
-    // KF-001: "Select task" closes the panel and shows the header pill; the
+    // "Select task" closes the panel and shows the header pill; the
     // next card click picks that card (see init).
     beginSelect: function () {
       this.selecting = true;
@@ -8985,7 +8985,7 @@
         credentials: 'same-origin',
         body: JSON.stringify({ task_id: taskId || null }),
       }).then(function (res) {
-        // KF-129: only parse JSON when the server actually sent it.
+        // only parse JSON when the server actually sent it.
         var ct = res.headers ? (res.headers.get('content-type') || '') : '';
         if (!res.ok || ct.indexOf('application/json') === -1) { toast('Could not change task.'); return null; }
         return res.json();
@@ -9006,7 +9006,7 @@
     },
 
     openLog: function () {
-      // KF-286: the timer log opens as a modal over the dimmed board.
+      // the timer log opens as a modal over the dimmed board.
       TimerLogPage.openModal();
     },
   };
@@ -9023,7 +9023,7 @@
     cal.style.top = (r.bottom + 6) + 'px';
   }
 
-  // KF-414: a stored due_at may use RFC3339's lowercase "t"/"z" or a
+  // a stored due_at may use RFC3339's lowercase "t"/"z" or a
   // space separator, which Safari's Date parser rejects; normalize first.
   function parseDueAt(s) {
     var v = String(s == null ? '' : s).trim()
@@ -9056,7 +9056,7 @@
     return Math.floor(b - a);
   }
 
-  // KF-004: seconds between "HH:MM[:SS]" strings; null when to <= from.
+  // seconds between "HH:MM[:SS]" strings; null when to <= from.
   function diffSeconds(from, to) {
     function parts(s) {
       var p = s.split(':');
@@ -9068,7 +9068,7 @@
     return b - a;
   }
 
-  // KF-389: the manual time dialogs' Duration readout. KanbanFlow shows
+  // the manual time dialogs' Duration readout. KanbanFlow shows
   // "0h" for an empty or zero-length range; "—" means To is before From.
   function durationLabel(from, to) {
     if (!from || !to) return '0h';
@@ -9093,8 +9093,8 @@
   }
 
   // Shared calendar renderer for the manual-time and edit-entry dialogs:
-  // Sun–Sat grid, selected day blue (KF-003).
-  // KF-291: three-letter weekday names (KanbanFlow GM-122/GM-171) and quick
+  // Sun–Sat grid, selected day blue.
+  // three-letter weekday names (KanbanFlow GM-122/GM-171) and quick
   // buttons "Today", "yesterday", "This month" under the grid.
   function renderCalPopup(popup, input, year, month) {
     var first = new Date(year, month, 1);
@@ -9133,7 +9133,7 @@
         popup.hidden = true;
       });
     });
-    // KF-291 quick buttons. Today/yesterday pick the date (popups dismiss;
+    // Quick buttons. Today/yesterday pick the date (popups dismiss;
     // the inline due-date calendar re-renders so the picked day highlights).
     // "This month" only navigates the grid back to the current month.
     function setQuickDate(date) {
@@ -9161,9 +9161,9 @@
     });
   }
 
-  // ---------- Manual time dialog (KF-003) ----------
+  // ---------- Manual time dialog ----------
 
-  // KF-460: task names repeat across boards, so the dialog's own task wins
+  // task names repeat across boards, so the dialog's own task wins
   // while its name is unchanged, and a typed name must match one task.
   function resolveTypedTask(name, ownId, ownName) {
     if (ownId && (!name || name === ownName)) return ownId;
@@ -9182,7 +9182,7 @@
     taskId: null,
     taskName: null,
     taskIdsByName: Object.create(null),
-    // date: optional YYYY-MM-DD to prefill the date field (KF-113 — the
+    // date: optional YYYY-MM-DD to prefill the date field (the
     // timer log's per-day-group "Add time entry" links pass their day).
     open: function (taskId, taskName, date) {
       var overlay = document.getElementById('manual-time-overlay');
@@ -9258,7 +9258,7 @@
       positionCalendar(input, popup);
       popup.hidden = false;
     },
-    // KF-271: "Add comment" is a checkbox expander (GM-082); visibility
+    // "Add comment" is a checkbox expander (GM-082); visibility
     // follows the checkbox state.
     toggleComment: function () {
       var check = document.getElementById('mt-comment-check');
@@ -9292,7 +9292,7 @@
       if (!date) { this.showError('Pick a date.'); return; }
       if (!from || !to) { this.showError('Enter a From and To time.'); return; }
       if (diffMinutes(from, to) === null) { this.showError('End time must be after start time.'); return; }
-      // KF-380: catch a future start here; the server's 400 logs a console error.
+      // catch a future start here; the server's 400 logs a console error.
       if (new Date(date + 'T' + (from.length === 5 ? from + ':00' : from)) > new Date()) {
         document.getElementById('mt-error-overlay').hidden = false;
         return;
@@ -9321,7 +9321,7 @@
     },
   };
 
-  // ---------- Edit time entry dialog (KF-004) ----------
+  // ---------- Edit time entry dialog ----------
   var EditEntry = {
     entryId: null,
     taskId: null,
@@ -9337,7 +9337,7 @@
           self.taskId = data.task_id;
           self.taskName = data.task_name || '';
           var start = new Date(data.started_at);
-          // KF-004: guard against malformed started_at (Invalid Date would
+          // guard against malformed started_at (Invalid Date would
           // populate NaN into the date/time fields).
           if (isNaN(start.getTime())) { toast('Could not load the time entry.'); return; }
           document.getElementById('ee-date').value = isoDate(start);
@@ -9374,7 +9374,7 @@
       var el = document.getElementById('ee-duration');
       if (!from || !to) { el.textContent = '0h'; return; }
       var secs = diffSeconds(from, to);
-      // KF-389: an equal From and To reads "0h", like the add dialog.
+      // an equal From and To reads "0h", like the add dialog.
       el.textContent = secs === null ? durationLabel(from, to)
         : secs < 60 ? secs + 's' : fmtDuration(Math.floor(secs / 60));
     },
@@ -9387,7 +9387,7 @@
       positionCalendar(input, popup);
       popup.hidden = false;
     },
-    // KF-271: "Add comment" is a checkbox expander (GM-084); visibility
+    // "Add comment" is a checkbox expander (GM-084); visibility
     // follows the checkbox state.
     toggleComment: function () {
       var check = document.getElementById('ee-comment-check');
@@ -9459,10 +9459,10 @@
   function initEntryEdit() {
     if (entryEditInitialized) return;
     entryEditInitialized = true;
-    // The modal log renders data-entry-id (KF-004); accept the legacy
+    // The modal log renders data-entry-id; accept the legacy
     // data-edit-entry attribute too.
     document.addEventListener('click', function (e) {
-      // KF-277: the time-log entry row itself carries data-entry-id (the
+      // the time-log entry row itself carries data-entry-id (the
       // explicit Edit button is gone), so ignore clicks on the row's
       // delete button — the delete handler is registered later on
       // document and cannot pre-empt this one via stopPropagation.
@@ -9473,7 +9473,7 @@
       EditEntry.open(btn.getAttribute('data-edit-entry') || btn.getAttribute('data-entry-id'));
     });
 
-    // Manual-time dialog wiring (mt-* ids, KF-003).
+    // Manual-time dialog wiring (mt-* ids).
     var mtDate = document.getElementById('mt-date');
     if (mtDate) mtDate.addEventListener('click', function () { ManualTime.openCalendar(); });
     var mtCalBtn = document.getElementById('mt-cal-btn');
@@ -9487,7 +9487,7 @@
     var mtAdd = document.getElementById('mt-add');
     if (mtAdd) mtAdd.addEventListener('click', function () { ManualTime.submit(); });
 
-    // Edit-entry dialog wiring (ee-* ids, KF-004).
+    // Edit-entry dialog wiring (ee-* ids).
     var eeDate = document.getElementById('ee-date');
     if (eeDate) eeDate.addEventListener('click', function () { EditEntry.openCalendar(); });
     var eeCalBtn = document.getElementById('ee-cal-btn');
@@ -9501,7 +9501,7 @@
     var eeUpdate = document.getElementById('ee-update');
     if (eeUpdate) eeUpdate.addEventListener('click', function () { EditEntry.submit(); });
 
-    // "Add time" buttons elsewhere (timer log page day groups, KF-113/KF-119).
+    // "Add time" buttons elsewhere (timer log page day groups).
     // Document-level delegation so buttons rendered after boot are covered.
     document.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-open-manual-time]');
@@ -9512,7 +9512,7 @@
     });
   }
 
-  // ---------- keyboard shortcuts (KF-094, KF-095) ----------
+  // ---------- keyboard shortcuts ----------
   // KanbanFlow: T = timer menu, P = reports menu, Y = manual time entry,
   // E = time estimate. Task-modal context: V = Move dialog, . = More menu,
   // Cmd+Enter = save, Delete = delete task, Esc = close.
@@ -9521,8 +9521,8 @@
     var menu = document.getElementById('reports-menu');
     if (!menu) return;
     if (!menu.hidden) { menu.hidden = true; return; }
-    // Interim anchor: the board-bar Menu + 15-item Reports submenu (KF-099,
-    // KF-133, KF-136) do not exist yet — when they land, P should open the
+    // Interim anchor: the board-bar Menu + 15-item Reports submenu
+    // do not exist yet — when they land, P should open the
     // real Reports submenu instead of this placeholder.
     var pill = document.getElementById('timer-pill');
     var x = window.innerWidth - 260;
@@ -9718,7 +9718,7 @@
         timerShortcut(e.shiftKey);
       }
     } else if (key === 'p') {
-      // KF-383: with a task open, P opens the modal's Reports menu, as T
+      // with a task open, P opens the modal's Reports menu, as T
       // opens its Timer menu.
       if (modal) {
         var reportsBtn = document.querySelector('[data-tm-menu="tm-reports-menu"]');
@@ -9756,7 +9756,7 @@
   // ---------- Task extras: labels, due dates, comments, attachments,
   // history & time-log sub-views (KanbanFlow parity batch) ----------
 
-  // Labels dialog (KF-061): current labels with × removal, an add input,
+  // Labels dialog: current labels with × removal, an add input,
   // and "Add labels..." suggestions drawn from the board's existing
   // labels (GET /api/boards/:id/labels). Save persists via PATCH.
   var LabelsDialog = {
@@ -9801,7 +9801,7 @@
         chip.appendChild(x);
         cur.appendChild(chip);
       });
-      // KF-269: KanbanFlow's fully-empty labels dialog shows a single body
+      // KanbanFlow's fully-empty labels dialog shows a single body
       // text "No recently used labels exist" (GM-080, GM-158) — there is no
       // separate "current labels" empty note, so render chips only when
       // labels exist and nothing otherwise.
@@ -9835,7 +9835,7 @@
           row.appendChild(document.createTextNode(l));
           all.appendChild(row);
         });
-      // KF-269: KanbanFlow's suggestions-area empty text is verbatim
+      // KanbanFlow's suggestions-area empty text is verbatim
       // "No recently used labels exist" (GM-080, GM-158).
       if (!sug.children.length) {
         sug.innerHTML = '<span class="empty-note">No recently used labels exist</span>';
@@ -9850,7 +9850,7 @@
       if (!label || this.labels.indexOf(label) !== -1) return;
       this.labels.push(label);
       this.render();
-      // KF-328: KanbanFlow applies label changes immediately (GM-080 has
+      // KanbanFlow applies label changes immediately (GM-080 has
       // no Save button) — persist on every add/remove.
       this.persist();
     },
@@ -9862,7 +9862,7 @@
     // PATCH the current label set; the dialog stays open.
     persist: function () {
       var self = this;
-      // KF-157: PATCH /api/tasks/:id returns the refreshed task card as an
+      // PATCH /api/tasks/:id returns the refreshed task card as an
       // HTML fragment, not JSON — parse as text so a successful save is not
       // misreported as a failure.
       api('/api/tasks/' + encodeURIComponent(this.taskId), 'PATCH', { labels: this.labels })
@@ -9877,7 +9877,7 @@
     },
   };
 
-  // Due-date dialog (KF-270 — KanbanFlow parity "Add due date": title,
+  // Due-date dialog (KanbanFlow parity "Add due date": title,
   // Date/Time fields, inline calendar grid, runtime column list with
   // selection, Repeat field, green Add button).
   var DueDateDialog = {
@@ -9885,7 +9885,7 @@
     // The stored due_at and the Date/Time fields it filled, so an
     // unchanged save sends the stored instant back instead of rebuilding
     // it from the minute-precision local wall clock.
-    // KF-505: a 280 px popover; the due chip anchors the edit, the Add button
+    // a 280 px popover; the due chip anchors the edit, the Add button
     // anchors a new due date.
     place: function (source, subtask) {
       var overlay = document.getElementById('duedate-dialog');
@@ -9907,7 +9907,7 @@
         left = modalRect.left + 27;
         top = chip.getBoundingClientRect().bottom + 4;
       } else if (subtask && document.querySelector('.task-modal')) {
-        // KF-528: a subtask due date opens 297 px right of the modal's left
+        // a subtask due date opens 297 px right of the modal's left
         // edge, 79 px below its top (golden modal/22).
         var taskModal = document.querySelector('.task-modal').getBoundingClientRect();
         left = taskModal.left + 297;
@@ -9923,7 +9923,7 @@
       dlg.style.top = Math.max(0, Math.min(top, window.innerHeight - h)) + 'px';
     },
     loaded: null,
-    // KF-545: a subtask's due date reuses the dialog with Date and Time only;
+    // a subtask's due date reuses the dialog with Date and Time only;
     // `subtaskId` is set while it edits a subtask instead of the task.
     subtaskId: null,
     setSubtaskMode: function (on) {
@@ -9947,9 +9947,9 @@
           }
           var dateInput = document.getElementById('dd-date');
           var timeInput = document.getElementById('dd-time');
-          // KF-259: a new due date starts today.
+          // a new due date starts today.
           dateInput.value = isoDate(new Date());
-          // KF-404: a new due date starts at the board's Due date time.
+          // a new due date starts at the board's Due date time.
           timeInput.value = document.getElementById('duedate-dialog').dataset.defaultTime || '17:00';
           self.loaded = null;
           if (detail.due_at) {
@@ -9960,7 +9960,7 @@
               self.loaded = { dueAt: detail.due_at, date: dateInput.value, time: timeInput.value };
             }
           }
-          // KF-328: KanbanFlow's repeat is a checkbox (GM-081), not free text.
+          // KanbanFlow's repeat is a checkbox (GM-081), not free text.
           document.getElementById('dd-repeat').checked = !!detail.due_repeat;
           document.getElementById('dd-delete').hidden = !detail.due_at;
           document.getElementById('dd-title').textContent =
@@ -9982,7 +9982,7 @@
       var current = input.value ? new Date(input.value + 'T12:00:00') : new Date();
       renderCalPopup(box, input, current.getFullYear(), current.getMonth());
     },
-    // KF-259: KanbanFlow's Target column select: "Any archived column",
+    // KanbanFlow's Target column select: "Any archived column",
     // then the runtime columns after the task's own column (plus a stored
     // target outside them), with the stored target selected.
     renderColumnList: function (id, targetId) {
@@ -10023,11 +10023,11 @@
       }).catch(function () { toast('Could not load board columns.'); });
     },
     // The PATCH body for the dialog fields; null when the date or time is
-    // missing or invalid (KF-417: the dialog requires both).
+    // missing or invalid (the dialog requires both).
     collect: function () {
       var date = document.getElementById('dd-date').value;
       var time = document.getElementById('dd-time').value;
-      // KF-328: KanbanFlow's repeat is a checkbox (GM-081).
+      // KanbanFlow's repeat is a checkbox (GM-081).
       var repeat = document.getElementById('dd-repeat').checked ? 'every week' : null;
       if (!date || !time) return null;
       var target = document.getElementById('dd-column').value || null;
@@ -10043,7 +10043,7 @@
         : { due_at: d.toISOString(), due_repeat: repeat, due_target_column_id: target };
     },
     // Writes only the open task; the Target column select sets that
-    // task's due_target_column_id (KF-259), never which tasks are written.
+    // task's due_target_column_id, never which tasks are written.
     save: function (patch, verb) {
       var self = this;
       if (!this.taskId) return;
@@ -10052,7 +10052,7 @@
       api(url, 'PATCH', patch).then(function (res) {
         if (!res.ok) throw new Error('save failed');
       }).then(function () {
-        // KF-225: the dialog save must flag the board dirty synchronously —
+        // the dialog save must flag the board dirty synchronously —
         // openModal's refresh sets modalDirty only after its fetch resolves,
         // which left the board card stale when the fetch was slow or failed.
         modalDirty = true;
@@ -10066,7 +10066,7 @@
       var patch = this.collect();
       if (!patch) { showAlertDialog('Invalid date or time'); return; }
       var verb = this.loaded ? 'Due date updated' : 'Due date added';
-      // KF-432: a stored due date saved unchanged is not asked about again.
+      // a stored due date saved unchanged is not asked about again.
       var changed = !this.loaded || patch.due_at !== this.loaded.dueAt;
       if (changed && new Date(patch.due_at).getTime() < Date.now()) {
         showPastDueConfirm(function () { self.save(patch, verb); });
@@ -10074,14 +10074,14 @@
       }
       this.save(patch, verb);
     },
-    // KF-401: Delete removes the open task's due date and its repeat and
+    // Delete removes the open task's due date and its repeat and
     // done state.
     remove: function () {
       this.save(this.subtaskId ? { due_at: null }
         : { due_at: null, due_repeat: null, due_done: false }, 'Due date deleted');
     },
   };
-  // KF-270: capture-phase day clicks on the inline calendar keep the grid
+  // capture-phase day clicks on the inline calendar keep the grid
   // visible (stopPropagation blocks renderCalPopup's hide-on-pick), then
   // re-render so the picked day is highlighted.
   (function () {
@@ -10275,7 +10275,7 @@
     addModalComment();
   };
 
-  // Comments (KF-064): the modal body always shows the section; Add →
+  // Comments: the modal body always shows the section; Add →
   // Comment focuses the input.
   function addModalComment() {
     var id = modalTaskId();
@@ -10358,7 +10358,7 @@
   function deleteModalComment(commentId) {
     var id = modalTaskId();
     if (!id || !commentId) return;
-    // KF-188: styled in-page confirmation (same class as KF-184); the native
+    // styled in-page confirmation; the native
     // window.confirm() auto-dismisses under automation, silently no-op'ing.
     showConfirmDialog('Delete comment', 'Delete this comment?', 'Delete', function () {
       api('/api/tasks/' + encodeURIComponent(id) + '/comments/' + encodeURIComponent(commentId), 'DELETE')
@@ -10934,7 +10934,7 @@
 
   function deleteTimeEntry(entryId) {
     if (!entryId) return;
-    // KF-188: styled in-page confirmation (same class as KF-184).
+    // styled in-page confirmation.
     showConfirmDialog('Delete time entry', 'Delete this time entry?', 'Delete', function () {
       api('/api/time/entries/' + encodeURIComponent(entryId), 'DELETE')
         .then(function (res) {
@@ -10947,7 +10947,7 @@
   }
 
   // Labels chip editor shared by the manual-time and edit-entry dialogs
-  // (KanbanFlow parity, KF-102).
+  // (KanbanFlow parity).
   function makeLabelEditor(prefix) {
     var labels = [];
     function listEl() { return document.getElementById(prefix + '-labels-list'); }
@@ -10997,7 +10997,7 @@
         var input = inputEl();
         if (input) input.value = '';
       },
-      // KF-271: "Add labels" is a checkbox expander (GM-082/GM-084); the
+      // "Add labels" is a checkbox expander (GM-082/GM-084); the
       // section visibility follows the checkbox state.
       toggle: function () {
         var wrap = wrapEl();
@@ -11134,7 +11134,7 @@
     if (labelsInput) labelsInput.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); LabelsDialog.add(labelsInput.value); labelsInput.value = ''; }
     });
-    // KF-328: the labels × closes via LabelsDialog.close() so the modal
+    // the labels × closes via LabelsDialog.close() so the modal
     // refreshes after immediate-persist edits.
     var labelsDialog = document.getElementById('labels-dialog');
     if (labelsDialog) labelsDialog.addEventListener('click', function (e) {
@@ -11142,7 +11142,7 @@
       if (e.target.closest('#labels-list-btn')) LabelsDialog.showAll(document.getElementById('labels-all').hidden);
     });
 
-    // Due-date dialog (KF-270: "Add due date" with inline calendar).
+    // Due-date dialog ("Add due date" with inline calendar).
     var ddAdd = document.getElementById('dd-add');
     if (ddAdd) ddAdd.addEventListener('click', function () { DueDateDialog.add(); });
     var ddDelete = document.getElementById('dd-delete');
@@ -11160,7 +11160,7 @@
       input.addEventListener('change', function () { TimelineDialog.fieldChanged(which); });
     });
 
-    // KF-253: description editor dialog.
+    // description editor dialog.
     var descSave = document.getElementById('desc-editor-save');
     if (descSave) descSave.addEventListener('click', saveDescriptionEditor);
     var descInput = document.getElementById('desc-editor-input');
@@ -11175,8 +11175,8 @@
       }
     });
 
-    // Labels editors in the manual-time / edit-entry dialogs (KF-102);
-    // KF-271: the toggles are "Add labels" checkbox expanders.
+    // Labels editors in the manual-time / edit-entry dialogs:
+    // the toggles are "Add labels" checkbox expanders.
     var mtLabelsCheck = document.getElementById('mt-labels-check');
     if (mtLabelsCheck) mtLabelsCheck.addEventListener('change', function () { ManualTimeLabels.toggle(); });
     var mtInput = document.getElementById('mt-labels-input');
@@ -11222,9 +11222,9 @@
     if (closeLinkPicker(true)) return;
     if (closeAllTmMenus()) return;
     if (hideFloatingMenus()) return;
-    // KF-001: Escape leaves the timer's "Select task" mode.
+    // Escape leaves the timer's "Select task" mode.
     if (TimerUI.selecting) { TimerUI.endSelect(); return; }
-    // KF-504: the topmost open overlay closes alone (highest z-index, the
+    // the topmost open overlay closes alone (highest z-index, the
     // later one in the page on a tie), so Escape preserves the dialog
     // beneath an alert and the timer log beneath an entry dialog.
     var top = topmostOverlay();
@@ -11242,15 +11242,15 @@
       window.location.href = backHref;
       return;
     }
-    // KF-299: two-stage Escape for the task modal — first Esc discards
+    // two-stage Escape for the task modal — first Esc discards
     // in-progress edits while keeping the modal open; a second Esc with
     // nothing pending closes the modal.
     if (discardModalDrafts()) return;
     closeModal();
   }
 
-  // KF-299: returns true (and clears the drafts) when the open task modal
-  // holds unsent edits: the comment composer, the subtask input, or (KF-388)
+  // returns true (and clears the drafts) when the open task modal
+  // holds unsent edits: the comment composer, the subtask input, or
   // a changed but uncommitted title. The description edits through its own
   // dialog, so it has no discardable draft here.
   function discardModalDrafts() {
@@ -11271,7 +11271,7 @@
     return discarded;
   }
 
-  // ---------- timer log page (KF-090) ----------
+  // ---------- timer log page ----------
 
   // KanbanFlow period presets -> [fromISO, toISO]. Weeks start on the account's first day.
   function periodToRange(preset, customFrom, customTo, relN, relUnit) {
@@ -11392,7 +11392,7 @@
 
     function qs(id) { return document.getElementById(id); }
 
-    // ---------- period select (KF-286, KF-497) ----------
+    // ---------- period select ----------
     function currentPeriod() { return { value: qs('log-period-filter').value }; }
 
     function renderPeriodLabel() {
@@ -11400,7 +11400,7 @@
       if (rel) rel.hidden = currentPeriod().value !== 'custom-relative';
     }
 
-    // KF-290: picking Custom (absolute) opens the two-calendar dialog; the
+    // picking Custom (absolute) opens the two-calendar dialog; the
     // log reloads only when the user confirms with Done.
     function periodChanged() {
       renderPeriodLabel();
@@ -11411,7 +11411,7 @@
       if (currentPeriod().value !== 'custom-relative') loadLog();
     }
 
-    // ---------- custom absolute range dialog (KF-290) ----------
+    // ---------- custom absolute range dialog ----------
     // KanbanFlow (GM-121): nested "Custom (absolute)" dialog with Start/End
     // fields, two side-by-side month calendars with the selected dates
     // highlighted, and a green Done button. The chosen range is stored in the
@@ -11582,7 +11582,7 @@
       return page(0);
     }
 
-    // KF-390: KanbanFlow puts the day before the month ("Friday, 16
+    // KanbanFlow puts the day before the month ("Friday, 16
     // October") and calls the current day "Today".
     function dayHeader(dateISO) {
       if (!dateISO) return 'Unknown date';
@@ -11604,7 +11604,7 @@
           (e.interrupted && e.interrupt_reason ? ' — ' + escapeHtml(e.interrupt_reason) : '') +
           '</div>';
       }
-      // KF-464: a break is not manual time.
+      // a break is not manual time.
       if (e.kind === 'short_break') return '<div class="log-neutral">Short break</div>';
       if (e.kind === 'long_break') return '<div class="log-neutral">Long break</div>';
       return '<div class="log-neutral">Manually added time</div>';
@@ -11627,7 +11627,7 @@
       var html = '';
       order.forEach(function (key) {
         var rows = byKey[key];
-        // KF-428: "Today 27m 1 Pomodoro" — the day, its total and its
+        // "Today 27m 1 Pomodoro" — the day, its total and its
         // completed pomodori, the count hidden at 0 ("Today 30s"; goldens 20).
         var seconds = rows.reduce(function (s, e) { return s + (e.seconds || (e.minutes || 0) * 60); }, 0);
         var total = seconds < 60 ? seconds + 's' : fmtDuration(Math.floor(seconds / 60));
@@ -11637,9 +11637,9 @@
           '<div class="log-day-head"><span class="log-day-title">' + escapeHtml(dayHeader(key)) +
           '</span><span class="log-day-total">' + escapeHtml(total) + '</span>' + count + '</div>';
         rows.forEach(function (e) {
-          // KF-461: golden 20's row — a task-colour dot, the bold task name
+          // golden 20's row — a task-colour dot, the bold task name
           // over an italic status line, then the time span, the duration and
-          // a ⋮. KF-004: clicking the row opens the Edit entry dialog.
+          // a ⋮. Clicking the row opens the Edit entry dialog.
           html += '<div class="log-entry" data-entry-id="' + escapeHtml(e.id) + '">' +
             '<span class="log-dot" style="background:' + escapeHtml(e.task_color || '#9e9e9e') + '"></span>' +
             '<div class="log-main"><div class="log-task" title="' + escapeHtml(e.badge_title) + '">' +
@@ -11670,7 +11670,7 @@
       });
     }
 
-    // Shared row builder for the timer-log exports (KF-080: CSV + Excel).
+    // Shared row builder for the timer-log exports (CSV + Excel).
     function logRows(entries) {
       var rows = [['Date', 'Task', 'Board', 'Type', 'Duration', 'Time range', 'Status', 'Note']];
       entries.forEach(function (e) {
@@ -11689,7 +11689,7 @@
       return rows;
     }
 
-    // KF-080: Excel export as an HTML-table .xls — Excel opens it natively,
+    // Excel export as an HTML-table .xls — Excel opens it natively,
     // no client library needed.
     function downloadExcel(filename, rows) {
       var html = '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
@@ -11712,7 +11712,7 @@
       setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 100);
     }
 
-    // KF-289: KanbanFlow's timer log exports every entry as Excel or CSV.
+    // KanbanFlow's timer log exports every entry as Excel or CSV.
     function exportLog(format) {
       fetchAll(currentFilters()).then(function (entries) {
         if (format === 'csv') downloadCsv('timer-log.csv', logRows(entries));
@@ -11720,7 +11720,7 @@
       }).catch(function () { toast('Export failed.'); });
     }
 
-    // ---------- Time spent report (KF-091) ----------
+    // ---------- Time spent report ----------
     var TimeSpent = {
       view: 'summary',
       setView: function (v) {
@@ -11778,7 +11778,7 @@
           list.innerHTML = '<p class="settings-hint">No entries exist for the given filter.</p>';
           return;
         }
-        // KF-292: KanbanFlow-style table — date | bar+percent | tasks | breaks | duration%.
+        // KanbanFlow-style table — date | bar+percent | tasks | breaks | duration%.
         var total = rep.total_minutes || 0;
         var html = '<div class="bshell-scroll"><table class="bshell-table spent-table"><thead><tr>' +
           '<th>Date</th><th></th><th class="num">Tasks</th><th class="num">Breaks</th><th class="num">Duration</th></tr></thead><tbody>';
@@ -11866,7 +11866,7 @@
       }).catch(function () { /* color filter is best-effort */ });
     }
 
-    // ---------- timer log modal (KF-286) ----------
+    // ---------- timer log modal ----------
 
     function openLogModal() {
       var overlay = qs('timer-log-overlay');
@@ -11928,7 +11928,7 @@
       qs('timer-log-overlay').addEventListener('click', function (e) {
         if (e.target === this) closeLogModal();
       });
-      // KF-290: nested "Custom (absolute)" range dialog.
+      // nested "Custom (absolute)" range dialog.
       qs('log-custom-done').addEventListener('click', function () { CustomRange.apply(); });
       qs('log-custom-back').addEventListener('click', function () { CustomRange.close(); });
       qs('log-custom-x').addEventListener('click', function () { CustomRange.close(); });
@@ -12084,11 +12084,11 @@
       qs('spent-color').addEventListener('change', loadSpent);
       qs('spent-group').addEventListener('change', loadSpent);
       qs('spent-print').addEventListener('click', openSpentPrintSheet);
-      // KF-295: "Print" sheet (GM-169) — the report's Print button opens a
+      // "Print" sheet (GM-169) — the report's Print button opens a
       // sheet titled "Print" with the report's task table and Filter / Print
       // buttons top-left. The sheet's Print button fires window.print() with
       // print CSS scoped to the sheet; Filter closes the sheet back to the
-      // report (Pomb's filters are the always-visible row, KF-292).
+      // report (Pomb's filters are the always-visible row).
       function openSpentPrintSheet() {
         var list = qs('spent-list');
         var body = qs('spent-print-body');
@@ -12108,7 +12108,7 @@
         var overlay = qs('spent-print-overlay');
         if (overlay && !overlay.hidden) closeSpentPrintSheet();
       });
-      // KF-294: Time spent Export dropdown — verbatim KanbanFlow items
+      // Time spent Export dropdown — verbatim KanbanFlow items
       // (GM-170): "Excel (Detailed)", "Excel (Summary)", "PDF (Summary)".
       var spentExportBtn = qs('spent-export');
       var spentExportMenu = qs('spent-export-menu');
@@ -12224,7 +12224,7 @@
     function init() {
       if (initialized) return;
       initialized = true;
-      // KF-286: the timer log lives in a modal on the board page; the
+      // the timer log lives in a modal on the board page; the
       // Time spent report is its own page. Wire whichever is present.
       if (qs('timer-log-list')) initLogModal();
       if (qs('spent-list')) initSpentPage();
@@ -12245,7 +12245,7 @@
     };
   })();
 
-  // ---------- timer statistics page (KF-092) ----------
+  // ---------- timer statistics page ----------
 
   var TimerStatsPage = (function () {
     var initialized = false;
@@ -12269,7 +12269,7 @@
     var MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-    // KF-293: KanbanFlow bar tooltip date — "Tuesday 1 Sep 2026"
+    // KanbanFlow bar tooltip date — "Tuesday 1 Sep 2026"
     // (full weekday, day-of-month with no leading zero, abbreviated
     // month, 4-digit year; computed from the ISO date, not the
     // server "%b %d" axis label).
@@ -12297,7 +12297,7 @@
         chart.innerHTML = '<p class="settings-hint">No data to display</p>';
       } else {
         renderBarChart(chart, (rep.daily || []).map(function (d) {
-          // KF-293: count and minutes are separate fields — the count
+          // count and minutes are separate fields — the count
           // drives the bar height and atop-bar label, the day's real
           // minutes drive the tooltip duration. Tooltip format per
           // KanbanFlow: "Tuesday 1 Sep 2026: 2 Pomodori (30m)" — the
@@ -12331,7 +12331,7 @@
       }
       qs('stats-reasons').innerHTML = rh;
 
-      // KF-347: Break activities tab — per-activity totals for the range
+      // Break activities tab — per-activity totals for the range
       // plus today's progress against each activity's daily goal.
       var bas = rep.break_activities || [];
       var bh;
@@ -12355,7 +12355,7 @@
       }
       qs('stats-breaks').innerHTML = bh;
 
-      // Highscores tab. KF-391: no best day means nothing was logged.
+      // Highscores tab. No best day means nothing was logged.
       var hs = '<p class="settings-hint">No data to display</p>';
       if (rep.best_day) {
         hs = statCard(rep.best_day.pomodori,
@@ -12425,7 +12425,7 @@
     return { init: init, reload: load };
   })();
 
-  // KF-346: Export report page — download the board's tasks as a file.
+  // Export report page — download the board's tasks as a file.
   // Formats match KanbanFlow's documented export targets: Excel, CSV,
   // XML, JSON. The board dataset comes from /api/boards/:id/export-data
   // (the shared data shape for the board reports); the file is rendered
@@ -12867,7 +12867,7 @@
     };
   })();
 
-  // KF-343: Task count report page — number of tasks in each column,
+  // Task count report page — number of tasks in each column,
   // broken down by color (KanbanFlow's "Time estimate & Task count" layout).
   // Renders client-side from the shared export-data dataset.
   var TaskCountPage = (function () {
@@ -13984,7 +13984,7 @@
       return null;
     }
 
-    // KF-350: bands are columns keyed by id. An event that carries a
+    // bands are columns keyed by id. An event that carries a
     // column id joins that column's band even after the column is deleted,
     // and a deleted column's band takes the newest name recorded for its
     // id. Name-only history maps by current name, then former name, then a
@@ -14047,7 +14047,7 @@
         var c = new Date(task.created_at);
         if (!isNaN(c.getTime()) && home) tl.push({ at: c.getTime(), col: home });
       }
-      // KF-350: the timeline ends in the task's current column, whatever
+      // the timeline ends in the task's current column, whatever
       // name its last event recorded.
       if (home && tl.length > 0) tl[tl.length - 1].col = home;
       return tl;
@@ -14363,7 +14363,7 @@
     };
   })();
 
-  // KF-340: Cycle & lead time report page. Average cycle/lead time per week
+  // Cycle & lead time report page. Average cycle/lead time per week
   // (last 12 weeks) with a 3-week moving-average trend line,
   // rendered from the shared export-data dataset.
   // Definitions (KanbanFlow): lead time = creation -> completion; cycle time
@@ -14623,7 +14623,7 @@
     return { init: init, chartSvg: chartSvg, computeTimes: computeTimes, bucketize: bucketize };
   })();
 
-  // KF-339: Cumulative flow report page — tasks in each column over time
+  // Cumulative flow report page — tasks in each column over time
   // as a stacked area chart. Reconstructed from each task's history trail
   // ("created"/"moved" events), falling back to the task's current column
   // when it has no recorded moves.
@@ -14714,7 +14714,7 @@
           if (tl[p].at <= ms && idx[tl[p].col] !== undefined) counts[idx[tl[p].col]][di] += value;
         });
       });
-      // KF-350: a band only history knows (a deleted column, or a name no
+      // a band only history knows (a deleted column, or a name no
       // column claims) that holds no task in the window is dropped, so the
       // chart, legend and status show only real bands.
       var keep = order.map(function (key, k) {
@@ -14934,14 +14934,14 @@
       });
     }
 
-    // seriesByDay is pure; exposed for the KF-350 check.
+    // seriesByDay is pure; exposed for the series check.
     return {
       init: init, seriesByDay: seriesByDay, chartSvg: chartSvg, tipFor: tipFor,
       periodRange: periodRange, controls: controls, render: render,
     };
   })();
 
-  // KF-341: Due date performance report page. How well tasks meet their due
+  // Due date performance report page. How well tasks meet their due
   // dates, rendered from the shared export-data dataset.
   // Categories: on time (completed_at <= due_at, or the due date was marked
   // done), late (completed_at > due_at), overdue (due date passed, not
@@ -16071,7 +16071,7 @@
       return new Date(d.getFullYear(), d.getMonth(), d.getDate());
     }
 
-    // KF-352: expand due_repeat into recurrence instances. Mirrors the
+    // expand due_repeat into recurrence instances. Mirrors the
     // server's parse_repeat_cadence ("every week" from the dialog checkbox,
     // plus plain-English alternates); unrecognized text -> no expansion.
     function parseRepeatCadence(text) {
@@ -16691,7 +16691,7 @@
     };
   })();
 
-  // KF-342: Monte Carlo forecasting report page — predicts when N tasks will
+  // Monte Carlo forecasting report page — predicts when N tasks will
   // be completed by running thousands of simulations sampled from the
   // board's historical daily throughput (arrivals into the target column,
   // from "moved" history events). Renders client-side from the shared
@@ -17224,7 +17224,7 @@
     };
   })();
 
-  // KF-345: Time estimate report page — estimated workload by color and
+  // Time estimate report page — estimated workload by color and
   // column, summed from each task's time estimate (KanbanFlow's Time
   // estimate report: "an overview of the estimated workload on your
   // board"). Renders client-side from the shared export-data dataset.
@@ -17846,7 +17846,7 @@
       html += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw.toFixed(1) +
         '" height="' + h.toFixed(1) + '" fill="#2f7cf6" rx="2">' +
         '<title>' + escapeHtml(tip) + '</title></rect>' +
-        // KF-293: pomodoro count label atop each bar (KanbanFlow).
+        // pomodoro count label atop each bar (KanbanFlow).
         '<text x="' + cx + '" y="' + (y - 4).toFixed(1) +
         '" text-anchor="middle" font-size="11" fill="#777">' + b.count + '</text>';
       if (i % step === 0) {
@@ -17861,9 +17861,9 @@
   }
 
   // ---------- board chrome: board-bar controls, filter panel, board menu ----------
-  // KF-132 (timer pill lives in the light board bar), KF-133 (board-bar
-  // buttons), KF-134/KF-096 (filter panel), KF-135/KF-099 (board menu),
-  // KF-136 (reports submenu). Guarded init like the other inits (KF-137).
+  // The timer pill lives in the light board bar, beside the board-bar
+  // buttons, the filter panel, the board menu and the reports submenu.
+  // Guarded init like the other inits.
 
   var MENU_KEEPS_OPEN = { dark: true, legend: true, 'large-names': true };
 
@@ -17903,7 +17903,7 @@
       var sub = document.getElementById('reports-submenu');
       if (!btn || !menu || !sub) return;
 
-      // KF-367: the panel runs from under the top bar to the viewport bottom.
+      // the panel runs from under the top bar to the viewport bottom.
       function placeMenu() {
         var bar = document.querySelector('.topbar');
         var top = (bar ? bar.getBoundingClientRect().bottom : 0) + 'px';
@@ -17939,7 +17939,7 @@
         e.stopPropagation();
         if (menu.hidden && sub.hidden) {
           placeMenu();
-          // KF-353: sync the toggle switches with live state every time the
+          // sync the toggle switches with live state every time the
           // menu opens (dark/large-names come from localStorage prefs; the
           // legend item is server-rendered but re-sync defensively).
           var darkItem = menu.querySelector('[data-bm="dark"]');
@@ -18007,7 +18007,7 @@
           this.editLayout();
           break;
         case 'settings':
-          // KF-154: the board menu's Settings opens this board's settings,
+          // the board menu's Settings opens this board's settings,
           // not the account-level /settings page.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/settings';
           break;
@@ -18081,46 +18081,46 @@
           PrintBoard.open(boardId());
           break;
         case 'export':
-          // KF-346: Export report page — download the board's tasks.
+          // Export report page — download the board's tasks.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/export';
           break;
         case 'count':
-          // KF-343: Task count report page — tasks per column by color.
+          // Task count report page — tasks per column by color.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/task-count';
           break;
         case 'throughput':
-          // KF-344: Throughput report page — completions per week chart.
+          // Throughput report page — completions per week chart.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/throughput';
           break;
         case 'burndown':
-          // KF-337: Burndown report page — tasks remaining per day chart.
+          // Burndown report page — tasks remaining per day chart.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/burndown';
           break;
         case 'flow':
-          // KF-339: Cumulative flow report page — tasks per column over time.
+          // Cumulative flow report page — tasks per column over time.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/cumulative-flow';
           break;
         case 'cycle':
-          // KF-340: Cycle & lead time report page — avg time per week chart.
+          // Cycle & lead time report page — avg time per week chart.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/cycle-lead';
           break;
         case 'due':
-          // KF-341: Due date performance report page — on-time/late/overdue table.
+          // Due date performance report page — on-time/late/overdue table.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/due-date';
           break;
         case 'history':
-          // KF-336: Board history report page — chronological change log.
+          // Board history report page — chronological change log.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/board-history';
           break;
         case 'calendar':
           CalendarPage.open(boardId());
           break;
         case 'montecarlo':
-          // KF-342: Monte Carlo forecasting report page — probabilistic completion forecast.
+          // Monte Carlo forecasting report page — probabilistic completion forecast.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/monte-carlo';
           break;
         case 'estimate':
-          // KF-345: Time estimate report page — estimated workload by color and column.
+          // Time estimate report page — estimated workload by color and column.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/time-estimate';
           break;
         case 'column':
@@ -18155,7 +18155,7 @@
       });
       var back = document.getElementById('filter-back');
       if (back) back.addEventListener('click', function () { self.closeFilter(); });
-      // KF-215: the list button shows the label checkboxes; the field
+      // the list button shows the label checkboxes; the field
       // lists the labels in use.
       var labelsToggle = document.getElementById('filter-labels-toggle');
       if (labelsToggle) labelsToggle.addEventListener('click', function () {
@@ -18193,7 +18193,7 @@
         self.maybeSaveFilter();
       });
       panel.addEventListener('change', function (e) {
-        // KF-175: handle both select dropdowns (by id) and radio buttons (by name)
+        // handle both select dropdowns (by id) and radio buttons (by name)
         if (e.target.id === 'f-user' || e.target.id === 'f-owner' || e.target.id === 'f-color' || e.target.id === 'f-date' ||
             e.target.id === 'f-label-mode' || e.target.id === 'f-hide-epics' || e.target.classList.contains('f-field') ||
             e.target.name === 'f-fold' || e.target.name === 'f-user' || e.target.name === 'f-color' || e.target.name === 'f-date' || e.target.name === 'f-label') {
@@ -18208,7 +18208,7 @@
       this.initColumnLabels();
       this.restoreFilter();
       this.initFilterBookmarks();
-      // KF-215: dock the panel below the top bars. Measure the dark topbar
+      // dock the panel below the top bars. Measure the dark topbar
       // + gray board-header row so the panel's own header (Filter title +
       // close button) renders below them instead of sliding underneath —
       // the panel can then never cover its own toggle, and the close
@@ -18217,7 +18217,7 @@
       window.addEventListener('resize', function () { self.positionFilterPanel(); });
     },
 
-    // KF-215: filter bookmarks in the panel footer, saved in this browser
+    // filter bookmarks in the panel footer, saved in this browser
     // per board.
     filterBookmarksKey: function () { return 'pomb-filter-bookmarks:' + boardId(); },
     readFilterBookmarks: function () {
@@ -18303,7 +18303,7 @@
       this.renderFilterBookmarks();
     },
 
-    // KF-215: KanbanFlow docks the panel directly under the top bar.
+    // KanbanFlow docks the panel directly under the top bar.
     positionFilterPanel: function () {
       var row = document.querySelector('.board-header-row');
       var topbar = document.querySelector('.topbar');
@@ -19054,7 +19054,7 @@
       this.maybeSaveFilter();
     },
     filterValue: function (name) {
-      // KF-175: support both select dropdowns (new) and radio buttons (legacy)
+      // support both select dropdowns (new) and radio buttons (legacy)
       var select = document.getElementById(name);
       if (select && select.tagName === 'SELECT') return select.value;
       var el = document.querySelector('input[name="' + name + '"]:checked');
@@ -19076,7 +19076,7 @@
     },
     setRadio: function (name, value) {
       if (!value) return;
-      // KF-175: support select dropdowns
+      // support select dropdowns
       var select = document.getElementById(name);
       if (select && select.tagName === 'SELECT') {
         // A saved "me" means the signed-in user; a value with no
@@ -19172,15 +19172,15 @@
         if (color !== 'all' && card.dataset.colorValue !== color) show = false;
         // "Timer users": only the card with the running timer stays visible.
         if (user === 'timer' && String(card.dataset.taskId) !== activeTaskId) show = false;
-        // KF-370: Unassigned and named users match the card's members.
+        // Unassigned and named users match the card's members.
         var members = (card.dataset.memberIds || '').split(',').filter(Boolean);
         if (user === 'unassigned' && members.length) show = false;
         if (user.indexOf('user:') === 0 && members.indexOf(user.slice(5)) === -1) show = false;
         const cardOwner = card.dataset.owner || '';
         if (owner === 'none' ? cardOwner !== '' : owner !== 'all' && cardOwner !== owner) show = false;
-        // KF-159: date filters evaluate the card's data-due-at (RFC3339).
+        // date filters evaluate the card's data-due-at (RFC3339).
         if (!self.dateMatches(date, card.dataset.dueAt, card.dataset.dueDone === '1')) show = false;
-        // KF-165: label filters match the card's data-labels JSON array.
+        // label filters match the card's data-labels JSON array.
         // Several labels match every one, or any one in "or" mode.
         if (show && labels.length) {
           var cardLabels = [];
@@ -19355,7 +19355,7 @@
       if (this.closeTimer) window.clearTimeout(this.closeTimer);
       this.closeTimer = null;
     },
-    // KF-161: column header counts reflect the currently filtered (visible)
+    // column header counts reflect the currently filtered (visible)
     // card set, KanbanFlow parity. When no filter is active the
     // server-rendered totals are restored from th.dataset.taskCount.
     refreshFilteredCounts: function () {
@@ -19384,14 +19384,14 @@
         var limit = wipLimitState(th, count, minutes);
         var el = th.querySelector('.columnHeader-count');
         if (el) el.textContent = filtering ? String(count) : limit.label;
-        // KF-297/KF-371: the badge follows the visible set too.
+        // the badge follows the visible set too.
         setSumBadge(th, count, minutes);
         // Mirror updateColumnCount's WIP-violation warning for the visible set.
         var warn = limit.warn;
         th.classList.toggle('columnHeader--warning', warn);
         th.classList.toggle('columnHeader--limitWarning', warn);
         syncWarningLine(th, warn, overdue);
-        // KF-440: the collapsed strip's count colour, the overdue strip and
+        // the collapsed strip's count colour, the overdue strip and
         // the strip's tooltip follow the visible set too.
         var badge = th.querySelector('.columnHeader-countBadge');
         if (badge && th.dataset.collapsed === '1') badge.classList.toggle('columnHeader-countBadge--over', warn);
@@ -19407,7 +19407,7 @@
         });
       });
     },
-    // KF-159: due-date matching for the filter panel. Undated tasks are
+    // due-date matching for the filter panel. Undated tasks are
     // hidden for every specific range; only "Show all" keeps them and
     // "No due date" shows only them (KanbanFlow parity).
     dateMatches: function (value, dueAt, dueDone) {
@@ -19420,7 +19420,7 @@
       var now = new Date();
       var today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
       var DAY = 86400000;
-      // KF-219: "Overdue" compares the full due timestamp, not the date —
+      // "Overdue" compares the full due timestamp, not the date —
       // a task due later today is not overdue (KanbanFlow parity).
       if (value === 'overdue') return !dueDone && d.getTime() < Date.now();
       if (value === 'today') return day === today;
@@ -19441,7 +19441,7 @@
       return true;
     },
 
-    // KF-165: populate the Labels section of the filter panel from the
+    // populate the Labels section of the filter panel from the
     // board's label set (GET /api/boards/:id/labels). Each label gets a
     // checkbox; checking labels narrows the board (see applyFilter).
     loadFilterLabels: function () {
@@ -19477,13 +19477,13 @@
       wrap.appendChild(label);
       return input;
     },
-    // KF-165: labels currently checked in the filter panel.
+    // labels currently checked in the filter panel.
     filterLabels: function () {
       var sel = [];
       document.querySelectorAll('input[name="f-label"]:checked').forEach(function (el) { sel.push(el.value); });
       return sel;
     },
-    // KF-165: toggle the filter for one label — called when a card's
+    // toggle the filter for one label — called when a card's
     // label chip is clicked (KanbanFlow parity: clicking a label filters
     // the board instead of opening the task).
     toggleLabelFilter: function (label) {
@@ -19509,7 +19509,7 @@
       this.applyFilter();
       this.maybeSaveFilter();
     },
-    // KF-165: check the remembered labels once the label options load.
+    // check the remembered labels once the label options load.
     restoreLabelFilter: function () {
       var pending = this._pendingLabelFilter;
       this._pendingLabelFilter = null;
@@ -19580,7 +19580,7 @@
     },
 
     // Month/year date options depend on the current date — render in JS.
-    // KF-381: appended to the Date select (KF-175), after "Due in 90 days".
+    // appended to the Date select, after "Due in 90 days".
     addDateOptions: function () {
       var select = document.getElementById('f-date');
       if (!select || select.dataset.extended) return;
@@ -19658,9 +19658,9 @@
       if (layoutAddCol) layoutAddCol.addEventListener('click', function () {
         openAddColumnDialog('end', layoutAddCol);
       });
-      // KF-246: green "Add column" button at the right end of the column list;
+      // green "Add column" button at the right end of the column list;
       // same add-column flow as the header button.
-      // KF-405: column deletion lives in the layout view's column list.
+      // column deletion lives in the layout view's column list.
       var layoutCols = document.getElementById('layout-columns-list');
       if (layoutCols) layoutCols.addEventListener('click', function (e) {
         var kebab = e.target.closest('[data-layout-column-menu]');
@@ -19709,7 +19709,7 @@
       });
     },
 
-    // KF-032: layout-edit view ("Layout: <board>") with Add column / Add
+    // layout-edit view ("Layout: <board>") with Add column / Add
     // swimlane actions. The timer pill is hidden while this view is open
     // (KanbanFlow parity, frame-review section 9).
     editLayout: function () {
@@ -19720,7 +19720,7 @@
       view.hidden = false;
       var pill = document.getElementById('timer-pill');
       if (pill) pill.hidden = true;
-      // KF-180: wire drag-reorder for the arrange lists.
+      // wire drag-reorder for the arrange lists.
       initLayoutSortables();
 
       window.history.replaceState(null, '', '#layout');
@@ -19935,7 +19935,7 @@
       document.body.classList.toggle('dark', on);
       syncDarkCookie(on);
       this.setPref('dark', on);
-      // KF-353: keep the menu's toggle switch in sync.
+      // keep the menu's toggle switch in sync.
       var item = document.querySelector('#board-menu [data-bm="dark"]');
       if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');
     },
@@ -19943,7 +19943,7 @@
       var on = !document.body.classList.contains('large-names');
       document.body.classList.toggle('large-names', on);
       this.setPref('large_names', on);
-      // KF-353: keep the menu's toggle switch in sync.
+      // keep the menu's toggle switch in sync.
       var item = document.querySelector('#board-menu [data-bm="large-names"]');
       if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');
     },
@@ -19974,7 +19974,7 @@
           toast('Could not save the legend setting.');
         });
     },
-    // KF-379: the help dialog, from the top-bar "?" and Menu > Help &
+    // the help dialog, from the top-bar "?" and Menu > Help &
     // feedback.
     openHelp: function () {
       var dlg = document.getElementById('help-dialog');
@@ -20020,7 +20020,7 @@
           });
         });
       });
-      // KF-475: only a click that starts and ends on the backdrop closes,
+      // only a click that starts and ends on the backdrop closes,
       // so a drag between the dialog and the backdrop keeps it open.
       var dlg = document.getElementById('help-dialog');
       var downOnBackdrop = false;
@@ -20069,7 +20069,7 @@
 
   // ---------- boot ----------
 
-  // ---------- Boards sidebar (KF-088) ----------
+  // ---------- Boards sidebar ----------
   //
   // Persistent left sidebar on board pages: "Boards" header, search box,
   // "Drag to add to Favorites" hint, Favorites section + All boards.
@@ -20136,7 +20136,7 @@
     section.classList.toggle('bs-fav-empty', empty);
   }
 
-  // KF-195: account menu (Sign out via POST /logout).
+  // account menu (Sign out via POST /logout).
   function initAccountMenu() {
     var btn = document.getElementById('account-btn');
     var menu = document.getElementById('account-menu');
@@ -20363,7 +20363,7 @@
       btn.setAttribute('aria-expanded', 'false');
     }
     function closeAccountMenu() {
-      // KF-310: one topbar popover at a time. The account button's own
+      // one topbar popover at a time. The account button's own
       // handler stopPropagation()s, so its document-level closer never runs
       // for the bell click.
       var am = document.getElementById('account-menu');
@@ -20428,7 +20428,7 @@
   function initBoardsDropdown() {
     var dropdown = document.getElementById('boards-dropdown');
     if (!dropdown) return;
-    // KF-330: Boards dropdown toggle (light menu, KanbanFlow parity)
+    // Boards dropdown toggle (light menu, KanbanFlow parity)
     var dropdownBtn = document.getElementById('boards-dropdown-btn');
     
     function openDropdown() {
@@ -20526,7 +20526,7 @@
     }
   }
 
-  // KF-224: card icon-row section expand/collapse. Each icon toggles its
+  // card icon-row section expand/collapse. Each icon toggles its
   // card section; the state persists per task in localStorage. Defaults
   // match KanbanFlow's board: description collapsed, due dates and
   // subtasks expanded. IIFE-level so quick-add's insert path can reuse it.
@@ -20557,7 +20557,7 @@
     document.querySelectorAll('.task-card').forEach(applyCardSecState);
   }
 
-  // Guard: the defer/DOMContentLoaded double-fire (KF-137) would otherwise
+  // Guard: the defer/DOMContentLoaded double-fire would otherwise
   // bind every board handler twice.
   var boardInitialized = false;
   function initBoard() {
@@ -20572,9 +20572,9 @@
     initBoardMenus();
     initMembersDialog();
     initBoardsDropdown();
-    initAccountMenu(); // KF-195
-    initNotificationsPanel(); // KF-310
-    refreshCardSecStates(); // KF-224: apply persisted card section state
+    initAccountMenu();
+    initNotificationsPanel();
+    refreshCardSecStates(); // apply persisted card section state
     // Cards inserted later via htmx swaps need the same treatment.
     document.addEventListener('htmx:afterSwap', function () { refreshCardSecStates(); });
 
@@ -20600,12 +20600,12 @@
         return;
       }
       // "N hidden (M done)" expands the full inline subtask list, and the
-      // label turns into "Hide" until it folds again (KF-364).
+      // label turns into "Hide" until it folds again.
       var more = e.target.closest('.card-sub-more');
       if (more) toggleSubFold(more);
     });
 
-    // KF-478: Enter and Space work the folded-subtask label like a click.
+    // Enter and Space work the folded-subtask label like a click.
     document.addEventListener('keydown', function (e) {
       if ((e.key !== 'Enter' && e.key !== ' ') || !e.target.classList ||
           !e.target.classList.contains('card-sub-more')) return;
@@ -20626,7 +20626,7 @@
       more.title = open ? 'Click to hide done subtasks' : 'Click to expand subtasks';
     }
 
-    // KF-478: folds a card's done subtasks the way a render does (a list
+    // folds a card's done subtasks the way a render does (a list
     // longer than the server's CARD_SUBTASKS_SHOWN with any done item), so
     // the "N hidden (N done)" label matches a reload.
     function refoldSubtasks(card) {
@@ -20707,7 +20707,7 @@
       if (e.target.closest('button, a, input, select, textarea, form, .task-modal, .timer-popup, .why-stop-menu, .menu-pop, .tm-menu, .dlg-overlay, .card-sub, .card-sub-more')) return;
       var card = e.target.closest('.task-card');
       if (!card) return;
-      // KF-165: clicking a label chip filters the board by that label
+      // clicking a label chip filters the board by that label
       // (KanbanFlow parity) instead of opening the task modal.
       var chip = e.target.closest('.card-label');
       if (chip && chip.textContent) {
@@ -20725,7 +20725,7 @@
       }
     });
 
-    // KF-117: Task-URL deep links — copyTaskUrl produces
+    // Task-URL deep links — copyTaskUrl produces
     // origin + '/b/' + boardId + '#task-' + id. On board load (and on
     // hashchange) scroll to the card and open its modal.
     function openTaskFromHash() {
@@ -21460,7 +21460,7 @@
     },
   };
 
-  // KF-357: the settings pages carry the global top bar without the board.
+  // the settings pages carry the global top bar without the board.
   var topbarOnlyInitialized = false;
   function initTopbarOnly() {
     if (topbarOnlyInitialized || document.querySelector('.board-wrap')) return;
@@ -22164,7 +22164,7 @@
   window.closeModal = closeModal;
   window.TimerUI = TimerUI;
   window.WipGuard = { run: withWip, withForce: withForce };
-  // KF-158: the timer popup's footer Settings button calls
+  // the timer popup's footer Settings button calls
   // TimerSettings.open() from an inline onclick handler, so it must be
   // reachable as a global.
   window.TimerSettings = TimerSettings;
@@ -22297,7 +22297,7 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => BoardLive.init());
   else BoardLive.init();
 
-  // KF-278: hovering Time spent shows a tooltip and the "Add time entry /
+  // hovering Time spent shows a tooltip and the "Add time entry /
   // Open time log" menu. Both nodes are created once and reused by every
   // modal open.
   var timeSpentHover = null;

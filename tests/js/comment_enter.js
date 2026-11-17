@@ -8,7 +8,7 @@ const slice = (from, to) => {
 
 let posts = 0;
 const addModalComment = () => { posts++; };
-const { fitCommentBox, onCommentKeydown } = eval('(() => {' + slice('  const fitCommentBox', '  // Comments (KF-064)') + 'return { fitCommentBox, onCommentKeydown };})()');
+const { fitCommentBox, onCommentKeydown } = eval('(() => {' + slice('  const fitCommentBox', '  // Comments: the modal body') + 'return { fitCommentBox, onCommentKeydown };})()');
 
 let failures = 0;
 const check = (name, got, want) => {
@@ -50,7 +50,7 @@ check('the composer has no other Enter handler', wiring.includes("e.key === 'Ent
 
 const tabBox = { style: { height: '0px' }, scrollHeight: 90, offsetHeight: 90, clientHeight: 90 };
 const document = { getElementById: (id) => (id === 'modal-comment-input' ? tabBox : null) };
-const { fitOpenCommentBox } = eval('(() => {' + slice('  const fitCommentBox', '  // Comments (KF-064)') + slice('  const fitOpenCommentBox', '  function showModalTab') + 'return { fitOpenCommentBox };})()');
+const { fitOpenCommentBox } = eval('(() => {' + slice('  const fitCommentBox', '  // Comments: the modal body') + slice('  const fitOpenCommentBox', '  function showModalTab') + 'return { fitOpenCommentBox };})()');
 fitOpenCommentBox();
 check('opening the Comments tab sizes the box to its lines', tabBox.style.height, '90px');
 check('selecting the Comments tab sizes the box', slice('  function selectModalTab', '  const fitOpenCommentBox').includes("if (name === 'comments') fitOpenCommentBox();"), true);

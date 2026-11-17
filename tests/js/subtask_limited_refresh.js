@@ -22,7 +22,7 @@ let onChange = null;
 const document = {
   addEventListener: (type, fn) => { if (type === 'change') onChange = fn; },
 };
-eval(slice('    // KF-478: folds', '    // Click a card to open its modal.'));
+eval(slice('    // folds a card', '    // Click a card to open its modal.'));
 
 const tick = async (subAll) => {
   const li = { classList: { toggle: () => {} }, querySelector: () => null };
