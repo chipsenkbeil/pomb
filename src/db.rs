@@ -16154,6 +16154,49 @@ mod schema_version_tests {
             held.retain(|name| name != "seats.take");
         }
 
+        struct UpgradeTokens {
+            work: String,
+            lead: String,
+            custom: String,
+        }
+
+        struct UpgradeRoles {
+            reviewer: String,
+            verifier: String,
+            lead: String,
+            edited: String,
+            planner: String,
+        }
+
+        fn seed_tokens(db: &Db, account: &AccountId) -> UpgradeTokens {
+            let mut tokens = Vec::new();
+            for scope in [AuthScope::Work, AuthScope::Provision, AuthScope::Work] {
+                let (record, _) = new_api_token_record(account, "old", scope, None);
+                db.create_api_token(&record).expect("token");
+                tokens.push(record.id);
+            }
+            UpgradeTokens {
+                work: tokens[0].clone(),
+                lead: tokens[1].clone(),
+                custom: tokens[2].clone(),
+            }
+        }
+
+        fn seed_roles(db: &Db, account: &AccountId, edited: &BTreeSet<Permission>) -> UpgradeRoles {
+            let role = |name: &str, held: BTreeSet<Permission>| {
+                db.create_agent_role(account.as_str(), name, held)
+                    .expect("role")
+                    .id
+            };
+            UpgradeRoles {
+                reviewer: role("reviewer", without_take("reviewer")),
+                verifier: role("verifier", without_take("verifier")),
+                lead: role("lead", without_take("lead")),
+                edited: role("tester", edited.clone()),
+                planner: role("planner", without_take("planner")),
+            }
+        }
+
         #[test]
         fn should_grant_seats_take_to_preset_tokens_and_matching_stored_roles_once_at_upgrade() {
             let (_dir, path) = temp_path();
@@ -16163,34 +16206,17 @@ mod schema_version_tests {
                 held.insert(Permission::TimeRead);
                 held
             };
-            let (work, lead, custom, reviewer, verifier, lead_role, edited_role, planner) = {
+            let (tokens, roles) = {
                 let db = Db::connect(&path).expect("connect");
-                let mut tokens = Vec::new();
-                for scope in [AuthScope::Work, AuthScope::Provision, AuthScope::Work] {
-                    let (record, _) = new_api_token_record(&account, "old", scope, None);
-                    db.create_api_token(&record).expect("token");
-                    tokens.push(record.id);
-                }
-                let role = |name: &str, held: BTreeSet<Permission>| {
-                    db.create_agent_role(account.as_str(), name, held)
-                        .expect("role")
-                        .id
-                };
                 (
-                    tokens[0].clone(),
-                    tokens[1].clone(),
-                    tokens[2].clone(),
-                    role("reviewer", without_take("reviewer")),
-                    role("verifier", without_take("verifier")),
-                    role("lead", without_take("lead")),
-                    role("tester", edited.clone()),
-                    role("planner", without_take("planner")),
+                    seed_tokens(&db, &account),
+                    seed_roles(&db, &account, &edited),
                 )
             };
-            for id in [&work, &lead, &custom] {
+            for id in [&tokens.work, &tokens.lead, &tokens.custom] {
                 edit_raw(&path, API_TOKENS, id, drop_take);
             }
-            edit_raw(&path, API_TOKENS, &custom, |object| {
+            edit_raw(&path, API_TOKENS, &tokens.custom, |object| {
                 let held = object["permissions"].as_array_mut().expect("permissions");
                 held.retain(|name| name != "tasks.move");
             });
@@ -16207,13 +16233,25 @@ mod schema_version_tests {
                     .expect("read")
                     .expect("row")
             };
-            assert!(token(&work).permissions.contains(&Permission::SeatsTake));
-            assert!(token(&lead).permissions.contains(&Permission::SeatsTake));
-            assert!(!token(&custom).permissions.contains(&Permission::SeatsTake));
+            assert!(
+                token(&tokens.work)
+                    .permissions
+                    .contains(&Permission::SeatsTake)
+            );
+            assert!(
+                token(&tokens.lead)
+                    .permissions
+                    .contains(&Permission::SeatsTake)
+            );
+            assert!(
+                !token(&tokens.custom)
+                    .permissions
+                    .contains(&Permission::SeatsTake)
+            );
             for (id, name) in [
-                (&reviewer, "reviewer"),
-                (&verifier, "verifier"),
-                (&lead_role, "lead"),
+                (&roles.reviewer, "reviewer"),
+                (&roles.verifier, "verifier"),
+                (&roles.lead, "lead"),
             ] {
                 let standard = STANDARD_ROLES
                     .iter()
@@ -16221,18 +16259,18 @@ mod schema_version_tests {
                     .expect("standard role");
                 assert_eq!(role(id).permissions, standard.permissions(), "{name}");
             }
-            assert_eq!(role(&edited_role).permissions, edited);
-            assert_eq!(role(&planner).permissions, without_take("planner"));
+            assert_eq!(role(&roles.edited).permissions, edited);
+            assert_eq!(role(&roles.planner).permissions, without_take("planner"));
 
             drop(db);
-            edit_raw(&path, AGENT_ROLES, &reviewer, drop_take);
-            edit_raw(&path, API_TOKENS, &work, drop_take);
+            edit_raw(&path, AGENT_ROLES, &roles.reviewer, drop_take);
+            edit_raw(&path, API_TOKENS, &tokens.work, drop_take);
             let db = Db::connect(&path).expect("reopen at version 80");
-            let kept: AgentRoleRow = read_one(&db.db, AGENT_ROLES, &reviewer)
+            let kept: AgentRoleRow = read_one(&db.db, AGENT_ROLES, &roles.reviewer)
                 .expect("read")
                 .expect("row");
             assert_eq!(kept.permissions, without_take("reviewer"));
-            let kept: ApiTokenRecord = read_one(&db.db, API_TOKENS, &work)
+            let kept: ApiTokenRecord = read_one(&db.db, API_TOKENS, &tokens.work)
                 .expect("read")
                 .expect("row");
             assert!(!kept.permissions.contains(&Permission::SeatsTake));
