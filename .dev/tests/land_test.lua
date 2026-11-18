@@ -26,7 +26,7 @@ local VERBS = {
 local STUB_DEV = [[
 case "$1" in __*) exec luajit '@main@' "$@";; esac
 if [ "$1" = board ] && [ "$2" = show ]; then [ -e '@dir@/fail-show' ] && exit 1; printf 'abc123  Ready  1 Pomodoro  %s  name\n' "$(cat '@dir@/labels' 2>/dev/null || echo -)"; cat '@dir@/check-note' 2>/dev/null; exit 0; fi
-if [ "$1" = board ]; then echo "$*" >>'@dir@/notes'; exit 0; fi
+if [ "$1" = board ]; then echo "$*" >>'@dir@/notes'; if [ "$2" = move ]; then pwd -P >>'@dir@/move-dirs'; git rev-parse HEAD >>'@dir@/move-heads'; [ ! -e '@dir@/fail-move' ] || exit 1; fi; exit 0; fi
 touch '@dir@/runs.jsonl'
 echo "$1" >>'@dir@/calls'
 if [ -e '@dir@/drain-'"$1" ] && [ "$(cat '@dir@/drain-'"$1")" -gt 0 ]; then
@@ -671,6 +671,34 @@ t.test("land notes the landed sha on the card", function()
     t.eq(notes[1], "board note " .. CARD .. " landed " .. remote_main(fix) .. " on origin/main")
     t.eq(notes[2], "board move " .. CARD .. " " .. RELEASE)
     done(fix)
+end)
+
+t.test("land_should_move_the_card_from_the_checked_commit", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    local _, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    eq_list(lines(fix, "move-dirs"), { fix.work .. "/.dev/worktrees/move-" .. CARD })
+    eq_list(lines(fix, "move-heads"), { cand })
+    done(fix)
+end)
+
+t.test("land_should_remove_the_move_worktree", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    local _, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.ok(not fs.exists(fix.work .. "/.dev/worktrees/move-" .. CARD))
+    done(fix)
+
+    local failing = fixture()
+    local failing_cand = candidate(failing, { ["feature.txt"] = "feature" }, "add feature")
+    mark(failing, "fail-move")
+    local _, failing_code, failing_err = land(failing, failing_cand)
+    t.ok(failing_code == 0, failing_err)
+    t.ok(failing_err:find("dev board move " .. CARD .. " release failed", 1, true), failing_err)
+    t.ok(not fs.exists(failing.work .. "/.dev/worktrees/move-" .. CARD))
+    done(failing)
 end)
 
 t.test("land removes the card worktree and deletes its branch", function()

@@ -8,7 +8,7 @@ Steps, any failure aborts before the push:
 2. Take the land lock .dev/land.lock, which names the card and the pid, to allow one land at a time to apply, test and push. Wait for it while a live land holds it, polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) up to POMB_LAND_WAIT_BOUND seconds (default 21600) and saying who holds it, and take over a lock whose pid is gone. Drop it after the push, after a push refused because main moved, after a refusal and on every other exit. Then wait for the release lock .dev/release.lock to clear, up to POMB_LAND_WAIT_BOUND seconds (default 21600), polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) and saying who holds it. A lock whose pid is gone is removed. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>, first removing a clean land worktree left by an earlier attempt, and refusing when that worktree holds uncommitted changes. On gerrit the commit gets a Change-Id trailer when it has none.
 3. Refuse attribution trailers through __push_main --check, before any gate.
 4. Read the card's latest mode=run dev-check note from dev board show, and match each of its rows `N result RUNID` to the card's checks list by position. When its sum matches the card's current checks list, it has a result for every checks row, passes the rows dev --remote lint and dev --remote test, and names the landed commit or one with the same git patch-id, skip the gates whether or not main moved since, and say so. Otherwise say why and run dev lint --remote, then dev test --remote, through __gate, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts. When the commit changes a path under tests/ or .dev/ or a Cargo file, also run dev nixcheck --remote through __gate after test with the same drain retry, even when the card's dev-check let lint and test skip, since that note records only lint and test. Any other change runs no nixcheck gate.
-5. Push to main through __push_main, remove the land worktree, print the landed sha, note it on the card with dev board note and move the card to Release with dev board move. Then remove the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch. In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the bookmark of the same name. A worktree with uncommitted changes is kept, and the verb says why.
+5. Push to main through __push_main, remove the land worktree, print the landed sha, note it on the card with dev board note and move the card to Release with dev board move from a detached worktree at the verified commit. Then remove the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch. In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the bookmark of the same name. A worktree with uncommitted changes is kept, and the verb says why.
 6. A push refused because main moved on (exit 3) removes the worktree, drops the land lock, fetches, and repeats steps 2 to 5 on the new main, 3 attempts in all. It never forces the push.
 The remote of record is forge.remote, else gerrit when that remote exists, else origin. A failed land leaves its worktree behind; the next land removes it when it is clean, and a worktree with uncommitted changes is removed by hand. A push refused a third time exits 1 with the worktree left behind, and so does any other push failure, which is not retried.
 ]]
@@ -269,6 +269,25 @@ local function retire_landed_worktrees(repo, cand)
             retire_if_landed(repo, cand, entry)
             entry = {}
         end
+    end
+end
+
+local function move_to_release(repo, card, cand)
+    local path = repo .. "/.dev/worktrees/move-" .. card
+    if fs.exists(path) then
+        run_git(repo, "worktree", "remove", "--force", path)
+    end
+    local moved = run_git(repo, "worktree", "add", "-q", "--detach", path, cand)
+    if moved == 0 then
+        moved = devos.run({ "dev", "board", "move", card, "release" }, { cwd = path })
+        run_git(repo, "worktree", "remove", "--force", path)
+    end
+    if moved ~= 0 then
+        warn(
+            ("Landed, but dev board move %s release failed, so move the card yourself.\n"):format(
+                card
+            )
+        )
     end
 end
 
@@ -724,10 +743,6 @@ if devos.run(note, { cwd = repo }) ~= 0 then
         )
     )
 end
-if devos.run({ "dev", "board", "move", card, "release" }, { cwd = repo }) ~= 0 then
-    warn(
-        ("Landed, but dev board move %s release failed, so move the card yourself.\n"):format(card)
-    )
-end
+move_to_release(repo, card, cand)
 retire_landed_worktrees(repo, cand)
 return 0
