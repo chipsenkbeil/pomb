@@ -363,6 +363,29 @@ async fn owner_should_not_restrict_move_or_edit() {
 }
 
 #[tokio::test]
+async fn fenceless_write_should_pass_on_an_owned_card() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let grabbed = fx.grab(ALPHA, &task, "builder", None).await;
+    assert_eq!(grabbed.status, StatusCode::OK, "{}", grabbed.body);
+
+    let move_uri = format!("/api/tasks/{task}/move");
+    let moving = json!({"column_id": fx.other_column, "position": 0});
+    let moved = fx.bearer(BETA, "POST", &move_uri, None, moving).await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
+    let edit_uri = format!("/api/tasks/{task}");
+    let edit = fx
+        .bearer(BETA, "PATCH", &edit_uri, None, json!({"name": "Edited"}))
+        .await;
+    assert_eq!(edit.status, StatusCode::OK, "{}", edit.body);
+    let comment_uri = format!("/api/tasks/{task}/comments");
+    let comment = fx
+        .bearer(BETA, "POST", &comment_uri, None, json!({"body": "hi"}))
+        .await;
+    assert_eq!(comment.status, StatusCode::OK, "{}", comment.body);
+}
+
+#[tokio::test]
 async fn owner_claim_routes_should_write_the_owner() {
     let fx = Fixture::new();
     let task = fx.task().await;
