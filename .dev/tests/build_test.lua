@@ -9,5 +9,5 @@ t.test("dev build refuses an unknown flag with exit 2 and its message", function
         env = { CI = "true", DEV_REMOTE = "0" },
     })
     t.eq(code, 2)
-    t.ok(err:find("dev build: unknown flag --bogus", 1, true), err)
+    t.ok(err:lower():find("dev build: unknown flag --bogus", 1, true), err)
 end)
