@@ -302,6 +302,14 @@ else
     )
 end
 
+local dev_lua = lint:dev_lua()
+if #dev_lua > 0 and lint:have("stylua", "brew install stylua") then
+    lint:check(
+        "stylua",
+        lintset.with_files({ "stylua", "--check", "--config-path", "stylua.toml" }, dev_lua)
+    )
+end
+
 lint:check(
     "cargo clippy",
     { "cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings" }
@@ -655,18 +663,6 @@ if lint:have("shellcheck", "brew install shellcheck", "shellcheck") then
 end
 if lint:have("shfmt", "brew install shfmt", "shfmt") then
     lint:check("shfmt", lintset.with_files({ "shfmt", "-d", "-i", "2", "-ci" }, site_scripts))
-end
-
-if lint:have("stylua", "brew install stylua", "stylua") then
-    local lua_files = {}
-    for _, file in ipairs(lint:files({ "*.lua" })) do
-        if file:find("^%.dev/") and not file:find("^%.dev/worktrees/") then
-            lua_files[#lua_files + 1] = file
-        end
-    end
-    if #lua_files > 0 then
-        lint:check("stylua", lintset.with_files({ "stylua", "--check" }, lua_files))
-    end
 end
 
 check_private_details()

@@ -1,6 +1,8 @@
 --[[
-Format the workspace with nightly rustfmt, which the unstable rustfmt.toml options need,
-then drop the trailing period from each // one-liner, then format the .dev Lua files.
+Format the Rust workspace with nightly rustfmt and the Lua under .dev and .ci with stylua.
+Nightly is needed for the unstable rustfmt.toml options, and each // one-liner then loses its
+trailing period.
+patch fmt fmt.patch
 ]]
 local dev_os = require("dev.os")
 local lintset = require("lintset")
@@ -15,23 +17,19 @@ if code ~= 0 then
     return code or 1
 end
 
-for _, file in ipairs(lintset.new(ctx):files({ "*.rs" })) do
+local run = lintset.new(ctx)
+local dev_lua = run:dev_lua()
+if #dev_lua > 0 then
+    local argv = lintset.with_files({ "stylua", "--config-path", "stylua.toml" }, dev_lua)
+    code = dev_os.run(argv, { cwd = root })
+    if code ~= 0 then
+        return code or 1
+    end
+end
+
+for _, file in ipairs(run:files({ "*.rs" })) do
     local ok, err = lintset.fix_comment_periods(root, file)
     if not ok then
         verb.die(tostring(err))
     end
 end
-
-local lua_files = {}
-for _, file in ipairs(lintset.new(ctx):files({ "*.lua" })) do
-    if file:find("^%.dev/") and not file:find("^%.dev/worktrees/") then
-        lua_files[#lua_files + 1] = file
-    end
-end
-if #lua_files == 0 then
-    return 0
-end
-if not dev_os.which("stylua") then
-    verb.die("Stylua is not installed. Run `brew install stylua`.")
-end
-return dev_os.run(lintset.with_files({ "stylua" }, lua_files), { cwd = root })

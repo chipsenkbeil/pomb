@@ -21,18 +21,30 @@ local RUNNER = { target = "archlinux-rust" }
 
 -- Prefix cargo's directory on every command, since each ci.sh gets a fresh shell
 local function run(name, command)
-  return ci.sh("export PATH=$HOME/.cargo/bin:$PATH; " .. command, { name = name })
+    return ci.sh("export PATH=$HOME/.cargo/bin:$PATH; " .. command, { name = name })
 end
 
 local function shell_quote(word)
-  return "'" .. (word:gsub("'", "'\\''")) .. "'"
+    return "'" .. (word:gsub("'", "'\\''")) .. "'"
 end
 
 local function check_rust()
-  ci.group("Check Rust toolchain", function()
-    run("Check toolchain", "rustup toolchain list | grep -q '^" .. TOOLCHAIN .. "-' || { echo 'image has no toolchain " .. TOOLCHAIN .. "' >&2; exit 1; }")
-    run("Check cargo tools", "rustc --version | grep -q '^rustc " .. TOOLCHAIN .. " ' && cargo nextest --version >/dev/null && cargo +nightly fmt --version >/dev/null")
-  end)
+    ci.group("Check Rust toolchain", function()
+        run(
+            "Check toolchain",
+            "rustup toolchain list | grep -q '^"
+                .. TOOLCHAIN
+                .. "-' || { echo 'image has no toolchain "
+                .. TOOLCHAIN
+                .. "' >&2; exit 1; }"
+        )
+        run(
+            "Check cargo tools",
+            "rustc --version | grep -q '^rustc "
+                .. TOOLCHAIN
+                .. " ' && cargo nextest --version >/dev/null && cargo +nightly fmt --version >/dev/null"
+        )
+    end)
 end
 
 local BROWSER_RUNNER = { target = "archlinux-browser" }
@@ -75,64 +87,64 @@ tar czf "$root/regress-report.tgz" -C "$out" report -C "$seeders" candidate base
 ]=]
 
 return {
-  jobs = {
-    lint = {
-      name = "Lint Rust",
-      matrix = { RUNNER },
-      run = function()
-        check_rust()
-        run("Run lint", "dev lint")
-      end,
+    jobs = {
+        lint = {
+            name = "Lint Rust",
+            matrix = { RUNNER },
+            run = function()
+                check_rust()
+                run("Run lint", "dev lint")
+            end,
+        },
+        test = {
+            name = "Test Rust",
+            matrix = { RUNNER },
+            run = function()
+                check_rust()
+                local args = {}
+                for _, word in ipairs(ci.args) do
+                    args[#args + 1] = shell_quote(word)
+                end
+                run("Run tests", "dev test " .. table.concat(args, " "))
+            end,
+        },
+        nixcheck = {
+            name = "Nix check",
+            matrix = { RUNNER },
+            run = function()
+                check_rust()
+                run("Run nix check", "dev nixcheck")
+            end,
+        },
+        build = {
+            name = "Build Rust",
+            matrix = { RUNNER },
+            run = function()
+                check_rust()
+                run("Build release", "dev build")
+            end,
+        },
+        lock = {
+            name = "Resolve Cargo.lock",
+            matrix = { RUNNER },
+            run = function()
+                local update = "cargo update -p " .. shell_quote(ci.args[1] or "")
+                if ci.args[2] then
+                    update = update .. " --precise " .. shell_quote(ci.args[2])
+                end
+                run("Update Cargo.lock", update)
+                ci.artifact("Cargo.lock")
+            end,
+        },
+        regress = {
+            name = "Regress browser",
+            matrix = { BROWSER_RUNNER },
+            run = function()
+                check_rust()
+                ci.sh(REGRESS, { name = "Run regress" })
+                ci.artifact("regress-report.tgz")
+                ci.sh("exit $(cat regress-out/rc)", { name = "Check regress result" })
+            end,
+        },
     },
-    test = {
-      name = "Test Rust",
-      matrix = { RUNNER },
-      run = function()
-        check_rust()
-        local args = {}
-        for _, word in ipairs(ci.args) do
-          args[#args + 1] = shell_quote(word)
-        end
-        run("Run tests", "dev test " .. table.concat(args, " "))
-      end,
-    },
-    nixcheck = {
-      name = "Nix check",
-      matrix = { RUNNER },
-      run = function()
-        check_rust()
-        run("Run nix check", "dev nixcheck")
-      end,
-    },
-    build = {
-      name = "Build Rust",
-      matrix = { RUNNER },
-      run = function()
-        check_rust()
-        run("Build release", "dev build")
-      end,
-    },
-    lock = {
-      name = "Resolve Cargo.lock",
-      matrix = { RUNNER },
-      run = function()
-        local update = "cargo update -p " .. shell_quote(ci.args[1] or "")
-        if ci.args[2] then
-          update = update .. " --precise " .. shell_quote(ci.args[2])
-        end
-        run("Update Cargo.lock", update)
-        ci.artifact("Cargo.lock")
-      end,
-    },
-    regress = {
-      name = "Regress browser",
-      matrix = { BROWSER_RUNNER },
-      run = function()
-        check_rust()
-        ci.sh(REGRESS, { name = "Run regress" })
-        ci.artifact("regress-report.tgz")
-        ci.sh("exit $(cat regress-out/rc)", { name = "Check regress result" })
-      end,
-    },
-  },
 }

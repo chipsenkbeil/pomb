@@ -17,7 +17,7 @@ checks it. A project adds its own rules under the `## This project` section that
 | Inline `//` comment | present tense, "we" welcome | Capitalized | no |
 | `// NOTE:` and `// TODO:` | marker, then a sentence | Capitalized | no |
 | Error `Display` message | phrase | lowercase | no |
-| Person-facing message | full sentences, no semicolon | Capitalized | yes |
+| Person-facing message (rule 98) | full sentences, no semicolon | Capitalized | yes |
 | Rustdoc section | `# Examples`, `# Errors`, `# Panics`, `# Safety` | h1 | |
 
 ## Comments
@@ -62,8 +62,8 @@ let fonts = Fonts::load_from_dir(&config.font_dir)?;
 ### 3. Write a one-liner capitalized, present tense, no period
 
 A `//` one-liner starts with a capital, reads in the present tense and has no
-trailing period. "We" is welcome. `dev fmt` removes the period from a one-liner and
-leaves a multi-line run, a doc comment and an ellipsis alone.
+trailing period. "We" is welcome. `dev fmt` removes the period from a one-liner
+and leaves a multi-line run, a doc comment and an ellipsis alone.
 
 Line comments wrap at 100 columns, rustfmt's default width.
 
@@ -94,9 +94,9 @@ let mut base = root.as_os_str().to_owned();
 
 ### 5. Put a blank line before a full-line comment
 
-A full-line comment that follows code at the same or a deeper indent, such as the
-last line of a method chain, gets a blank line above it. An end-of-line comment
-needs none.
+A full-line comment that follows code at the same or a deeper indent, such as
+the last line of a method chain, gets a blank line above it. An end-of-line
+comment needs none.
 
 Lint: `lint.lua` comment spacing, with the exceptions in the style skill's `SKILL.md` Style rule 1
 
@@ -189,7 +189,8 @@ imperative.
 Rust docs follow std's third person even though Lua doc summaries are
 imperative.
 
-A failure variant's doc opens with a noun phrase saying what failed, as std does ("The socket closed before..."), never with a "When" clause.
+A failure variant's doc opens with a noun phrase saying what failed, as std
+does ("The socket closed before..."), never with a "When" clause.
 
 A const or field doc is a noun phrase ("Maximum size of ..."), never a verb
 phrase such as "Sets the ..." or "Represents the ...".
@@ -548,7 +549,8 @@ pub trait Encoding: private::Sealed {
 
 An underscore marks a value nothing reads, never a private name.
 
-A guard held for its drop binds to an underscore-prefixed name such as `_guard`, never a bare `_`, which drops it at once.
+A guard held for its drop binds to an underscore-prefixed name such as
+`_guard`, never a bare `_`, which drops it at once.
 
 Review
 
@@ -784,7 +786,11 @@ mod tests {
 
 ### 38. Group imports std, external, then the crate
 
-Import a function through its module and a type directly.
+Import a function through its module and a type directly. A constant is
+imported at the top and used by its bare name, in tests too. A constant whose
+bare name is ambiguous, such as `TIMEOUT` from both `udp` and `tcp`, is
+renamed on import with `use udp::TIMEOUT as UDP_TIMEOUT`. Writing
+`udp::TIMEOUT` through its module is the fallback when a rename reads worse.
 
 Lint: rustfmt `group_imports`, `imports_granularity`
 
@@ -795,10 +801,13 @@ use std::path::PathBuf;
 use anyhow::Context;
 
 use crate::config::Config;
+use crate::config::GIVE_UP_SECS;
 use crate::fs;
+use crate::udp::TIMEOUT as UDP_TIMEOUT;
 
 let config = Config::load_from_path(&path)?;
 let bytes = fs::read_all(&path)?;
+let deadline = GIVE_UP_SECS.max(UDP_TIMEOUT);
 ```
 
 ## Constants
@@ -817,7 +826,7 @@ module of its own.
 Review
 
 ```rust
-// Library, src/codec.rs, read as codec::MAX_FRAME_SIZE
+// Library, src/codec.rs, callers import it and use it as MAX_FRAME_SIZE
 pub const MAX_FRAME_SIZE: usize = 16 * 1024;
 ```
 
@@ -968,7 +977,8 @@ return Err(io::Error::other("missing header"));
 Give a derived `Display` a `#[display("...")]` string on every variant, or the
 variant prints as its bare name.
 
-An error's `Display` text stays lowercase with no period in every case, and the screen or CLI layer that shows it to a person turns it into a full sentence.
+An error's `Display` text stays lowercase with no period in every case, and the
+screen or CLI layer that shows it to a person turns it into a full sentence.
 
 Review
 
@@ -1004,6 +1014,28 @@ Lint: `clippy::unwrap_used`, `clippy::allow_attributes_without_reason`
 ```rust
 #[expect(clippy::unwrap_used, reason = "the pattern is a literal checked by tests")]
 let pattern = Regex::new(r"^\d+x\d+$").unwrap();
+```
+
+### 98. Write a person-facing message as full sentences
+
+A person-facing message is a refusal, a hint or a nothing-changed note that a
+CLI prints for a person. Write it as full sentences: capitalized, ending in a
+period, with no semicolon. Split a reason from its consequence into two
+sentences. A usage synopsis line, such as `usage: tool <verb> ...`, is exempt
+from this rule and stays lowercase. It names a form, not a sentence.
+
+An error `Display` message stays a lowercase phrase with no period (rule 47).
+Another error wraps it, and the application code at the boundary turns it into
+the sentences a person reads.
+
+Review
+
+```rust
+// Good
+eprintln!("The config file is missing. Run `tool init` to create it.");
+
+// Bad
+eprintln!("config file is missing, run `tool init` to create it");
 ```
 
 ## Traits and generics
@@ -1174,6 +1206,7 @@ Mark a method that reads like in-place mutation (`with_*`, `to_*`, builder
 setters), a pure function whose result is the only reason to call it, and a
 type whose silent drop loses something. Never mark a unit function or one whose
 return type is already `must_use`.
+
 A private pure helper carries `must_use` on the same terms as a public one,
 with no visibility exemption. A pure test helper in `tests/` or a
 `#[cfg(test)]` module carries `must_use` like any private pure helper, under
@@ -1537,7 +1570,8 @@ channel = "1.90.0"
 Suppress with a local `#[expect(lint, reason = "...")]`, never a bare
 `#[allow]`. An `#[expect]` errors once the lint stops firing.
 
-A temporary `expect(dead_code)` is banned, and the caller lands in the same change as the code it calls.
+A temporary `expect(dead_code)` is banned, and the caller lands in the same
+change as the code it calls.
 
 Lint: `clippy::allow_attributes`, `allow_attributes_without_reason`
 
@@ -1634,8 +1668,8 @@ shipped with the embedded stdlib, never as Rust closures on a table. A handle to
 Rust-owned state crosses as `UserData`, never as a copy.
 
 The Rust call boundary is the cost: Luau methods run `v:add(w)` in 207 ns
-against about 750 ns for Rust methods or `UserData`. A per-frame copy of state is
-the slowest option and the only one that can drift.
+against about 750 ns for Rust methods or `UserData`. A per-frame copy of state
+is the slowest option and the only one that can drift.
 
 Review
 

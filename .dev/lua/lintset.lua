@@ -1,6 +1,7 @@
 local dev_os = require("dev.os")
 local fs = require("dev.fs")
 local standalone = require("dev.standalone")
+local verb = require("dev.verb")
 
 ---@class lintset.Lint
 ---@field root string absolute project root
@@ -15,7 +16,19 @@ local M = {}
 
 local PROSE_RUN = 3
 local FAIL_RUN = 7
-local KIND = { NONE = "none", BLANK = "blank", COMMENT = "comment", CODE = "code", OPEN = "open" }
+local CHECK_SPACING = "comment spacing"
+local CHECK_RUNS = "comment runs"
+---@enum lintset.Kind
+local Kind = {
+    NONE = "none",
+    BLANK = "blank",
+    COMMENT = "comment",
+    DOC = "doc",
+    CODE = "code",
+    OPEN = "open",
+}
+---@enum lintset.Marker
+local Marker = { SLASH = "//", DASH = "--", HASH = "#" }
 local CASE_ARM_ENDS = { [";;"] = true, [";&"] = true, [";;&"] = true }
 local LITERAL_ENDS = { [","] = true, ["("] = true, ["["] = true }
 
@@ -36,50 +49,78 @@ local function starts(text, prefix)
 end
 
 local function classify(body, marker)
-    if marker == "//" then
+    if marker == Marker.SLASH then
         if starts(body, "///") or starts(body, "//!") then
-            return "doc"
+            return Kind.DOC
         end
-        if starts(body, "//") then
-            return "comment"
+        if starts(body, Marker.SLASH) then
+            return Kind.COMMENT
         end
-    elseif marker == "--" then
+    elseif marker == Marker.DASH then
         if starts(body, "---") then
-            return "doc"
+            return Kind.DOC
         end
         if starts(body, "--[[") then
-            return "comment", not body:find("]]", 1, true)
+            return Kind.COMMENT, not body:find("]]", 1, true)
         end
-        if starts(body, "--") then
-            return "comment"
+        if starts(body, Marker.DASH) then
+            return Kind.COMMENT
         end
-    elseif marker == "#" then
+    elseif marker == Marker.HASH then
         if starts(body, "#!") then
-            return "doc"
+            return Kind.DOC
         end
-        if starts(body, "#") then
-            return "comment"
+        if starts(body, Marker.HASH) then
+            return Kind.COMMENT
         end
     end
-    return "code"
+    return Kind.CODE
 end
 
-local function spacing_hit(marker, prev_text, same_indent, number)
-    if marker == "//" and LITERAL_ENDS[prev_text:sub(-1)] then
-        return nil, number
+---@class lintset.SpacingHit
+---@field marker lintset.Marker the comment marker of the file
+---@field prev_text string the text of the code line above the comment
+---@field same_indent boolean whether the comment sits at the code line's indent
+---@field number integer the comment's line number
+
+local function spacing_hit(hit)
+    if hit.marker == Marker.SLASH and LITERAL_ENDS[hit.prev_text:sub(-1)] then
+        return nil, hit.number
     end
-    if marker == "#" and CASE_ARM_ENDS[prev_text] then
-        return same_indent and number or nil
+    if hit.marker == Marker.HASH and CASE_ARM_ENDS[hit.prev_text] then
+        return hit.same_indent and hit.number or nil
     end
-    return number
+    return hit.number
 end
 
 local function after_code_exempt(marker, body)
     local first = body:sub(1, 1)
-    if marker == "//" then
+    if marker == Marker.SLASH then
         return first == "."
     end
-    return marker == "--" and (first == ":" or first == ".")
+    return marker == Marker.DASH and (first == ":" or first == ".")
+end
+
+local function heredoc_opener(body)
+    local code = body:gsub("<<<", "")
+    local at = code:find("<<", 1, true)
+    if not at or code:find("((", 1, true) or code:find("$[", 1, true) then
+        return nil
+    end
+    local before = code:sub(1, at - 1)
+    local quotes = select(2, before:gsub("[\"']", ""))
+    if before:find("#", 1, true) or quotes % 2 == 1 then
+        return nil
+    end
+    local dash, _, word = code:match("<<(%-?)%s*\\?([\"']?)([%a_][%w_]*)")
+    if not word then
+        return nil
+    end
+    return { word = word, strip = dash == "-" }
+end
+
+local function heredoc_closes(heredoc, body, line)
+    return (heredoc.strip and body or line) == heredoc.word
 end
 
 ---Find the full-line comments that directly follow a line of code.
@@ -87,32 +128,42 @@ end
 ---A blank line, another comment line, an opening brace line or the top of the text before a
 ---comment passes, and so do the places where a formatter removes the blank line.
 ---@param text string the file's text
----@param marker string `//`, `--` or `#`
+---@param marker lintset.Marker the comment marker
 ---@return integer[] numbers line numbers of the findings
 function M.spacing(text, marker)
     local found = {}
-    local kind, prev_indent, prev_text = KIND.NONE, "", ""
-    local in_block, pending, literal = false, nil, nil
+    local kind, prev_indent, prev_text = Kind.NONE, "", ""
+    local in_block, pending, literal, heredoc = false, nil, nil, nil
     for number, line in ipairs(lines_of(text)) do
         local body = line:gsub("^%s+", "")
         local indent = line:sub(1, #line - #body)
-        if in_block then
+        if heredoc then
+            if heredoc_closes(heredoc, body, line) then
+                heredoc = nil
+            end
+            kind = Kind.CODE
+        elseif in_block then
             in_block = not body:find("]]", 1, true)
-            kind = KIND.COMMENT
+            kind = Kind.COMMENT
         elseif body == "" then
-            kind = KIND.BLANK
+            kind = Kind.BLANK
         else
             local class, opens = classify(body, marker)
-            if class == "doc" then
-                kind = KIND.COMMENT
-            elseif class == "comment" then
-                if kind == KIND.CODE and #indent <= #prev_indent then
-                    local hit, lit = spacing_hit(marker, prev_text, indent == prev_indent, number)
+            if class == Kind.DOC then
+                kind = Kind.COMMENT
+            elseif class == Kind.COMMENT then
+                if kind == Kind.CODE and #indent <= #prev_indent then
+                    local hit, lit = spacing_hit({
+                        marker = marker,
+                        prev_text = prev_text,
+                        same_indent = indent == prev_indent,
+                        number = number,
+                    })
                     pending = hit or pending
                     literal = lit or literal
                 end
                 in_block = opens or false
-                kind = KIND.COMMENT
+                kind = Kind.COMMENT
             else
                 if pending then
                     if not after_code_exempt(marker, body) then
@@ -126,8 +177,11 @@ function M.spacing(text, marker)
                     end
                     literal = nil
                 end
-                kind = body:sub(-1) == "{" and KIND.OPEN or KIND.CODE
+                kind = body:sub(-1) == "{" and Kind.OPEN or Kind.CODE
                 prev_indent, prev_text = indent, body
+                if marker == Marker.HASH then
+                    heredoc = heredoc_opener(body)
+                end
             end
         end
     end
@@ -138,7 +192,11 @@ function M.spacing(text, marker)
     return found
 end
 
-local NOT_PROSE = { ["//"] = { "///", "//!" }, ["--"] = { "---", "--[[" }, ["#"] = {} }
+local NOT_PROSE = {
+    [Marker.SLASH] = { "///", "//!" },
+    [Marker.DASH] = { "---", "--[[" },
+    [Marker.HASH] = {},
+}
 
 local function is_prose(body, marker)
     if not starts(body, marker) or body:gsub("%s+$", "") == marker then
@@ -159,13 +217,14 @@ end
 ---Find the runs of three or more consecutive full-line comments.
 ---
 ---Doc comments and block comments are not counted, a bare marker line ends a run, and a
----`//` run holding a numbered list item passes. A list enumerates distinct cases.
+---`//` run holding a numbered list item passes. A list enumerates distinct cases. A shell
+---heredoc body is data, so its lines never make a run.
 ---@param text string the file's text
----@param marker string `//`, `--` or `#`
+---@param marker lintset.Marker the comment marker
 ---@return lintset.Run[] runs the runs, in line order
 function M.runs(text, marker)
     local found = {}
-    local run, start, listed = 0, 0, false
+    local run, start, listed, heredoc = 0, 0, false, nil
     local function flush()
         if run >= PROSE_RUN and not listed then
             found[#found + 1] = { line = start, count = run }
@@ -174,17 +233,25 @@ function M.runs(text, marker)
     end
     for number, line in ipairs(lines_of(text)) do
         local body = line:gsub("^%s+", "")
-        if is_prose(body, marker) then
+        if heredoc then
+            if heredoc_closes(heredoc, body, line) then
+                heredoc = nil
+            end
+            flush()
+        elseif is_prose(body, marker) then
             if run == 0 then
                 start = number
                 listed = false
             end
             run = run + 1
-            if marker == "//" and body:find("^// %d") then
+            if marker == Marker.SLASH and body:find("^// %d") then
                 listed = true
             end
         else
             flush()
+            if marker == Marker.HASH then
+                heredoc = heredoc_opener(body)
+            end
         end
     end
     flush()
@@ -192,7 +259,7 @@ function M.runs(text, marker)
 end
 
 local function one_liner(body)
-    if not starts(body, "//") then
+    if not starts(body, Marker.SLASH) then
         return false
     end
     local third = body:sub(3, 3)
@@ -292,15 +359,27 @@ end
 ---Print the name of the check that starts.
 ---@param name string the check's name
 function Lint:step(name)
-    print("> " .. name)
+    verb.say("> " .. name)
+end
+
+---Add a failed check's name to the list unless it is already there.
+---@param failed string[] the failed checks, in the order each first failed
+---@param name string the check's name
+local function record(failed, name)
+    for _, seen in ipairs(failed) do
+        if seen == name then
+            return
+        end
+    end
+    failed[#failed + 1] = name
 end
 
 ---Record a failure found by an inline check.
 ---@param name string the check's name
 ---@param message string what is wrong, written to standard error
 function Lint:fail(name, message)
-    io.stderr:write(message, "\n")
-    self.failed[#self.failed + 1] = name
+    verb.note(message)
+    record(self.failed, name)
 end
 
 ---Run a command in the project root and record a failure without stopping.
@@ -308,41 +387,33 @@ end
 ---@param argv string[] the command and its arguments
 function Lint:check(name, argv)
     if self.verbose >= 1 then
-        print("> " .. name .. ": " .. table.concat(argv, " "))
+        verb.say("> " .. name .. ": " .. table.concat(argv, " "))
     else
         self:step(name)
     end
     if dev_os.run(argv, { cwd = self.root }) ~= 0 then
-        self.failed[#self.failed + 1] = name
+        record(self.failed, name)
     end
 end
 
----Warn that a tool is missing, or fail the check under CI, which never skips one.
+---Skip the check with a note that its tool is missing, or fail it under CI, which never skips one.
 ---@param binary string the missing tool
 ---@param install string how to install it
 ---@param name string the check it would have run
 function Lint:missing(binary, install, name)
     local ci = os.getenv("CI")
-    if ci and ci ~= "" then
-        self:fail(
-            name,
-            binary
-                .. " not found, so the "
-                .. name
-                .. " check cannot run, and CI never skips a check. Install with: "
-                .. install
-        )
+    local strict = ci and ci ~= ""
+    local text = ("Tool %s not found. The %s check %s Install it with %s."):format(
+        binary,
+        name,
+        strict and "cannot run. CI never skips a check." or "is skipped.",
+        install
+    )
+    if strict then
+        self:fail(name, text)
         return
     end
-    io.stderr:write(
-        "WARNING: ",
-        binary,
-        " not found, skipping the ",
-        name,
-        " check. Install with: ",
-        install,
-        "\n"
-    )
+    verb.note(text)
 end
 
 ---Say whether a tool exists, and report it as missing when it does not.
@@ -373,65 +444,83 @@ local function is_hidden(file)
     return file:sub(1, 1) == "." or file:find("/.", 1, true) ~= nil
 end
 
----List the project's files matching the globs, never under a target directory.
----
----In a jj checkout that is what `jj file list` shows. Inside a git work tree it is what git tracks
----or would track, so a nested checkout is never walked. Elsewhere it is a ripgrep walk. A project
----lists globs relative to its root in `.dev/lint-ignore`, one per line, to leave those out, and
----`skip_hidden` drops hidden paths.
----@param globs string[] file name globs such as `*.rs`
----@return string[] files paths relative to the root
-function Lint:files(globs)
-    local root = self.root
-    local ignored = ignore_globs(root)
-    local files = {}
-    if fs.exists(root .. "/.jj") and dev_os.which("jj") then
-        local include = {}
-        for _, glob in ipairs(globs) do
-            include[#include + 1] = 'glob:"**/' .. glob .. '"'
-        end
-        local fileset = "(" .. table.concat(include, " | ") .. ")"
-        for _, glob in ipairs(ignored) do
-            fileset = fileset .. ' ~ glob:"' .. glob .. '"'
-        end
-        fileset = fileset .. ' ~ glob:"**/target/**"'
-        local out, code = dev_os.capture(
-            { "jj", "file", "list", fileset },
-            { cwd = root, stderr = "null" }
+local function visible(lint, file, query)
+    return query.hidden or not (lint.skip_hidden and is_hidden(file))
+end
+
+local function files_jj(lint, query)
+    local globs, ignored = query.globs, query.ignored
+    local root = lint.root
+    if not (fs.exists(root .. "/.jj") and dev_os.which("jj")) then
+        return nil
+    end
+    local include = {}
+    for _, glob in ipairs(globs) do
+        include[#include + 1] = 'glob:"**/' .. glob .. '"'
+    end
+    local fileset = "(" .. table.concat(include, " | ") .. ")"
+    for _, glob in ipairs(ignored) do
+        fileset = fileset .. ' ~ glob:"' .. glob .. '"'
+    end
+    fileset = fileset .. ' ~ glob:"**/target/**"'
+    local out, code = dev_os.capture(
+        { "jj", "file", "list", fileset },
+        { cwd = root, stderr = "null" }
+    )
+    if code ~= 0 then
+        verb.note(
+            "The jj file list command failed with exit "
+                .. code
+                .. ". A bad glob in .dev/lint-ignore is the usual cause."
+                .. " Lint falls back to git or rg."
         )
-        if code == 0 then
-            for file in out:gmatch("[^\n]+") do
-                if not (self.skip_hidden and is_hidden(file)) then
-                    files[#files + 1] = file
-                end
-            end
-            return files
+        return nil
+    end
+    local files = {}
+    for file in out:gmatch("[^\n]+") do
+        if visible(lint, file, query) then
+            files[#files + 1] = file
         end
     end
+    return files
+end
+
+local function files_git(lint, query)
+    local globs, ignored = query.globs, query.ignored
+    local root = lint.root
     local _, inside = dev_os.capture(
         { "git", "rev-parse", "--is-inside-work-tree" },
         { cwd = root, stderr = "null" }
     )
-    if inside == 0 then
-        local argv = { "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--" }
-        for _, glob in ipairs(globs) do
-            argv[#argv + 1] = ":(glob)**/" .. glob
-        end
-        for _, glob in ipairs(ignored) do
-            argv[#argv + 1] = ":(exclude,glob)" .. glob
-        end
-        argv[#argv + 1] = ":(exclude,glob)**/target/**"
-        local out = dev_os.capture(argv, { cwd = root })
-        for file in out:gmatch("([^%z]+)") do
-            local skip = file:sub(-1) == "/" or (self.skip_hidden and is_hidden(file))
-            if not skip and fs.is_file(fs.join(root, file)) then
-                files[#files + 1] = file
-            end
-        end
-        return files
+    if inside ~= 0 then
+        return nil
     end
+    local argv = { "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--" }
+    for _, glob in ipairs(globs) do
+        argv[#argv + 1] = ":(glob)**/" .. glob
+    end
+    for _, glob in ipairs(ignored) do
+        argv[#argv + 1] = ":(exclude,glob)" .. glob
+    end
+    argv[#argv + 1] = ":(exclude,glob)**/target/**"
+    local out = dev_os.capture(argv, { cwd = root })
+    local files = {}
+    for file in out:gmatch("([^%z]+)") do
+        if
+            file:sub(-1) ~= "/"
+            and visible(lint, file, query)
+            and fs.is_file(fs.join(root, file))
+        then
+            files[#files + 1] = file
+        end
+    end
+    return files
+end
+
+local function files_rg(lint, query)
+    local globs, ignored = query.globs, query.ignored
     local argv = { "rg", "--files", "--no-require-git" }
-    if self.skip_hidden then
+    if lint.skip_hidden and not query.hidden then
         argv[#argv + 1] = "--no-hidden"
     else
         for _, word in ipairs({ "--hidden", "-g", "!.git", "-g", "!.jj" }) do
@@ -451,7 +540,8 @@ function Lint:files(globs)
         lua_pattern = lua_pattern:gsub("%*", "[^/]*"):gsub("%?", "[^/]")
         patterns[#patterns + 1] = "^" .. lua_pattern .. "$"
     end
-    local out = dev_os.capture(argv, { cwd = root })
+    local out = dev_os.capture(argv, { cwd = lint.root })
+    local files = {}
     for file in out:gmatch("[^\n]+") do
         local name = file:match("[^/]*$")
         for _, pattern in ipairs(patterns) do
@@ -459,6 +549,39 @@ function Lint:files(globs)
                 files[#files + 1] = file:gsub("^%./", "")
                 break
             end
+        end
+    end
+    return files
+end
+
+---List the project's files matching the globs, never under a target directory.
+---
+---In a jj checkout that is what `jj file list` shows. Inside a git work tree it is what git tracks
+---or would track, so a nested checkout is never walked. Elsewhere it is a ripgrep walk. A project
+---lists globs relative to its root in `.dev/lint-ignore`, one per line, to leave those out, and
+---`skip_hidden` drops hidden paths.
+---@param globs string[] file name globs such as `*.rs`
+---@param opts? { hidden?: boolean } `hidden` lists hidden paths even when `skip_hidden` is set
+---@return string[] files paths relative to the root
+function Lint:files(globs, opts)
+    local query = {
+        globs = globs,
+        ignored = ignore_globs(self.root),
+        hidden = opts and opts.hidden,
+    }
+    return files_jj(self, query) or files_git(self, query) or files_rg(self, query)
+end
+
+---List the Lua files under the project's `.dev` and `.ci` directories, and no other Lua.
+---
+---The list holds them whether or not hidden paths are skipped, and `.dev/lint-ignore` still leaves
+---paths out.
+---@return string[] files paths relative to the root
+function Lint:dev_lua()
+    local files = {}
+    for _, file in ipairs(self:files({ "*.lua" }, { hidden = true })) do
+        if file:find("^%.dev/") or file:find("^%.ci/") then
+            files[#files + 1] = file
         end
     end
     return files
@@ -497,14 +620,30 @@ function Lint:grep(pattern, files)
     return hits
 end
 
+---Read a project file, or fail the check naming the file when it cannot be read.
+---@param lint lintset.Lint the lint run
+---@param name string the check that needs the file
+---@param file string the path relative to the root
+---@return string? text the file's text, nil after the failure
+local function read_or_fail(lint, name, file)
+    local text, err = fs.read(fs.join(lint.root, file))
+    if not text then
+        lint:fail(name, file .. ": cannot read the file: " .. tostring(err))
+    end
+    return text
+end
+
 ---Fail on each full-line comment that directly follows code.
 ---@param file string the path relative to the root
----@param marker string `//`, `--` or `#`
+---@param marker lintset.Marker the comment marker
 function Lint:comment_spacing(file, marker)
-    local text = fs.read(fs.join(self.root, file)) or ""
+    local text = read_or_fail(self, CHECK_SPACING, file)
+    if not text then
+        return
+    end
     for _, number in ipairs(M.spacing(text, marker)) do
         self:fail(
-            "comment spacing",
+            CHECK_SPACING,
             file
                 .. ":"
                 .. number
@@ -515,9 +654,12 @@ end
 
 ---Fail on each run of seven or more consecutive full-line comments and warn from three.
 ---@param file string the path relative to the root
----@param marker string `//`, `--` or `#`
+---@param marker lintset.Marker the comment marker
 function Lint:comment_runs(file, marker)
-    local text = fs.read(fs.join(self.root, file)) or ""
+    local text = read_or_fail(self, CHECK_RUNS, file)
+    if not text then
+        return
+    end
     for _, run in ipairs(M.runs(text, marker)) do
         local message = file
             .. ":"
@@ -526,18 +668,18 @@ function Lint:comment_runs(file, marker)
             .. run.count
             .. " consecutive comment lines, restructure the code or shrink the comment"
         if run.count >= FAIL_RUN then
-            self:fail("comment runs", message)
+            self:fail(CHECK_RUNS, message)
         else
-            io.stderr:write(message, "\n")
+            verb.note(message)
         end
     end
 end
 
----Warn about non-helper shell outside .dev/standalone and bad standalone headers, never failing.
+---Fail on non-helper shell outside .dev/standalone and on bad standalone headers.
 function Lint:standalone()
     self:step("standalone shell")
     for _, line in ipairs(standalone.problems(self.root)) do
-        io.stderr:write(line, "\n")
+        self:fail("standalone shell", line)
     end
 end
 
@@ -547,7 +689,7 @@ function Lint:finish()
     if #self.failed == 0 then
         return 0
     end
-    io.stderr:write("\nFAILED: ", table.concat(self.failed, " "), "\n")
+    verb.note("These checks failed: " .. table.concat(self.failed, ", ") .. ".")
     return 1
 end
 

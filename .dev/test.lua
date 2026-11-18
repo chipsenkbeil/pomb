@@ -1,28 +1,20 @@
 --[[
-positional
 Run the test suite. nextest skips doctests, so they get their own step.
-Arguments go to nextest (`dev test -- -j 1 module`), doctests run only when there are none, each tests/js script runs with node against static/app.js, and every .dev/tests/*_test.lua runs last, arguments or not.
+Arguments go to nextest (`dev test -- -j 1 module`), and doctests run only when there are none.
 nextest runs with `INSTA_UPDATE=new`, so a failed run prints the path and text
 of each pending `.snap.new` file.
 ]]
-local devos = require("dev.os")
-local fs = require("dev.fs")
+local dev_os = require("dev.os")
 local verb = require("dev.verb")
-local argv = require("pomb.argv")
 
 local ctx = ...
-local nextest = argv.extend({ "cargo", "nextest", "run", "--all-features" }, ctx.args)
-
-local function step(cmd)
-    local code = devos.run(cmd, { cwd = ctx.root }) or 1
-    if code ~= 0 then
-        return code
-    end
-    return nil
+local argv = { "cargo", "nextest", "run", "--all-features" }
+for _, arg in ipairs(ctx.args) do
+    argv[#argv + 1] = arg
 end
 
 local function print_pending_snapshots()
-    local found = devos.capture({
+    local found = dev_os.capture({
         "find",
         ".",
         "-path",
@@ -44,33 +36,36 @@ local function print_pending_snapshots()
         local file = assert(io.open(ctx.root .. "/" .. path, "rb"))
         local text = file:read("*a")
         file:close()
-        verb.say("pending snapshot " .. path .. "\n" .. text)
+        verb.say(table.concat({ "pending snapshot ", path, "\n", text }))
     end
 end
 
-local code = devos.run(nextest, { cwd = ctx.root, env = { INSTA_UPDATE = "new" } }) or 1
+local code = dev_os.run(argv, { cwd = ctx.root, env = { INSTA_UPDATE = "new" } })
 if code ~= 0 then
     print_pending_snapshots()
-    return code
+    code = code or 1
+elseif #ctx.args == 0 then
+    code = dev_os.run({ "cargo", "test", "--doc", "--all-features" }, { cwd = ctx.root }) or 1
 end
 
-if #ctx.args == 0 then
-    code = step({ "cargo", "test", "--doc", "--all-features" })
-    if code then
-        return code
+-- --- project-specific tests below ---
+
+local fs = require("dev.fs")
+
+if code == 0 then
+    local names, message = fs.list(ctx.root .. "/tests/js")
+    if not names then
+        verb.die(message)
     end
-end
-
-local names, message = fs.list(ctx.root .. "/tests/js")
-if not names then
-    verb.die(message)
-end
-for _, name in ipairs(names) do
-    if name:sub(1, 1) ~= "." and name:match("%.js$") then
-        code = step({ "node", "tests/js/" .. name, "static/app.js" })
-        if code then
-            return code
+    for _, name in ipairs(names) do
+        if code == 0 and name:sub(1, 1) ~= "." and name:match("%.js$") then
+            code = dev_os.run({ "node", "tests/js/" .. name, "static/app.js" }, { cwd = ctx.root })
+                or 1
         end
     end
 end
-return require("dev.testrun").run(ctx.root)
+if code == 0 then
+    code = require("dev.testrun").run(ctx.root)
+end
+
+return code
