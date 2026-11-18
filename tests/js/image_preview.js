@@ -126,4 +126,29 @@ check('image_attachment_should_open_preview: the close button closes it', view.o
 const first = open();
 const second = open();
 check('image_attachment_should_open_preview: opening again replaces the first', [first.o.removed, second.o.removed, listeners.length], [true, false, 1]);
+const css = require('fs').readFileSync(require('path').join(require('path').dirname(process.argv[2]), 'style.css'), 'utf8');
+const rule = /\.tm-md img \{([^}]*)\}/.exec(css);
+check('comment_image_should_fit_width: the rule exists', rule !== null, true);
+check('comment_image_should_fit_width: width is capped', /max-width:\s*100%/.test(rule[1]), true);
+check('comment_image_should_fit_width: height follows', /height:\s*auto/.test(rule[1]), true);
+check('comment_image_should_fit_width: the cursor zooms', /cursor:\s*zoom-in/.test(rule[1]), true);
+
+const commentImage = (src, alt, linked) => {
+  const img = makeNode('img');
+  if (src !== null) img.setAttribute('src', src);
+  if (alt) img.setAttribute('alt', alt);
+  img.closest = (sel) => (sel === '.tm-md img' ? img : sel === 'a' && linked ? makeNode('a') : null);
+  return { closest: (sel) => (sel === '[data-image-preview]' ? null : img.closest(sel)) };
+};
+while (body.children.length) body.children.pop();
+check('comment_image_should_open_preview: an image opens', imagePreviewTrigger(commentImage('/files/shot.png?v=1', 'a screenshot', false)), true);
+const commentOverlay = body.children[body.children.length - 1];
+check('comment_image_should_open_preview: the preview shows the source', commentOverlay.find('image-preview-img').getAttribute('src'), '/files/shot.png?v=1');
+check('comment_image_should_open_preview: the alt text is the title', commentOverlay.find('image-preview-name').textContent, 'a screenshot');
+check('comment_image_should_open_preview: the source is the download link', commentOverlay.find('image-preview-download').getAttribute('href'), '/files/shot.png?v=1');
+imagePreviewTrigger(commentImage('/files/shot.png?v=1', '', false));
+check('comment_image_should_open_preview: no alt falls back to the file name', body.children[body.children.length - 1].find('image-preview-name').textContent, 'shot.png');
+const before = body.children.length;
+check('linked_comment_image_should_follow_link: a linked image opens nothing', imagePreviewTrigger(commentImage('/files/shot.png', 'x', true)), false);
+check('linked_comment_image_should_follow_link: nothing is mounted', body.children.length, before);
 process.exit(failures ? 1 : 0);

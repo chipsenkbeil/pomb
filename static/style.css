@@ -3083,6 +3083,8 @@ html[data-md-view="raw"] .tm-md-rendered { display: none; }
 .tm-md-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .tm-md-toggle[aria-pressed="true"] { color: var(--on-color); background: var(--muted); border-color: var(--muted); }
 .tm-md { overflow-wrap: anywhere; min-width: 0; }
+.tm-md img { max-width: 100%; height: auto; cursor: zoom-in; }
+.tm-md a img { cursor: pointer; }
 .tm-md > :first-child { margin-top: 0; }
 .tm-md > :last-child { margin-bottom: 0; }
 .tm-md p, .tm-md ul, .tm-md ol, .tm-md blockquote, .tm-md pre, .tm-md table { margin: 0 0 0.7em; }

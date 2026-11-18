@@ -10859,9 +10859,17 @@
 
   const imagePreviewTrigger = (target) => {
     const link = target.closest('[data-image-preview]');
-    if (!link) return false;
-    const url = link.getAttribute('data-image-preview');
-    openImagePreview(url, link.getAttribute('data-image-title') || '', url);
+    if (link) {
+      const url = link.getAttribute('data-image-preview');
+      openImagePreview(url, link.getAttribute('data-image-title') || '', url);
+      return true;
+    }
+    const image = target.closest('.tm-md img');
+    if (!image || image.closest('a')) return false;
+    const src = image.getAttribute('src');
+    if (!src) return false;
+    const fileName = src.split(/[?#]/)[0].split('/').pop() || '';
+    openImagePreview(src, image.getAttribute('alt') || fileName, src);
     return true;
   };
 
