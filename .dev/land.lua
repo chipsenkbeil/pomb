@@ -415,6 +415,7 @@ local function take_land_lock(repo, card)
         end
     end
     land_lock_repo = repo
+    return waited
 end
 
 local function check_attribution(wt)
@@ -659,8 +660,9 @@ end
 local sha
 local verdict
 local attempt = 1
+local lock_wait = 0
 while true do
-    take_land_lock(repo, card)
+    lock_wait = lock_wait + take_land_lock(repo, card)
     wait_for_release(repo)
     fetched = run_git(repo, "fetch", "-q", remote)
     if fetched ~= 0 then
@@ -734,7 +736,13 @@ end
 
 run_git(repo, "worktree", "remove", "--force", wt)
 say(("Landed %s.\n"):format(sha))
-local note = { "dev", "board", "note", card, ("landed %s on %s/main"):format(sha, remote) }
+local note = {
+    "dev",
+    "board",
+    "note",
+    card,
+    ("landed %s on %s/main, waited %s s for the land lock"):format(sha, remote, lock_wait),
+}
 if devos.run(note, { cwd = repo }) ~= 0 then
     warn(
         ("Landed, but dev board note %s failed, so note %s on the card yourself.\n"):format(

@@ -668,7 +668,14 @@ t.test("land notes the landed sha on the card", function()
     t.ok(code == 0, err)
     local notes = lines(fix, "notes")
     t.eq(#notes, 2, table.concat(notes, "|"))
-    t.eq(notes[1], "board note " .. CARD .. " landed " .. remote_main(fix) .. " on origin/main")
+    t.eq(
+        notes[1],
+        "board note "
+            .. CARD
+            .. " landed "
+            .. remote_main(fix)
+            .. " on origin/main, waited 0 s for the land lock"
+    )
     t.eq(notes[2], "board move " .. CARD .. " " .. RELEASE)
     done(fix)
 end)
@@ -910,6 +917,40 @@ t.test("land should wait while a live land holds the land lock", function()
     t.eq(#lines(fix, "pushes"), 1)
     t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
     t.ok(not fs.exists(land_lock_path(fix)))
+    done(fix)
+end)
+
+t.test("land_should_note_the_land_lock_wait", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    stub(fix.dir, "sleep", STUB_LAND_SLEEP)
+    assert(fs.write(land_lock_path(fix), ("card=other pid=%d\n"):format(devos.getpid())))
+    local _, code, err = land(fix, cand, { POMB_LAND_WAIT_INTERVAL = "1" })
+    t.ok(code == 0, err)
+    t.eq(
+        lines(fix, "notes")[1],
+        "board note "
+            .. CARD
+            .. " landed "
+            .. remote_main(fix)
+            .. " on origin/main, waited 1 s for the land lock"
+    )
+    done(fix)
+end)
+
+t.test("land_should_note_a_zero_lock_wait", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    local _, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.eq(
+        lines(fix, "notes")[1],
+        "board note "
+            .. CARD
+            .. " landed "
+            .. remote_main(fix)
+            .. " on origin/main, waited 0 s for the land lock"
+    )
     done(fix)
 end)
 

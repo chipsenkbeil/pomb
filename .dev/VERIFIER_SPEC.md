@@ -81,6 +81,10 @@ Write the full report to the card's comments or the runner's scratch directory, 
 end with exactly `DONE: <defect id + verdict in one line>` or
 `FAILED: <reason>`. Do not finish without sending one of these two.
 
+Note your start and your finish on the card, each with `dev board note CARD --kind status`,
+so the card records how long verification took. Send the start note before your first check
+and the finish note just before the terminal signal.
+
 ## 7. Hard rules
 
 - No deploys, no production data, no production ports. Test instances only;
