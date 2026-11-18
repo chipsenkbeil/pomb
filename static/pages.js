@@ -1420,6 +1420,34 @@
     },
   };
 
+  function wireTokenCreatedDialog() {
+    const overlay = document.getElementById('token-created-dialog');
+    const value = document.getElementById('token-created-value');
+    const copy = document.getElementById('token-copy');
+    const done = document.getElementById('token-created-done');
+    const close = () => {
+      overlay.hidden = true;
+      value.textContent = '';
+      document.getElementById('token-create-submit').focus();
+    };
+    copy.addEventListener('click', () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(value.textContent);
+    });
+    done.addEventListener('click', close);
+    overlay.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      close();
+    });
+    return {
+      open: (raw) => {
+        value.textContent = raw;
+        overlay.hidden = false;
+        copy.focus();
+      },
+    };
+  }
+
   pages['settings'] = function () {
     var panes = document.querySelectorAll('.settings-pane');
     var navItems = document.querySelectorAll('.bshell-nav-item');
@@ -1604,6 +1632,7 @@
       });
     });
     var form = document.getElementById('token-create-form');
+    const tokenDialog = wireTokenCreatedDialog();
     var err = document.getElementById('token-error');
     function showError(msg) { err.textContent = msg; err.hidden = false; }
     var catalog = [];
@@ -1659,16 +1688,15 @@
         if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
         return r.json();
       }).then(function (data) {
-        document.getElementById('token-created-value').textContent = data.raw_token;
-        document.getElementById('token-created').hidden = false;
         form.reset();
         boardPicker.reset();
         picker.reset();
         expiryMenu.reset();
         lifetimeMenu.reset();
+        tokenDialog.open(data.raw_token);
 
         // Refresh the Active tokens list in place instead of a delayed full-page reload,
-        // so the one-time secret above stays visible.
+        // so the one-time secret in the dialog stays visible.
         refreshTokenList();
       }).catch(function (ex) { showError('Could not create token: ' + ex.message); });
     });
@@ -1709,10 +1737,6 @@
         inspectError.textContent = 'Could not inspect the token: ' + ex.message;
         inspectError.hidden = false;
       });
-    });
-    document.getElementById('token-copy').addEventListener('click', function () {
-      var v = document.getElementById('token-created-value').textContent;
-      if (navigator.clipboard) navigator.clipboard.writeText(v);
     });
 
     // Re-fetch the server-rendered token list and swap it in, so the

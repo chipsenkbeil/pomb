@@ -4366,6 +4366,12 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   margin-top: 0.5rem;
 }
 
+#token-created-dialog .token-value code {
+  display: block;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
 .dlg-date-ok {
   color: var(--green-400);
   font-weight: 700;
