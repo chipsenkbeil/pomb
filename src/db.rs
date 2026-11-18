@@ -64,6 +64,8 @@ use redb::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+pub(crate) use support::stamp_schema_version;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
@@ -1176,7 +1178,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 98;
+pub const SCHEMA_VERSION: u64 = 99;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1280,6 +1282,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "79a5f8988a4826ad121f959dfd9ea54a6c916d2e61bbcaaaf950ae7a5056a1e8",
     "063a2fd6eedd4e0ed6668abad6b667fad127e276471373236394498472608931",
     "063a2fd6eedd4e0ed6668abad6b667fad127e276471373236394498472608931",
+    "eaac544be40a5d410f1632174778e53117f2d14e4dca989f74f8c03c2a3725b1",
     "eaac544be40a5d410f1632174778e53117f2d14e4dca989f74f8c03c2a3725b1",
 ];
 
@@ -1504,6 +1507,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 97) {
         raise_default_rate_limits(txn)?;
     }
+    if from.is_none_or(|version| version < 99) {
+        grant_lead_role_links_delete(txn)?;
+    }
     Ok(())
 }
 
@@ -1607,6 +1613,37 @@ fn grant_links_delete(txn: &WriteTransaction) -> DbResult<()> {
         })?;
     }
     Ok(())
+}
+
+/// Adds `links.delete` to each stored role whose standard key is lead and whose permissions are
+/// exactly the lead standard role without it, and leaves any other role as the owner set it.
+fn grant_lead_role_links_delete(txn: &WriteTransaction) -> DbResult<()> {
+    let added = Permission::LinksDelete.name();
+    let lead_key = serde_json::json!(StandardKey::Lead);
+    let old: BTreeSet<&str> = STANDARD_ROLES
+        .iter()
+        .filter(|standard| standard.key == StandardKey::Lead)
+        .flat_map(|standard| standard.permissions())
+        .map(Permission::name)
+        .filter(|name| *name != added)
+        .collect();
+    rewrite_rows(txn, AGENT_ROLES, |_, role| {
+        if role.get("standard") != Some(&lead_key) {
+            return false;
+        }
+        let Some(held) = role
+            .get_mut("permissions")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return false;
+        };
+        let names: BTreeSet<&str> = held.iter().filter_map(serde_json::Value::as_str).collect();
+        if names != old || names.len() != held.len() {
+            return false;
+        }
+        held.push(serde_json::Value::from(added));
+        true
+    })
 }
 
 /// The tables whose rows hold a permission set a token acts with.
@@ -14669,13 +14706,7 @@ mod schema_version_tests {
     }
 
     fn stamp(path: &str, version: u64) {
-        let db = Database::create(path).expect("raw open");
-        let txn = db.begin_write().expect("write txn");
-        txn.open_table(META)
-            .expect("meta table")
-            .insert(SCHEMA_VERSION_KEY, version)
-            .expect("stamp");
-        txn.commit().expect("commit");
+        stamp_schema_version(path, version);
     }
 
     fn stamp_of(path: &str) -> Option<u64> {
@@ -16100,6 +16131,76 @@ mod schema_version_tests {
         drop(Db::connect(&path).expect("open version 93"));
         assert_eq!(stripped, rows_of(&path, API_TOKENS));
         assert_ne!(first, stripped);
+    }
+
+    /// A version-98 file whose owner's lead role holds the lead preset without `links.delete`,
+    /// after `edit` changes it, plus its path and the role's id.
+    fn version_98_file_with_lead_role(
+        edit: impl FnOnce(&mut BTreeSet<Permission>),
+    ) -> (tempfile::TempDir, String, String) {
+        let (dir, path) = temp_path();
+        let role = {
+            let db = Db::connect(&path).expect("connect");
+            let account = db.create_user("owner").expect("account");
+            let role = db
+                .list_agent_roles(account.as_str())
+                .expect("roles")
+                .into_iter()
+                .find(|role| role.name == "lead")
+                .expect("lead");
+            let mut held = lead_role_permissions();
+            held.remove(&Permission::LinksDelete);
+            edit(&mut held);
+            db.update_agent_role(account.as_str(), &role.id, None, Some(held))
+                .expect("update");
+            role.id
+        };
+        stamp(&path, 98);
+        (dir, path, role)
+    }
+
+    #[test]
+    fn open_should_give_a_lead_role_row_links_delete() {
+        // Check that the lead role row starts without links.delete
+        let (_dir, path, role) = version_98_file_with_lead_role(|_| {});
+        assert!(!holds_named(&path, AGENT_ROLES, &role, "links.delete"));
+
+        // Open the version 98 file so the upgrade runs
+        drop(Db::connect(&path).expect("open version 98"));
+        assert!(holds_named(&path, AGENT_ROLES, &role, "links.delete"));
+    }
+
+    #[test]
+    fn open_should_leave_an_edited_lead_role_row() {
+        // Remove a permission the owner edited out of the lead role row
+        let (_dir, path, role) = version_98_file_with_lead_role(|held| {
+            held.remove(&Permission::TasksBin);
+        });
+        let before = rows_of(&path, AGENT_ROLES);
+
+        // Open the version 98 file and compare the rows
+        drop(Db::connect(&path).expect("open version 98"));
+        assert_eq!(before, rows_of(&path, AGENT_ROLES));
+        assert!(!holds_named(&path, AGENT_ROLES, &role, "links.delete"));
+    }
+
+    #[test]
+    fn open_should_not_change_a_lead_role_row_twice() {
+        // Open the version 98 file so the upgrade runs
+        let (_dir, path, role) = version_98_file_with_lead_role(|_| {});
+        drop(Db::connect(&path).expect("open version 98"));
+        assert!(holds_named(&path, AGENT_ROLES, &role, "links.delete"));
+
+        // Strip links.delete again to see whether a second open restores it
+        edit_raw(&path, AGENT_ROLES, &role, |object| {
+            let held = object["permissions"].as_array_mut().expect("permissions");
+            held.retain(|name| name != "links.delete");
+        });
+        let stripped = rows_of(&path, AGENT_ROLES);
+
+        // Open again and compare the rows
+        drop(Db::connect(&path).expect("open again"));
+        assert_eq!(stripped, rows_of(&path, AGENT_ROLES));
     }
 
     #[must_use]
@@ -19782,13 +19883,7 @@ mod role_key_upgrade_tests {
     use crate::permissions::StandardKey;
 
     fn stamp(path: &str, version: u64) {
-        let db = Database::create(path).expect("raw open");
-        let txn = db.begin_write().expect("write txn");
-        txn.open_table(META)
-            .expect("meta table")
-            .insert(SCHEMA_VERSION_KEY, version)
-            .expect("stamp");
-        txn.commit().expect("commit");
+        stamp_schema_version(path, version);
     }
 
     fn key_of(db: &Db, role: &str) -> Option<StandardKey> {
@@ -19838,13 +19933,7 @@ mod stage_upgrade_tests {
     use super::*;
 
     fn stamp(path: &str, version: u64) {
-        let db = Database::create(path).expect("raw open");
-        let txn = db.begin_write().expect("write txn");
-        txn.open_table(META)
-            .expect("meta table")
-            .insert(SCHEMA_VERSION_KEY, version)
-            .expect("stamp");
-        txn.commit().expect("commit");
+        stamp_schema_version(path, version);
     }
 
     fn stage_of(db: &Db, column: &str) -> Option<ColumnStage> {

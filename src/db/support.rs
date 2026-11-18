@@ -1,6 +1,18 @@
+use redb::Database;
+
 use super::{
     API_TOKENS, ApiTokenRecord, BOARD_ACTIVITY, Db, DbResult, META, SCHEMA_VERSION_KEY, rows_in,
 };
+
+pub(crate) fn stamp_schema_version(path: &str, version: u64) {
+    let raw = Database::create(path).expect("raw open");
+    let txn = raw.begin_write().expect("write txn");
+    txn.open_table(META)
+        .expect("meta table")
+        .insert(SCHEMA_VERSION_KEY, version)
+        .expect("stamp");
+    txn.commit().expect("commit");
+}
 
 impl Db {
     /// Returns the live API tokens of every account, oldest first.

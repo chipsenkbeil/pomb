@@ -8,7 +8,10 @@ use super::test_support::{Reply, call, drop_seeded_roles, held_disk};
 use super::{history_actor, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::{ChildTokenRefusal, Db, MAX_AGENT_ROLES_PER_ACCOUNT, RoleTokenRefusal, TokenEdit};
+use crate::db::{
+    ChildTokenRefusal, Db, MAX_AGENT_ROLES_PER_ACCOUNT, RoleTokenRefusal, TokenEdit,
+    stamp_schema_version,
+};
 use crate::models::{
     AccountId, AgentRoleRow, ApiTokenRecord, AuthScope, BoardAccess, BoardRole, HistoryKind,
 };
@@ -1090,6 +1093,93 @@ async fn child_token_should_copy_the_role_template() {
     let who = whoami(&fx, raw).await;
     assert_eq!(who["role_name"], "implementer");
     assert_eq!(permission_names(&who), granted);
+}
+
+#[tokio::test]
+async fn child_of_the_lead_role_should_hold_links_delete() {
+    // Set up a lead issuer and the standard lead role
+    let fx = Fixture::new();
+    let role = standard_role(&fx, "lead").await;
+    let (_, lead) = issuer_token(&fx, None, BoardAccess::All, None);
+
+    // Issue a child of the lead role and check it holds links.delete
+    let body = json!({"name": "lead-child", "role_id": role["id"]});
+    let reply = issue_child(&fx, &lead, body).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(permission_names(&reply.body).contains("links.delete"));
+}
+
+#[tokio::test]
+async fn child_of_an_upgraded_lead_role_should_hold_links_delete() {
+    // Strip links.delete from the lead role as a version 98 file held it
+    let fx = Fixture::new();
+    standard_role(&fx, "lead").await;
+    let lead = fx
+        .db
+        .list_agent_roles(fx.alice.as_str())
+        .expect("roles")
+        .into_iter()
+        .find(|role| role.name == "lead")
+        .expect("lead");
+    let mut held = lead.permissions.clone();
+    held.remove(&Permission::LinksDelete);
+    fx.db
+        .update_agent_role(fx.alice.as_str(), &lead.id, None, Some(held))
+        .expect("update");
+
+    // Close the fixture so the file can be reopened raw
+    let Fixture {
+        _dir,
+        app,
+        db,
+        alice,
+        bob,
+        cookies,
+        tokens,
+        boards,
+    } = fx;
+    drop(app);
+    drop(db);
+
+    // Stamp the file at version 98 so the upgrade runs on open
+    let file = _dir.path().join("agent-roles.redb");
+    let path = file.to_str().expect("utf8 path");
+    stamp_schema_version(path, 98);
+
+    // Reopen the file and rebuild the app over the upgraded database
+    let db = Db::connect(path).expect("open version 98");
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits()),
+    );
+    let fx = Fixture {
+        _dir,
+        app,
+        db,
+        alice,
+        bob,
+        cookies,
+        tokens,
+        boards,
+    };
+
+    // Check the upgraded role row holds links.delete
+    let upgraded = fx
+        .db
+        .list_agent_roles(fx.alice.as_str())
+        .expect("roles")
+        .into_iter()
+        .find(|role| role.name == "lead")
+        .expect("lead");
+    assert!(upgraded.permissions.contains(&Permission::LinksDelete));
+
+    // Issue a child of the upgraded role and check it holds links.delete
+    let (_, lead_token) = issuer_token(&fx, None, BoardAccess::All, None);
+    let body = json!({"name": "lead-child", "role_id": upgraded.id});
+    let reply = issue_child(&fx, &lead_token, body).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(permission_names(&reply.body).contains("links.delete"));
 }
 
 #[tokio::test]
