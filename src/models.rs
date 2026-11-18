@@ -2826,16 +2826,22 @@ impl CommentQuestion {
 pub struct QuestionChoice {
     /// What picking the choice means.
     pub label: String,
-    /// The column the card moves to when this choice is picked.
-    pub column_id: String,
+    /// The column the card moves to when this choice is picked, or null when picking it moves
+    /// no card.
+    #[serde(default)]
+    pub column_id: Option<String>,
 }
 
 /// How a question was answered. A token's answer is relayed: it names the token and quotes the
 /// owner's own words.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct QuestionAnswer {
-    /// The number of the choice picked.
-    pub choice: u32,
+    /// The number of the choice picked, or null when the answer is an Other text.
+    #[serde(default)]
+    pub choice: Option<u32>,
+    /// The Other text that answered in place of a choice, or null when a choice was picked.
+    #[serde(default)]
+    pub other: Option<String>,
     /// The username of the account that answered.
     pub answered_by: String,
     /// Name of the API token that relayed the answer, or null when the owner answered in the

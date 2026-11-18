@@ -1176,7 +1176,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 97;
+pub const SCHEMA_VERSION: u64 = 98;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1280,6 +1280,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "79a5f8988a4826ad121f959dfd9ea54a6c916d2e61bbcaaaf950ae7a5056a1e8",
     "063a2fd6eedd4e0ed6668abad6b667fad127e276471373236394498472608931",
     "063a2fd6eedd4e0ed6668abad6b667fad127e276471373236394498472608931",
+    "eaac544be40a5d410f1632174778e53117f2d14e4dca989f74f8c03c2a3725b1",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -10150,8 +10151,8 @@ impl Db {
     }
 
     /// Records the answer to question comment `comment_id`, removes the [`NEEDS_HUMAN_LABEL`]
-    /// label and moves the task to the destination of the choice `answer` names, with the answer,
-    /// label and move events, in one write. While another question on the task is still open, the
+    /// label and moves the task to the column of the choice `answer` names, if it names one, with
+    /// the answer, label and move events, in one write. While another question on the task is still open, the
     /// answer is recorded and the label and the task's column stay as they are. Only an open
     /// question takes an answer, and a refused move writes nothing.
     pub fn answer_question(
@@ -10180,18 +10181,26 @@ impl Db {
             if question.answer.is_some() {
                 return Ok(QuestionWrite::AlreadyAnswered);
             }
-            let Some(picked) = question.choice(choice) else {
-                return Ok(QuestionWrite::BadChoice);
+            let picked = match choice {
+                Some(number) => {
+                    let Some(picked) = question.choice(number) else {
+                        return Ok(QuestionWrite::BadChoice);
+                    };
+                    picked.column_id.clone()
+                }
+                None => None,
             };
-            let picked = picked.column_id.clone();
-            let detail = format!("{} answered choice {choice}", answer.answered_by);
+            let detail = match choice {
+                Some(number) => format!("{} answered choice {number}", answer.answered_by),
+                None => format!("{} answered Other", answer.answered_by),
+            };
             question.answer = Some(answer);
             answered = comment.clone();
             let others_open = task
                 .comments
                 .iter()
                 .any(|c| c.question.as_ref().is_some_and(|q| q.answer.is_none()));
-            destination = (!others_open).then_some(picked);
+            destination = if others_open { None } else { picked };
             push_event(&mut task, HistoryKind::CommentAdded, detail, actor);
             if !others_open {
                 remove_needs_human(&mut task, actor);

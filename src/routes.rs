@@ -14413,7 +14413,7 @@ struct CreateCommentInput {
     kind: Option<String>,
     /// Makes the comment a structured question that blocks the card: the card moves to the board's
     /// Blocked column and gains the `needs:human` label in the same write, until the question is
-    /// answered. Every part is required.
+    /// answered. Every part is required, except a choice's `column_id`.
     question: Option<QuestionInput>,
 }
 
@@ -14436,6 +14436,7 @@ struct QuestionChoiceInput {
     /// What picking the choice means, at most 200 characters.
     label: Option<String>,
     /// The id of the column on the card's board the card moves to when this choice is picked.
+    /// Leave it out for a choice that moves no card.
     column_id: Option<String>,
 }
 
@@ -14449,7 +14450,7 @@ const MAX_QUESTION_CHOICES: usize = 10;
 const MAX_QUESTION_LABEL_CHARS: usize = 200;
 
 /// Returns the question `input` describes, or the 400 that names its first missing or invalid
-/// part. Every choice names a column of board `board_id`.
+/// part. A column a choice names is on board `board_id`.
 fn question_from_input(
     db: &AccountDb,
     board_id: &str,
@@ -14485,16 +14486,21 @@ fn question_from_input(
                 "question.choices[{number}].label must be at most {MAX_QUESTION_LABEL_CHARS} characters"
             )));
         }
-        let column_id = required(&choice.column_id, &format!("choices[{number}].column_id"))?;
-        let on_board = db
-            .column(&column_id)
-            .map_err(AppError::from)?
-            .is_some_and(|column| column.row().board_id == board_id);
-        if !on_board {
-            return Err(AppError::bad_request(format!(
-                "question.choices[{number}].column_id names a column that is not on this board"
-            )));
-        }
+        let column_id = match choice.column_id.as_deref().map(str::trim) {
+            Some(column_id) if !column_id.is_empty() => {
+                let on_board = db
+                    .column(column_id)
+                    .map_err(AppError::from)?
+                    .is_some_and(|column| column.row().board_id == board_id);
+                if !on_board {
+                    return Err(AppError::bad_request(format!(
+                        "question.choices[{number}].column_id names a column that is not on this board"
+                    )));
+                }
+                Some(column_id.to_string())
+            }
+            _ => None,
+        };
         choices.push(QuestionChoice { label, column_id });
     }
     let recommended = input
@@ -14893,16 +14899,20 @@ async fn react_to_comment(
 /// Request body to answer a question comment.
 #[derive(Deserialize, ToSchema)]
 struct AnswerInput {
-    /// The number of the choice picked, counting from 1. Required.
+    /// The number of the choice picked, counting from 1. Send it or `other`, never both.
     choice: Option<u32>,
+    /// An Other answer in the owner's words, stored as the answer in place of a choice, at most
+    /// 5000 bytes after trimming. It moves no card.
+    other: Option<String>,
     /// The owner's own words that picked the choice, at most 5000 bytes. Required and non-empty
     /// for a token, which relays the owner's answer, and ignored for the browser.
     quote: Option<String>,
 }
 
-/// Answers a question comment: records the answerer and the choice, removes the `needs:human`
-/// label and moves the card to the choice's column, in one write. The browser answers as the
-/// owner. A token must send `quote`, the owner's own words, and the answer is stored as relayed,
+/// Answers a question comment: records the answerer and the choice or the Other text, removes the
+/// `needs:human` label and moves the card to the choice's column when the choice names one, in one
+/// write. A choice with no column and an Other answer leave the card where it is. The browser
+/// answers as the owner. A token must send `quote`, the owner's own words, and the answer is stored as relayed,
 /// naming the token and the quote. A question takes one answer. The `needs:human` label the question
 /// added does not lock the card against the answer, though any other locking label does.
 #[utoipa::path(
@@ -14917,7 +14927,7 @@ struct AnswerInput {
     request_body = AnswerInput,
     responses(
         (status = 200, description = "The question comment with its answer", body = TaskComment),
-        (status = 400, description = "Missing choice, a choice number the question lacks, a token without a non-empty quote, a quote that is too long, or the comment is not a question"),
+        (status = 400, description = "Neither choice nor other, both together, a blank or too long other, a choice number the question lacks, a token without a non-empty quote, a quote that is too long, or the comment is not a question"),
         (status = 404, description = "Task or comment not found"),
         (status = 409, description = "The question is answered already, its column is gone, `wip_limit_reached`, or `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -14931,9 +14941,24 @@ async fn answer_comment_question(
     body: Bytes,
 ) -> Result<Json<TaskComment>, AppError> {
     let input: AnswerInput = parse_body(&headers, body).await?;
-    let choice = input
-        .choice
-        .ok_or_else(|| AppError::bad_request("choice is required"))?;
+    let other = input.other.as_deref().map(str::trim);
+    match (input.choice, other) {
+        (None, None) => {
+            return Err(AppError::bad_request("choice or other is required"));
+        }
+        (Some(_), Some(_)) => {
+            return Err(AppError::bad_request(
+                "send either choice or other, never both",
+            ));
+        }
+        (None, Some("")) => return Err(AppError::bad_request("other must not be blank")),
+        (None, Some(text)) if text.len() > MAX_COMMENT_BYTES => {
+            return Err(AppError::bad_request(format!(
+                "other is too long (max {MAX_COMMENT_BYTES} bytes)"
+            )));
+        }
+        _ => {}
+    }
     let relayed = user.kind != CredentialKind::Session;
     let quote = input.quote.as_deref().map(str::trim).unwrap_or_default();
     if relayed && quote.is_empty() {
@@ -14956,15 +14981,20 @@ async fn answer_comment_question(
         .iter()
         .find(|comment| comment.id == comment_id)
         .ok_or_else(|| AppError::not_found("task or comment not found"))?;
-    let picked = comment
-        .question
-        .as_ref()
-        .filter(|question| question.answer.is_none())
-        .and_then(|question| question.choice(choice));
-    let position = match picked {
-        Some(picked) => {
+    let destination_id = input
+        .choice
+        .and_then(|choice| {
+            comment
+                .question
+                .as_ref()
+                .filter(|question| question.answer.is_none())
+                .and_then(|question| question.choice(choice))
+        })
+        .and_then(|picked| picked.column_id.as_deref());
+    let position = match destination_id {
+        Some(column_id) => {
             let destination = account
-                .column(&picked.column_id)
+                .column(column_id)
                 .map_err(AppError::from)?
                 .ok_or_else(|| AppError::conflict("the column of this choice is gone"))?;
             if task.row().column_id != destination.row().id {
@@ -14981,7 +15011,8 @@ async fn answer_comment_question(
         None => placement_index(new_task_placement(&account, task.board_id())?),
     };
     let answer = QuestionAnswer {
-        choice,
+        choice: input.choice,
+        other: other.map(str::to_string),
         answered_by: user.handle.clone(),
         token_name: relayed.then(|| {
             user.token_name

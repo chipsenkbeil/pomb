@@ -307,13 +307,6 @@ async fn a_question_missing_a_part_should_be_refused_naming_it() {
             "question.choices[2].label is required",
         ),
         (
-            "no column",
-            Box::new(|q| {
-                q["choices"][0].as_object_mut().unwrap().remove("column_id");
-            }),
-            "question.choices[1].column_id is required",
-        ),
-        (
             "unknown column",
             Box::new(|q| q["choices"][0]["column_id"] = json!("nope")),
             "question.choices[1].column_id names a column that is not on this board",
@@ -697,6 +690,121 @@ async fn an_answer_into_a_full_column_should_leave_the_question_open() {
         answer(&fx, Caller::Browser, &task, comment, json!({"choice": 1})).await;
 
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    let still = detail(&fx, &task).await;
+    assert_eq!(still["column_id"], json!(fx.blocked), "{still}");
+    assert_eq!(still["labels"], json!(["needs:human"]), "{still}");
+    assert_eq!(
+        comments(&fx, &task).await[0]["question"]["answer"],
+        Value::Null
+    );
+}
+
+fn question_without_columns(fx: &Fixture) -> Value {
+    let mut asked = question(fx);
+    for choice in asked["choices"].as_array_mut().expect("choices") {
+        choice.as_object_mut().expect("choice").remove("column_id");
+    }
+    asked
+}
+
+#[tokio::test]
+async fn a_choice_without_a_column_should_record_the_answer_and_leave_the_card_in_place() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let task = card(&fx, json!({})).await;
+    let (status, asked) = ask(&fx, &task, question_without_columns(&fx)).await;
+    assert_eq!(status, StatusCode::OK, "{asked}");
+    assert_eq!(asked["question"]["choices"][0]["column_id"], Value::Null);
+    let comment = asked["id"].as_str().expect("id");
+    let blocked = detail(&fx, &task).await;
+    assert_eq!(blocked["column_id"], json!(fx.blocked), "{blocked}");
+
+    let (status, answered) =
+        answer(&fx, Caller::Browser, &task, comment, json!({"choice": 2})).await;
+
+    assert_eq!(status, StatusCode::OK, "{answered}");
+    assert_eq!(answered["question"]["answer"]["choice"], 2);
+    assert_eq!(answered["question"]["answer"]["other"], Value::Null);
+    let after = detail(&fx, &task).await;
+    assert_eq!(after["column_id"], json!(fx.blocked), "{after}");
+    assert_eq!(after["labels"], json!([]), "{after}");
+}
+
+#[tokio::test]
+async fn an_other_answer_should_store_its_text_move_no_card_and_clear_the_label() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let task = card(&fx, json!({})).await;
+    let (_, asked) = ask(&fx, &task, question(&fx)).await;
+    let comment = asked["id"].as_str().expect("id");
+
+    let (status, answered) = answer(
+        &fx,
+        Caller::Browser,
+        &task,
+        comment,
+        json!({"other": "  Wait for the next release  "}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{answered}");
+    let stored = &answered["question"]["answer"];
+    assert_eq!(stored["other"], "Wait for the next release");
+    assert_eq!(stored["choice"], Value::Null);
+    let after = detail(&fx, &task).await;
+    assert_eq!(after["column_id"], json!(fx.blocked), "{after}");
+    assert_eq!(after["labels"], json!([]), "{after}");
+}
+
+#[tokio::test]
+async fn an_other_answer_from_a_token_should_need_its_quote() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let task = card(&fx, json!({})).await;
+    let (_, asked) = ask(&fx, &task, question(&fx)).await;
+    let comment = asked["id"].as_str().expect("id");
+
+    let (status, refused) = answer(
+        &fx,
+        Caller::Token,
+        &task,
+        comment,
+        json!({"other": "Later"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    let (status, relayed) = answer(
+        &fx,
+        Caller::Token,
+        &task,
+        comment,
+        json!({"other": "Later", "quote": "do it later"}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{relayed}");
+    assert_eq!(relayed["question"]["answer"]["quote"], "do it later");
+    assert_eq!(relayed["question"]["answer"]["other"], "Later");
+    assert_eq!(relayed["question"]["answer"]["token_name"], "agent-7");
+}
+
+#[tokio::test]
+async fn a_bad_other_answer_should_be_refused() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let task = card(&fx, json!({})).await;
+    let (_, asked) = ask(&fx, &task, question(&fx)).await;
+    let comment = asked["id"].as_str().expect("id");
+    let too_long = "x".repeat(5001);
+
+    for body in [
+        json!({"choice": 1, "other": "both"}),
+        json!({"other": "   "}),
+        json!({"other": too_long}),
+    ] {
+        let (status, refused) = answer(&fx, Caller::Browser, &task, comment, body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {refused}");
+    }
     let still = detail(&fx, &task).await;
     assert_eq!(still["column_id"], json!(fx.blocked), "{still}");
     assert_eq!(still["labels"], json!(["needs:human"]), "{still}");

@@ -1462,11 +1462,11 @@ mod locked {
             choices: vec![
                 QuestionChoice {
                     label: "Ship".to_string(),
-                    column_id: fx.stages["done"].clone(),
+                    column_id: Some(fx.stages["done"].clone()),
                 },
                 QuestionChoice {
                     label: "Review".to_string(),
-                    column_id: fx.stages["review"].clone(),
+                    column_id: Some(fx.stages["review"].clone()),
                 },
             ],
             recommended: 2,

@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "42"
+  version: "43"
 ---
 
 # Pomb
@@ -153,7 +153,7 @@ lists the lanes in row order, each with `archived`, `collapsed`, `limits` and `h
 8. `GET /api/boards/{id}/epics` shows progress. Finished children never close an epic: a lead token or
    the owner does with `POST /api/tasks/{id}/close`, or a move into Done does, and a move out reopens it.
 9. On a decision you cannot make alone, add a `question` to `POST /api/tasks/{id}/comments`. Relay the owner's
-   pick with `POST /api/tasks/{id}/comments/{comment_id}/answer` and `{"choice": N, "quote": "<his words>"}`.
+   pick with `POST /api/tasks/{id}/comments/{comment_id}/answer`, `{"choice": N, "quote": "<his words>"}` or `{"other": "<his words>", "quote": "<his words>"}`. A choice's `column_id` may be null, so accept that when reading a question.
 
 ## Reviewing a task
 
