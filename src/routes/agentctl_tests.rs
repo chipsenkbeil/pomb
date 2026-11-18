@@ -16,6 +16,7 @@ use crate::auth::new_api_token_record;
 use crate::db::{
     BootstrapToken, ChildTokenRefusal, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT, NewComment,
 };
+use crate::limit::Limits;
 use crate::models::{
     AccountId, ActiveTimer, Actor, ActorKind, AgentRoleRow, AuthScope, BoardAccess, BoardRole,
     DeviceAuthRow, DeviceAuthStatus, FieldDefRow, FieldKind, FieldOwner, HistoryKind,
@@ -14690,6 +14691,62 @@ async fn only_a_token_should_issue_children() {
     let (status, _) = request(&fx, As::Anonymous, "POST", CHILDREN, Some(body), true).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(token_count(&fx), before);
+}
+
+/// Builds a fixture whose mint bucket never refills, so every mint a test makes counts against the burst.
+fn frozen_mint_fixture() -> (tempfile::TempDir, Fixture) {
+    let (dir, mut fx) = fixture();
+    let start = std::time::Instant::now();
+    let limits = Limits::with_clock(std::sync::Arc::new(move || start));
+    fx.app = router(
+        AppState::new(fx.db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&fx.db))
+            .with_limits(limits),
+    );
+    (dir, fx)
+}
+
+#[tokio::test]
+async fn refused_mints_should_not_spend_the_mint_bucket() {
+    let (_dir, fx) = frozen_mint_fixture();
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (status, reply) = issue(&fx, &lead, json!({"name": "taken", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    for _ in 0..=Limits::MINT_BURST {
+        let (status, reply) = issue(&fx, &lead, json!({"name": "taken", "preset": "read"})).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{reply}");
+    }
+    let (status, reply) = issue(&fx, &lead, json!({"name": "fresh", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+}
+
+#[tokio::test]
+async fn refused_mints_should_leave_the_burst_for_stored_children() {
+    let (_dir, fx) = frozen_mint_fixture();
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (status, reply) = issue(&fx, &lead, json!({"name": "first", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    for _ in 0..=Limits::MINT_BURST {
+        let (status, reply) = issue(&fx, &lead, json!({"name": "first", "preset": "read"})).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{reply}");
+    }
+    for n in 1..Limits::MINT_BURST {
+        let name = format!("kid-{n}");
+        let (status, reply) = issue(&fx, &lead, json!({"name": name, "preset": "read"})).await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+    }
+    let (status, reply) = issue(&fx, &lead, json!({"name": "late", "preset": "read"})).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{reply}");
+}
+
+#[test]
+fn child_token_docs_should_say_a_refused_mint_costs_nothing() {
+    let json = ApiDoc::openapi().to_json().expect("spec serializes");
+    let spec: Value = serde_json::from_str(&json).expect("valid json");
+    let text = spec["paths"][CHILDREN]["post"]["responses"]["429"]["description"]
+        .as_str()
+        .expect("429 description");
+    assert!(text.contains("A refused mint costs nothing."), "{text}");
 }
 
 #[tokio::test]

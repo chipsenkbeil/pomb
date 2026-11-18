@@ -165,6 +165,23 @@ impl Buckets {
         }
     }
 
+    /// Says whether the key's bucket holds a request, or how long until one is free, spending none.
+    pub fn peek(&self, key: &CredentialKey, now: Instant, rate: Rate) -> Result<(), Refusal> {
+        let state = lock(&self.state);
+        let tokens = state
+            .buckets
+            .get(key)
+            .map_or(rate.burst, |bucket| Self::refilled(bucket, now, rate));
+        if tokens >= 1.0 {
+            Ok(())
+        } else {
+            let missing = 1.0 - tokens;
+            Err(Refusal::after(Duration::from_secs_f64(
+                missing / rate.per_second,
+            )))
+        }
+    }
+
     /// Spends one request from the key's bucket and reports what the bucket holds afterwards.
     pub fn meter(&self, key: &CredentialKey, now: Instant, rate: Rate) -> Metered {
         let mut state = lock(&self.state);
@@ -417,14 +434,25 @@ impl Limits {
         self.inbound.check(&key, (self.clock)(), rate)
     }
 
-    /// Spends one mint from the bucket of the issuing token `issuer`.
+    /// Refuses when the issuing token `issuer` holds no mint, without spending one.
     pub fn check_mint(&self, issuer: &str) -> Result<(), Refusal> {
-        let rate = Rate {
+        let key = CredentialKey::Token(issuer.to_string());
+        self.mints.peek(&key, (self.clock)(), Self::mint_rate())
+    }
+
+    /// Spends one mint from the bucket of the issuing token `issuer` once its child is stored.
+    pub fn spend_mint(&self, issuer: &str) {
+        let key = CredentialKey::Token(issuer.to_string());
+        self.mints.meter(&key, (self.clock)(), Self::mint_rate());
+    }
+
+    /// Returns the rate the child token mints refill at.
+    #[must_use]
+    fn mint_rate() -> Rate {
+        Rate {
             burst: f64::from(Self::MINT_BURST),
             per_second: 1.0 / Self::MINT_SECONDS_PER_TOKEN,
-        };
-        let key = CredentialKey::Token(issuer.to_string());
-        self.mints.check(&key, (self.clock)(), rate)
+        }
     }
 
     /// Records a request from `ip` against the limit for `scope`.
