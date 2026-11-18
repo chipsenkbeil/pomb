@@ -26191,6 +26191,8 @@ async fn start_device_auth(
     }
     let now = chrono::Utc::now().timestamp();
     let device_code = auth::generate_device_code();
+    let preset = (input.role.is_none() && input.permissions.is_none())
+        .then(|| scope.preset().name().to_string());
     let mut row = DeviceAuthRow {
         device_code_hash: auth::hash_device_code(&device_code),
         user_code: auth::generate_user_code(),
@@ -26210,6 +26212,7 @@ async fn start_device_auth(
         requested_boards,
         requested_hours,
         reason,
+        preset,
     };
 
     // A user-code collision among live requests is astronomically rare;
@@ -26319,6 +26322,9 @@ async fn poll_device_token(
                 row.token_expires_at,
             );
             record.permissions = row.permissions.clone();
+            record.preset = row.preset.clone().filter(|name| {
+                Preset::named(name).is_some_and(|p| p.permissions() == row.permissions)
+            });
             record.boards = row.boards.clone();
             raw_token = raw;
             record
@@ -26898,6 +26904,9 @@ struct Whoami {
     role_name: Option<String>,
     /// The `agent-N` label of the token's issue, null for a credential issued as no role.
     label: Option<String>,
+    /// The preset (`read`, `work`, `lead` or `admin`) the token was minted from, null for a token
+    /// minted from custom permissions or as a role and for any other credential.
+    preset: Option<String>,
     /// The lead token that issued the token, with its name as it was then, null for any other
     /// credential.
     parent_token: Option<ParentToken>,
@@ -27008,8 +27017,9 @@ impl GrantView {
 }
 
 /// Returns the kind, name, scope, expiry and grant of the credential that made the request, with
-/// the role name and `agent-N` label of a token issued as a role and the `parent_token` that
-/// issued it, each null when it has none. For a token issued as a role, `drift` lists the
+/// the role name and `agent-N` label of a token issued as a role, the `preset` a token was minted
+/// from and the `parent_token` that issued it, each null when it has none. For a token issued as
+/// a role, `drift` lists the
 /// permissions it holds beyond the role's current template (`beyond`) and the template permissions
 /// it lacks (`lacks`), both counting the required permissions as part of the template, and is
 /// null for any other credential. A token issued with fewer permissions than the template, such
@@ -27052,6 +27062,7 @@ async fn whoami(
         handle: user.handle,
         role_name: user.role_name,
         label: user.label,
+        preset: user.preset,
         parent_token: user.parent_token,
         drift,
         grant,
@@ -27251,6 +27262,7 @@ async fn create_api_token(
         permissions,
         boards,
         child_lifetime_hours: submitted_child_lifetime(input.child_lifetime_hours)?,
+        preset: (role.is_none() && input.permissions.is_none()).then(|| scope.preset()),
     };
     let (record, raw) = match &role {
         Some(role) => account
@@ -27378,6 +27390,7 @@ async fn create_child_token(
         permissions,
         boards,
         child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
+        preset: (role.is_none() && input.permissions.is_none()).then(|| scope.preset()),
     };
     let parent = ParentToken {
         id: parent_id.to_string(),

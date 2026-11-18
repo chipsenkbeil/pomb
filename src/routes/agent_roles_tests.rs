@@ -3477,3 +3477,66 @@ async fn child_token_should_not_gain_edit_locked() {
     assert_eq!(issued.status, StatusCode::OK, "{}", issued.body);
     assert!(permission_names(&issued.body).contains("tasks.edit_locked"));
 }
+
+async fn browser_token(fx: &Fixture, body: Value) -> String {
+    let made = fx
+        .browse(ALICE, "POST", "/api/v1/auth/tokens", Some(body))
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    made.body["raw_token"].as_str().expect("raw").to_string()
+}
+
+#[tokio::test]
+async fn whoami_should_name_the_minted_preset() {
+    let fx = Fixture::new();
+    for preset in ["read", "work", "lead", "admin"] {
+        let raw = browser_token(&fx, json!({"name": preset, "preset": preset})).await;
+        assert_eq!(whoami(&fx, &raw).await["preset"], preset);
+    }
+}
+
+#[tokio::test]
+async fn whoami_should_return_no_preset_for_custom_permissions() {
+    let fx = Fixture::new();
+    let custom = browser_token(
+        &fx,
+        json!({"name": "custom", "permissions": ["tasks.read"]}),
+    )
+    .await;
+    assert_eq!(whoami(&fx, &custom).await["preset"], Value::Null);
+
+    let role = standard_role(&fx, "implementer").await;
+    let as_role = browser_token(&fx, json!({"name": "as-role", "role_id": role["id"]})).await;
+    assert_eq!(whoami(&fx, &as_role).await["preset"], Value::Null);
+}
+
+#[tokio::test]
+async fn child_whoami_should_name_its_preset() {
+    let fx = Fixture::new();
+    let (_, lead) = issuer_token(&fx, None, BoardAccess::All, None);
+    let made = issue_child(&fx, &lead, json!({"name": "kid", "preset": "read"})).await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    let raw = made.body["raw_token"].as_str().expect("raw");
+    assert_eq!(whoami(&fx, raw).await["preset"], "read");
+
+    let custom = issue_child(
+        &fx,
+        &lead,
+        json!({"name": "kid-custom", "permissions": ["tasks.read"]}),
+    )
+    .await;
+    assert_eq!(custom.status, StatusCode::OK, "{}", custom.body);
+    let raw = custom.body["raw_token"].as_str().expect("raw");
+    assert_eq!(whoami(&fx, raw).await["preset"], Value::Null);
+
+    let role = standard_role(&fx, "implementer").await;
+    let as_role = issue_child(
+        &fx,
+        &lead,
+        json!({"name": "kid-role", "role_id": role["id"]}),
+    )
+    .await;
+    assert_eq!(as_role.status, StatusCode::OK, "{}", as_role.body);
+    let raw = as_role.body["raw_token"].as_str().expect("raw");
+    assert_eq!(whoami(&fx, raw).await["preset"], Value::Null);
+}

@@ -22,7 +22,7 @@ use crate::models::{
     DeviceAuthRow, DeviceAuthStatus, FieldDefRow, FieldKind, FieldOwner, HistoryKind,
     SECONDS_PER_DAY, SECONDS_PER_HOUR, TimeEntryRow, TimerMode,
 };
-use crate::permissions::Permission;
+use crate::permissions::{Permission, Preset};
 use crate::{AppState, BODY_LIMIT_BYTES, markdown};
 
 struct Fixture {
@@ -3685,6 +3685,7 @@ async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
         requested_boards: Vec::new(),
         requested_hours: None,
         reason: None,
+        preset: None,
     };
     fx.db.create_device_auth(&row, now).expect("insert");
     let (status, text) = poll_device(&fx, expired_code).await;
@@ -3781,6 +3782,7 @@ async fn device_pairing_should_limit_pending_requests_wrong_codes_and_clean_up()
         requested_boards: Vec::new(),
         requested_hours: None,
         reason: None,
+        preset: None,
     };
     fx.db.create_device_auth(&stale, now).expect("insert");
     assert_eq!(poll_device(&fx, "stale").await.0, StatusCode::GONE);
@@ -5865,6 +5867,24 @@ async fn approve_asked(extra: Value, form: &str) -> (StatusCode, String, Option<
 }
 
 #[tokio::test]
+async fn device_token_should_name_only_a_preset_it_was_asked_for() {
+    let (_, _, whoami) = approve_asked(json!({"scopes": [], "preset": "lead"}), "").await;
+    assert_eq!(whoami.expect("whoami")["preset"], "lead");
+
+    let (_, _, whoami) = approve_asked(json!({"scopes": ["work"]}), "").await;
+    assert_eq!(whoami.expect("whoami")["preset"], "work");
+
+    let names: Vec<_> = Preset::Read
+        .permissions()
+        .iter()
+        .map(|permission| permission.name())
+        .collect();
+    let custom = json!({"scopes": [], "permissions": names});
+    let (_, _, whoami) = approve_asked(custom, "").await;
+    assert_eq!(whoami.expect("whoami")["preset"], Value::Null);
+}
+
+#[tokio::test]
 async fn device_approval_should_refuse_an_expiry_longer_than_requested() {
     let extra = json!({"expires_in_hours": 8});
     let (status, page, whoami) = approve_asked(extra.clone(), "&expires_in_hours=9").await;
@@ -6608,6 +6628,7 @@ async fn approving_should_refuse_the_role_of_another_account() {
         requested_boards: Vec::new(),
         requested_hours: None,
         reason: None,
+        preset: None,
     };
     let form = DeviceApproveForm {
         user_code: "BCDFGHJK".into(),
@@ -6674,6 +6695,7 @@ async fn device_grant_should_refuse_boards_outside_the_request() {
         requested_boards: Vec::new(),
         requested_hours: None,
         reason: None,
+        preset: None,
     };
     let form = |boards: Option<Vec<String>>| DeviceApproveForm {
         user_code: "BCDFGHJK".into(),

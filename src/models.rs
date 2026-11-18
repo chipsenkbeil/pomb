@@ -5457,6 +5457,10 @@ pub struct DeviceAuthRow {
     /// Why the client asks, in its own words, which nothing verifies.
     #[serde(default)]
     pub reason: Option<String>,
+    /// The name of the preset the request asked for, absent for a request that asked for custom
+    /// permissions or a role.
+    #[serde(default)]
+    pub preset: Option<String>,
 }
 
 /// A named API token for agent/script access. The raw token is shown once
@@ -5507,6 +5511,10 @@ pub struct ApiTokenRecord {
     /// The `agent-N` label of the issue, N from the role's counter and never reused.
     #[serde(default)]
     pub label: Option<String>,
+    /// The name of the preset the token was minted from, absent for a token minted from custom
+    /// permissions or as a role.
+    #[serde(default)]
+    pub preset: Option<String>,
 }
 
 /// Returns the lifetime a stored token that predates the field allows its children.

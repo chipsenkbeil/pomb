@@ -2040,6 +2040,7 @@ fn member_child(fx: &Pair, bob: &AccountId) -> String {
         permissions: parent.permissions.clone(),
         boards: parent.boards.clone(),
         child_lifetime_hours: parent.child_lifetime_hours,
+        preset: None,
     };
     let parent = ParentToken {
         id: parent.id,

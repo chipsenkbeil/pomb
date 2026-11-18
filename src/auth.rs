@@ -277,6 +277,8 @@ pub struct AuthUser {
     pub role_name: Option<String>,
     /// The `agent-N` label of the token's issue.
     pub label: Option<String>,
+    /// The name of the preset the token was minted from.
+    pub preset: Option<String>,
     /// Highest scope the credential holds.
     pub scope: AuthScope,
     /// Every permission the credential holds.
@@ -581,11 +583,14 @@ pub struct TokenGrant {
     pub boards: BoardAccess,
     /// The most hours a child of the token may live, from 1 to 8.
     pub child_lifetime_hours: i64,
+    /// The preset the permissions were named by, absent for a custom set or a role.
+    pub preset: Option<Preset>,
 }
 
 impl TokenGrant {
-    /// Copies the permissions, boards and child lifetime onto `record`.
+    /// Copies the permissions, preset, boards and child lifetime onto `record`.
     pub fn apply_to(self, record: &mut ApiTokenRecord) {
+        record.preset = self.preset.map(|preset| preset.name().to_string());
         record.permissions = self.permissions;
         record.boards = self.boards;
         record.child_lifetime_hours = self.child_lifetime_hours;
@@ -622,6 +627,7 @@ pub fn new_api_token_record(
         role_id: None,
         role_name: None,
         label: None,
+        preset: None,
     };
     (record, raw)
 }
@@ -1849,6 +1855,7 @@ fn browser_user(account: UserRow) -> AuthUser {
         role_id: None,
         role_name: None,
         label: None,
+        preset: None,
         scope: AuthScope::Admin,
         permissions,
         boards: BoardAccess::All,
@@ -2048,6 +2055,9 @@ pub async fn auth_middleware(
                     label: maybe_record
                         .as_ref()
                         .and_then(|record| record.label.clone()),
+                    preset: maybe_record
+                        .as_ref()
+                        .and_then(|record| record.preset.clone()),
                     token_id: maybe_record.map(|record| record.id),
                     scope,
                     permissions,
@@ -2262,6 +2272,7 @@ mod tests {
             role_id: None,
             role_name: None,
             label: None,
+            preset: None,
         };
         assert!(!raw.starts_with(API_TOKEN_PREFIX));
         assert!(verify_api_token(&record, raw));
@@ -2846,6 +2857,7 @@ mod tests {
             role_id: None,
             role_name: None,
             label: None,
+            preset: None,
         };
         assert!(!record.is_expired(now));
         record.expires_at = Some(now + 60);

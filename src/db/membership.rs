@@ -818,6 +818,7 @@ mod tests {
             requested_boards: Vec::new(),
             requested_hours: None,
             reason: None,
+            preset: None,
         };
         let txn = fx.db.db.begin_write().expect("write");
         move_row_to(
@@ -883,6 +884,7 @@ mod tests {
             requested_boards: Vec::new(),
             requested_hours: None,
             reason: None,
+            preset: None,
         };
         fx.db.create_device_auth(&request, now).expect("request");
         let grant = DeviceGrant {
@@ -972,6 +974,7 @@ mod tests {
                         permissions: AuthScope::Read.permissions(),
                         boards: BoardAccess::All,
                         child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
+                        preset: None,
                     },
                     None,
                 )

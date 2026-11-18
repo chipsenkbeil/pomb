@@ -1178,7 +1178,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 99;
+pub const SCHEMA_VERSION: u64 = 100;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1284,6 +1284,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "063a2fd6eedd4e0ed6668abad6b667fad127e276471373236394498472608931",
     "eaac544be40a5d410f1632174778e53117f2d14e4dca989f74f8c03c2a3725b1",
     "eaac544be40a5d410f1632174778e53117f2d14e4dca989f74f8c03c2a3725b1",
+    "ad607eecc9bfd4378aa3275b34fecafbd70ca520cc3bad5c32b3ad930b9006d6",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -4800,6 +4801,7 @@ fn txn_issue_as_role(
     record.role_id = Some(role.id.clone());
     record.role_name = Some(role.name.clone());
     record.label = Some(format!("agent-{}", role.issued));
+    record.preset = None;
     write_one(txn, AGENT_ROLES, role_id, &role)?;
     Ok(true)
 }
@@ -15392,6 +15394,7 @@ mod schema_version_tests {
             requested_boards: Vec::new(),
             requested_hours: None,
             reason: None,
+            preset: None,
         };
         let value = serde_json::to_value(&device).expect("json");
         put_raw(&path, DEVICE_AUTHS, &device.device_code_hash, &value);
@@ -16242,6 +16245,7 @@ mod schema_version_tests {
             requested_boards: Vec::new(),
             requested_hours: None,
             reason: None,
+            preset: None,
         };
         let value = serde_json::to_value(&device).expect("json");
         put_raw(path, DEVICE_AUTHS, &device.device_code_hash, &value);
@@ -16574,6 +16578,7 @@ mod schema_version_tests {
             requested_boards: Vec::new(),
             requested_hours: None,
             reason: None,
+            preset: None,
         };
         put_raw(
             &path,
@@ -16657,6 +16662,7 @@ mod schema_version_tests {
                 requested_boards: Vec::new(),
                 requested_hours: None,
                 reason: None,
+                preset: None,
             };
             let value = serde_json::to_value(&row).expect("json");
             put_raw(&path, DEVICE_AUTHS, &row.device_code_hash, &value);
@@ -18983,6 +18989,7 @@ mod device_tests {
             requested_boards: Vec::new(),
             requested_hours: None,
             reason: None,
+            preset: None,
         }
     }
 
@@ -19265,6 +19272,7 @@ mod token_index_tests {
             requested_boards: Vec::new(),
             requested_hours: None,
             reason: None,
+            preset: None,
         }
     }
 
