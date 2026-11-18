@@ -7,7 +7,7 @@ use super::test_support::{TEST_BODY_4_MIB_BYTES, held_disk, make_plain, move_to}
 use super::{EPIC_TEMPLATE, router};
 use crate::AppState;
 use crate::db::Db;
-use crate::models::{AccountId, HistoryKind};
+use crate::models::{AccountId, ActiveTimer, HistoryKind, TimerMode};
 
 struct Fixture {
     db: Db,
@@ -2089,4 +2089,86 @@ async fn a_timer_on_an_ordinary_task_should_start_and_retarget() {
     .await;
     assert_eq!(status, StatusCode::OK, "{moved}");
     assert_eq!(moved["task_id"], second.as_str(), "{moved}");
+}
+
+#[tokio::test]
+async fn a_running_timer_should_stop_and_keep_its_entry_when_its_card_becomes_an_epic() {
+    let (_dir, fx) = fixture();
+
+    // Create a card and start a stopwatch on it
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let (status, started) = call(
+        &fx,
+        "POST",
+        "/api/timer/start",
+        Some(json!({"task_id": card, "mode": "stopwatch"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+
+    // Backdate the session so it runs past the 20 second floor and is logged
+    fx.db
+        .account(&fx.user_id)
+        .set_active_timer(&ActiveTimer {
+            task_id: Some(card.clone()),
+            mode: TimerMode::Stopwatch,
+            started_at: chrono::Utc::now().timestamp() - 600,
+            duration_secs: None,
+        })
+        .expect("timer");
+
+    // Make the card an epic
+    let (status, made) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{card}"),
+        Some(json!({"kind": "epic"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+
+    // The timer is stopped and its session is kept as an entry on the card
+    let (_, after) = call(&fx, "GET", "/api/timer/status", None).await;
+    assert!(after["task_id"].is_null(), "{after}");
+    assert!(
+        fx.db
+            .account(&fx.user_id)
+            .active_timer()
+            .expect("timer")
+            .is_none()
+    );
+    let entries = fx.db.list_entries(&card).expect("entries");
+    assert_eq!(entries.len(), 1, "the session is recorded");
+    assert!(entries[0].minutes >= 10, "{}", entries[0].minutes);
+}
+
+#[tokio::test]
+async fn a_timer_on_another_card_should_keep_running_when_a_card_becomes_an_epic() {
+    let (_dir, fx) = fixture();
+
+    // Create two cards and start a stopwatch on the first
+    let running = create(&fx, json!({"column_id": fx.col_todo, "name": "Running"})).await;
+    let other = create(&fx, json!({"column_id": fx.col_todo, "name": "Other"})).await;
+    let (status, started) = call(
+        &fx,
+        "POST",
+        "/api/timer/start",
+        Some(json!({"task_id": running, "mode": "stopwatch"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+
+    // Make the other card an epic
+    let (status, made) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{other}"),
+        Some(json!({"kind": "epic"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+
+    // The timer on the first card keeps running
+    let (_, after) = call(&fx, "GET", "/api/timer/status", None).await;
+    assert_eq!(after["task_id"], running.as_str(), "{after}");
 }

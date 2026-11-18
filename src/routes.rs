@@ -10361,6 +10361,26 @@ async fn update_task(
         .ok_or_else(|| AppError::not_found("task not found"))?;
     applied?;
 
+    // An epic holds no work, so a timer still running on the card stops and logs its session
+    if input.kind == Some(TaskKind::Epic) {
+        let _gate = db.lock_timer();
+        if let Some(timer) = db.active_timer().map_err(AppError::from)?
+            && timer.task_id.as_deref() == Some(id.as_str())
+        {
+            log_timer_session(
+                db,
+                &timer,
+                TimerSession {
+                    claimed_completed: false,
+                    reason: Some("Card became an epic"),
+                    activity_id: None,
+                    created_by: &user.handle,
+                    actor: user.actor(),
+                },
+            )?;
+        }
+    }
+
     if wants_json(&headers, &user) {
         let task = found(db.task(&id), "task not found")?;
         return Ok(Json(TaskDetail::load(db, task.into_row())?).into_response());
