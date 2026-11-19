@@ -38,6 +38,7 @@ mod client;
 mod csrf;
 mod db;
 mod disk;
+mod egress;
 mod image;
 mod labels;
 mod layouts;
@@ -556,6 +557,7 @@ async fn serve(
     println!("pomb: backups go to {}", state.backups.dir().display());
     tokio::spawn(backup::run_schedule(db.clone(), state.backups.clone()));
     tokio::spawn(run_upkeep(db.clone()));
+    tokio::spawn(state.egress.clone().run_report());
     tokio::spawn(state.disk.clone().run_sampler());
     tokio::spawn(webhook::Dispatcher::new(db.clone(), webhook::is_public_address).run());
     let app = routes::router(state.with_public_url(config.public_url));

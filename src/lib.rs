@@ -7,6 +7,8 @@ pub mod auth;
 pub mod backup;
 pub mod db;
 pub mod disk;
+/// Request counts and response body bytes per route.
+pub mod egress;
 /// The per-board label settings: highlighted labels, their colours and the labels kept with no card.
 pub mod labels;
 /// The built-in board layouts and their categories.

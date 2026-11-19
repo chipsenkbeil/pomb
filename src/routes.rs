@@ -671,6 +671,10 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn(api_error::json_errors))
         .layer(middleware::from_fn_with_state(
             state.clone(),
+            crate::egress::count_egress,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
             security_headers,
         ))
         .with_state(state)

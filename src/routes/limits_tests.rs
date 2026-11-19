@@ -3366,6 +3366,29 @@ async fn upload_should_answer_busy_while_two_uploads_hold_every_slot() {
 }
 
 #[tokio::test]
+async fn router_should_count_the_bytes_of_each_route() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = Db::connect(dir.path().join("egress.redb").to_str().expect("utf8")).expect("db");
+    let state = AppState::new(db, None, passkey_mode());
+    let app = router(state.clone());
+
+    // Request a matched and an unmatched path
+    let sent = send_bytes(&app, "GET", "/api/v1/version", &[], None, Vec::new()).await;
+    assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+    let missing = send_bytes(&app, "GET", "/api/nope", &[], None, Vec::new()).await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+
+    // Both land in the counter
+    let top = state.egress.top(10);
+    let version = top
+        .iter()
+        .find(|total| total.route == "GET /api/v1/version")
+        .expect("version route");
+    assert_eq!((version.requests, version.bytes > 0), (1, true));
+    assert!(top.iter().any(|total| total.route == "GET unmatched"));
+}
+
+#[tokio::test]
 async fn responses_should_carry_the_security_headers() {
     let fx = Fixture::multi();
     let (_, task) = fx.member_task();

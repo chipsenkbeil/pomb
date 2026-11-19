@@ -120,6 +120,7 @@ use crate::auth::{
 };
 use crate::backup::Backups;
 use crate::disk::{DiskGuard, MIB};
+use crate::egress::Egress;
 use crate::labels::{CONFIG_KEY, LabelSettings};
 use crate::layouts::{LAYOUTS, Layout};
 use crate::limit::{Limits, TrustProxy};
@@ -2793,6 +2794,8 @@ pub struct AppState {
     pub backups: Backups,
     /// When writes stop because the database or its disk is full.
     pub disk: DiskGuard,
+    /// Requests and response bytes of each route.
+    pub egress: Egress,
     /// One permit per attachment upload that may run at once.
     pub uploads: Arc<Semaphore>,
     /// One permit per attachment download that may run at once.
@@ -2882,6 +2885,7 @@ impl AppState {
         Self {
             backups: Backups::beside(db.path()).with_disk(disk.clone()),
             disk,
+            egress: Egress::default(),
             db,
             sign_in,
             mode: InstanceMode::Single,
