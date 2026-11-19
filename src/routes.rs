@@ -3350,6 +3350,24 @@ impl PanelSeatState {
 /// What the side panel says of a hold that has no lease.
 const PANEL_NO_LEASE: &str = "No lease, stays until released";
 
+/// How long the owner's lease lasts.
+#[derive(Clone, Debug)]
+enum PanelLease {
+    Lapsed,
+    Until(LocalTime),
+    Open,
+}
+
+impl fmt::Display for PanelLease {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Lapsed => f.write_str("Lease lapsed"),
+            Self::Until(end) => write!(f, "Until {end}"),
+            Self::Open => f.write_str(PANEL_NO_LEASE),
+        }
+    }
+}
+
 /// The owner group of the side panel.
 #[derive(Clone, Debug)]
 struct PanelOwner {
@@ -3358,9 +3376,9 @@ struct PanelOwner {
     /// The owner's name, or `No owner` while the card has none.
     name: String,
     /// How long the lease lasts, or none while the card has no owner.
-    lease: Option<String>,
+    lease: Option<PanelLease>,
     /// The time of day the holder took the card, or none while it is unknown.
-    owner_since: Option<String>,
+    owner_since: Option<LocalTime>,
     /// The fence a release sends, set only while the signed-in member holds the card.
     release_fence: Option<u64>,
     /// The take button, or none to a viewer and to the live owner.
@@ -3463,14 +3481,14 @@ impl SidePanel {
         let lease = owner
             .as_ref()
             .map(|owner| match (&owner.lease_expires_at, live) {
-                (_, false) => "Lease lapsed".to_string(),
-                (Some(end), true) => format!("Until {}", format_datetime(end)),
-                (None, true) => PANEL_NO_LEASE.to_string(),
+                (_, false) => PanelLease::Lapsed,
+                (Some(end), true) => PanelLease::Until(LocalTime::of(Shape::DateTime, end)),
+                (None, true) => PanelLease::Open,
             });
         let owner_since = owner
             .as_ref()
             .and_then(|owner| owner.since.as_deref())
-            .and_then(format_clock);
+            .map(|since| LocalTime::of(Shape::Clock, since));
         let name = circle
             .as_ref()
             .map(|circle| circle.title.clone())
@@ -4458,16 +4476,6 @@ fn format_datetime(rfc3339: &str) -> String {
     DateTime::parse_from_rfc3339(rfc3339)
         .map(|dt| dt.with_timezone(&Local).format(&pattern).to_string())
         .unwrap_or_else(|_| rfc3339.to_string())
-}
-
-/// "1:25 PM" rendering of the time of day in a stored RFC3339 timestamp, on the account's clock, or
-/// none when it does not parse.
-fn format_clock(rfc3339: &str) -> Option<String> {
-    DateTime::parse_from_rfc3339(rfc3339).ok().map(|dt| {
-        dt.with_timezone(&Local)
-            .format(TimeFormat::current().clock())
-            .to_string()
-    })
 }
 
 /// "Sep 28" rendering of a stored RFC3339 timestamp.

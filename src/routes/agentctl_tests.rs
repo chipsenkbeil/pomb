@@ -12723,6 +12723,55 @@ async fn a_lapsed_person_claim_should_leave_the_modal_unclaimed_and_the_history_
     );
 }
 
+#[tokio::test]
+async fn panel_owner_lease_should_render_a_local_time_element() {
+    let (_dir, fx) = fixture();
+    let (id, granted) = claim_task(&fx, "Lease", "admin", 600).await;
+    let end = granted["expires_at"].as_str().expect("lease end");
+    let html = modal_html(&fx, &id).await;
+    let start = html.find(r#"id="modal-owner-lease""#).expect("lease line");
+    let line = &html[start..start + html[start..].find("</span></span>").expect("line end")];
+    assert!(line.contains("Until <time"), "{line}");
+    assert!(line.contains(r#"data-fmt="datetime""#), "{line}");
+    assert!(line.contains(&end[..16]), "{line} {end}");
+}
+
+#[tokio::test]
+async fn panel_owner_since_should_render_a_local_time_element() {
+    let (_dir, fx) = fixture();
+    let (id, _) = claim_task(&fx, "Since", "admin", 600).await;
+    let html = modal_html(&fx, &id).await;
+    let start = html.find("tm-owner-since").expect("since line");
+    let line = &html[start..start + html[start..].find("</span>").expect("line end")];
+    assert!(line.contains(">Since <time"), "{line}");
+    assert!(line.contains(r#"data-fmt="clock""#), "{line}");
+}
+
+#[tokio::test]
+async fn panel_owner_lease_should_keep_its_words_for_a_lapsed_or_open_lease() {
+    let (_dir, fx) = fixture();
+
+    // Lapse a one-second lease and read the panel
+    let (id, _) = claim_task(&fx, "Lapse", "admin", 1).await;
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let lapsed = modal_html(&fx, &id).await;
+    assert!(
+        lapsed.contains(r#"id="modal-owner-lease">Lease lapsed</span>"#),
+        "{lapsed}"
+    );
+
+    // Take with no lease and read the panel
+    let open = create(&fx, json!({"column_id": fx.col_todo, "name": "Open"})).await;
+    let uri = format!("/api/tasks/{open}/owner");
+    let (status, text) = request(&fx, As::Admin, "POST", &uri, Some(json!({})), true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let html = modal_html(&fx, &open).await;
+    assert!(
+        html.contains(r#"id="modal-owner-lease">No lease, stays until released</span>"#),
+        "{html}"
+    );
+}
+
 #[test]
 fn token_form_sources_should_not_hard_code_any_permission_name() {
     let sources = [
