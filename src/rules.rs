@@ -37,6 +37,9 @@ pub struct ColumnRules {
     /// roles, and an empty map limits no role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role_moves: Option<RoleMoves>,
+    /// Role ids refused every move out of a column the rules give them no entry for.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub closed_roles: BTreeSet<String>,
 }
 
 /// The ids of the columns each role may move a task into, by role id, then by the id of the
@@ -78,6 +81,7 @@ impl Default for ColumnRules {
             locked_labels: default_locked_labels(),
             columns: BTreeMap::new(),
             role_moves: None,
+            closed_roles: BTreeSet::new(),
         }
     }
 }
@@ -156,6 +160,13 @@ impl ColumnRules {
         }
     }
 
+    /// Reports whether the rules refuse role `role_id` every move out of a column they give it no
+    /// entry for.
+    #[must_use]
+    pub fn is_closed(&self, role_id: &str) -> bool {
+        self.closed_roles.contains(role_id)
+    }
+
     /// Returns the moves in force for each of `roles`, given as an id and the standard role it
     /// stands for: what the board stores, or the standard moves when it stores none.
     #[must_use]
@@ -226,6 +237,13 @@ impl ColumnRules {
             .role_moves
             .map(|moves| clean_role_moves(moves, column_ids, role_ids))
             .transpose()?;
+        if let Some(role_id) = self
+            .closed_roles
+            .iter()
+            .find(|role_id| !role_ids.contains(role_id.as_str()))
+        {
+            return Err(format!("unknown role \"{role_id}\""));
+        }
         Ok(self)
     }
 }
@@ -679,6 +697,40 @@ mod tests {
         }
 
         #[test]
+        fn closed_role_should_be_refused_a_move_out_of_an_unlisted_column() {
+            let rules = ColumnRules {
+                role_moves: Some(RoleMoves::new()),
+                closed_roles: BTreeSet::from(["r1".to_string()]),
+                ..ColumnRules::default()
+            };
+            assert!(rules.is_closed("r1"));
+            assert!(!rules.is_closed("r2"));
+            let kept = rules
+                .clone()
+                .validated(&known(&[]), &known(&[]), &known(&["r1"]))
+                .unwrap();
+            assert_eq!(kept.closed_roles, rules.closed_roles);
+            assert!(
+                rules
+                    .validated(&known(&[]), &known(&[]), &known(&["r2"]))
+                    .is_err()
+            );
+        }
+
+        #[test]
+        fn open_role_should_still_move_out_of_an_unlisted_column() {
+            let rules = ColumnRules {
+                role_moves: Some(RoleMoves::new()),
+                ..ColumnRules::default()
+            };
+            assert!(!rules.is_closed("r1"));
+            let read: ColumnRules = serde_json::from_str("{}").expect("rules");
+            assert!(read.closed_roles.is_empty());
+            let written = serde_json::to_value(&read).expect("json");
+            assert!(written.get("closed_roles").is_none());
+        }
+
+        #[test]
         fn should_drop_a_role_with_no_moves_and_keep_an_empty_map() {
             let rules = ColumnRules {
                 role_moves: Some(RoleMoves::from([("r1".to_string(), BTreeMap::new())])),
@@ -874,6 +926,7 @@ mod tests {
                     "r1".to_string(),
                     BTreeMap::from([("c1".to_string(), BTreeSet::from(["c2".to_string()]))]),
                 )])),
+                closed_roles: BTreeSet::from(["r1".to_string()]),
             };
             let bag = serde_json::json!({ CONFIG_KEY: rules.to_config_value() });
             assert_eq!(ColumnRules::from_config(&bag.to_string()), rules);

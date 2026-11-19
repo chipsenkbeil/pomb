@@ -22565,7 +22565,8 @@ async fn get_board_rules(
 /// issued as an agent role may move a task only where `role_moves` lets that role, and is refused
 /// with 403 `role_move_forbidden` otherwise. Leave `role_moves` out to give the standard roles
 /// their standard moves, which apply only where the board's columns hold the stages that set. Send
-/// `{}` to limit no role.
+/// `{}` to limit no role. A role id in `closed_roles` is also refused every move out of a column
+/// `role_moves` gives it no entry for.
 #[utoipa::path(
     put,
     path = "/api/boards/{id}/rules",
@@ -22575,7 +22576,7 @@ async fn get_board_rules(
     request_body = ColumnRules,
     responses(
         (status = 200, description = "The rules as stored", body = ColumnRules),
-        (status = 400, description = "Unknown column or field, a list over 20 entries or an entry over 100 characters, a fewest above the most, a `role_moves` entry for a role the account lacks, or an unknown property"),
+        (status = 400, description = "Unknown column or field, a list over 20 entries or an entry over 100 characters, a fewest above the most, a `role_moves` entry or a `closed_roles` id for a role the account lacks, or an unknown property"),
         (status = 403, description = "`session_required`: the request came from an API token"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -23260,21 +23261,20 @@ fn ensure_role_move_allowed(
         .agent_role(role_id)
         .map_err(AppError::from)?
         .and_then(|role| role.standard);
-    let allowed = ColumnRules::from_config(&board.row().config_json).role_targets(
-        role_id,
-        standard,
-        &from.id,
-        &columns,
-        blocked.as_deref(),
-    );
-    match allowed {
-        Some(targets) if !targets.contains(&to.id) => Err(AppError::forbidden(format!(
+    let rules = ColumnRules::from_config(&board.row().config_json);
+    let allowed = rules.role_targets(role_id, standard, &from.id, &columns, blocked.as_deref());
+    let refused = match &allowed {
+        Some(targets) => !targets.contains(&to.id),
+        None => rules.is_closed(role_id),
+    };
+    if refused {
+        return Err(AppError::forbidden(format!(
             "the board's column rules do not let role \"{role_name}\" move a task out of \"{}\" into \"{}\"",
             from.name, to.name
         ))
-        .with_code(ErrorCode::RoleMoveForbidden)),
-        _ => Ok(()),
+        .with_code(ErrorCode::RoleMoveForbidden));
     }
+    Ok(())
 }
 
 /// Returns the refusal of a write to a task in, or into, an archived swimlane.
@@ -23753,6 +23753,8 @@ struct BoardSettingsTemplate {
     rules_columns: Vec<RulesColumnView>,
     /// Each agent role with the moves it holds, for the Column rules tab.
     rules_roles: Vec<RulesRoleView>,
+    /// The closed role ids as a JSON array, which the Column rules form sends back on a save.
+    rules_closed_roles: String,
     /// The Labels tab.
     labels_tab: LabelsTabView,
 }
@@ -24257,6 +24259,14 @@ fn board_settings_context(
         rules_labels: rules.locked_labels.join("\n"),
         rules_columns,
         rules_roles,
+        rules_closed_roles: serde_json::to_string(
+            &rules
+                .closed_roles
+                .iter()
+                .filter(|id| agent_roles.iter().any(|role| &role.id == *id))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_default(),
         labels_tab: LabelsTabView {
             rows: label_rows,
             palette: HIGHLIGHT_COLORS.join(","),

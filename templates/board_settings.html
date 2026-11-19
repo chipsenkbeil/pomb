@@ -515,7 +515,7 @@
           change these rules.</p>
         <div id="br-error" class="form-error" hidden></div>
         <p id="br-saved" class="settings-saved" hidden>Column rules saved.</p>
-        <form id="br-form" class="settings-form" novalidate>
+        <form id="br-form" class="settings-form" data-closed-roles="{{ rules_closed_roles }}" novalidate>
           <label>Locked labels
             <textarea id="br-locked" rows="2" placeholder="One per line">{{ rules_labels }}</textarea>
           </label>

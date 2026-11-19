@@ -99,7 +99,7 @@ expect('Save rules sends one request', sent.length, 1);
 if (sent.length) {
   var body = JSON.parse(sent[0].options.body);
   expect('Save rules PUTs the board rules', [sent[0].options.method, sent[0].url], ['PUT', '/api/boards/b1/rules']);
-  expect('Save rules holds locked labels, columns and role_moves', Object.keys(body), ['locked_labels', 'columns', 'role_moves']);
+  expect('Save rules holds locked labels, columns and role_moves', Object.keys(body), ['locked_labels', 'columns', 'role_moves', 'closed_roles']);
   expect('Save rules trims the locked labels', body.locked_labels, ['lock-a', 'lock-b']);
   expect('Save rules holds only the column fieldsets', Object.keys(body.columns), ['c1', 'c2']);
   expect('Save rules sends the first column rules', body.columns.c1,
@@ -115,14 +115,14 @@ expect('Restore standard moves sends one more request', sent.length, 2);
 if (sent.length === 2) {
   const restored = JSON.parse(sent[1].options.body);
   expect('Restore standard moves PUTs the board rules', [sent[1].options.method, sent[1].url], ['PUT', '/api/boards/b1/rules']);
-  expect('restore_standard_moves_omits_role_moves', Object.keys(restored), ['locked_labels', 'columns']);
+  expect('restore_standard_moves_omits_role_moves', Object.keys(restored), ['locked_labels', 'columns', 'closed_roles']);
   expect('Restore standard moves sends the same columns as the save', restored.columns, JSON.parse(sent[0].options.body).columns);
 }
 
 form.listeners.submit({ preventDefault: () => {} });
 expect('A plain submit after a restore sends one more request', sent.length, 3);
 if (sent.length === 3) {
-  expect('A plain submit after a restore still sends role_moves', Object.keys(JSON.parse(sent[2].options.body)), ['locked_labels', 'columns', 'role_moves']);
+  expect('A plain submit after a restore still sends role_moves', Object.keys(JSON.parse(sent[2].options.body)), ['locked_labels', 'columns', 'role_moves', 'closed_roles']);
 }
 
 process.exit(failures ? 1 : 0);

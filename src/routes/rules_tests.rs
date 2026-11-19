@@ -456,6 +456,36 @@ mod role_moves {
     }
 
     #[tokio::test]
+    async fn closed_implementer_should_not_move_ready_into_done() {
+        let fx = Fixture::new();
+        let implementer = fx.role_ids["implementer"].clone();
+        let rules = json!({"role_moves": {}, "closed_roles": [implementer]});
+        assert_eq!(fx.put_rules(rules).await, StatusCode::OK);
+        let task = fx.task(&fx.stages["ready"], json!({})).await;
+        let (status, text) = move_to(&fx, Who::Role("implementer"), &task, "done").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(parse(&text)["code"], "role_move_forbidden", "{text}");
+        let (status, text) = move_to(&fx, Who::Role("lead"), &task, "done").await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+
+    #[tokio::test]
+    async fn rules_put_should_store_closed_roles_and_refuse_an_unknown_one() {
+        let fx = Fixture::new();
+        let implementer = fx.role_ids["implementer"].clone();
+        let rules = json!({"closed_roles": [implementer]});
+        let (status, text) = fx
+            .json(Who::Session, "PUT", &fx.rules_uri(), rules.clone())
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert_eq!(parse(&text)["closed_roles"], rules["closed_roles"]);
+        assert_eq!(
+            fx.put_rules(json!({"closed_roles": ["nope"]})).await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
     async fn token_should_not_edit_the_moves() {
         let fx = Fixture::new();
         let status = fx
