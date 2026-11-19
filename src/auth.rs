@@ -1163,6 +1163,7 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/tasks/:id/history-export",
         Permission::TasksRead,
     ),
+    (Method::GET, "/api/tasks/:id/history", Permission::TasksRead),
     (
         Method::GET,
         "/api/tasks/:id/link-picker",

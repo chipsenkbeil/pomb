@@ -271,6 +271,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks/:id/time-log-view", get(time_log_view))
         .route("/api/tasks/:id/history-view", get(history_view))
         .route("/api/tasks/:id/history-export", get(history_export))
+        .route("/api/tasks/:id/history", get(task_history_rows))
         .route("/api/tasks/:id/link-picker", get(link_picker))
         .route(
             "/api/time/entries/:id",
@@ -1168,6 +1169,7 @@ const ROUTE_ACCESS: &[(Method, &str, Rc, Wr)] = {
             Wr::No,
         ),
         (Method::GET, "/api/tasks/:id/history-view", Rc::Task, Wr::No),
+        (Method::GET, "/api/tasks/:id/history", Rc::Task, Wr::No),
         (
             Method::GET,
             "/api/tasks/:id/history-export",
@@ -16380,6 +16382,79 @@ async fn history_export(
         .into_response())
 }
 
+/// Query of `GET /api/tasks/{id}/history`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct TaskHistoryQuery {
+    /// Page size from 1 to 1000, default 200.
+    #[param(value_type = Option<i64>)]
+    limit: Option<String>,
+    /// The `next_cursor` of an earlier page. Only the rows after it come back.
+    cursor: Option<String>,
+}
+
+/// One page of a task's history.
+#[derive(Serialize, ToSchema)]
+struct TaskHistoryPage {
+    /// The rows of the page, oldest first.
+    rows: Vec<board_history::HistoryRow>,
+    /// The cursor of the last row on the page, or null when the page is empty. Send it as `cursor`
+    /// to read the rows after it, now or once the task has more.
+    next_cursor: Option<String>,
+}
+
+/// Returns a task's history as JSON rows, comments included, oldest first with ties broken by row
+/// id. Each row carries its `id`. A page holds `limit` rows from 1 to 1000, 200 by default, and
+/// `next_cursor` is the cursor of its last row. Send it as `cursor` to read the next page, or keep
+/// it after reading to the end and send it later to read only the rows added since. An empty page
+/// has a null `next_cursor`, so keep the last cursor you had. A malformed cursor is a 400. A token
+/// limited to some boards sees the same rows as on the board history, with what it may not read
+/// left out or blanked.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/history",
+    operation_id = "get_task_history",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id"), TaskHistoryQuery),
+    responses(
+        (status = 200, description = "One page of the history, oldest first", body = TaskHistoryPage),
+        (status = 400, description = "Invalid limit or cursor"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn task_history_rows(
+    account: AccountDb,
+    Path(id): Path<String>,
+    Query(query): Query<TaskHistoryQuery>,
+) -> Result<Json<TaskHistoryPage>, AppError> {
+    let limit = parse_page_limit(query.limit.as_deref())?;
+    let task = found(account.task(&id), "task not found")?;
+    let after: Option<board_history::RowKey> = query
+        .cursor
+        .as_deref()
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+        .map(|raw| decode_page_cursor(raw, &id))
+        .transpose()?;
+    let events = account
+        .visible_history(&task.row().history)
+        .map_err(AppError::from)?;
+    let page: Vec<_> = board_history::task_page(task.row(), &events)
+        .into_iter()
+        .filter(|(key, _)| after.as_ref().is_none_or(|after| key > after))
+        .take(limit)
+        .collect();
+    let next_cursor = page
+        .last()
+        .map(|(key, _)| encode_page_cursor(key, &id))
+        .transpose()?;
+    Ok(Json(TaskHistoryPage {
+        rows: page.into_iter().map(|(_, row)| row).collect(),
+        next_cursor,
+    }))
+}
+
 /// Lists the cards of every board the caller can read that may become the task's child or its
 /// umbrella, as the link picker's result list. The query holds finder terms, and the cards of
 /// archived boards are left out.
@@ -30336,6 +30411,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         watch_task,
         set_checklist_item,
         history_export,
+        task_history_rows,
         markdown_preview,
         create_subtask,
         delete_all_subtasks,

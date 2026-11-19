@@ -1586,6 +1586,12 @@ const ROLE_TABLE: &[(Method, &str, BoardRole, [u16; 3])] = &[
     ),
     (
         Method::GET,
+        "/api/tasks/:id/history",
+        BoardRole::Viewer,
+        [200, 200, 200],
+    ),
+    (
+        Method::GET,
         "/api/tasks/:id/link-picker",
         BoardRole::Viewer,
         [200, 200, 200],

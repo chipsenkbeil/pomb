@@ -179,6 +179,8 @@ impl Filter {
 /// One row of a board's history.
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub(crate) struct HistoryRow {
+    /// The id of the event, or of the comment.
+    pub(crate) id: String,
     /// RFC3339 time of the event.
     pub(crate) time: String,
     /// Who made the change, as the page names it. A token issued as a role shows the role name,
@@ -231,6 +233,7 @@ fn event_row(task: &str, event: &TaskEvent) -> HistoryRow {
         (from, to) => (from.clone(), to.clone()),
     };
     HistoryRow {
+        id: event.id.clone(),
         time: event.created_at.clone(),
         user: history_actor(event),
         task: task.to_string(),
@@ -257,6 +260,30 @@ fn task_rows(rows: &mut Vec<HistoryRow>, task: &TaskRow, events: &[TaskEvent]) {
     }
 }
 
+/// Where a row sits in a task's history: its time in microseconds, then its id.
+pub(crate) type RowKey = (i64, String);
+
+/// Returns the key of `row`, or [`None`] when its time is not RFC3339.
+#[must_use]
+fn row_key(row: &HistoryRow) -> Option<RowKey> {
+    let at = DateTime::parse_from_rfc3339(&row.time).ok()?;
+    Some((at.timestamp_micros(), row.id.clone()))
+}
+
+/// Returns the rows of a task's comments and its visible history `events` with their keys, oldest
+/// first, ties broken by id.
+#[must_use]
+pub(crate) fn task_page(task: &TaskRow, events: &[TaskEvent]) -> Vec<(RowKey, HistoryRow)> {
+    let mut all = Vec::new();
+    task_rows(&mut all, task, events);
+    let mut keyed: Vec<(RowKey, HistoryRow)> = all
+        .into_iter()
+        .filter_map(|row| Some((row_key(&row)?, row)))
+        .collect();
+    keyed.sort_by(|(left, _), (right, _)| left.cmp(right));
+    keyed
+}
+
 /// Shapes a `comment` on the task `task`.
 fn comment_row(task: &str, comment: &TaskComment) -> HistoryRow {
     let user = attribution(
@@ -267,6 +294,7 @@ fn comment_row(task: &str, comment: &TaskComment) -> HistoryRow {
         comment.label.as_deref(),
     );
     HistoryRow {
+        id: comment.id.clone(),
         time: comment.created_at.clone(),
         user,
         task: task.to_string(),

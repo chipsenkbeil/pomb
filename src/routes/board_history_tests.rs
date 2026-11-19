@@ -551,3 +551,223 @@ async fn board_history_should_hide_the_other_board_from_a_limited_token() {
         assert!(text.contains("Staging Lane"), "{format}: {text}");
     }
 }
+
+async fn task_page(fx: &Fixture, id: &str, query: &str) -> Value {
+    let (status, text) = send(fx, "GET", &format!("/api/tasks/{id}/history{query}")).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    serde_json::from_str(&text).expect("json")
+}
+
+fn add_comment(fx: &Fixture, id: &str, comment_id: &str, body: &str, at: &str) {
+    let owned = fx.db.account(&fx.user_id);
+    let proof = owned.task(id).expect("read").expect("task");
+    owned
+        .apply_task_change(&proof, Actor::SYSTEM, |row| {
+            row.comments.push(TaskComment {
+                id: comment_id.to_string(),
+                author: "bob".to_string(),
+                body: body.to_string(),
+                created_at: at.to_string(),
+                actor_kind: ActorKind::default(),
+                token_name: None,
+                token_id: None,
+                kind: None,
+                edited_at: None,
+                reactions: Vec::new(),
+                question: None,
+                parent_token: None,
+                role_id: None,
+                role_name: None,
+                label: None,
+            });
+            ((), true)
+        })
+        .expect("comment")
+        .expect("task");
+}
+
+#[must_use]
+fn row_ids(page: &Value) -> Vec<String> {
+    page["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|row| row["id"].as_str().expect("id").to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn task_history_should_return_the_rows_oldest_first() {
+    let (_dir, fx) = fixture();
+    let id = task_with(
+        &fx,
+        "Alpha",
+        vec![
+            event(
+                HistoryKind::LabelsUpdated,
+                "Changed the labels",
+                "bob",
+                "2026-10-25T10:00:00Z",
+            ),
+            event(
+                HistoryKind::Created,
+                "Task created in Todo",
+                "ann",
+                "2026-10-10T10:00:00Z",
+            ),
+        ],
+    );
+    add_comment(&fx, &id, "c1", "Looks fine", "2026-10-20T10:00:00Z");
+    let page = task_page(&fx, &id, "").await;
+    assert_eq!(
+        details(&page),
+        ["Task created in Todo", "Looks fine", "Changed the labels"]
+    );
+    assert_eq!(
+        row_ids(&page),
+        [
+            "created-2026-10-10T10:00:00Z",
+            "c1",
+            "labels_updated-2026-10-25T10:00:00Z"
+        ]
+    );
+    assert!(page["next_cursor"].is_string(), "{page}");
+}
+
+#[tokio::test]
+async fn task_history_should_hide_the_rows_a_limited_token_may_not_read() {
+    let (_dir, fx) = fixture();
+    let kestrel = fx
+        .db
+        .create_board(&fx.user_id, "Kestrel Board")
+        .expect("board");
+    let staging = fx
+        .db
+        .create_column(&kestrel, "Staging Lane", None)
+        .expect("column");
+    let mut created = event(
+        HistoryKind::Created,
+        "Task created in Staging Lane",
+        "ann",
+        "2026-10-10T10:00:00Z",
+    );
+    created.column_id = Some(staging.clone());
+    let mut moved = event(
+        HistoryKind::Moved,
+        "Moved from Staging Lane to Todo",
+        "bob",
+        "2026-10-20T10:00:00Z",
+    );
+    moved.column_id = Some(fx.column.clone());
+    moved.from = Some("Staging Lane".to_string());
+    moved.to = Some("Todo".to_string());
+    let id = task_with(&fx, "Local Card", vec![created, moved]);
+
+    let owner = details(&task_page(&fx, &id, "").await);
+    assert_eq!(
+        owner,
+        [
+            "Task created in Staging Lane",
+            "Moved from Staging Lane to Todo"
+        ]
+    );
+
+    let (mut record, raw) = new_api_token_record(&fx.user_id, "one-board", AuthScope::Read, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+    let bearer = format!("Bearer {raw}");
+    let (status, json) = send_as(&fx, &bearer, &format!("/api/tasks/{id}/history")).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    for hidden in ["Kestrel Board", "Staging Lane", staging.as_str()] {
+        assert!(!json.contains(hidden), "{hidden} in {json}");
+    }
+    let page: Value = serde_json::from_str(&json).expect("json");
+    assert_eq!(
+        details(&page),
+        ["Created on another board", "Moved from another board"]
+    );
+}
+
+#[tokio::test]
+async fn task_history_should_page_and_resume_from_a_cursor() {
+    let (_dir, fx) = fixture();
+    let id = task_with(
+        &fx,
+        "Alpha",
+        vec![
+            event(
+                HistoryKind::Created,
+                "Task created in Todo",
+                "ann",
+                "2026-10-10T10:00:00Z",
+            ),
+            event(
+                HistoryKind::LabelsUpdated,
+                "Changed the labels",
+                "bob",
+                "2026-10-12T10:00:00Z",
+            ),
+            event(
+                HistoryKind::Moved,
+                "Moved from Todo to Doing",
+                "ann",
+                "2026-10-14T10:00:00Z",
+            ),
+        ],
+    );
+    let first = task_page(&fx, &id, "?limit=2").await;
+    assert_eq!(
+        details(&first),
+        ["Task created in Todo", "Changed the labels"]
+    );
+    let cursor = first["next_cursor"].as_str().expect("cursor").to_string();
+    let second = task_page(&fx, &id, &format!("?limit=2&cursor={cursor}")).await;
+    assert_eq!(details(&second), ["Moved from Todo to Doing"]);
+    let last = second["next_cursor"].as_str().expect("cursor").to_string();
+
+    let empty = task_page(&fx, &id, &format!("?cursor={last}")).await;
+    assert!(empty["rows"].as_array().expect("rows").is_empty());
+    assert!(empty["next_cursor"].is_null(), "{empty}");
+
+    add_comment(&fx, &id, "c1", "Newer", "2026-10-30T10:00:00Z");
+    let resumed = task_page(&fx, &id, &format!("?cursor={last}")).await;
+    assert_eq!(details(&resumed), ["Newer"]);
+}
+
+#[tokio::test]
+async fn task_history_should_refuse_a_foreign_task_and_a_bad_cursor() {
+    let (_dir, fx) = fixture();
+    let id = task_with(
+        &fx,
+        "Alpha",
+        vec![event(
+            HistoryKind::Created,
+            "Task created in Todo",
+            "ann",
+            "2026-10-10T10:00:00Z",
+        )],
+    );
+    let other = fx.db.create_user("other").expect("user");
+    let board = fx.db.create_board(&other, "Theirs").expect("board");
+    let column = fx.db.create_column(&board, "Todo", None).expect("column");
+    let foreign = fx
+        .db
+        .create_task(&column, None, "Secret", 1, None)
+        .expect("task");
+    let (status, text) = send(&fx, "GET", &format!("/api/tasks/{foreign}/history")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+
+    let (status, text) = send(&fx, "GET", &format!("/api/tasks/{id}/history?cursor=%21")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    let page = task_page(&fx, &id, "").await;
+    let cursor = page["next_cursor"].as_str().expect("cursor").to_string();
+    let (status, text) = send(
+        &fx,
+        "GET",
+        &format!("/api/tasks/{foreign}/history?cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+    let (status, text) = send(&fx, "GET", &format!("/api/tasks/{id}/history?limit=0")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+}

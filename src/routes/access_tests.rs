@@ -2228,6 +2228,7 @@ async fn lists_should_hold_only_rows_of_the_token_set() {
         format!("/api/boards/{}/export-data", granted.board),
         format!("/api/tasks/{}/history-view", granted.task),
         format!("/api/tasks/{}/history-export?all=1", granted.task),
+        format!("/api/tasks/{}/history", granted.task),
     ] {
         let who = Who::Token(&assigned.token);
         let (status, text) = send(&fx.app, who, &Method::GET, &uri, None).await;
