@@ -1392,6 +1392,23 @@
     },
   };
 
+  const RoleTabs = {
+    step: (ids, current, key) => {
+      const at = ids.indexOf(current);
+      const to = key === 'ArrowRight' ? at + 1 : key === 'ArrowLeft' ? at - 1 :
+        key === 'Home' ? 0 : key === 'End' ? ids.length - 1 : null;
+      return to === null ? null : ids[(to + ids.length) % ids.length];
+    },
+    show: (tabs, cards, id) => {
+      tabs.forEach((tab) => {
+        const on = tab.dataset.roleTab === id;
+        tab.setAttribute('aria-selected', on ? 'true' : 'false');
+        tab.tabIndex = on ? 0 : -1;
+      });
+      cards.forEach((card) => { card.hidden = card.dataset.roleId !== id; });
+    },
+  };
+
   var TokenSort = {
     columns: ['name', 'token', 'scope', 'created', 'last_used', 'expires'],
     numeric: ['created', 'last_used', 'expires'],
@@ -1831,6 +1848,20 @@
     if (rolesPane) {
       const rolesError = document.getElementById('roles-error');
       const rolePickers = {};
+      const roleTabs = Array.from(rolesPane.querySelectorAll('[data-role-tab]'));
+      const roleCards = Array.from(rolesPane.querySelectorAll('.role-card'));
+      const roleIds = roleTabs.map((tab) => tab.dataset.roleTab);
+      roleTabs.forEach((tab) => {
+        tab.addEventListener('click', () => RoleTabs.show(roleTabs, roleCards, tab.dataset.roleTab));
+        tab.addEventListener('keydown', (e) => {
+          if (e.metaKey || e.ctrlKey || e.altKey) return;
+          const next = RoleTabs.step(roleIds, tab.dataset.roleTab, e.key);
+          if (next === null) return;
+          e.preventDefault();
+          RoleTabs.show(roleTabs, roleCards, next);
+          roleTabs[roleIds.indexOf(next)].focus();
+        });
+      });
       const changeRole = (method, url, body, undo) => {
         rolesError.hidden = true;
         return jsonRequest(method, url, body)

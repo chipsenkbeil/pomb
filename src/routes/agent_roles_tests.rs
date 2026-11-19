@@ -3077,6 +3077,50 @@ async fn settings_should_list_roles_with_boards_and_live_tokens() {
 }
 
 #[tokio::test]
+async fn agent_roles_should_render_one_tab_per_role() {
+    let fx = Fixture::new();
+    let planner = fx.create(ALICE, "planner").await;
+    let reviewer = fx.create(ALICE, "reviewer").await;
+
+    let html = settings_html(&fx).await;
+    let pane = roles_pane(&html);
+
+    assert_eq!(pane.matches("role=\"tablist\"").count(), 1, "{pane}");
+    assert_eq!(pane.matches("role=\"tab\"").count(), 2, "{pane}");
+    for (role, name, selected) in [
+        (&planner, "planner", "true"),
+        (&reviewer, "reviewer", "false"),
+    ] {
+        let id = role["id"].as_str().expect("id");
+        assert!(
+            pane.contains(&format!("data-role-tab=\"{id}\" aria-controls=\"role-panel-{id}\" aria-selected=\"{selected}\"")),
+            "{pane}"
+        );
+        assert!(pane.contains(&format!(">{name}</button>")), "{pane}");
+        assert!(
+            pane.contains(&format!("id=\"role-panel-{id}\" role=\"tabpanel\"")),
+            "{pane}"
+        );
+    }
+    let first = pane
+        .split("class=\"role-card\"")
+        .nth(1)
+        .expect("first card");
+    let second = pane
+        .split("class=\"role-card\"")
+        .nth(2)
+        .expect("second card");
+    assert!(
+        !first.split('>').next().expect("tag").contains("hidden"),
+        "{first}"
+    );
+    assert!(
+        second.split('>').next().expect("tag").contains(" hidden"),
+        "{second}"
+    );
+}
+
+#[tokio::test]
 async fn settings_should_show_the_boards_of_a_role_token_limited_to_some_boards() {
     let fx = Fixture::new();
     let other = fx.db.create_board(&fx.alice, "Other").expect("board");

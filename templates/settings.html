@@ -210,8 +210,15 @@
     <p class="settings-hint">No agent roles yet.</p>
     {% endif %}
     <div id="role-list">
+      {% if !pane.roles.is_empty() %}
+      <div class="tk-tabs" role="tablist" aria-label="Agent roles">
+        {% for role in pane.roles %}
+        <button type="button" class="tm-tab" role="tab" id="role-tab-{{ role.id }}" data-role-tab="{{ role.id }}" aria-controls="role-panel-{{ role.id }}" aria-selected="{% if loop.first %}true{% else %}false{% endif %}"{% if !loop.first %} tabindex="-1"{% endif %}>{{ role.name }}</button>
+        {% endfor %}
+      </div>
+      {% endif %}
       {% for role in pane.roles %}
-      <div class="role-card" data-role-id="{{ role.id }}" data-name="{{ role.name }}" data-permissions="{{ role.permissions }}">
+      <div class="role-card" id="role-panel-{{ role.id }}" role="tabpanel" aria-labelledby="role-tab-{{ role.id }}"{% if !loop.first %} hidden{% endif %} data-role-id="{{ role.id }}" data-name="{{ role.name }}" data-permissions="{{ role.permissions }}">
         <h3>{{ role.name }} <span class="role-tokens">{{ role.live_tokens }} live token{% if role.live_tokens != 1 %}s{% endif %}</span></h3>
         <label>Name
           <input type="text" class="role-name-input" maxlength="32" value="{{ role.name }}">
