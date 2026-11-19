@@ -293,6 +293,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/timer/time-spent", get(api_time_spent))
         .route("/api/timer/statistics", get(api_timer_statistics))
         .route("/api/settings", get(api_settings).put(api_update_settings))
+        .route("/api/settings/spent-bookmarks", post(add_spent_bookmark))
+        .route(
+            "/api/settings/spent-bookmarks/:name",
+            delete(remove_spent_bookmark),
+        )
         .route("/api/avatar", get(get_avatar).put(upload_avatar))
         .route("/api/columns", post(create_column))
         .route(
@@ -1201,6 +1206,18 @@ const ROUTE_ACCESS: &[(Method, &str, Rc, Wr)] = {
         (Method::GET, "/api/timer/statistics", Rc::Account, Wr::No),
         (Method::GET, "/api/settings", Rc::Account, Wr::No),
         (Method::PUT, "/api/settings", Rc::Account, Wr::Grows),
+        (
+            Method::POST,
+            "/api/settings/spent-bookmarks",
+            Rc::Account,
+            Wr::Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/settings/spent-bookmarks/:name",
+            Rc::Account,
+            Wr::Exempt,
+        ),
         (Method::GET, "/api/avatar", Rc::Account, Wr::No),
         (Method::PUT, "/api/avatar", Rc::Account, Wr::Grows),
         (Method::POST, "/api/columns", Rc::Account, Wr::Grows),
@@ -14088,6 +14105,73 @@ async fn delete_subtask_template(
     remaining
         .map(Json)
         .ok_or_else(|| AppError::not_found("template not found"))
+}
+
+/// Saves one time spent report bookmark, replacing the one of the same name or appending a new
+/// one, and leaves every other bookmark as stored. The name is trimmed and may not be empty, and
+/// a list past 50 bookmarks is refused with 400. Writes account settings, so it needs the
+/// settings permission.
+#[utoipa::path(
+    post,
+    path = "/api/settings/spent-bookmarks",
+    operation_id = "add_spent_bookmark",
+    tag = "Settings",
+    request_body = SpentBookmark,
+    responses(
+        (status = 200, description = "Every saved bookmark", body = Vec<SpentBookmark>),
+        (status = 400, description = "The name is empty or too long, or the list is past its cap"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn add_spent_bookmark(
+    account: AccountDb,
+    Json(mut bookmark): Json<SpentBookmark>,
+) -> Result<Json<Vec<SpentBookmark>>, AppError> {
+    bookmark.name = bookmark.name.trim().to_string();
+    if bookmark.name.is_empty() {
+        return Err(AppError::bad_request("the bookmark name is empty"));
+    }
+    let saved = account
+        .update_settings_with(|settings| {
+            match settings
+                .spent_bookmarks
+                .iter_mut()
+                .find(|held| held.name == bookmark.name)
+            {
+                Some(held) => *held = bookmark,
+                None => settings.spent_bookmarks.push(bookmark),
+            }
+            settings.spent_bookmarks.clone()
+        })
+        .map_err(AppError::from)?;
+    Ok(Json(saved))
+}
+
+/// Removes the time spent report bookmark of that name and leaves the others. A name no bookmark
+/// holds is not an error, so two devices removing the same bookmark both succeed. Writes account
+/// settings, so it needs the settings permission.
+#[utoipa::path(
+    delete,
+    path = "/api/settings/spent-bookmarks/{name}",
+    operation_id = "remove_spent_bookmark",
+    tag = "Settings",
+    params(("name" = String, Path, description = "Bookmark name")),
+    responses(
+        (status = 200, description = "The bookmarks that remain", body = Vec<SpentBookmark>),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn remove_spent_bookmark(
+    account: AccountDb,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<SpentBookmark>>, AppError> {
+    let remaining = account
+        .update_settings_with(|settings| {
+            settings.spent_bookmarks.retain(|held| held.name != name);
+            settings.spent_bookmarks.clone()
+        })
+        .map_err(AppError::from)?;
+    Ok(Json(remaining))
 }
 
 /// The saved template to add to a task.
@@ -30544,6 +30628,8 @@ them, which the Backups section of the settings page calls after a confirmation.
         api_settings,
         api_timer_settings,
         api_update_settings,
+        add_spent_bookmark,
+        remove_spent_bookmark,
         get_avatar,
         upload_avatar,
         delete_board_api,

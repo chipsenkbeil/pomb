@@ -1389,6 +1389,16 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (Method::GET, "/api/timer/statistics", Permission::TimeRead),
     (Method::GET, "/api/settings", Permission::SettingsRead),
     (Method::PUT, "/api/settings", Permission::SettingsWrite),
+    (
+        Method::POST,
+        "/api/settings/spent-bookmarks",
+        Permission::SettingsWrite,
+    ),
+    (
+        Method::DELETE,
+        "/api/settings/spent-bookmarks/:name",
+        Permission::SettingsWrite,
+    ),
     (Method::GET, "/api/avatar", Permission::SettingsRead),
     (Method::PUT, "/api/avatar", Permission::SettingsWrite),
     (Method::POST, "/api/columns", Permission::ColumnsCreate),
@@ -2508,6 +2518,16 @@ mod tests {
         (Method::POST, "/api/timer/stop", AuthScope::Work),
         (Method::POST, "/api/timer/retarget", AuthScope::Work),
         (Method::PUT, "/api/settings", AuthScope::Admin),
+        (
+            Method::POST,
+            "/api/settings/spent-bookmarks",
+            AuthScope::Admin,
+        ),
+        (
+            Method::DELETE,
+            "/api/settings/spent-bookmarks/:name",
+            AuthScope::Admin,
+        ),
         (Method::POST, "/api/columns", AuthScope::Provision),
         (Method::PATCH, "/api/columns/:id", AuthScope::Provision),
         (Method::DELETE, "/api/columns/:id", AuthScope::Admin),

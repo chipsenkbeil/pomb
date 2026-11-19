@@ -775,6 +775,117 @@ async fn spent_bookmarks_should_persist_and_refuse_past_the_cap() {
     assert_eq!(kept.body["spent_bookmarks"], expected);
 }
 
+#[tokio::test]
+async fn spent_bookmark_add_should_keep_a_bookmark_saved_since() {
+    let fx = Fixture::new();
+    let stale = fx.send("GET", "/api/settings", None).await;
+    assert_eq!(stale.body["spent_bookmarks"], json!([]));
+    fx.send(
+        "POST",
+        "/api/settings/spent-bookmarks",
+        Some(json!({"name": "Phone", "filters": {"spent-period": "week"}})),
+    )
+    .await;
+    let added = fx
+        .send(
+            "POST",
+            "/api/settings/spent-bookmarks",
+            Some(json!({"name": " Laptop ", "filters": {}})),
+        )
+        .await;
+    assert_eq!(
+        added.body,
+        json!([
+            {"name": "Phone", "filters": {"spent-period": "week"}},
+            {"name": "Laptop", "filters": {}},
+        ])
+    );
+    let replaced = fx
+        .send(
+            "POST",
+            "/api/settings/spent-bookmarks",
+            Some(json!({"name": "Phone", "filters": {"spent-period": "month"}})),
+        )
+        .await;
+    assert_eq!(
+        replaced.body,
+        json!([
+            {"name": "Phone", "filters": {"spent-period": "month"}},
+            {"name": "Laptop", "filters": {}},
+        ])
+    );
+    let read = fx.send("GET", "/api/settings", None).await;
+    assert_eq!(read.body["spent_bookmarks"], replaced.body);
+}
+
+#[tokio::test]
+async fn spent_bookmark_remove_should_keep_a_bookmark_saved_since() {
+    let fx = Fixture::new();
+    fx.send(
+        "PUT",
+        "/api/settings",
+        Some(json!({"spent_bookmarks": [{"name": "Phone", "filters": {}}]})),
+    )
+    .await;
+    fx.send(
+        "POST",
+        "/api/settings/spent-bookmarks",
+        Some(json!({"name": "Laptop", "filters": {}})),
+    )
+    .await;
+    let removed = fx
+        .send("DELETE", "/api/settings/spent-bookmarks/Phone", None)
+        .await;
+    assert_eq!(removed.body, json!([{"name": "Laptop", "filters": {}}]));
+    let again = fx
+        .send("DELETE", "/api/settings/spent-bookmarks/Phone", None)
+        .await;
+    assert_eq!(again.body, removed.body);
+    let read = fx.send("GET", "/api/settings", None).await;
+    assert_eq!(read.body["spent_bookmarks"], removed.body);
+}
+
+#[tokio::test]
+async fn spent_bookmark_add_should_refuse_past_the_cap() {
+    let fx = Fixture::new();
+    let full: Vec<Value> = (0..50)
+        .map(|n| json!({"name": format!("b{n}"), "filters": {}}))
+        .collect();
+    fx.send(
+        "PUT",
+        "/api/settings",
+        Some(json!({"spent_bookmarks": full})),
+    )
+    .await;
+    let refused = fx
+        .call(
+            "POST",
+            "/api/settings/spent-bookmarks",
+            Some(json!({"name": "extra", "filters": {}})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    let kept = fx.send("GET", "/api/settings", None).await;
+    assert_eq!(kept.body["spent_bookmarks"], json!(full));
+}
+
+#[tokio::test]
+async fn spent_bookmark_add_should_refuse_an_empty_name() {
+    let fx = Fixture::new();
+    for name in ["", "   "] {
+        let refused = fx
+            .call(
+                "POST",
+                "/api/settings/spent-bookmarks",
+                Some(json!({"name": name, "filters": {}})),
+            )
+            .await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    }
+    let kept = fx.send("GET", "/api/settings", None).await;
+    assert_eq!(kept.body["spent_bookmarks"], json!([]));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn settings_put_should_keep_a_template_saved_in_between() {
     let fx = Fixture::new();
