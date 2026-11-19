@@ -6210,6 +6210,45 @@ async fn task_link_should_ignore_matches_in_other_accounts() {
 }
 
 #[tokio::test]
+async fn get_task_should_resolve_a_unique_id_prefix() {
+    let fx = Fixture::multi();
+    let id = "c1d2e3f4-0000-4000-8000-000000000001";
+    fx.member_task_with_id(id);
+    for given in ["c1d2e3", "c1d2e3f4", id] {
+        let reply = fx.member("GET", &format!("/api/tasks/{given}"), None).await;
+        assert_eq!(reply.status, StatusCode::OK, "{given}: {}", reply.body);
+        assert_eq!(reply.body["id"], id, "{given}");
+    }
+}
+
+#[tokio::test]
+async fn get_task_should_refuse_an_ambiguous_id_prefix() {
+    let fx = Fixture::multi();
+    fx.member_task_with_id("c1d2e3f4-0000-4000-8000-000000000001");
+    fx.member_task_with_id("c1d2e3f4-0000-4000-8000-000000000002");
+    let reply = fx.member("GET", "/api/tasks/c1d2e3f4", None).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.body);
+    let missing = fx.member("GET", "/api/tasks/012345", None).await;
+    assert_eq!(reply.body, missing.body);
+}
+
+#[tokio::test]
+async fn get_task_should_refuse_an_id_prefix_under_six_characters() {
+    let fx = Fixture::multi();
+    fx.member_task_with_id("c1d2e3f4-0000-4000-8000-000000000001");
+    let reply = fx.member("GET", "/api/tasks/c1d2e", None).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.body);
+}
+
+#[tokio::test]
+async fn get_task_should_not_resolve_another_accounts_id_prefix() {
+    let fx = Fixture::multi();
+    fx.task_with_id(&fx.admin, "c1d2e3f4-0000-4000-8000-000000000001");
+    let reply = fx.member("GET", "/api/tasks/c1d2e3", None).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.body);
+}
+
+#[tokio::test]
 async fn task_responses_should_carry_a_url_that_opens_the_card() {
     let fx = Fixture::multi();
     let (_, task) = fx.member_task();

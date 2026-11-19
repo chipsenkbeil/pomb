@@ -2174,6 +2174,16 @@ struct TaskSummaryPage {
 /// Shortest task id prefix `/t/{id}` looks up, so a guess cannot walk the task table.
 const TASK_PREFIX_MIN_LEN: usize = 6;
 
+/// Returns whether `id` is long enough and made only of hex digits and dashes to look up as a
+/// task id prefix.
+#[must_use]
+fn is_task_prefix_shaped(id: &str) -> bool {
+    id.len() >= TASK_PREFIX_MIN_LEN
+        && id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f' | b'-'))
+}
+
 /// Page size when a list request gives no `limit`.
 const DEFAULT_PAGE_LIMIT: usize = 200;
 
@@ -12371,16 +12381,18 @@ impl TaskDetail {
 }
 
 /// Returns one task: name, description, placement, timestamps, assignment, labels, due date,
-/// subtasks, metadata, links, and readiness.
+/// subtasks, metadata, links, and readiness. The path takes a full task id or a unique prefix of at
+/// least six hex characters, and the answer holds the full id. A prefix that is too short, unknown
+/// or ambiguous answers 404.
 #[utoipa::path(
     get,
     path = "/api/tasks/{id}",
     operation_id = "get_task",
     tag = "Tasks",
-    params(("id" = String, Path, description = "Task id")),
+    params(("id" = String, Path, description = "Task id, or a unique prefix of one at least six hex characters long. A prefix that is too short, matches no task of the account or matches two tasks answers 404")),
     responses(
         (status = 200, description = "Task detail", body = TaskDetail),
-        (status = 404, description = "Task not found"),
+        (status = 404, description = "Task not found, or the id prefix is too short, unknown or ambiguous"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -12389,7 +12401,14 @@ async fn get_task(
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<TaskDetail>, AppError> {
-    let task = found(account.task(&id), "task not found")?;
+    let mut task = account.task(&id).map_err(AppError::from)?;
+    if task.is_none()
+        && is_task_prefix_shaped(&id)
+        && let Some((_, full_id)) = account.task_by_prefix(&id).map_err(AppError::from)?
+    {
+        task = account.task(&full_id).map_err(AppError::from)?;
+    }
+    let task = task.ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(Json(TaskDetail::load(&account, task.into_row())?))
 }
 
@@ -16653,11 +16672,7 @@ fn task_url(id: &str) -> String {
 /// board. A prefix that is too short, matches no task of the account or matches two answers the
 /// same 404.
 async fn task_link_page(account: AccountDb, Path(id): Path<String>) -> Result<Redirect, AppError> {
-    let shaped = id.len() >= TASK_PREFIX_MIN_LEN
-        && id
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f' | b'-'));
-    let found = if shaped {
+    let found = if is_task_prefix_shaped(&id) {
         account.task_by_prefix(&id).map_err(AppError::from)?
     } else {
         None
