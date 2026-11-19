@@ -1499,13 +1499,16 @@ pub struct Seat {
     /// RFC3339 time the holder's lease ends, or null.
     #[serde(default)]
     pub lease_expires_at: Option<String>,
-    /// Whether the holder is waiting rather than working.
+    /// Whether the seat waits rather than works: true after a verdict and after ask again, false
+    /// while a holder works.
     #[serde(default)]
     pub idle: bool,
-    /// The holder's answer, or null before one.
+    /// The holder's answer, `approved` or `changes_needed`, or null before one. Ask again clears
+    /// a `changes_needed` answer to null and keeps an `approved` one.
     #[serde(default)]
     pub verdict: Option<SeatVerdict>,
-    /// The change the holder suggests with a verdict, or null.
+    /// The free text the holder sent with the verdict, or null before one. Ask again clears it
+    /// only with a `changes_needed` verdict.
     #[serde(default)]
     pub revision: Option<String>,
 }

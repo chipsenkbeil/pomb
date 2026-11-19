@@ -12238,7 +12238,7 @@ struct TaskDetail {
     /// The owner with its lease state and fence, or null when the task never had one. A lapsed or
     /// released lease keeps the owner, with `live` false.
     owner: Option<OwnerView>,
-    /// The card's seats in the order the board lists them, each with its holder, lease and answer.
+    /// The card's seats in the order they were added, each with its holder, lease and answer.
     seats: Vec<Seat>,
     /// Custom field values by key.
     #[schema(value_type = Object)]
@@ -12384,6 +12384,11 @@ impl TaskDetail {
 /// subtasks, metadata, links, and readiness. The path takes a full task id or a unique prefix of at
 /// least six hex characters, and the answer holds the full id. A prefix that is too short, unknown
 /// or ambiguous answers 404.
+///
+/// The `seats` array lists the task's seats in the order they were added, starting with a copy
+/// of the board's seats when the task was created. Each seat comes with its holder, lease and
+/// answer. `GET /api/boards/{id}/seats` lists only the board's seat slots, a name and a role
+/// each, with no holder or answer.
 #[utoipa::path(
     get,
     path = "/api/tasks/{id}",
@@ -31202,6 +31207,44 @@ mod tests {
         let mut hits = Vec::new();
         walk(&doc, "", &mut hits);
         assert!(hits.is_empty(), "{}", hits.join("\n"));
+    }
+
+    /// The task read documents its seats, and the Seat schema says what each answer field holds.
+    #[test]
+    fn get_task_docs_should_describe_the_seats_read() {
+        // Read the get_task description with its whitespace collapsed
+        let doc = serde_json::to_value(ApiDoc::openapi()).expect("openapi json");
+        let read = doc["paths"]["/api/tasks/{id}"]["get"]["description"]
+            .as_str()
+            .expect("get_task description")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            read.contains("lists the task's seats in the order they were added"),
+            "{read}"
+        );
+        assert!(
+            read.contains("`GET /api/boards/{id}/seats` lists only the board's seat slots"),
+            "{read}"
+        );
+
+        // Check the Seat schema text for each answer field
+        let seat = doc["components"]["schemas"]["Seat"].to_string();
+        assert!(seat.contains("`approved` or `changes_needed`"), "{seat}");
+        assert!(seat.contains("keeps an `approved` one."), "{seat}");
+        assert!(
+            seat.contains("free text the holder sent with the verdict"),
+            "{seat}"
+        );
+        assert!(
+            seat.contains("only with a `changes_needed` verdict."),
+            "{seat}"
+        );
+        assert!(
+            seat.contains("true after a verdict and after ask again"),
+            "{seat}"
+        );
     }
 
     /// The timer docs state the completion grace and the stopwatch case.
