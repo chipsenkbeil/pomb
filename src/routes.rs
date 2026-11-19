@@ -20277,15 +20277,28 @@ struct TaskSummary {
     blocked: bool,
     /// The live claim, or null when unclaimed, released, or expired.
     claim: Option<TaskClaim>,
+    /// The owner with its lease state and fence, or null when the task never had one. A lapsed or
+    /// released lease keeps the owner, with `live` false.
+    owner: Option<OwnerView>,
+    /// How many tasks the epic has as direct children, on any board. Zero for a plain task.
+    children_total: usize,
+    /// How many of the epic's children sit in a done column. Zero for a plain task.
+    children_done: usize,
     /// Custom field values by key.
     #[schema(value_type = Object)]
     fields: serde_json::Map<String, serde_json::Value>,
 }
 
 impl TaskSummary {
-    fn new(task: TaskRow, blocked: bool) -> Self {
+    fn new(task: TaskRow, blocked: bool, children_total: usize, children_done: usize) -> Self {
         Self {
             claim: task.live_claim().cloned(),
+            owner: task
+                .owner
+                .clone()
+                .map(|owner| OwnerView::new(owner, task.claim_fence)),
+            children_total,
+            children_done,
             updated_at: task.last_updated().to_string(),
             column_entered_at: task.column_entered_at().to_string(),
             url: task_url(&task.id),
@@ -20513,12 +20526,20 @@ async fn list_board_tasks(
         query.cursor.as_deref(),
         &query.scope(&id),
     )?;
+    let mut reads = db.link_reads().map_err(AppError::from)?;
     let mut items = Vec::with_capacity(page.len());
     for key in page {
         if let Some(task) = db.task(&key.id).map_err(AppError::from)? {
             let task = task.into_row();
             let is_blocked = blocked(&task.links).map_err(AppError::from)?;
-            items.push(TaskSummary::new(task, is_blocked));
+            let (total, done) = if task.kind == TaskKind::Epic {
+                let links = reads.task_links(&task.id).map_err(AppError::from)?;
+                let children = reads.children(&links).map_err(AppError::from)?;
+                (children.len(), done_children(&children))
+            } else {
+                (0, 0)
+            };
+            items.push(TaskSummary::new(task, is_blocked, total, done));
         }
     }
     Ok(Json(TaskSummaryPage { items, next_cursor }))

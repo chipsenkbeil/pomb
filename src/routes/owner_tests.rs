@@ -16,6 +16,7 @@ struct Fixture {
     db: Db,
     cookie: String,
     tokens: [String; 2],
+    board: String,
     column: String,
     other_column: String,
     done_column: String,
@@ -55,6 +56,7 @@ impl Fixture {
             db,
             cookie: format!("session={session}"),
             tokens,
+            board,
             column,
             other_column,
             done_column,
@@ -700,4 +702,69 @@ async fn grabbing_an_epic_whose_children_are_done_should_be_granted() {
     let granted = fx.grab(ALPHA, &epic, "builder", Some(60)).await;
     assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
     assert_eq!(granted.body["holder"]["name"], "builder");
+}
+
+fn board_list(fx: &Fixture) -> String {
+    format!("/api/boards/{}/tasks", fx.board)
+}
+
+async fn listed(fx: &Fixture, id: &str) -> Value {
+    let uri = board_list(fx);
+    let read = call(&fx.app, "GET", &uri, &[("cookie", &fx.cookie)], None).await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+    read.body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["id"] == id)
+        .expect("listed")
+        .clone()
+}
+
+#[tokio::test]
+async fn board_list_should_show_an_owner_grabbed() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let grab = fx.grab(ALPHA, &task, "builder", Some(60)).await;
+    assert_eq!(grab.status, StatusCode::OK, "{}", grab.body);
+    let item = listed(&fx, &task).await;
+    assert_eq!(item["owner"]["holder"]["name"], "builder");
+    assert_eq!(item["owner"]["live"], true);
+    assert_eq!(item["owner"]["fence"], grab.body["fence"]);
+}
+
+#[tokio::test]
+async fn board_list_should_show_a_claim_as_the_owner() {
+    let fx = Fixture::new();
+    let task = fx.task().await;
+    let claim = format!("/api/tasks/{task}/claim");
+    let body = json!({"claimant": "builder", "ttl_seconds": 60});
+    let claimed = fx.bearer(ALPHA, "POST", &claim, None, body).await;
+    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+    let item = listed(&fx, &task).await;
+    assert_eq!(item["owner"]["holder"]["name"], "builder");
+    assert_eq!(item["owner"]["live"], true);
+    assert_eq!(item["owner"]["fence"], claimed.body["fence"]);
+    assert_eq!(item["claim"]["fence"], claimed.body["fence"]);
+}
+
+#[tokio::test]
+async fn board_list_should_count_an_epics_children() {
+    let fx = Fixture::new();
+    let epic = fx
+        .create(json!({"column_id": fx.column, "name": "Epic", "kind": "epic"}))
+        .await;
+    let finished = fx.child_of(&epic).await;
+    fx.finish(&finished).await;
+    fx.child_of(&epic).await;
+    let plain = fx.task().await;
+
+    let item = listed(&fx, &epic).await;
+    assert_eq!(item["children_total"], 2);
+    assert_eq!(item["children_done"], 1);
+    assert!(item["owner"].is_null(), "{item}");
+    let item = listed(&fx, &plain).await;
+    assert_eq!(item["children_total"], 0);
+    assert_eq!(item["children_done"], 0);
+    assert!(item["owner"].is_null(), "{item}");
 }
