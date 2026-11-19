@@ -8045,6 +8045,10 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .token-table td:first-child { min-width: 7rem; overflow-wrap: anywhere; }
 .token-table .token-child td:first-child { padding-inline-start: 1.5rem; }
 .token-scroll { max-height: 15.5rem; overflow-y: auto; }
+.token-scroll::-webkit-scrollbar { width: 10px; background-color: var(--hover-light); }
+.token-scroll::-webkit-scrollbar-thumb { background-color: var(--bar-border); }
+body.dark .token-scroll::-webkit-scrollbar { background-color: #555555; }
+body.dark .token-scroll::-webkit-scrollbar-thumb { background-color: #777777; }
 .token-scroll thead th { position: sticky; top: 0; z-index: 1; background: var(--surface-white); box-shadow: 0 1px 0 var(--rule-light); }
 .token-sort { all: unset; cursor: pointer; font-weight: inherit; }
 .token-sort:focus-visible { outline: 2px solid var(--kf-link); }

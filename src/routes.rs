@@ -35926,6 +35926,21 @@ mod tests {
         }
     }
 
+    /// The Active tokens list keeps its inner scroll and styles its scrollbar so it shows at rest.
+    #[test]
+    fn token_list_should_show_its_scrollbar() {
+        let css = include_str!("../static/style.css");
+        assert!(css.contains(".token-scroll { max-height: 15.5rem; overflow-y: auto; }"));
+        for rule in [
+            ".token-scroll::-webkit-scrollbar {",
+            ".token-scroll::-webkit-scrollbar-thumb {",
+            "body.dark .token-scroll::-webkit-scrollbar {",
+            "body.dark .token-scroll::-webkit-scrollbar-thumb {",
+        ] {
+            assert!(css.contains(rule), "{rule}");
+        }
+    }
+
     /// The board settings pages and the delete page carry the global top bar (Boards dropdown with
     /// every board, account control).
     #[tokio::test]
