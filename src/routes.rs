@@ -26021,6 +26021,12 @@ fn named_grant(
     }
 }
 
+/// Names the preset a grant takes when it sets neither a role nor custom permissions.
+#[must_use]
+fn grant_preset(scope: AuthScope, role_or_custom: bool) -> Option<Preset> {
+    (!role_or_custom).then(|| scope.preset())
+}
+
 /// Reads the boards `input` names, each a board of `account`. A board of another account is
 /// refused like an unknown one.
 fn submitted_boards(account: &AccountDb, input: BoardsInput) -> Result<BoardAccess, AppError> {
@@ -26216,8 +26222,8 @@ async fn start_device_auth(
     }
     let now = chrono::Utc::now().timestamp();
     let device_code = auth::generate_device_code();
-    let preset = (input.role.is_none() && input.permissions.is_none())
-        .then(|| scope.preset().name().to_string());
+    let preset = grant_preset(scope, input.role.is_some() || input.permissions.is_some())
+        .map(|preset| preset.name().to_string());
     let mut row = DeviceAuthRow {
         device_code_hash: auth::hash_device_code(&device_code),
         user_code: auth::generate_user_code(),
@@ -26348,7 +26354,7 @@ async fn poll_device_token(
             );
             record.permissions = row.permissions.clone();
             record.preset = row.preset.clone().filter(|name| {
-                Preset::named(name).is_some_and(|p| p.permissions() == row.permissions)
+                Preset::named(name).is_some_and(|preset| preset.permissions() == row.permissions)
             });
             record.boards = row.boards.clone();
             raw_token = raw;
@@ -27044,13 +27050,12 @@ impl GrantView {
 /// Returns the kind, name, scope, expiry and grant of the credential that made the request, with
 /// the role name and `agent-N` label of a token issued as a role, the `preset` a token was minted
 /// from and the `parent_token` that issued it, each null when it has none. For a token issued as
-/// a role, `drift` lists the
-/// permissions it holds beyond the role's current template (`beyond`) and the template permissions
-/// it lacks (`lacks`), both counting the required permissions as part of the template, and is
-/// null for any other credential. A token issued with fewer permissions than the template, such
-/// as a child cut to its issuer's grant, lists the difference in `lacks`. `permissions` lists
-/// every permission it holds, and `boards` is the string `all` or an array of the `id` and `name`
-/// of each board assigned to it.
+/// a role, `drift` lists the permissions it holds beyond the role's current template (`beyond`)
+/// and the template permissions it lacks (`lacks`), both counting the required permissions as part
+/// of the template, and is null for any other credential. A token issued with fewer permissions
+/// than the template, such as a child cut to its issuer's grant, lists the difference in `lacks`.
+/// `permissions` lists every permission it holds, and `boards` is the string `all` or an array of
+/// the `id` and `name` of each board assigned to it.
 /// Every token reaches this route whatever it holds. A revoked or expired token is a 401.
 #[utoipa::path(
     get,
@@ -27287,7 +27292,7 @@ async fn create_api_token(
         permissions,
         boards,
         child_lifetime_hours: submitted_child_lifetime(input.child_lifetime_hours)?,
-        preset: (role.is_none() && input.permissions.is_none()).then(|| scope.preset()),
+        preset: grant_preset(scope, role.is_some() || input.permissions.is_some()),
     };
     let (record, raw) = match &role {
         Some(role) => account
@@ -27415,7 +27420,7 @@ async fn create_child_token(
         permissions,
         boards,
         child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
-        preset: (role.is_none() && input.permissions.is_none()).then(|| scope.preset()),
+        preset: grant_preset(scope, role.is_some() || input.permissions.is_some()),
     };
     let parent = ParentToken {
         id: parent_id.to_string(),

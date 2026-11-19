@@ -5868,12 +5868,15 @@ async fn approve_asked(extra: Value, form: &str) -> (StatusCode, String, Option<
 
 #[tokio::test]
 async fn device_token_should_name_only_a_preset_it_was_asked_for() {
+    // A device asked for a preset names it
     let (_, _, whoami) = approve_asked(json!({"scopes": [], "preset": "lead"}), "").await;
     assert_eq!(whoami.expect("whoami")["preset"], "lead");
 
+    // A device asked for a scope names that scope's preset
     let (_, _, whoami) = approve_asked(json!({"scopes": ["work"]}), "").await;
     assert_eq!(whoami.expect("whoami")["preset"], "work");
 
+    // A device asked for a custom set names no preset
     let names: Vec<_> = Preset::Read
         .permissions()
         .iter()

@@ -3497,6 +3497,7 @@ async fn whoami_should_name_the_minted_preset() {
 
 #[tokio::test]
 async fn whoami_should_return_no_preset_for_custom_permissions() {
+    // A token with custom permissions names no preset
     let fx = Fixture::new();
     let custom = browser_token(
         &fx,
@@ -3505,6 +3506,7 @@ async fn whoami_should_return_no_preset_for_custom_permissions() {
     .await;
     assert_eq!(whoami(&fx, &custom).await["preset"], Value::Null);
 
+    // A token issued as a role names no preset
     let role = standard_role(&fx, "implementer").await;
     let as_role = browser_token(&fx, json!({"name": "as-role", "role_id": role["id"]})).await;
     assert_eq!(whoami(&fx, &as_role).await["preset"], Value::Null);
@@ -3512,6 +3514,7 @@ async fn whoami_should_return_no_preset_for_custom_permissions() {
 
 #[tokio::test]
 async fn child_whoami_should_name_its_preset() {
+    // A child asked for a preset names it
     let fx = Fixture::new();
     let (_, lead) = issuer_token(&fx, None, BoardAccess::All, None);
     let made = issue_child(&fx, &lead, json!({"name": "kid", "preset": "read"})).await;
@@ -3519,6 +3522,7 @@ async fn child_whoami_should_name_its_preset() {
     let raw = made.body["raw_token"].as_str().expect("raw");
     assert_eq!(whoami(&fx, raw).await["preset"], "read");
 
+    // A child with custom permissions names no preset
     let custom = issue_child(
         &fx,
         &lead,
@@ -3529,6 +3533,7 @@ async fn child_whoami_should_name_its_preset() {
     let raw = custom.body["raw_token"].as_str().expect("raw");
     assert_eq!(whoami(&fx, raw).await["preset"], Value::Null);
 
+    // A child issued as a role names no preset
     let role = standard_role(&fx, "implementer").await;
     let as_role = issue_child(
         &fx,
