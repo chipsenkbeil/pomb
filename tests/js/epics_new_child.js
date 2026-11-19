@@ -77,10 +77,15 @@ function reset(dataset) {
 let epicCard = null;
 let processed = [];
 let columnCounts = [];
+let boardWrap = { dataset: {} };
+let refolds = 0;
+let secStateRefreshes = 0;
+const refreshCardSecStates = () => secStateRefreshes++;
 const document = {
   querySelector: (sel) => {
     if (sel === '#modal-root .task-modal') return modal;
     if (sel === '.task-card[data-task-id="e1"]') return epicCard;
+    if (sel === '.board-wrap') return boardWrap;
     return null;
   },
   createElement: () => {
@@ -96,7 +101,8 @@ const document = {
   },
 };
 const cssEscape = (value) => value;
-const window = { htmx: { process: (el) => processed.push(el) } };
+const BoardChrome = { refold: () => refolds++ };
+const window = { htmx: { process: (el) => processed.push(el) }, BoardChrome };
 const updateColumnCount = (colId, delta, minutes) => columnCounts.push([colId, delta, minutes]);
 const cardEstimateMinutes = (card) => (card ? parseInt(card.dataset.estimateMinutes, 10) || 0 : 0);
 const modalTaskId = () => modal.dataset.taskId;
@@ -124,6 +130,7 @@ eval(fn('  function linkError(message) {'));
 eval(fn('  function linkFailure(err, fallback) {'));
 eval(fn('  function taskLinksUrl(taskId) {'));
 eval(fn('  function addTaskLink(taskId, kind, targetId) {'));
+eval(fn('  function placeTaskCard(list, card) {'));
 eval(fn('  function closeNewChild(row, open) {'));
 eval(fn('  function showNewChildCard(epicId, childId) {'));
 eval(fn('  function pickChild(targetId) {'));
@@ -243,12 +250,19 @@ eval(fn('  function wireNewChild(overlay) {'));
   const withEpicCard = () => {
     list = {
       dataset: { columnId: 'c1' },
-      children: [],
+      hidden: true,
+      children: [{ dataset: { taskId: 'old' } }],
+      removeAttribute: (name) => { if (name === 'hidden') list.hidden = false; },
+      querySelector: (sel) => (sel === '.task-card' ? list.children[0] || null : null),
+      insertBefore: (el, ref) => list.children.splice(Math.max(list.children.indexOf(ref), 0), 0, el),
       appendChild: (el) => list.children.push(el),
     };
     epicCard = { closest: (sel) => (sel === '.task-list' ? list : null) };
+    boardWrap = { dataset: {} };
     processed = [];
     columnCounts = [];
+    refolds = 0;
+    secStateRefreshes = 0;
   };
   const createChildOnBoard = async () => {
     reset();
@@ -269,17 +283,27 @@ eval(fn('  function wireNewChild(overlay) {'));
   pending[2](response(true, '<li class="task-card" data-task-id="n1" data-estimate-minutes="90"></li>'));
   await flush();
   await flush();
-  check('new_child_inserts_card appends to the epic card list', list.children.map((c) => c.dataset.taskId), ['n1']);
-  check('new_child_inserts_card processes the card with htmx', processed.length, 1);
+  check('new_child_honors_bottom_position puts the card last', list.children.map((c) => c.dataset.taskId), ['old', 'n1']);
+  check('new_child_runs_insert_hooks processes the card with htmx', processed.length, 1);
+  check('new_child_runs_insert_hooks unhides the list', list.hidden, false);
+  check('new_child_runs_insert_hooks refolds and refreshes section states', [refolds, secStateRefreshes], [1, 1]);
   check('new_child_inserts_card keeps the modal refresh', refreshes, 1);
   check('new_child_counts_column adds one task and the estimate to the epic column', columnCounts, [['c1', 1, 90]]);
+
+  withEpicCard();
+  boardWrap = { dataset: { newTasksAtTop: '1' } };
+  await createChildOnBoard();
+  pending[2](response(true, '<li class="task-card" data-task-id="n1" data-estimate-minutes="90"></li>'));
+  await flush();
+  await flush();
+  check('new_child_honors_top_position puts the card first', list.children.map((c) => c.dataset.taskId), ['n1', 'old']);
 
   withEpicCard();
   await createChildOnBoard();
   pending[2](response(false, ''));
   await flush();
   await flush();
-  check('new_child_inserts_card inserts nothing when the card fetch fails', [list.children.length, columnCounts.length], [0, 0]);
+  check('new_child_inserts_card inserts nothing when the card fetch fails', [list.children.length, columnCounts.length], [1, 0]);
 
   reset();
   withEpicCard();

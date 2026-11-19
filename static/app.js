@@ -424,6 +424,19 @@
     });
   };
 
+  function placeTaskCard(list, card) {
+    list.removeAttribute('hidden');
+    const wrap = document.querySelector('.board-wrap');
+    if (wrap && wrap.dataset.newTasksAtTop === '1') {
+      list.insertBefore(card, list.querySelector('.task-card'));
+    } else {
+      list.appendChild(card);
+    }
+    if (window.htmx) window.htmx.process(card);
+    if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
+    refreshCardSecStates();
+  }
+
   // Shift a column header's count by `delta` tasks and its estimate total
   // by `minutes`.
   function updateColumnCount(colId, delta, minutes) {
@@ -1296,19 +1309,7 @@
       // Insert into the column's first visible task-list (unhiding
       // when every lane is folded).
       var list = openList(colId, form.elements.swimlane_id.value);
-      if (list && card) {
-        list.removeAttribute('hidden');
-        // the board's "Position of new tasks", bottom by default.
-        var wrap = document.querySelector('.board-wrap');
-        if (wrap && wrap.dataset.newTasksAtTop === '1') {
-          list.insertBefore(card, list.querySelector('.task-card'));
-        } else {
-          list.appendChild(card);
-        }
-        if (window.htmx) window.htmx.process(card);
-        if (window.BoardChrome && BoardChrome.refold) BoardChrome.refold();
-        refreshCardSecStates(); // new card honors section state
-      }
+      if (list && card) placeTaskCard(list, card);
       updateColumnCount(colId, 1, cardEstimateMinutes(card));
       return card;
     }
@@ -3426,8 +3427,7 @@
         tpl.innerHTML = html.trim();
         const card = tpl.content.firstElementChild;
         if (!card) return;
-        list.appendChild(card);
-        if (window.htmx) window.htmx.process(card);
+        placeTaskCard(list, card);
         updateColumnCount(list.dataset.columnId, 1, cardEstimateMinutes(card));
       })
       .catch(() => { /* the next board load shows the card */ });
