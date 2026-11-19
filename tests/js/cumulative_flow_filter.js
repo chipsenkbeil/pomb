@@ -75,12 +75,29 @@ check('points mode sums points per column', points.counts, [[3, 3], [8, 8]]);
 check('points mode labels the axis in points', />Points<\/text>/.test(CumulativeFlowPage.chartSvg(points)), true);
 check('count mode labels the axis', />Task count<\/text>/.test(CumulativeFlowPage.chartSvg(counts)), true);
 
-counts.hidden = { 'To-do': true };
+check('bands carry their column ids as keys', counts.keys, ['todo', 'done']);
+counts.hidden = { todo: true };
 check('a toggled off column leaves the tooltip', CumulativeFlowPage.tipFor(counts, 0).rows.map(function (r) { return r.label; }), ['Done']);
 check('a toggled off column leaves the chart', /To-do/.test(CumulativeFlowPage.chartSvg(counts)), false);
 counts.hidden = {};
 check('a shown column is in the tooltip', CumulativeFlowPage.tipFor(counts, 0).rows.map(function (r) { return r.label; }), ['To-do', 'Done']);
 check('the tooltip rows carry no toggle control', /data-band|button/.test(JSON.stringify(CumulativeFlowPage.tipFor(counts, 0))), false);
+
+var twins = {
+  columns: [
+    { id: 'c1', name: 'Review', former_names: [], is_done: false },
+    { id: 'c2', name: 'Review', former_names: [], is_done: false },
+  ],
+  tasks: [
+    { id: 'a', column_id: 'c1', created_at: at(-5, 9) },
+    { id: 'b', column_id: 'c2', created_at: at(-5, 9) },
+  ],
+};
+var twinSeries = CumulativeFlowPage.seriesByDay(twins, twins.tasks, range, 'count');
+twinSeries.hidden = { c1: true };
+check('cumulative-flow-same-name-columns-toggle-apart', [twinSeries.keys, CumulativeFlowPage.tipFor(twinSeries, 0).rows.length], [['c1', 'c2'], 1]);
+check('cumulative-flow-prune-drops-deleted-columns',
+  CumulativeFlowPage.pruneHidden({ c1: true, gone: true, 'name:x': true }, ['c1', 'c2']), { c1: true });
 
 var controls = CumulativeFlowPage.controls(data);
 function control(id) { return controls.filter(function (c) { return c.id === id; })[0]; }

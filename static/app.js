@@ -14858,6 +14858,7 @@
       });
       return {
         ends: ends,
+        keys: order.filter(function (_, k) { return keep[k]; }),
         order: order.filter(function (_, k) { return keep[k]; })
           .map(function (key) { return cols.label[key]; }),
         counts: counts.filter(function (_, k) { return keep[k]; }),
@@ -14868,9 +14869,16 @@
     function shownBands(s) {
       var shown = [];
       s.order.forEach(function (name, b) {
-        if (!(s.hidden && s.hidden[name])) shown.push(b);
+        if (!(s.hidden && s.hidden[s.keys[b]])) shown.push(b);
       });
       return shown;
+    }
+
+    function pruneHidden(hidden, keys) {
+      Object.keys(hidden).forEach(function (key) {
+        if (keys.indexOf(key) === -1) delete hidden[key];
+      });
+      return hidden;
     }
 
     function chartSvg(s) {
@@ -14954,6 +14962,7 @@
 
     function renderChart(s) {
       current = s;
+      pruneHidden(hiddenBands, s.keys);
       s.hidden = hiddenBands;
       var host = qs('cumulative-flow-chart');
       if (host) {
@@ -14967,7 +14976,7 @@
         var html = '';
         s.order.forEach(function (name, bi) {
           html += '<button type="button" class="cfd-legend-item" data-band="' + bi + '" aria-pressed="' +
-            (hiddenBands[name] ? 'false' : 'true') + '"><span class="cfd-swatch" style="background:' +
+            (hiddenBands[s.keys[bi]] ? 'false' : 'true') + '"><span class="cfd-swatch" style="background:' +
             PALETTE[bi % PALETTE.length] + '"></span>' + escapeHtml(name) + '</button>';
         });
         legend.innerHTML = html;
@@ -14976,8 +14985,8 @@
 
     function toggleBand(index) {
       if (!current || !current.order[index]) return;
-      var name = current.order[index];
-      hiddenBands[name] = !hiddenBands[name];
+      var key = current.keys[index];
+      hiddenBands[key] = !hiddenBands[key];
       renderChart(current);
     }
 
@@ -15073,7 +15082,7 @@
     // seriesByDay is pure; exposed for the series check.
     return {
       init: init, seriesByDay: seriesByDay, chartSvg: chartSvg, tipFor: tipFor,
-      periodRange: periodRange, controls: controls, render: render,
+      periodRange: periodRange, controls: controls, render: render, pruneHidden: pruneHidden,
     };
   })();
 
