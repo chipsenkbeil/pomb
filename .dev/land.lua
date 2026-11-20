@@ -743,7 +743,7 @@ local note = {
     card,
     ("landed %s on %s/main, waited %s s for the land lock"):format(sha, remote, lock_wait),
 }
-if devos.run(note, { cwd = repo }) ~= 0 then
+if devos.run(note, { cwd = repo, stderr = "null" }) ~= 0 then
     warn(
         ("Landed, but dev board note %s failed, so note %s on the card yourself.\n"):format(
             card,

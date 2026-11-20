@@ -26,6 +26,7 @@ local VERBS = {
 local STUB_DEV = [[
 case "$1" in __*) exec luajit '@main@' "$@";; esac
 if [ "$1" = board ] && [ "$2" = show ]; then [ -e '@dir@/fail-show' ] && exit 1; printf 'abc123  Ready  1 Pomodoro  %s  name\n' "$(cat '@dir@/labels' 2>/dev/null || echo -)"; cat '@dir@/check-note' 2>/dev/null; exit 0; fi
+if [ "$1" = board ] && [ "$2" = note ] && [ -e '@dir@/note-warns' ]; then echo 'dev: card prose holds a hex id or hash' >&2; fi
 if [ "$1" = board ]; then echo "$*" >>'@dir@/notes'; if [ "$2" = move ]; then pwd -P >>'@dir@/move-dirs'; git rev-parse HEAD >>'@dir@/move-heads'; [ ! -e '@dir@/fail-move' ] || exit 1; fi; exit 0; fi
 touch '@dir@/runs.jsonl'
 echo "$1" >>'@dir@/calls'
@@ -307,6 +308,16 @@ t.test("land pushes the commit onto current main after lint and test pass", func
     eq_list(lines(fix, "calls"), { "lint", "test" })
     t.ok(out:find("Landed " .. remote_main(fix) .. ".", 1, true), out)
     t.ok(not fs.exists(fix.work .. "/.dev/worktrees/land-" .. CARD))
+    done(fix)
+end)
+
+t.test("land_should_hide_the_note_prose_warning", function()
+    local fix = fixture()
+    mark(fix, "note-warns")
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    local _, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.ok(not err:find("hex id", 1, true), err)
     done(fix)
 end)
 
