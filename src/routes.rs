@@ -647,7 +647,8 @@ pub fn router(state: AppState) -> Router {
     let router = {
         use tower_http::services::ServeDir;
 
-        router.nest_service("/static", ServeDir::new("static"))
+        let files = router.nest_service("/static", ServeDir::new("static"));
+        files.layer(middleware::from_fn(no_cache_static))
     };
     #[cfg(not(debug_assertions))]
     let router = router.route("/static/*path", get(serve_embedded_static));
@@ -1865,24 +1866,75 @@ async fn refuse_public_writes_when_full(
 struct EmbeddedStatic;
 
 #[cfg(not(debug_assertions))]
-async fn serve_embedded_static(Path(path): Path<String>) -> impl IntoResponse {
+async fn serve_embedded_static(Path(path): Path<String>, headers: HeaderMap) -> Response {
+    use axum::http::header::IF_NONE_MATCH;
+
     match EmbeddedStatic::get(&path) {
-        Some(file) => {
-            let content_type = if path.ends_with(".js") {
-                "text/javascript"
-            } else if path.ends_with(".css") {
-                "text/css"
-            } else if path.ends_with(".svg") {
-                "image/svg+xml"
-            } else if path.ends_with(".woff2") {
-                "font/woff2"
-            } else {
-                "application/octet-stream"
-            };
-            ([(CONTENT_TYPE, content_type)], file.data).into_response()
-        }
+        Some(file) => static_response(
+            &path,
+            file.data.into_owned(),
+            file.metadata.sha256_hash(),
+            headers.get(IF_NONE_MATCH),
+        ),
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// Answers a static asset with an `ETag` from its hash and `no-cache`, so a browser revalidates and gets
+/// a 304 with no body while the file is unchanged.
+#[cfg(any(test, not(debug_assertions)))]
+fn static_response(
+    path: &str,
+    data: Vec<u8>,
+    hash: [u8; 32],
+    if_none_match: Option<&HeaderValue>,
+) -> Response {
+    use axum::http::header::ETAG;
+
+    let content_type = if path.ends_with(".js") {
+        "text/javascript"
+    } else if path.ends_with(".css") {
+        "text/css"
+    } else if path.ends_with(".svg") {
+        "image/svg+xml"
+    } else if path.ends_with(".woff2") {
+        "font/woff2"
+    } else {
+        "application/octet-stream"
+    };
+    let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+    let etag = format!("\"{hex}\"");
+    let matches = if_none_match
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .any(|tag| tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == etag)
+        });
+    let headers = [
+        (ETAG, etag.as_str()),
+        (CACHE_CONTROL, "no-cache"),
+        (CONTENT_TYPE, content_type),
+    ];
+    if matches {
+        (StatusCode::NOT_MODIFIED, headers).into_response()
+    } else {
+        (headers, data).into_response()
+    }
+}
+
+/// Marks every response under `/static` `no-cache`, as the release handler does.
+#[cfg(debug_assertions)]
+async fn no_cache_static(req: Request, next: Next) -> Response {
+    let is_static = req.uri().path().starts_with("/static/");
+    let mut response = next.run(req).await;
+    if is_static {
+        response
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    }
+    response
 }
 
 // ---- Errors ----
@@ -31095,8 +31147,8 @@ mod tests {
         format_time_kf, format_timeline, generate_feed_token, ical_escape, ical_fold, is_overdue,
         log_timer_session, needs_lane_label_column, normalize_due_input, normalize_due_input_at,
         normalize_due_input_in, normalize_estimate_hours, parse_manual_range, parse_repeat_cadence,
-        place_overdue_strips, reaction_pills, router, subtasks_on_face, timer_status_view,
-        version_info,
+        place_overdue_strips, reaction_pills, router, static_response, subtasks_on_face,
+        timer_status_view, version_info,
     };
     use crate::auth::is_event_wait;
     use crate::db::{BootstrapToken, Db, NewTimeEntry, SwimlanePatch};
@@ -32026,6 +32078,33 @@ mod tests {
         let sha = value["build_sha"].as_str().expect("build_sha string");
         assert!(!sha.is_empty(), "build_sha present");
         assert_eq!(value["skill_version"], SKILL_VERSION.to_string());
+    }
+
+    #[tokio::test]
+    async fn static_asset_answers_304_on_matching_etag() {
+        let hash = [0xab; 32];
+        let first = static_response("app.js", b"body".to_vec(), hash, None);
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(first.headers()["cache-control"], "no-cache");
+        assert_eq!(first.headers()["content-type"], "text/javascript");
+        let etag = first.headers()["etag"].clone();
+        let body = axum::body::to_bytes(first.into_body(), 1024)
+            .await
+            .expect("body");
+        assert_eq!(&body[..], b"body");
+
+        let matched = static_response("app.js", b"body".to_vec(), hash, Some(&etag));
+        assert_eq!(matched.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(matched.headers()["etag"], etag);
+        assert_eq!(matched.headers()["cache-control"], "no-cache");
+        let body = axum::body::to_bytes(matched.into_body(), 1024)
+            .await
+            .expect("body");
+        assert!(body.is_empty());
+
+        let stale = axum::http::HeaderValue::from_static("\"other\"");
+        let changed = static_response("app.js", b"body".to_vec(), hash, Some(&stale));
+        assert_eq!(changed.status(), StatusCode::OK);
     }
 
     /// Shared fixture for the handler regression tests: a fresh temp-DB app, an admin user with a
