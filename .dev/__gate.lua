@@ -18,7 +18,7 @@ local function fail(...)
 end
 
 local function runs(wt)
-    local out = devos.capture({ "ci", "-C", wt, "--json", "ps", "-a", "-n", "200" })
+    local out = devos.capture({ "ci", "-C", wt, "--json", "ps", "-a", "-n", "2000" })
     local doc = json.decode(out) or {}
     local prefix = fs.basename(wt) .. "-"
     local rows = {}

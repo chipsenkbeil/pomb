@@ -27,6 +27,7 @@ end
 ---@field before string[] run rows before the gate runs
 ---@field after string[] run rows the dev stub leaves behind
 ---@field dev_exit integer exit code of the dev stub
+---@field narrow? string[] rows a listing under 2000 runs returns after the dev stub, default after
 ---@field kind? string repository kind of the worktree
 
 ---@param opts gate_test.Opts
@@ -55,8 +56,17 @@ exit 0
 fi
 exec '%s' "$@"]]):format(wt, git_head, real_git)
     )
-    testkit.stub(root .. "/bin/ci", "cat '" .. root .. "/runs.json'")
-    local copy = ("cp '%s/next.json' '%s/runs.json'\nexit %d"):format(root, root, dev_exit)
+    assert(fs.write(root .. "/narrow.json", doc(before)))
+    assert(fs.write(root .. "/narrow_next.json", doc(opts.narrow or after)))
+    local list = [[if [ "$7" -lt 2000 ]; then cat '%s/narrow.json'; else cat '%s/runs.json'; fi]]
+    testkit.stub(root .. "/bin/ci", list:format(root, root))
+    local copy = ("cp '%s/next.json' '%s/runs.json'\ncp '%s/narrow_next.json' '%s/narrow.json'\nexit %d"):format(
+        root,
+        root,
+        root,
+        root,
+        dev_exit
+    )
     testkit.stub(root .. "/bin/dev", copy)
     local words = { "__gate", root .. "/" .. WORKTREE, "lint", root .. "/gate.log" }
     local out, code, err = testenv.verb(root, words)
@@ -94,6 +104,13 @@ t.test("gate refuses two new runs", function()
     local after = { row("aaaaaa", "passed", "local"), row("bbbbbb", "passed", "local") }
     local _, code = gate({ before = {}, after = after, dev_exit = 0 })
     t.ok(code ~= 0)
+end)
+
+t.test("gate_should_find_a_run_past_the_newest_200", function()
+    local after = { row("bbbbbb", "passed", "local") }
+    local out, code, err = gate({ before = {}, after = after, dev_exit = 0, narrow = {} })
+    t.eq(code, 0, err)
+    t.eq(out, "bbbbbb " .. REPO .. " local\n")
 end)
 
 t.test("gate refuses a run that did not pass", function()
