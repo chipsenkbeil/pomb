@@ -1765,19 +1765,32 @@ mod tests {
     }
 
     #[test]
-    fn archive_round_trip_should_keep_clears_blockers() {
+    fn archive_round_trip_should_keep_clears_blockers_on_every_column() {
         let dir = tempfile::tempdir().expect("tempdir");
         let seeded = seed(dir.path());
-        let first = seeded.db.list_columns(&seeded.board).expect("columns")[0]
-            .id
-            .clone();
+        let columns = seeded.db.list_columns(&seeded.board).expect("columns");
         let patch = ColumnPatch {
             clears_blockers: Some(true),
             ..ColumnPatch::default()
         };
-        seeded.db.update_column(&first, &patch).expect("clears");
+        for column in columns.iter().skip(1).step_by(2) {
+            seeded.db.update_column(&column.id, &patch).expect("clears");
+        }
+        let expected: Vec<bool> = (0..columns.len()).map(|index| index % 2 == 1).collect();
+        assert!(expected.contains(&true) && expected.contains(&false));
+
         let exported = document(&archive_of(&seeded));
-        assert_eq!(exported["columns"][0]["clears_blockers"], true);
+        let exported_flags: Vec<bool> = exported["columns"]
+            .as_array()
+            .expect("columns")
+            .iter()
+            .map(|column| {
+                column["clears_blockers"]
+                    .as_bool()
+                    .expect("clears_blockers")
+            })
+            .collect();
+        assert_eq!(exported_flags, expected);
 
         let spool_dir = tempfile::tempdir().expect("tempdir");
         let spool = Spool::create(spool_dir.path()).expect("spool");
@@ -1791,7 +1804,12 @@ mod tests {
         let snapshot = read_board(&archive_bytes(&seeded), &importer, &spool)
             .expect("import")
             .0;
-        assert!(snapshot.columns[0].clears_blockers);
+        let imported_flags: Vec<bool> = snapshot
+            .columns
+            .iter()
+            .map(|column| column.clears_blockers)
+            .collect();
+        assert_eq!(imported_flags, expected);
     }
 
     #[test]
