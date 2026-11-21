@@ -2349,4 +2349,13 @@ mod outcomes_lock {
         let (_, page) = fx.call(Who::Session, "GET", &uri, Body::Empty).await;
         assert!(page.contains("br-outcomes-locked\" checked"), "{page}");
     }
+
+    #[tokio::test]
+    async fn outcomes_locked_hint_should_wrap_the_permission_in_code() {
+        let fx = Fixture::new();
+        let uri = format!("/b/{}/settings/rules", fx.board);
+        let (status, page) = fx.call(Who::Session, "GET", &uri, Body::Empty).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert!(page.contains("<code>outcomes.edit_locked</code>"), "{page}");
+    }
 }
