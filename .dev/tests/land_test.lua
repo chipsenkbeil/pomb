@@ -150,11 +150,12 @@ local function check_notes(fix, checks, records)
             record.sum or board_check.fingerprint(checks)
         )
         for i, result in ipairs(record.rows) do
-            text[#text + 1] = ("%s%d %s %s"):format(
+            text[#text + 1] = ("%s%d %s %s %s"):format(
                 (" "):rep(40),
                 i,
                 result,
-                result == "pass" and "34b701" or "-"
+                result == "pass" and "34b701" or "-",
+                checks[i] or "dev --remote lint"
             )
         end
     end
@@ -476,6 +477,20 @@ t.test("land_should_skip_gates_for_board_show_rows", function()
     t.ok(code == 0, err)
     t.eq(#lines(fix, "calls"), 0)
     t.ok(out:find("The gates are skipped because", 1, true), out)
+    done(fix)
+end)
+
+t.test("land_should_read_a_check_row_that_ends_with_its_command", function()
+    local fix = fixture()
+    local first = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    check_notes(fix, { LINT, TEST }, {
+        { commit = first, rows = { "pass", "pass" } },
+    })
+    local out, code, err = land(fix, first)
+    t.ok(code == 0, err)
+    t.eq(#lines(fix, "calls"), 0)
+    t.ok(out:find("The gates are skipped because", 1, true), out)
+    t.ok(fs.read(fix.dir .. "/check-note"):find("pass 34b701 dev --remote lint", 1, true))
     done(fix)
 end)
 

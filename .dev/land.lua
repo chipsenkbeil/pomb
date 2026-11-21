@@ -461,7 +461,7 @@ local function latest_check(text)
             end
             open = latest
         elseif open then
-            local index, result = line:match("^%s+(%d+) (%a+) %S+$")
+            local index, result = line:match("^%s+(%d+) (%a+) %S+")
             if index then
                 open.rows[tonumber(index)] = result
             elseif not line:match("^%s") then
