@@ -6964,6 +6964,10 @@ body.dark:has(.settings-page):not(:has(.bshell-report)) .dlg-light {
   --rose-border: #e0a3a3;
   --error-ink: #b42318;
   --drag-helper-bg: rgba(255, 255, 255, 0.75);
+  --btn-bg: #ffffff;
+  --btn-hover: #f9fafb;
+  --btn-border: #d1d5db;
+  --btn-ink: buttontext;
   color-scheme: light;
 }
 body.dark:has(.settings-page):not(:has(.bshell-report)) .pk-menu { --accent: #6ea8ff; }
