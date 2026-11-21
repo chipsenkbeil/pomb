@@ -2681,6 +2681,18 @@ impl LinkKind {
         }
     }
 
+    /// Returns true for `blocked_by` and `related`.
+    #[must_use]
+    pub fn is_relation(self) -> bool {
+        matches!(self, Self::BlockedBy | Self::Related)
+    }
+
+    /// Returns true for `blocked_by`, the one kind that blocks its holder.
+    #[must_use]
+    pub fn blocks_holder(self) -> bool {
+        matches!(self, Self::BlockedBy)
+    }
+
     /// Returns the wire name.
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -6146,5 +6158,36 @@ mod limit_unit_tests {
         }
         assert_eq!(LimitUnit::Count.as_str(), "count");
         assert_eq!(LimitUnit::Hours.as_str(), "hours");
+    }
+}
+
+#[cfg(test)]
+mod link_kind_relation_tests {
+    use super::*;
+
+    #[test]
+    fn is_relation_should_hold_for_blocked_by_and_related_only() {
+        let kinds = [
+            LinkKind::BlockedBy,
+            LinkKind::Blocks,
+            LinkKind::Related,
+            LinkKind::Parent,
+            LinkKind::Child,
+        ];
+        let relations: Vec<bool> = kinds.iter().map(|kind| kind.is_relation()).collect();
+        assert_eq!(relations, [true, false, true, false, false]);
+    }
+
+    #[test]
+    fn blocks_holder_should_hold_for_blocked_by_only() {
+        let kinds = [
+            LinkKind::BlockedBy,
+            LinkKind::Blocks,
+            LinkKind::Related,
+            LinkKind::Parent,
+            LinkKind::Child,
+        ];
+        let blocks: Vec<bool> = kinds.iter().map(|kind| kind.blocks_holder()).collect();
+        assert_eq!(blocks, [true, false, false, false, false]);
     }
 }

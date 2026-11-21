@@ -11297,13 +11297,13 @@ async fn bulk_tasks(
             for (kind, target_id) in &add {
                 let target = found(db.task(target_id), "task or target not found")?;
                 ensure_lane_open(db, target.row())?;
-                if !matches!(kind, LinkKind::BlockedBy | LinkKind::Related) {
+                if !kind.is_relation() {
                     ensure_unlocked(db, &user, target.board_id(), target.row())?;
                 }
             }
             for (kind, target_id) in &remove {
                 ensure_task_id_lane_open(db, target_id)?;
-                if !matches!(kind, LinkKind::BlockedBy | LinkKind::Related) {
+                if !kind.is_relation() {
                     ensure_task_id_unlocked(db, &user, target_id)?;
                 }
             }
@@ -12538,7 +12538,7 @@ async fn create_task_link(
     }
     let target = found(account.task(&input.target_id), missing)?;
     ensure_lane_open(&account, target.row())?;
-    if !matches!(kind, LinkKind::BlockedBy | LinkKind::Related) {
+    if !kind.is_relation() {
         ensure_unlocked(&account, &user, target.board_id(), target.row())?;
     }
     match account
@@ -12691,7 +12691,7 @@ async fn delete_task_link(
         .find(|link| link.id == link_id);
     if let Some(link) = link {
         ensure_task_id_lane_open(&account, &link.target_id)?;
-        if !matches!(link.kind, LinkKind::BlockedBy | LinkKind::Related) {
+        if !link.kind.is_relation() {
             ensure_task_id_unlocked(&account, &user, &link.target_id)?;
         }
     }

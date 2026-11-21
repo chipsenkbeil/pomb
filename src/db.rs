@@ -3758,7 +3758,7 @@ fn blocked_dependents(txn: &WriteTransaction, targets: &[String]) -> DbResult<Ve
         let blocked_by_target = holder
             .links
             .iter()
-            .any(|link| link.kind == LinkKind::BlockedBy && targets.contains(&link.target_id));
+            .any(|link| link.kind.blocks_holder() && targets.contains(&link.target_id));
         if blocked_by_target {
             dependents.push(holder_id);
         }
@@ -3826,7 +3826,7 @@ fn links_blocked_in(
     links: &[TaskLink],
     open: &mut HashMap<String, bool>,
 ) -> DbResult<bool> {
-    for link in links.iter().filter(|link| link.kind == LinkKind::BlockedBy) {
+    for link in links.iter().filter(|link| link.kind.blocks_holder()) {
         let is_open = match open.get(&link.target_id) {
             Some(is_open) => *is_open,
             None => {
@@ -3908,7 +3908,7 @@ where
             pending.extend(
                 task.links
                     .iter()
-                    .filter(|link| link.kind == LinkKind::BlockedBy)
+                    .filter(|link| link.kind.blocks_holder())
                     .map(|link| link.target_id.clone()),
             );
         }
@@ -10449,21 +10449,17 @@ impl Db {
             if let Some(existing) = existing {
                 return Ok(LinkAddOutcome::Added(as_requested(existing)));
             }
-            let is_relation =
-                |kind: LinkKind| matches!(kind, LinkKind::BlockedBy | LinkKind::Related);
             let relates = |task: &TaskRow, target: &str| {
                 task.links
                     .iter()
-                    .any(|link| is_relation(link.kind) && link.target_id == target)
+                    .any(|link| link.kind.is_relation() && link.target_id == target)
             };
-            if is_relation(stored_kind)
+            if stored_kind.is_relation()
                 && (relates(&holder, stored_target) || relates(&other, holder_id))
             {
                 return Ok(LinkAddOutcome::Duplicate);
             }
-            if stored_kind == LinkKind::BlockedBy
-                && blocked_by_reaches(&tbl, stored_target, holder_id)?
-            {
+            if stored_kind.blocks_holder() && blocked_by_reaches(&tbl, stored_target, holder_id)? {
                 return Ok(LinkAddOutcome::Cycle);
             }
             if stored_kind == LinkKind::Parent {
