@@ -29,7 +29,9 @@ local Kind = {
 }
 ---@enum lintset.Marker
 local Marker = { SLASH = "//", DASH = "--", HASH = "#" }
+---The terminators that end a shell `case` arm.
 local CASE_ARM_ENDS = { [";;"] = true, [";&"] = true, [";;&"] = true }
+---The last characters of a line that opens a literal in a `//` file.
 local LITERAL_ENDS = { [","] = true, ["("] = true, ["["] = true }
 
 local function lines_of(text)
@@ -101,26 +103,59 @@ local function after_code_exempt(marker, body)
     return marker == Marker.DASH and (first == ":" or first == ".")
 end
 
-local function heredoc_opener(body)
-    local code = body:gsub("<<<", "")
-    local at = code:find("<<", 1, true)
-    if not at or code:find("((", 1, true) or code:find("$[", 1, true) then
-        return nil
-    end
-    local before = code:sub(1, at - 1)
-    local quotes = select(2, before:gsub("[\"']", ""))
-    if before:find("#", 1, true) or quotes % 2 == 1 then
-        return nil
-    end
-    local dash, _, word = code:match("<<(%-?)%s*\\?([\"']?)([%a_][%w_]*)")
-    if not word then
-        return nil
-    end
-    return { word = word, strip = dash == "-" }
+local function opens_in_code(before)
+    local plain = before:gsub("%${#[^}]*}", ""):gsub("%$#", ""):gsub("\\.", "")
+    local quotes = select(2, plain:gsub("[\"']", ""))
+    return quotes % 2 == 0 and not plain:find("^#") and not plain:find("%s#")
 end
 
-local function heredoc_closes(heredoc, body, line)
-    return (heredoc.strip and body or line) == heredoc.word
+local function heredoc_openers(body)
+    local code = body:gsub("<<<", "")
+    local found = {}
+    if code:find("((", 1, true) or code:find("$[", 1, true) then
+        return found
+    end
+    local from = 1
+    while true do
+        local at = code:find("<<", from, true)
+        if not at then
+            return found
+        end
+        from = at + 2
+        if opens_in_code(code:sub(1, at - 1)) then
+            local dash, tail = code:match("^(%-?)%s*(.*)$", from)
+            local word = tail:match('^"([^"]+)"')
+                or tail:match("^'([^']+)'")
+                or tail:match("^\\?([%a_][%w_]*)")
+            if word then
+                found[#found + 1] = { word = word, strip = dash == "-" }
+            end
+        end
+    end
+end
+
+local function heredoc_closes(heredoc, line)
+    return (heredoc.strip and line:gsub("^\t+", "") or line) == heredoc.word
+end
+
+---Find the line where the heredocs opened on `number` end, or `number` when no opener has a
+---terminator later in the text.
+local function heredoc_end(lines, number, body)
+    local last = number
+    for _, heredoc in ipairs(heredoc_openers(body)) do
+        local closed
+        for at = last + 1, #lines do
+            if heredoc_closes(heredoc, lines[at]) then
+                closed = at
+                break
+            end
+        end
+        if not closed then
+            break
+        end
+        last = closed
+    end
+    return last
 end
 
 ---Find the full-line comments that directly follow a line of code.
@@ -133,14 +168,12 @@ end
 function M.spacing(text, marker)
     local found = {}
     local kind, prev_indent, prev_text = Kind.NONE, "", ""
-    local in_block, pending, literal, heredoc = false, nil, nil, nil
-    for number, line in ipairs(lines_of(text)) do
+    local in_block, pending, literal, body_end = false, nil, nil, 0
+    local lines = lines_of(text)
+    for number, line in ipairs(lines) do
         local body = line:gsub("^%s+", "")
         local indent = line:sub(1, #line - #body)
-        if heredoc then
-            if heredoc_closes(heredoc, body, line) then
-                heredoc = nil
-            end
+        if number <= body_end then
             kind = Kind.CODE
         elseif in_block then
             in_block = not body:find("]]", 1, true)
@@ -180,7 +213,7 @@ function M.spacing(text, marker)
                 kind = body:sub(-1) == "{" and Kind.OPEN or Kind.CODE
                 prev_indent, prev_text = indent, body
                 if marker == Marker.HASH then
-                    heredoc = heredoc_opener(body)
+                    body_end = heredoc_end(lines, number, body)
                 end
             end
         end
@@ -192,6 +225,7 @@ function M.spacing(text, marker)
     return found
 end
 
+---The prefixes of the doc and block comments, which are never prose, per marker.
 local NOT_PROSE = {
     [Marker.SLASH] = { "///", "//!" },
     [Marker.DASH] = { "---", "--[[" },
@@ -224,19 +258,17 @@ end
 ---@return lintset.Run[] runs the runs, in line order
 function M.runs(text, marker)
     local found = {}
-    local run, start, listed, heredoc = 0, 0, false, nil
+    local run, start, listed, body_end = 0, 0, false, 0
     local function flush()
         if run >= PROSE_RUN and not listed then
             found[#found + 1] = { line = start, count = run }
         end
         run = 0
     end
-    for number, line in ipairs(lines_of(text)) do
+    local lines = lines_of(text)
+    for number, line in ipairs(lines) do
         local body = line:gsub("^%s+", "")
-        if heredoc then
-            if heredoc_closes(heredoc, body, line) then
-                heredoc = nil
-            end
+        if number <= body_end then
             flush()
         elseif is_prose(body, marker) then
             if run == 0 then
@@ -250,7 +282,7 @@ function M.runs(text, marker)
         else
             flush()
             if marker == Marker.HASH then
-                heredoc = heredoc_opener(body)
+                body_end = heredoc_end(lines, number, body)
             end
         end
     end
@@ -583,6 +615,16 @@ function Lint:dev_lua()
         if file:find("^%.dev/") or file:find("^%.ci/") then
             files[#files + 1] = file
         end
+    end
+    return files
+end
+
+---List every Lua file the lint and fmt verbs check: the visible Lua, then the `.dev` and `.ci` Lua.
+---@return string[] files paths relative to the root
+function Lint:all_lua()
+    local files = self:files({ "*.lua" })
+    for _, file in ipairs(self:dev_lua()) do
+        files[#files + 1] = file
     end
     return files
 end

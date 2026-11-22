@@ -14,7 +14,7 @@ topics and `dev help <topic>` prints one. The project's own topics are the
 `-h` after a verb prints its description, usage and flags. `--help` after a
 verb prints the long form.
 
-Seven global flags work before a `--` on every verb:
+Global flags work before a `--` on every verb:
 
 - `-v` or `--verbose`: print each command before it runs
 - `-vv`: also trace every line of dev and of each bash script it runs
