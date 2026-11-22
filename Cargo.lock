@@ -2015,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "pomb"
-version = "0.5.133"
+version = "0.5.134"
 dependencies = [
  "ammonia",
  "askama",
