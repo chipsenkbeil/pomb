@@ -4515,6 +4515,18 @@ fn entry_end(started_at: &str, seconds: i64) -> String {
     )
 }
 
+/// Returns `raw` as RFC 3339 in UTC to the second, or unchanged when it does not parse.
+#[must_use]
+fn utc_seconds(raw: &str) -> String {
+    DateTime::parse_from_rfc3339(raw).map_or_else(
+        |_| raw.to_string(),
+        |time| {
+            time.with_timezone(&Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        },
+    )
+}
+
 /// "31s" for sub-minute durations, "Nm" under an hour, "2h 30m" from an hour up. `seconds` is the
 /// precise elapsed seconds (0 for rows written before the field existed, in which case we fall back
 /// to `minutes`).
@@ -16493,8 +16505,9 @@ fn history_csv(history: &[TaskEvent], all: bool) -> String {
         if !all && MINOR_HISTORY_KINDS.contains(&event.kind) {
             continue;
         }
+        let time = utc_seconds(&event.created_at);
         let fields = [
-            event.created_at.as_str(),
+            time.as_str(),
             &history_actor(event),
             event.kind.label(),
             event.detail.as_str(),
@@ -31238,11 +31251,11 @@ mod tests {
         build_ical_feed, csv_field, done_drop_position, done_group_label, entry_badge,
         estimate_hours_to_size, folds_done_subtasks, format_added, format_due,
         format_entry_duration, format_estimate_hours, format_pomodori, format_relative_day,
-        format_time_kf, format_timeline, generate_feed_token, ical_escape, ical_fold, is_overdue,
-        log_timer_session, needs_lane_label_column, normalize_due_input, normalize_due_input_at,
-        normalize_due_input_in, normalize_estimate_hours, parse_manual_range, parse_repeat_cadence,
-        place_overdue_strips, reaction_pills, router, static_response, subtasks_on_face,
-        timer_status_view, version_info,
+        format_time_kf, format_timeline, generate_feed_token, history_csv, ical_escape, ical_fold,
+        is_overdue, log_timer_session, needs_lane_label_column, normalize_due_input,
+        normalize_due_input_at, normalize_due_input_in, normalize_estimate_hours,
+        parse_manual_range, parse_repeat_cadence, place_overdue_strips, reaction_pills, router,
+        static_response, subtasks_on_face, timer_status_view, version_info,
     };
     use crate::auth::is_event_wait;
     use crate::db::{BootstrapToken, Db, NewTimeEntry, SwimlanePatch};
@@ -31251,8 +31264,8 @@ mod tests {
         AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
         AuthScope, BoardRole, BoardRow, BreakActivity, ColorRow, ColumnRow, EntryKind, FeedTask,
         FieldDefRow, FieldKind, FieldOwner, HistoryKind, LimitUnit, MAX_BOARD_FEEDS,
-        MAX_REPORT_BOOKMARKS, SECONDS_PER_DAY, Subtask, SwimlaneRow, TaskKind, TaskRow, TimeFormat,
-        TimerMode, UserRow, WebhookEvent, WebhookRow, WeekStart,
+        MAX_REPORT_BOOKMARKS, SECONDS_PER_DAY, Subtask, SwimlaneRow, TaskEvent, TaskKind, TaskRow,
+        TimeFormat, TimerMode, UserRow, WebhookEvent, WebhookRow, WeekStart,
     };
     use crate::{AppState, BODY_LIMIT_BYTES, auth, markdown};
 
@@ -37583,6 +37596,34 @@ mod tests {
         assert!(!major.contains("Due date done"), "{major}");
         let (_, everything) = history_export_response(&fx, &id, "?all=1").await;
         assert!(everything.contains("\"Due date done\""), "{everything}");
+    }
+
+    #[test]
+    fn history_csv_should_write_the_time_to_the_second_in_utc() {
+        let event = |created_at: &str| TaskEvent {
+            id: "created".to_string(),
+            kind: HistoryKind::Created,
+            detail: String::new(),
+            actor: "admin".to_string(),
+            created_at: created_at.to_string(),
+            column_id: None,
+            token_name: None,
+            from: None,
+            to: None,
+            parent_token: None,
+            role_id: None,
+            role_name: None,
+            label: None,
+            paid_by: None,
+        };
+        let history = [
+            event("2026-11-18T14:34:56.789012+02:00"),
+            event("not a time"),
+        ];
+        let csv = history_csv(&history, false);
+        let rows: Vec<&str> = csv.split("\r\n").collect();
+        assert!(rows[1].starts_with("\"2026-11-18T12:34:56Z\","), "{csv}");
+        assert!(rows[2].starts_with("\"not a time\","), "{csv}");
     }
 
     #[test]
