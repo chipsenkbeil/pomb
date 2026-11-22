@@ -471,6 +471,19 @@ async fn display_switches_should_persist_and_default_off_except_repeats() {
 }
 
 #[tokio::test]
+async fn settings_pages_should_carry_the_dark_class_when_dark_is_on() {
+    let fx = Fixture::new();
+    let board_settings = format!("/b/{}/settings", fx.board);
+    let dark = r#"<body class="dark">"#;
+    assert!(!fx.page("/settings").await.contains(dark));
+    assert!(!fx.page(&board_settings).await.contains(dark));
+    fx.send("PUT", "/api/settings", Some(json!({ "dark": true })))
+        .await;
+    assert!(fx.page("/settings").await.contains(dark));
+    assert!(fx.page(&board_settings).await.contains(dark));
+}
+
+#[tokio::test]
 async fn unknown_date_and_time_choices_should_be_refused() {
     let fx = Fixture::new();
     for body in [

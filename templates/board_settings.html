@@ -1,5 +1,6 @@
 {% extends "shell.html" %}
 {% block title %}Board settings: {{ board_name }} | Pomb{% endblock %}
+{% block body_attrs %}{% if chrome.dark %} class="dark"{% endif %}{% endblock %}
 {% block shell_title %}Board settings: {{ board_name }}{% endblock %}
 {% block shell_nav %}
     <nav class="bshell-nav" aria-label="Board settings">
