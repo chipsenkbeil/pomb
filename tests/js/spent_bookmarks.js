@@ -20,25 +20,33 @@ const store = (initial) => {
 
 const entry = (name, board) => ({ name, filters: { 'spent-board': board } });
 
-const load = (localStorage, saved, status) => {
+const load = (localStorage, saved, status, locks) => {
   const calls = [];
   const toasts = [];
-  const state = { renders: 0 };
+  const state = { renders: 0, server: saved.slice(), events: [] };
   const window = { localStorage };
+  if (locks) window.navigator = { locks };
   const toast = (message) => { toasts.push(message); };
+  const fetchJson = (url) => {
+    state.events.push('get');
+    return Promise.resolve({ spent_bookmarks: state.server });
+  };
   const fetch = (url, init) => {
+    state.events.push('put');
     calls.push([url, init.method, JSON.parse(init.body)]);
     if (status) {
       return Promise.resolve({ ok: false, status, json: () => Promise.resolve({}) });
     }
+    state.server = JSON.parse(init.body).spent_bookmarks;
     return Promise.resolve({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ spent_bookmarks: JSON.parse(init.body).spent_bookmarks }),
+      json: () => Promise.resolve({ spent_bookmarks: state.server }),
     });
   };
   const SpentBookmarks = eval('(function () {' + code + '\n return SpentBookmarks; })()');
   SpentBookmarks.list = saved;
+  SpentBookmarks.ready = true;
   SpentBookmarks.render = () => { state.renders++; };
   return { spent: SpentBookmarks, calls, toasts, state };
 };
@@ -119,6 +127,48 @@ test('spent_bookmark_migrate_should_drop_entries_past_the_limit', () => {
       page.calls, [['/api/settings', 'PUT', { spent_bookmarks: saved }]]);
     check('the limit toast shows', page.toasts, [LIMIT_TOAST]);
     check('the key is removed after the save', ls.getItem(KEY), null);
+  });
+});
+
+test('spent_bookmark_save_should_keep_a_bookmark_another_tab_saved', () => {
+  const page = load(store(), [entry('Sprint', 'b1')], 0);
+  page.state.server = [entry('Sprint', 'b1'), entry('Other', 'b8')];
+  const ids = { 'spent-board': 'b2', 'spent-period': '', 'spent-entry-type': '', 'spent-color': '', 'spent-group': '' };
+  const input = { value: 'Week', focus: () => {} };
+  global.qs = (id) => (id === 'spent-bookmark-name' ? input : { value: ids[id] });
+  page.spent.save();
+  return flush().then(() => {
+    check('the PUT keeps the other tab bookmark and adds the new one',
+      page.calls[0][2].spent_bookmarks.map((b) => b.name), ['Sprint', 'Other', 'Week']);
+    check('the list shows the saved result', page.spent.list.map((b) => b.name), ['Sprint', 'Other', 'Week']);
+    check('the input is cleared', input.value, '');
+  });
+});
+
+test('spent_bookmark_remove_should_keep_a_bookmark_another_tab_saved', () => {
+  const page = load(store(), [entry('Sprint', 'b1'), entry('Week', 'b2')], 0);
+  page.state.server = [entry('Sprint', 'b1'), entry('Week', 'b2'), entry('Other', 'b8')];
+  return page.spent.remove('Week').then(() => {
+    check('the PUT drops only the named bookmark',
+      page.calls, [['/api/settings', 'PUT', { spent_bookmarks: [entry('Sprint', 'b1'), entry('Other', 'b8')] }]]);
+    check('the list shows the saved result', page.spent.list, [entry('Sprint', 'b1'), entry('Other', 'b8')]);
+  });
+});
+
+test('spent_bookmark_write_should_take_the_web_lock_when_present', () => {
+  const requested = [];
+  const locks = {
+    request: (name, run) => {
+      requested.push(name);
+      page.state.events.push('lock');
+      return run();
+    },
+  };
+  const page = load(store(), [entry('Sprint', 'b1')], 0, locks);
+  return page.spent.remove('Sprint').then(() => {
+    check('the lock name', requested, ['pomb-spent-bookmarks']);
+    check('the read and PUT run inside the lock', page.state.events, ['lock', 'get', 'put']);
+    check('the list is saved', page.spent.list, []);
   });
 });
 

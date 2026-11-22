@@ -12104,9 +12104,13 @@
           return res.json();
         }).then((settings) => settings.spent_bookmarks || []);
       },
-      write(list) {
+      write(change) {
         if (!this.ready) return Promise.resolve();
-        return this.put(list).then((saved) => {
+        const run = () => fetchJson('/api/settings')
+          .then((settings) => this.put(change(settings.spent_bookmarks || [])));
+        const locks = window.navigator && window.navigator.locks;
+        const done = locks ? locks.request('pomb-spent-bookmarks', run) : run();
+        return done.then((saved) => {
           this.list = saved;
           this.render();
         }).catch(() => { toast('Could not save the bookmark.'); });
@@ -12155,7 +12159,7 @@
         qs('spent-bookmarks-count').textContent = String(list.length);
         var ul = qs('spent-bookmarks-list');
         ul.innerHTML = '';
-        list.forEach(function (b, i) {
+        list.forEach(function (b) {
           var li = document.createElement('li');
           var apply = document.createElement('button');
           apply.type = 'button';
@@ -12167,11 +12171,7 @@
           del.className = 'spent-bookmark-delete';
           del.setAttribute('aria-label', 'Delete bookmark ' + b.name);
           del.textContent = '×';
-          del.addEventListener('click', function () {
-            const next = self.list.slice();
-            next.splice(i, 1);
-            self.write(next);
-          });
+          del.addEventListener('click', () => { self.remove(b.name); });
           li.appendChild(apply);
           li.appendChild(del);
           ul.appendChild(li);
@@ -12184,10 +12184,13 @@
         if (!name) { input.focus(); return; }
         var filters = {};
         this.fields.forEach(function (id) { filters[id] = qs(id).value; });
-        const list = this.list.filter((b) => b.name !== name);
-        list.push({ name: name, filters: filters });
         input.value = '';
-        this.write(list);
+        this.write((current) => current
+          .filter((b) => b.name !== name)
+          .concat([{ name: name, filters: filters }]));
+      },
+      remove(name) {
+        return this.write((current) => current.filter((b) => b.name !== name));
       },
       apply: function (bookmark) {
         this.fields.forEach(function (id) {
