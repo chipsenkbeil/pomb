@@ -4819,12 +4819,12 @@ fn txn_create_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<
     if !txn_account_active(txn, &account)? {
         return Err(ACCOUNT_NOT_ACTIVE.into());
     }
+    let tokens = txn_account_tokens(txn, &token.account_id)?;
     if token.parent_id.is_none()
-        && let Some(refusal) = txn_token_cap_reached(txn, &token.account_id)?
+        && let Some(refusal) = token_cap_refusal(&tokens)
     {
         return Err(Box::new(refusal));
     }
-    let tokens = txn_account_tokens(txn, &token.account_id)?;
     if txn_token_name_taken(&tokens, &token.name, None) {
         return Err(Box::new(TokenNameTaken));
     }
@@ -5555,16 +5555,21 @@ pub const MAX_TEMPLATE_ROW_BYTES: usize = 8_388_608;
 /// tokens made by hand, read inside that write's transaction. A token another token issued does
 /// not count.
 fn txn_token_cap_reached(txn: &WriteTransaction, account: &str) -> DbResult<Option<QuotaExceeded>> {
-    let held = txn_account_tokens(txn, account)?
+    Ok(token_cap_refusal(&txn_account_tokens(txn, account)?))
+}
+
+/// Returns the refusal of another token made by hand when `tokens`, those of one account, hold
+/// [`MAX_API_TOKENS_PER_ACCOUNT`] of them. A token another token issued does not count.
+#[must_use]
+fn token_cap_refusal(tokens: &[ApiTokenRecord]) -> Option<QuotaExceeded> {
+    let held = tokens
         .iter()
         .filter(|token| token.parent_id.is_none())
         .count();
-    Ok(
-        (held >= MAX_API_TOKENS_PER_ACCOUNT).then_some(QuotaExceeded {
-            bound: Bound::ApiTokens,
-            limit: MAX_API_TOKENS_PER_ACCOUNT as u64,
-        }),
-    )
+    (held >= MAX_API_TOKENS_PER_ACCOUNT).then_some(QuotaExceeded {
+        bound: Bound::ApiTokens,
+        limit: MAX_API_TOKENS_PER_ACCOUNT as u64,
+    })
 }
 
 /// Returns the quotas `owner` is held to, read inside an open transaction. Single mode, the
@@ -7254,20 +7259,26 @@ impl Db {
     /// live ones it deleted.
     pub fn prune_expired_issued_tokens(&self, now: i64) -> DbResult<u64> {
         let txn = self.db.begin_write()?;
-        let mut accounts = BTreeSet::new();
+        let mut accounts: BTreeMap<String, Vec<ApiTokenRecord>> = BTreeMap::new();
+        let mut expired = BTreeSet::new();
         for table in [API_TOKENS, SUSPENDED_TOKENS] {
             for item in txn.open_table(table)?.iter()? {
                 let (_, raw) = item?;
                 let token: ApiTokenRecord = serde_json::from_slice(raw.value())?;
                 if token.parent_id.is_some() && token.is_expired(now) {
-                    accounts.insert(token.account_id);
+                    expired.insert(token.account_id.clone());
                 }
+                accounts
+                    .entry(token.account_id.clone())
+                    .or_default()
+                    .push(token);
             }
         }
         let mut removed = 0;
-        for account in accounts {
-            let mut tokens = txn_account_tokens(&txn, &account)?;
-            removed += txn_remove_expired_issued_tokens(&txn, &account, &mut tokens, now)?;
+        for (account, mut tokens) in accounts {
+            if expired.contains(&account) {
+                removed += txn_remove_expired_issued_tokens(&txn, &account, &mut tokens, now)?;
+            }
         }
         txn.commit()?;
         Ok(removed)
@@ -15055,6 +15066,44 @@ mod schema_version_tests {
         assert_eq!(role_index(&db), BTreeSet::from([key(&a, &both)]));
         assert!(db.delete_api_token(&account, &both.id).expect("revoke"));
         assert!(role_index(&db).is_empty());
+    }
+
+    /// One prune removes the expired issued tokens of every account with their children, and
+    /// leaves the live tokens.
+    #[test]
+    fn pruning_should_remove_expired_issued_tokens_of_every_account() {
+        let (_dir, path) = temp_path();
+        let db = Db::connect(&path).expect("connect");
+        let now = Utc::now().timestamp();
+        let mut doomed = Vec::new();
+        let mut kept = Vec::new();
+        for owner in ["alice", "bob"] {
+            let account = db.create_user(owner).expect("account");
+            let store = |name: &str, parent: Option<&ApiTokenRecord>, expires_at: i64| {
+                let (mut record, _) =
+                    new_api_token_record(&account, name, AuthScope::Work, Some(expires_at));
+                record.parent_id = parent.map(|parent| parent.id.clone());
+                db.create_api_token(&record).expect("store");
+                record
+            };
+            let (issuer, _) = new_api_token_record(&account, "lead", AuthScope::Provision, None);
+            db.create_api_token(&issuer).expect("issuer");
+            let expired = store("expired", Some(&issuer), now - 10);
+            let child = store("child", Some(&expired), now + 3600);
+            let live = store("live", Some(&issuer), now + 3600);
+            doomed.extend([expired.id, child.id]);
+            kept.extend([issuer.id, live.id]);
+        }
+
+        assert_eq!(db.prune_expired_issued_tokens(now).expect("prune"), 4);
+        for id in &doomed {
+            let row: Option<ApiTokenRecord> = read_one(&db.db, API_TOKENS, id).expect("read");
+            assert!(row.is_none(), "{id} should be gone");
+        }
+        for id in &kept {
+            let row: Option<ApiTokenRecord> = read_one(&db.db, API_TOKENS, id).expect("read");
+            assert!(row.is_some(), "{id} should stay");
+        }
     }
 
     /// Deleting a role leaves no role, grant, index or token row of it, and keeps another role's.
