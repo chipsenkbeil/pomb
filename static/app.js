@@ -12104,16 +12104,27 @@
           return res.json();
         }).then((settings) => settings.spent_bookmarks || []);
       },
-      write(change) {
+      send(url, init) {
         if (!this.ready) return Promise.resolve();
-        const run = () => fetchJson('/api/settings')
-          .then((settings) => this.put(change(settings.spent_bookmarks || [])));
-        const locks = window.navigator && window.navigator.locks;
-        const done = locks ? locks.request('pomb-spent-bookmarks', run) : run();
-        return done.then((saved) => {
+        return fetch(url, Object.assign({
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        }, init)).then((res) => {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        }).then((saved) => {
           this.list = saved;
           this.render();
         }).catch(() => { toast('Could not save the bookmark.'); });
+      },
+      add(bookmark) {
+        return this.send('/api/settings/spent-bookmarks', {
+          method: 'POST',
+          body: JSON.stringify(bookmark),
+        });
+      },
+      remove(name) {
+        return this.send('/api/settings/spent-bookmarks/' + encodeURIComponent(name), { method: 'DELETE' });
       },
       load() {
         fetchJson('/api/settings').then((settings) => {
@@ -12185,12 +12196,7 @@
         var filters = {};
         this.fields.forEach(function (id) { filters[id] = qs(id).value; });
         input.value = '';
-        this.write((current) => current
-          .filter((b) => b.name !== name)
-          .concat([{ name: name, filters: filters }]));
-      },
-      remove(name) {
-        return this.write((current) => current.filter((b) => b.name !== name));
+        this.add({ name: name, filters: filters });
       },
       apply: function (bookmark) {
         this.fields.forEach(function (id) {
@@ -18357,7 +18363,7 @@
     readFilterBookmarks: function () {
       try { return JSON.parse(window.localStorage.getItem(this.filterBookmarksKey()) || '[]') || []; } catch (e) { return []; }
     },
-    writeFilterBookmarks: function (list) {
+    storeFilterBookmarks: function (list) {
       try { window.localStorage.setItem(this.filterBookmarksKey(), JSON.stringify(list)); } catch (e) { toast('Could not save the bookmark.'); }
       this.renderFilterBookmarks();
     },
@@ -18395,7 +18401,7 @@
         del.addEventListener('click', function () {
           var next = self.readFilterBookmarks();
           next.splice(i, 1);
-          self.writeFilterBookmarks(next);
+          self.storeFilterBookmarks(next);
         });
         li.appendChild(apply);
         li.appendChild(del);
@@ -18428,7 +18434,7 @@
           hideEpics: self.hideEpics(),
         });
         name.value = '';
-        self.writeFilterBookmarks(list);
+        self.storeFilterBookmarks(list);
       };
       document.getElementById('filter-bookmark-save').addEventListener('click', save);
       name.addEventListener('keydown', function (e) {

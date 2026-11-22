@@ -20,28 +20,30 @@ const store = (initial) => {
 
 const entry = (name, board) => ({ name, filters: { 'spent-board': board } });
 
-const load = (localStorage, saved, status, locks) => {
+const load = (localStorage, saved, status) => {
   const calls = [];
   const toasts = [];
-  const state = { renders: 0, server: saved.slice(), events: [] };
+  const state = { renders: 0, server: saved.slice() };
   const window = { localStorage };
-  if (locks) window.navigator = { locks };
   const toast = (message) => { toasts.push(message); };
-  const fetchJson = (url) => {
-    state.events.push('get');
-    return Promise.resolve({ spent_bookmarks: state.server });
-  };
   const fetch = (url, init) => {
-    state.events.push('put');
-    calls.push([url, init.method, JSON.parse(init.body)]);
+    const body = init.body === undefined ? null : JSON.parse(init.body);
+    calls.push([url, init.method, body]);
     if (status) {
       return Promise.resolve({ ok: false, status, json: () => Promise.resolve({}) });
     }
-    state.server = JSON.parse(init.body).spent_bookmarks;
+    if (init.method === 'PUT') {
+      state.server = body.spent_bookmarks;
+    } else if (init.method === 'POST') {
+      state.server = state.server.filter((b) => b.name !== body.name).concat([body]);
+    } else {
+      const name = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1));
+      state.server = state.server.filter((b) => b.name !== name);
+    }
     return Promise.resolve({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ spent_bookmarks: state.server }),
+      json: () => Promise.resolve(init.method === 'PUT' ? { spent_bookmarks: state.server } : state.server),
     });
   };
   const SpentBookmarks = eval('(function () {' + code + '\n return SpentBookmarks; })()');
@@ -130,7 +132,7 @@ test('spent_bookmark_migrate_should_drop_entries_past_the_limit', () => {
   });
 });
 
-test('spent_bookmark_save_should_keep_a_bookmark_another_tab_saved', () => {
+test('spent_bookmark_save_should_post_the_bookmark', () => {
   const page = load(store(), [entry('Sprint', 'b1')], 0);
   page.state.server = [entry('Sprint', 'b1'), entry('Other', 'b8')];
   const ids = { 'spent-board': 'b2', 'spent-period': '', 'spent-entry-type': '', 'spent-color': '', 'spent-group': '' };
@@ -138,37 +140,27 @@ test('spent_bookmark_save_should_keep_a_bookmark_another_tab_saved', () => {
   global.qs = (id) => (id === 'spent-bookmark-name' ? input : { value: ids[id] });
   page.spent.save();
   return flush().then(() => {
-    check('the PUT keeps the other tab bookmark and adds the new one',
-      page.calls[0][2].spent_bookmarks.map((b) => b.name), ['Sprint', 'Other', 'Week']);
-    check('the list shows the saved result', page.spent.list.map((b) => b.name), ['Sprint', 'Other', 'Week']);
+    check('one POST of just the new bookmark',
+      page.calls, [['/api/settings/spent-bookmarks', 'POST', { name: 'Week', filters: ids }]]);
+    check('the list shows what the server answered', page.spent.list.map((b) => b.name), ['Sprint', 'Other', 'Week']);
     check('the input is cleared', input.value, '');
+    check('the page renders once', page.state.renders, 1);
   });
 });
 
-test('spent_bookmark_remove_should_keep_a_bookmark_another_tab_saved', () => {
-  const page = load(store(), [entry('Sprint', 'b1'), entry('Week', 'b2')], 0);
-  page.state.server = [entry('Sprint', 'b1'), entry('Week', 'b2'), entry('Other', 'b8')];
-  return page.spent.remove('Week').then(() => {
-    check('the PUT drops only the named bookmark',
-      page.calls, [['/api/settings', 'PUT', { spent_bookmarks: [entry('Sprint', 'b1'), entry('Other', 'b8')] }]]);
-    check('the list shows the saved result', page.spent.list, [entry('Sprint', 'b1'), entry('Other', 'b8')]);
+test('spent_bookmark_remove_should_send_the_encoded_name', () => {
+  const page = load(store(), [entry('Sprint', 'b1'), entry('A/B c', 'b2')], 0);
+  return page.spent.remove('A/B c').then(() => {
+    check('one DELETE with the encoded name', page.calls, [['/api/settings/spent-bookmarks/A%2FB%20c', 'DELETE', null]]);
+    check('the list shows what the server answered', page.spent.list, [entry('Sprint', 'b1')]);
   });
 });
 
-test('spent_bookmark_write_should_take_the_web_lock_when_present', () => {
-  const requested = [];
-  const locks = {
-    request: (name, run) => {
-      requested.push(name);
-      page.state.events.push('lock');
-      return run();
-    },
-  };
-  const page = load(store(), [entry('Sprint', 'b1')], 0, locks);
+test('spent_bookmark_remove_should_toast_when_the_request_fails', () => {
+  const page = load(store(), [entry('Sprint', 'b1')], 500);
   return page.spent.remove('Sprint').then(() => {
-    check('the lock name', requested, ['pomb-spent-bookmarks']);
-    check('the read and PUT run inside the lock', page.state.events, ['lock', 'get', 'put']);
-    check('the list is saved', page.spent.list, []);
+    check('the failure toasts', page.toasts, ['Could not save the bookmark.']);
+    check('the list is unchanged', page.spent.list, [entry('Sprint', 'b1')]);
   });
 });
 
