@@ -1,6 +1,7 @@
 --[[
 local
 positional
+remote: false
 Print the setup code each channel logged at its first start: dev site setup-code
 ]]
 local site = require("pomb.site")

@@ -1,5 +1,7 @@
 --[[
 positional
+remote: false
+requires: workspace
 flags: --batch --summary --env --dry-run --hash-only
 Cut a release from the remote's main as it stands and print the homelab request.
 Usage: dev release --batch N --summary "<text>" [--env KEY=VALUE]... [--dry-run]

@@ -1,6 +1,7 @@
 --[[
 local
 positional
+remote: false
 Run the box's pull agent now: dev site deploy <stable|nightly> [<tag>]
 ]]
 local site = require("pomb.site")

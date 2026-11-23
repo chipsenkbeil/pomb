@@ -1,5 +1,6 @@
 --[[
 positional
+remote: false
 Check the task finder of a candidate server against its state file.
 flags: --candidate
 ]]

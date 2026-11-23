@@ -1,5 +1,6 @@
 --[[
 positional
+remote: false
 Check that the candidate pages do not scroll sideways at a phone width.
 ]]
 local devos = require("dev.os")

@@ -1,6 +1,7 @@
 --[[
 local
 positional
+remote: false
 Show service states, current releases, last update results and disk use
 ]]
 local site = require("pomb.site")

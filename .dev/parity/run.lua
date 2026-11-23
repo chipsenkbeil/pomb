@@ -1,5 +1,6 @@
 --[[
 positional
+remote: false
 Replay the parity manifest on a running Pomb and compare it with the goldens.
 flags: --state --manifest --out --only --debug-dir
 ]]

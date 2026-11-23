@@ -1,5 +1,6 @@
 --[[
 positional
+remote: false
 flags: --backup --cleanup --delete-branch
 Check a release on green-box, and clean up its worktrees.
 Usage: dev verify SHA [--backup FILE] [--cleanup WORKTREE...] [--delete-branch BRANCH]...

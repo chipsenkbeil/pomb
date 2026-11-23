@@ -1,6 +1,7 @@
 --[[
 local
 positional
+remote: false
 Close port 22 to everything but the tunnel: dev site firewall
 ]]
 local site = require("pomb.site")

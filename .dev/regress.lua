@@ -1,6 +1,7 @@
 --[[
 local
 positional
+remote: false
 Diff this tree's screenshots against a baseline revision on a ci browser runner.
 REV defaults to the merge-base of HEAD and main on the remote of record, so a candidate behind main reports only its own diffs. The baseline sha prints to stderr before the run. A temporary directory holds a copy of the working copy's tracked and unignored files plus the revision exported to .ci-baseline/, the ci regress job runs on that directory, and the directory is removed on every exit, so the working tree is never written. The report, diff images included, is kept as a ci artifact, and the run id and the `ci cp` command that fetches it print at the end.
 ]]

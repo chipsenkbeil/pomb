@@ -2,6 +2,7 @@
 hidden
 local
 positional
+remote: false
 Remove the files a verifier planted in the nightly backups directory: dev site decoys
 ]]
 local site = require("pomb.site")

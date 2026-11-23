@@ -1,6 +1,7 @@
 --[[
 local
 positional
+remote: false
 flags: --bad
 Make the next update real: dev site restage nightly [--bad]
 ]]

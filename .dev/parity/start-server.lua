@@ -1,5 +1,6 @@
 --[[
 positional
+remote: false
 Start a Pomb binary without sign-in (--auth none) under a frozen server
 clock, seed the three parity boards and write WORKDIR/state.json for
 run.mjs and regress.mjs.

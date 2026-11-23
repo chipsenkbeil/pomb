@@ -1,6 +1,7 @@
 --[[
 local
 positional
+remote: false
 Enable and start a channel's service and update timer: dev site launch <stable|nightly>
 ]]
 local site = require("pomb.site")

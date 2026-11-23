@@ -1,5 +1,6 @@
 --[[
 positional
+remote: false
 Diff the screenshots of two running Pomb builds entry by entry.
 flags: --candidate --baseline --out --manifest --only --max-diff --fuzz
 ]]

@@ -1,6 +1,8 @@
 --[[
 local
 positional
+remote: false
+requires: workspace
 flags: --precise
 Resolve Cargo.lock for one dependency on ci, with no cargo run on this machine.
 Usage: dev lock PKG [--precise VER]

@@ -1,6 +1,7 @@
 --[[
 local
 positional
+remote: false
 flags: --wait
 Check a channel after an update: dev site verify [<stable|nightly> [<expected>] ] [--wait]
 ]]

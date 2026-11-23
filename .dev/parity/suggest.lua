@@ -1,5 +1,6 @@
 --[[
 positional
+remote: false
 Print the Pomb element that overlaps each golden element of a manifest entry.
 flags: --state --entry --manifest
 ]]

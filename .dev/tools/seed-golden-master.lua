@@ -2,6 +2,7 @@
 group: Parity
 positional
 local
+remote: false
 flags: --as-of
 Reproduce the KanbanFlow Golden Master board on a Pomb instance
 usage: dev tools seed-golden-master [--as-of YYYY-MM-DD] BASE_URL COOKIE_JAR [FIXTURE_JSON]

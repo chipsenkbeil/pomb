@@ -1,6 +1,7 @@
 --[[
 local
 positional
+remote: false
 Provision and harden the box over SSH; idempotent: dev site provision
 ]]
 local devos = require("dev.os")
