@@ -21,7 +21,7 @@ box (marked in the entry note).
   with its Chromium (installed with `PLAYWRIGHT_BROWSERS_PATH=0`).
 - libfaketime (`brew install libfaketime`, or the `faketime` package on Linux),
   `jq`, `curl`, `rg`, ImageMagick (`magick`, regression mode only).
-  `dev parity start-server` preloads `/opt/homebrew/lib/faketime/libfaketime.1.dylib`
+  `dev parity startserver` preloads `/opt/homebrew/lib/faketime/libfaketime.1.dylib`
   through `DYLD_INSERT_LIBRARIES` on macOS and
   `/usr/lib/faketime/libfaketime.so.1` through `LD_PRELOAD` on Linux; set
   `FAKETIME_LIB` to the library path on any other install.
@@ -32,17 +32,17 @@ box (marked in the entry note).
 
 ```bash
 export PW_NODE_MODULES=/path/to/node_modules
-dev parity start-server target/release/pomb 3420 /tmp/parity-3420
+dev parity startserver target/release/pomb 3420 /tmp/parity-3420
 dev parity run --state /tmp/parity-3420/state.json --out report.json
 kill $(jq -r .pid /tmp/parity-3420/state.json)
 ```
 
-`dev parity start-server` always passes `--database-path` (a fresh redb in the
+`dev parity startserver` always passes `--database-path` (a fresh redb in the
 workdir) and `--auth none`, so the first request creates the owner, named
 `owner`. It seeds the Golden Master board
-(`dev tools seed-golden-master`, `.dev/golden-master-board.json`) and the
-Visual Test board (`dev parity seed-visual-test`), the Epic Test board
-(`dev parity seed-epic`) and the Panel Test board (`dev parity seed-panel`),
+(`dev tools seedgoldenmaster`, `.dev/golden-master-board.json`) and the
+Visual Test board (`dev parity seedvisualtest`), the Epic Test board
+(`dev parity seedepic`) and the Panel Test board (`dev parity seedpanel`),
 and writes `state.json`. The
 server clock is frozen with libfaketime: the Golden Master board is seeded on
 2026-09-30 15:22 and served from 2026-10-16 18:00 (America/Chicago), the day of

@@ -203,8 +203,8 @@ Every check runs through `dev` (scripts in `.dev/`, details in
 - `dev build`: release build.
 - `dev regress`: screenshot regression against a base commit.
 
-Add `--remote` to run lint, test or build on the homelab ci instead of the
-local machine.
+Put `--remote` before the command, as in `dev --remote lint`, to run lint, test
+or build on the homelab ci instead of the local machine.
 
 htmx and SortableJS are vendored in `static/vendor/` as the published
 minified files:
@@ -257,5 +257,5 @@ from the password store (`Agents/Linode/pomb.app-host` and
 - The site verbs reach the box as the user from the `pass` entry at `ssh.pomb.app`,
   so `~/.ssh/config` needs a `Host ssh.pomb.app` block whose `ProxyCommand` runs
   `cloudflared access ssh --hostname %h`.
-- `dev site status`, `setup-code` and `restage nightly [--bad]` show the box,
+- `dev site status`, `setupcode` and `restage nightly [--bad]` show the box,
   print each channel's first-start setup code and stage the next update.

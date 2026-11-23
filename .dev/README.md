@@ -2,22 +2,22 @@
 
 ## Using dev
 
-`dev <command>` runs the script `.dev/<command>.lua` or `.dev/<command>.sh` at
-the repo root, or a built-in of the same name. Run `dev` for the curated help
-and `dev help <command>` for one command.
+`dev <command>` runs the command `.dev/commands/<command>.luau` or
+`.dev/commands/<command>.sh` at the repo root, or a built-in of the same name.
+Run `dev` for the curated help and `dev help <command>` for one command.
 
 `dev help -a` lists every command, hidden ones included, and marks a script
 that replaces a built-in with `(override)`. `dev help --topics` lists the
 topics and `dev help <topic>` prints one. The project's own topics are the
-`.md` files in `.dev/topics/`.
+`.md` files in `.dev/help/`.
 
 `-h` after a command prints its description, usage and flags. `--help` after a
 command prints the long form.
 
-Global flags work before a `--` on every command:
+Global flags go before the command word, as in `dev --remote test`:
 
 - `-v` or `--verbose`: print each command before it runs
-- `-vv`: also trace every line of dev and of each bash script it runs
+- `-vv`: also trace every spawn with its folder, exit code and time
 - `--remote`: run the command's job from `.ci/jobs.lua` on ci
 - `--local`: run here, whatever `[remote] default` says
 - `--detach`: with `--remote`, start the job and return
@@ -29,255 +29,36 @@ Global flags work before a `--` on every command:
 A command with a ci job runs remote by default. `DEV_REMOTE=0` or `--local`
 runs it here, and `--local` with `--remote` is a usage error.
 
-A script gets a flag only when its `flags:` header line declares it. Everything
-after the first `--` reaches the script untouched.
+A command gets a flag only when its spec declares it, and a spec refuses an
+unknown flag, a missing required argument or an extra word with one sentence
+and its usage line on standard error, exit 2.
 
-## The dev modules
+## Where the files live
 
-A Lua command loads each module below with `require` by its dotted name. The
-doc comments of the module hold every function.
+- `.dev/commands/`: one `.luau` file per command, returning a `dev.command`
+  spec, and `.sh` files for the site scripts. A folder is a command with
+  subcommands, and the first line of its `DESCRIPTION` describes it. A command
+  word has no hyphen.
+- `.dev/lib/`: Luau modules. The `lib` alias in the root `.luaurc` names the
+  folder, so `.dev/lib/pomb/cargo.luau` loads with `require("@lib/pomb/cargo")`.
+  `lintset.luau` is dev's lint-set module. dev's own modules load as
+  `require("@dev/NAME")`.
+- `.dev/helpers/`: scripts a command calls and dev never lists. A `.luau`
+  helper runs as `dev -l .dev/helpers/NAME.luau WORDS`, and a `.sh` helper
+  reaches a command through `$DEV_ROOT`.
+- `.dev/tests/`: the `*_test.luau` suites, which `dev test` runs through
+  `dev.testrun`. `dev -l .dev/tests/NAME_test.luau` runs one.
+- `.dev/standalone/`: shell that runs where dev is absent.
 
-### dev.command
-
-The helpers a command needs: `usage_error(ctx, msg)` exits 2, `no_args(ctx)`
-refuses any positional argument, `note(msg)` writes to standard error,
-`die(msg)` exits 1, `show(ctx, argv)` prints `+ <argv>` at `-v`, and
-`need(binary, install)` exits 1 when `binary` is not on `PATH`.
-
-```lua
-local dev_command = require("dev.command")
-
-local ctx = ...
-dev_command.no_args(ctx)
-dev_command.need("rg", "brew install ripgrep")
-dev_command.note("searching " .. ctx.root)
-```
-
-### dev.fs
-
-File and path helpers: `exists`, `is_dir`, `is_file`, `is_link`, `is_exec`,
-`read`, `write`, `mkdir`, `remove`, `list`, `stat`, `realpath`, `readlink`,
-`mktemp`, `symlink`, `join`, `dirname` and `basename`. A call that can fail
-returns nil and a message.
-
-```lua
-local fs = require("dev.fs")
-
-local path = fs.join(ctx.root, ".dev", "config.toml")
-if fs.is_file(path) then
-    local text, err = fs.read(path)
-    print(text or err)
-end
-```
-
-### dev.os
-
-Run and capture commands with `run`, `capture`, `capture_input` and
-`capture_timed`, and find a program with `which`. `exec`, `getuid`, `isatty`
-and `quote` live here too.
-
-```lua
-local dev_os = require("dev.os")
-
-local out, code = dev_os.capture({ "git", "-C", ctx.root, "status", "--short" })
-if code == 0 and out ~= "" then
-    print(out)
-end
-```
-
-### dev.ui
-
-Terminal drawing: `context`, colors through `paint` and `mark`, `table`, `bar`,
-`confirm` and `spin`. Color is on only when the stream is a terminal,
-`NO_COLOR` is empty or unset and `TERM` is not `dumb`.
-
-```lua
-local ui = require("dev.ui")
-
-local view = ui.context()
-local rows = { { "lint", "ok" }, { "test", "ok" } }
-for _, line in ipairs(ui.table(view, { "job", "state" }, rows)) do
-    print(line)
-end
-```
-
-### dev.text
-
-Display-width text helpers: `width`, `fit`, `words`, `wrap`, `trim` and
-`contains`. `wrap` fills lines from a word list and leaves a word wider than
-the width on a line of its own.
-
-```lua
-local text = require("dev.text")
-
-local lines = text.wrap(text.words("one two three four"), 10)
-for _, line in ipairs(lines) do
-    print(text.fit(line, 8))
-end
-```
-
-### dev.config
-
-Reads `~/.config/dev/config.toml` and then `<root>/.dev/config.toml` over it.
-`get(root, "a.b")` reads a dotted key, `prefer_user(root, "a.b")` lets the
-user file win, and `user("a.b")` reads the user file alone.
-
-```lua
-local config = require("dev.config")
-
-local mode = config.get(ctx.root, "remote.default")
-print(mode or "unset")
-```
-
-### dev.project
-
-`root()` finds the project root, `detect_type(root)` names the project's
-language from the files in its root, and `share` is dev's own share directory.
-
-```lua
-local project = require("dev.project")
-
-local root = project.root()
-print(root, project.detect_type(root) or "no type")
-```
-
-### dev.vcs
-
-Picks the project's backend and lists what it holds. `backend(root)` returns
-the jj or git backend, and `remotes(root, backend)` and
-`branches(root, backend)` list names.
-
-```lua
-local vcs = require("dev.vcs")
-local dev_command = require("dev.command")
-
-local backend, err = vcs.backend(ctx.root)
-if not backend then
-    return dev_command.die(err)
-end
-for _, name in ipairs(vcs.branches(ctx.root, backend)) do
-    print(name)
-end
-```
-
-## Adding a command, a subcommand or a flag in Lua
-
-### A command
-
-`.dev/NAME.lua` is a command. A `.lua` file needs no exec bit and wins over a
-`.sh` file of the same name. dev loads the file and calls the chunk with one
-argument, the context, which `local ctx = ...` reads.
-
-- `ctx.name`: the command as typed
-- `ctx.words`: the command words
-- `ctx.root`: the project root, an absolute path
-- `ctx.args`: the positional arguments, with each `KEY=value` word whose key
-  starts with an uppercase letter removed, unless the header has a
-  `positional` line
-- `ctx.vars`: the `KEY=value` arguments whose key starts with an uppercase
-  letter, by key, and empty under a `positional` line
-- `ctx.after`: how many of `ctx.args` follow a `--`
-- `ctx.dashed`: whether a `--` was typed
-- `ctx.verbose`: 0, 1 or 2
-- `ctx.interpreter`: the luajit dev runs under
-
-The chunk returns the exit code as an integer, and nothing means 0. A Lua
-error ends the run with `dev <name>: <message>` and exit 1.
-
-The first header line that is not a `group:`, `hidden`, `local`, `positional`
-or `flags:` line is the description in `dev help`. This command runs as
-`dev greet NAME=you`.
-
-```lua
---[[
-Print a greeting.
-usage: greet [NAME=who]
-]]
-local dev_command = require("dev.command")
-
-local ctx = ...
-dev_command.no_args(ctx)
-print("hello " .. (ctx.vars.NAME or "world"))
-return 0
-```
-
-### A subcommand
-
-`.dev/CMD/SUB.lua` runs as `dev CMD SUB`. A directory of scripts is a command
-with subcommands, and the first line of `.dev/CMD/DESCRIPTION` describes it.
-
-Such a command with no subcommand, or an unknown one, exits 2 and lists the
-subcommands. Saved as `.dev/cache/show.lua`, this subcommand runs as
-`dev cache show` and prints `cache show`.
-
-```lua
---[[
-Print the command's state.
-]]
-local dev_command = require("dev.command")
-
-local ctx = ...
-dev_command.no_args(ctx)
-print(ctx.name)
-```
-
-### A flag
-
-A script gets a flag only when its header declares it. Before a `--`, any
-other word that starts with `-` stops dev with exit 2, and `-h` and `--help`
-stay reserved, so a `flags:` line cannot declare them.
-
-```lua
---[[
-Print a greeting.
-usage: greet [--loud]
-flags: --loud
-]]
-local dev_command = require("dev.command")
-
-local ctx = ...
-local loud = false
-for _, arg in ipairs(ctx.args) do
-    if arg == "--loud" then
-        loud = true
-    else
-        dev_command.usage_error(ctx, "unknown argument " .. arg)
-    end
-end
-print(loud and "HELLO" or "hello")
-```
-
-### Group and hidden lines
-
-`group: <name>` sets the heading `dev help` lists the command under, and a
-command with none lands in a group named after the project directory. `hidden`
-keeps the command out of `dev help` and `dev help -a` still lists it. Scripts
-named `__*.sh` or `__*.lua` never appear in any listing.
-
-```lua
---[[
-group: Check your work
-hidden
-Print the checks this repo runs.
-]]
-local dev_command = require("dev.command")
-
-local ctx = ...
-dev_command.no_args(ctx)
-print("lint")
-```
-
-### Your own modules
-
-`.dev/lua/` is on `package.path` while a Lua command runs, so
-`.dev/lua/myproj/checks.lua` loads with `require("myproj.checks")`. dev never
-lists `lua` or `topics` as a command.
+The Rust lint set in `commands/lint.luau` is synced above its
+`-- --- project-specific checks below ---` line, and Pomb's own checks sit
+below it.
 
 ## Commands in this repo
 
-Pomb has the verbs below, listed alphabetically, and the `parity`, `site` and
-`tools` nouns with their subcommands. Hidden `__` helpers are not listed.
-`dev help <verb>` prints the authoritative text for one verb.
+Pomb has the commands below, listed alphabetically, and the `parity`, `site`
+and `tools` commands with their subcommands. The helpers are not listed.
+`dev help <command>` prints the authoritative text for one command.
 
 ### dev build
 
@@ -287,7 +68,7 @@ after `--` go to cargo.
 Example:
 
 ```sh
-dev build --remote
+dev --remote build
 ```
 
 ### dev fmt
@@ -318,8 +99,8 @@ waits for that lock and for `.dev/release.lock` to clear, up to
 `POMB_LAND_WAIT_BOUND` seconds each (default 21600, polled every
 `POMB_LAND_WAIT_INTERVAL`, default 30), and refuses attribution trailers. It
 skips the ci runs when the card's latest `dev-check` note passed `dev --remote
-lint` and `dev --remote test` on the same patch. Otherwise it runs `dev lint
---remote` and then `dev test --remote`, and a run refused while the ci hub is
+lint` and `dev --remote test` on the same patch. Otherwise it runs `dev
+--remote lint` and then `dev --remote test`, and a run refused while the ci hub is
 draining repeats every `POMB_DRAIN_INTERVAL` seconds (default 60) up to
 `POMB_DRAIN_BOUND` (default 3600).
 
@@ -373,7 +154,7 @@ release. Linux only. Arguments after `--` go to nextest.
 Example:
 
 ```sh
-dev nixcheck --remote
+dev --remote nixcheck
 ```
 
 ### dev parity
@@ -382,7 +163,7 @@ Check Pomb against the KanbanFlow Golden Master. The scripts run here and
 drive Playwright through node, so run them where it is installed (set
 `PW_NODE_MODULES` to a directory holding playwright 1.63).
 
-- `dev parity start-server BINARY PORT WORKDIR`: start a Pomb binary with
+- `dev parity startserver BINARY PORT WORKDIR`: start a Pomb binary with
   `--auth none` under a frozen server clock, seed the three parity boards and
   write `WORKDIR/state.json` (needs libfaketime, and `PARITY_SEED_TIME`,
   `PARITY_SERVE_TIME`, `PARITY_TZ` and `FAKETIME_LIB` tune it)
@@ -399,10 +180,10 @@ drive Playwright through node, so run them where it is installed (set
   server against its state file
 - `dev parity overflow STATE_FILE WIDTH`: check that the candidate pages do
   not scroll sideways at a phone width
-- `dev parity seed-epic BASE_URL COOKIE_JAR`: seed the "Pomb Epic Test" board
-- `dev parity seed-panel BASE_URL COOKIE_JAR`: seed the "Pomb Panel Test"
+- `dev parity seedepic BASE_URL COOKIE_JAR`: seed the "Pomb Epic Test" board
+- `dev parity seedpanel BASE_URL COOKIE_JAR`: seed the "Pomb Panel Test"
   board
-- `dev parity seed-visual-test BASE_URL COOKIE_JAR`: seed the "Pomb Visual
+- `dev parity seedvisualtest BASE_URL COOKIE_JAR`: seed the "Pomb Visual
   Test" board
 
 Each seed subcommand prints the new board id as the last line of standard
@@ -411,7 +192,7 @@ output.
 Example:
 
 ```sh
-dev parity start-server target/release/pomb 8099 /tmp/parity-a
+dev parity startserver target/release/pomb 8099 /tmp/parity-a
 dev parity run --state /tmp/parity-a/state.json --out report.json
 ```
 
@@ -449,8 +230,8 @@ request.
 Release refuses unless main has a commit since its last `v*` tag. It bumps
 the version in `.dev/worktrees/release-N` and commits `Release batch-N:
 SUMMARY` with only `Cargo.toml` and `Cargo.lock`. It takes the lock
-`.dev/release.lock` (which `dev land` waits on) and runs `dev lint --remote`,
-`dev test --remote`, `dev nixcheck --remote` and `dev build --remote` at the
+`.dev/release.lock` (which `dev land` waits on) and runs `dev --remote lint`,
+`dev --remote test`, `dev --remote nixcheck` and `dev --remote build` at the
 same time on ci, and pushes main only when all four pass and main has not
 moved. It then tags `batch-N` and `vVERSION` and prints the nix hash and the
 request block. A `--dry-run` leaves the release worktree behind, and
@@ -479,7 +260,7 @@ Host the public Pomb sites. Each subcommand runs here and takes a channel,
   and update timer
 - `dev site restage nightly [--bad]`: make the next update real (`--bad`:
   stage a binary that exits 1)
-- `dev site setup-code`: print the setup code each channel logged at its
+- `dev site setupcode`: print the setup code each channel logged at its
   first start
 - `dev site firewall`: drop new connections to port 22 except from the box
   itself, so only the tunnel reaches sshd (idempotent)
@@ -496,7 +277,7 @@ dev site verify nightly --wait
 
 Run the test suite. Arguments after `--` go to nextest, and doctests run only
 when there are none. Each `tests/js` script then runs with node against
-`static/app.js`, and every `.dev/tests/*_test.lua` runs last.
+`static/app.js`, and every `.dev/tests/*_test.luau` runs last.
 
 Example:
 
@@ -505,7 +286,7 @@ dev --remote test
 dev test -- -j 1 module
 ```
 
-### dev tools seed-golden-master
+### dev tools seedgoldenmaster
 
 Reproduce the KanbanFlow Golden Master board on a Pomb instance.
 
@@ -522,7 +303,7 @@ as the last line of standard output.
 Example:
 
 ```sh
-dev tools seed-golden-master --as-of 2026-09-30 http://127.0.0.1:8099 jar.txt
+dev tools seedgoldenmaster --as-of 2026-09-30 http://127.0.0.1:8099 jar.txt
 ```
 
 ### dev verify

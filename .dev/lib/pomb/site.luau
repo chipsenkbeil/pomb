@@ -1,0 +1,162 @@
+local devos = require("@dev/os")
+local fs = require("@dev/fs")
+local dev_command = require("@dev/command")
+
+---@class pomb.site
+---@field HOST_ENTRY string pass entry whose user part names the ssh user
+---@field TUNNEL_HOST string name the box answers on through the Cloudflare tunnel
+---@field ADMIN_IP_ENTRY string pass entry holding the admin address
+---@field CHANNEL table<string, string> release channel words by name
+---@field USAGE integer exit code of a usage error
+local M = {}
+
+M.HOST_ENTRY = "Agents/Linode/pomb.app-host"
+M.TUNNEL_HOST = "ssh.pomb.app"
+M.ADMIN_IP_ENTRY = "Agents/Linode/pomb.app-admin-ip"
+M.CHANNEL = { STABLE = "stable", NIGHTLY = "nightly" }
+M.USAGE = 2
+
+local cached_host
+
+local function non_empty(value)
+    return value ~= nil and value ~= ""
+end
+
+---Append `words` to `list`.
+---@param list string[] list to extend
+---@param words string[] words to add
+---@return string[] list the same list
+function M.append(list, words)
+    for _, word in ipairs(words) do
+        list[#list + 1] = word
+    end
+    return list
+end
+
+---Tell whether `name` is a release channel.
+---@param name string word to test
+---@return boolean channel true for stable and nightly
+function M.is_channel(name)
+    return name == M.CHANNEL.STABLE or name == M.CHANNEL.NIGHTLY
+end
+
+---Build the ssh options that select the key and stop prompts.
+---@return string[] opts the option words, with `POMB_KEY` or `~/.ssh/pomb_app` as the key
+function M.ssh_opts()
+    local key = devos.getenv("POMB_KEY")
+    if not non_empty(key) then
+        key = devos.getenv("HOME") .. "/.ssh/pomb_app"
+    end
+    return {
+        "-i",
+        key,
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "LogLevel=ERROR",
+    }
+end
+
+---Read the first line of a password store entry, and exit 1 when it is missing or empty.
+---@param entry string pass entry name
+---@return string line the first line of the entry
+function M.pass_line(entry)
+    local out, code = devos.capture({ "pass", "show", entry }, { stderr = "null" })
+    local value = out:gsub("\n+$", "")
+    if code ~= 0 or value == "" then
+        dev_command.die("The password store entry " .. entry .. " is missing or empty.")
+    end
+    return value:match("^[^\n]*")
+end
+
+---Name the box as `POMB_HOST`, or as the password store entry's user at the tunnel name.
+---
+---Exits 1 when the entry is missing, empty or malformed.
+---@return string host the ssh destination
+function M.host()
+    local host = devos.getenv("POMB_HOST")
+    if non_empty(host) then
+        return host
+    end
+    if cached_host then
+        return cached_host
+    end
+    local user = M.pass_line(M.HOST_ENTRY):match("^([%w_.-]+)@[^@%s]+$")
+    if not user then
+        dev_command.die("The password store entry " .. M.HOST_ENTRY .. " is not user@host.")
+    end
+    host = user .. "@" .. M.TUNNEL_HOST
+    cached_host = host
+    return host
+end
+
+---Build an ssh command line with the shared options.
+---@param host string ssh destination
+---@param words string[] remote command words
+---@return string[] argv the command line
+function M.ssh_argv(host, words)
+    local argv = M.append({ "ssh" }, M.ssh_opts())
+    argv[#argv + 1] = host
+    return M.append(argv, words)
+end
+
+---Run a command on the box.
+---@param words string[] remote command words
+---@return integer code ssh exit status, 1 when it had none
+function M.ssh(words)
+    return devos.run(M.ssh_argv(M.host(), words)) or 1
+end
+
+---Run a shell script on the box through its standard input.
+---@param script string the script text
+---@param words string[] remote command words that read it
+---@return integer code ssh exit status, 1 when it had none
+function M.ssh_script(script, words)
+    local argv = M.ssh_argv(M.host(), words)
+    local file, why = fs.mktemp({ prefix = "pomb-script" })
+    if not file then
+        dev_command.die(why)
+    end
+    local ok, code, message = pcall(function()
+        local written, why_not = fs.write(file, script)
+        if not written then
+            return nil, why_not
+        end
+        return devos.run(
+            M.append({ "sh", "-c", 'file=$1; shift; exec "$@" <"$file"', "sh", file }, argv)
+        ) or 1
+    end)
+    fs.remove(file)
+    if not ok then
+        error(code, 0)
+    end
+    if not code then
+        dev_command.die(message)
+    end
+    return code
+end
+
+---Name the folder of the site commands' box files.
+---@param ctx dev.Ctx the command's context
+---@return string dir the absolute path of `.dev/site`
+function M.dir(ctx)
+    return ctx.root .. "/.dev/site"
+end
+
+---Read a remote script from its `.dev/helpers/site_<name>.sh` file, and exit 1 when it fails.
+---@param ctx dev.Ctx the command's context
+---@param name string script name without its `site_` prefix and `.sh` suffix
+---@return string script the script text, sent to the box unchanged
+function M.read_script(ctx, name)
+    local text, why = fs.read(ctx.root .. "/.dev/helpers/site_" .. name .. ".sh")
+    if not text then
+        dev_command.die(why)
+    end
+    return text
+end
+
+return M

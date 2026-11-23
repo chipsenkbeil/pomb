@@ -58,7 +58,7 @@ diffPixels) for every permutation.
 **L4 — Regression.** The final-battery checks covering the affected area
 still pass; no previously-fixed defect regresses. A card lands on main with
 `dev land COMMIT --card ID` once L3 passes: it applies the verified commit onto
-the remote's current main, runs `dev lint --remote` then `dev test --remote`,
+the remote's current main, runs `dev --remote lint` then `dev --remote test`,
 and pushes. A successful land moves the card to Release, and it moves to
 Done only after `dev verify` passes on the released sha.
 

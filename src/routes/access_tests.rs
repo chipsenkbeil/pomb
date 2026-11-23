@@ -1509,7 +1509,7 @@ fn token_writable_task_routes_should_reach_the_lock_check() {
 
 #[test]
 fn restage_status_echo_should_be_a_sentence() {
-    let source = include_str!("../../.dev/__site_restage.sh");
+    let source = include_str!("../../.dev/helpers/site_restage.sh");
     assert!(
         !source.contains("echo \"nightly: current"),
         "the restage script still prints the prefixed status echo"
