@@ -99,7 +99,7 @@ local function fixture(tagged, current, cards)
         assert(fs.write(to, assert(fs.read(ROOT .. "/.dev/" .. file))))
     end
     git(repo, "add", "-f", ".dev")
-    git(repo, "commit", "-q", "-m", "Add dev verbs")
+    git(repo, "commit", "-q", "-m", "Add dev commands")
     commit_version(repo, tagged, "Release batch-1: first")
     git(repo, "tag", "-a", "v" .. tagged, "-m", "release")
     for n = 0, cards - 1 do

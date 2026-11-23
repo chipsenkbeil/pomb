@@ -7,7 +7,7 @@ REV defaults to the merge-base of HEAD and main on the remote of record, so a ca
 local devos = require("dev.os")
 local forge = require("dev.forge")
 local fs = require("dev.fs")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 local vcs = require("pomb.vcs")
 
 local ctx = ...
@@ -19,7 +19,7 @@ local INTERRUPTED = 130
 local function resolve_sha(rev)
     local sha = vcs.resolve(root, rev)
     if not sha then
-        verb.die("Cannot resolve " .. rev .. " to a commit.")
+        dev_command.die("Cannot resolve " .. rev .. " to a commit.")
     end
     return sha
 end
@@ -27,7 +27,7 @@ end
 local function merge_base(remote_main)
     local sha = vcs.merge_base(root, remote_main)
     if not sha then
-        verb.die("HEAD and " .. remote_main .. " have no merge-base.")
+        dev_command.die("HEAD and " .. remote_main .. " have no merge-base.")
     end
     return sha
 end
@@ -38,7 +38,7 @@ local function baseline_rev(requested)
     end
     local found, why = forge.resolve(root)
     if not found then
-        verb.die(why)
+        dev_command.die(why)
     end
     local code = devos.run({ "git", "fetch", "-q", found.remote, "main" }, { cwd = root }) or 1
     if code ~= 0 then
@@ -94,12 +94,12 @@ end
 stderr:write("baseline: ", rev, "\n")
 
 if fs.exists(root .. "/" .. BASELINE) then
-    verb.die("Refusing to start because " .. BASELINE .. "/ already exists.")
+    dev_command.die("Refusing to start because " .. BASELINE .. "/ already exists.")
 end
 
 local dir, why = fs.mktemp({ prefix = "dev-regress", dir = true })
 if not dir then
-    verb.die(why)
+    dev_command.die(why)
 end
 
 local ok, code = pcall(function()

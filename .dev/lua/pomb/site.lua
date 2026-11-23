@@ -1,6 +1,6 @@
 local devos = require("dev.os")
 local fs = require("dev.fs")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 ---@class pomb.site
 ---@field HOST_ENTRY string pass entry whose user part names the ssh user
@@ -68,7 +68,7 @@ function M.pass_line(entry)
     local out, code = devos.capture({ "pass", "show", entry }, { stderr = "null" })
     local value = out:gsub("\n+$", "")
     if code ~= 0 or value == "" then
-        verb.die("site: the password store entry " .. entry .. " is missing or empty")
+        dev_command.die("site: the password store entry " .. entry .. " is missing or empty")
     end
     return value:match("^[^\n]*")
 end
@@ -87,7 +87,7 @@ function M.host()
     end
     local user = M.pass_line(M.HOST_ENTRY):match("^([%w_.-]+)@[^@%s]+$")
     if not user then
-        verb.die("site: the password store entry " .. M.HOST_ENTRY .. " is not user@host")
+        dev_command.die("site: the password store entry " .. M.HOST_ENTRY .. " is not user@host")
     end
     host = user .. "@" .. M.TUNNEL_HOST
     cached_host = host
@@ -119,7 +119,7 @@ function M.ssh_script(script, words)
     local argv = M.ssh_argv(M.host(), words)
     local file, why = fs.mktemp({ prefix = "pomb-script" })
     if not file then
-        verb.die(why)
+        dev_command.die(why)
     end
     local ok, code, message = pcall(function()
         local written, why_not = fs.write(file, script)
@@ -135,7 +135,7 @@ function M.ssh_script(script, words)
         error(code, 0)
     end
     if not code then
-        verb.die(message)
+        dev_command.die(message)
     end
     return code
 end
@@ -154,7 +154,7 @@ end
 function M.read_script(ctx, name)
     local text, why = fs.read(ctx.root .. "/.dev/__site_" .. name .. ".sh")
     if not text then
-        verb.die(why)
+        dev_command.die(why)
     end
     return text
 end

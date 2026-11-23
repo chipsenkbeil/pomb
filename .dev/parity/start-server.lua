@@ -26,13 +26,13 @@ faketime package on Linux). Stop the server with
 local devos = require("dev.os")
 local fs = require("dev.fs")
 local json = require("dev.json")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local ctx = ...
 local bin, port, work = ctx.args[1], ctx.args[2], ctx.args[3]
 if not (bin and port and work) then
     local usage = "Binary, port and workdir are required."
-    verb.die(usage .. " Usage: dev " .. ctx.name .. " BINARY PORT WORKDIR.")
+    dev_command.die(usage .. " Usage: dev " .. ctx.name .. " BINARY PORT WORKDIR.")
 end
 
 local POLL_SECS = 0.2
@@ -53,7 +53,7 @@ local base = "http://127.0.0.1:" .. port
 
 local function need(ok, err)
     if not ok then
-        verb.die(err)
+        dev_command.die(err)
     end
 end
 
@@ -152,7 +152,7 @@ local function seed(argv, errfile)
     if code ~= 0 then
         local text = fs.read(errfile) or ""
         local name = table.concat(argv, " ", 1, 3)
-        verb.die("The seeder " .. name .. " failed with exit " .. code .. ". " .. text)
+        dev_command.die("The seeder " .. name .. " failed with exit " .. code .. ". " .. text)
     end
     local last
     for line in out:gmatch("[^\n]+") do

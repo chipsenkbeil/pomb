@@ -6,10 +6,10 @@ patch fmt fmt.patch
 ]]
 local dev_os = require("dev.os")
 local lintset = require("lintset")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local ctx = ...
-verb.no_args(ctx)
+dev_command.no_args(ctx)
 local root = ctx.root
 
 local code = dev_os.run({ "cargo", "+nightly", "fmt" }, { cwd = root })
@@ -30,6 +30,6 @@ end
 for _, file in ipairs(run:files({ "*.rs" })) do
     local ok, err = lintset.fix_comment_periods(root, file)
     if not ok then
-        verb.die(tostring(err))
+        dev_command.die(tostring(err))
     end
 end

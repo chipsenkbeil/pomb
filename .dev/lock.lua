@@ -8,7 +8,7 @@ A temporary directory holds a copy of the working copy's tracked and unignored f
 ]]
 local devos = require("dev.os")
 local fs = require("dev.fs")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 local vcs = require("pomb.vcs")
 
 local ctx = ...
@@ -28,18 +28,18 @@ local function parse(args)
                 inline = args[i]
             end
             if inline == nil or inline == "" then
-                verb.die("The --precise option needs a version. " .. USAGE)
+                dev_command.die("The --precise option needs a version. " .. USAGE)
             end
             found.precise = inline
         elseif found.package == nil and arg:sub(1, 1) ~= "-" then
             found.package = arg
         else
-            verb.die("Cannot use the argument '" .. arg .. "'. " .. USAGE)
+            dev_command.die("Cannot use the argument '" .. arg .. "'. " .. USAGE)
         end
         i = i + 1
     end
     if found.package == nil or found.package == "" then
-        verb.die("Name the package to resolve. " .. USAGE)
+        dev_command.die("Name the package to resolve. " .. USAGE)
     end
     return found
 end
@@ -106,7 +106,7 @@ local wanted = parse(ctx.args)
 
 local dir, why = fs.mktemp({ prefix = "dev-lock", dir = true })
 if not dir then
-    verb.die(why)
+    dev_command.die(why)
 end
 
 local ok, code = pcall(function()

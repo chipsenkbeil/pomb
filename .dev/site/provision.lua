@@ -6,7 +6,7 @@ Provision and harden the box over SSH; idempotent: dev site provision
 local devos = require("dev.os")
 local fs = require("dev.fs")
 local site = require("pomb.site")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local ctx = ...
 local stderr = io.stderr
@@ -18,7 +18,7 @@ local ROLLBACK = "rm -f /etc/ssh/sshd_config.d/10-pomb.conf && sshd -t && system
 local function temp(argv)
     local out, code = devos.capture(argv)
     if code ~= 0 then
-        verb.die("site: cannot make a temporary path")
+        dev_command.die("site: cannot make a temporary path")
     end
     return (out:gsub("\n$", ""))
 end
@@ -108,7 +108,9 @@ end
 local host = site.host()
 local admin_ip = site.pass_line(site.ADMIN_IP_ENTRY)
 if not admin_ip:match("^[%x.:/]+$") then
-    verb.die("site: the password store entry " .. site.ADMIN_IP_ENTRY .. " is not an address")
+    dev_command.die(
+        "site: the password store entry " .. site.ADMIN_IP_ENTRY .. " is not an address"
+    )
 end
 
 local stage = temp({ "mktemp", "-d", "/tmp/pomb-site.XXXXXX" })
@@ -128,6 +130,6 @@ if not ok then
     error(code, 0)
 end
 if message then
-    verb.die(message)
+    dev_command.die(message)
 end
 return code

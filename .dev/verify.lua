@@ -11,7 +11,7 @@ local devos = require("dev.os")
 local forge = require("pomb.forge")
 local fs = require("dev.fs")
 local json = require("dev.json")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local ctx = ...
 local stderr = io.stderr
@@ -211,7 +211,7 @@ end
 local repo = main_repo()
 local remote_name, why = forge.remote(repo)
 if not remote_name then
-    verb.note(("Dev verify cannot run, because %s."):format(why))
+    dev_command.note(("Dev verify cannot run, because %s."):format(why))
     return 1
 end
 if devos.run(git(repo, { "fetch", "-q", remote_name })) ~= 0 then

@@ -7,7 +7,7 @@ The verb takes no arguments, and a stray one exits 2.
 local dev_os = require("dev.os")
 local fs = require("dev.fs")
 local lintset = require("lintset")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local EDITION = "2024"
 local CANONICAL =
@@ -29,7 +29,7 @@ local ALLOWED_UNSAFE = [=[.workspace.metadata.style["allow-unsafe"] // [] | .[]
     | sub("^\./", "") | sub("/$", "")]=]
 
 local ctx = ...
-verb.no_args(ctx)
+dev_command.no_args(ctx)
 local lint = lintset.new(ctx)
 local root = ctx.root
 local rs_files = lint:files({ "*.rs" })

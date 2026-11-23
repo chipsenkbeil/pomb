@@ -1,6 +1,6 @@
 local devos = require("dev.os")
 local json = require("dev.json")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 ---@class pomb.seeder
 local M = {}
@@ -51,10 +51,12 @@ end
 function M.run(ctx, order, seed)
     local base, jar = ctx.args[1], ctx.args[2]
     if not base then
-        verb.die("Base url is required. Usage: dev " .. ctx.name .. " BASE_URL COOKIE_JAR.")
+        dev_command.die("Base url is required. Usage: dev " .. ctx.name .. " BASE_URL COOKIE_JAR.")
     end
     if not jar then
-        verb.die("Cookie jar is required. Usage: dev " .. ctx.name .. " BASE_URL COOKIE_JAR.")
+        dev_command.die(
+            "Cookie jar is required. Usage: dev " .. ctx.name .. " BASE_URL COOKIE_JAR."
+        )
     end
     local ok, result = pcall(seed, client(base, jar, order))
     if ok then

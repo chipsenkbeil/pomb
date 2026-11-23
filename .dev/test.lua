@@ -6,7 +6,7 @@ nextest runs with `INSTA_UPDATE=new`, so a failed run prints the path and text
 of each pending `.snap.new` file.
 ]]
 local dev_os = require("dev.os")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local ctx = ...
 local argv = { "cargo", "nextest", "run", "--all-features" }
@@ -55,7 +55,7 @@ local function print_pending_snapshots()
         local file = assert(io.open(ctx.root .. "/" .. path, "rb"))
         local text = file:read("*a")
         file:close()
-        verb.say(table.concat({ "pending snapshot ", path, "\n", text }))
+        dev_command.say(table.concat({ "pending snapshot ", path, "\n", text }))
     end
 end
 
@@ -79,7 +79,7 @@ local fs = require("dev.fs")
 
 local names, message = fs.list(ctx.root .. "/tests/js")
 if not names then
-    verb.die(message)
+    dev_command.die(message)
 end
 for _, name in ipairs(names) do
     if name:sub(1, 1) ~= "." and name:match("%.js$") then

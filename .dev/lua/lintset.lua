@@ -1,7 +1,7 @@
 local dev_os = require("dev.os")
 local fs = require("dev.fs")
 local standalone = require("dev.standalone")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 ---@class lintset.Lint
 ---@field root string absolute project root
@@ -391,7 +391,7 @@ end
 ---Print the name of the check that starts.
 ---@param name string the check's name
 function Lint:step(name)
-    verb.say("> " .. name)
+    dev_command.say("> " .. name)
 end
 
 ---Add a failed check's name to the list unless it is already there.
@@ -410,7 +410,7 @@ end
 ---@param name string the check's name
 ---@param message string what is wrong, written to standard error
 function Lint:fail(name, message)
-    verb.note(message)
+    dev_command.note(message)
     record(self.failed, name)
 end
 
@@ -419,7 +419,7 @@ end
 ---@param argv string[] the command and its arguments
 function Lint:check(name, argv)
     if self.verbose >= 1 then
-        verb.say("> " .. name .. ": " .. table.concat(argv, " "))
+        dev_command.say("> " .. name .. ": " .. table.concat(argv, " "))
     else
         self:step(name)
     end
@@ -445,7 +445,7 @@ function Lint:missing(binary, install, name)
         self:fail(name, text)
         return
     end
-    verb.note(text)
+    dev_command.note(text)
 end
 
 ---Say whether a tool exists, and report it as missing when it does not.
@@ -500,7 +500,7 @@ local function files_jj(lint, query)
         { cwd = root, stderr = "null" }
     )
     if code ~= 0 then
-        verb.note(
+        dev_command.note(
             "The jj file list command failed with exit "
                 .. code
                 .. ". A bad glob in .dev/lint-ignore is the usual cause."
@@ -712,7 +712,7 @@ function Lint:comment_runs(file, marker)
         if run.count >= FAIL_RUN then
             self:fail(CHECK_RUNS, message)
         else
-            verb.note(message)
+            dev_command.note(message)
         end
     end
 end
@@ -731,7 +731,7 @@ function Lint:finish()
     if #self.failed == 0 then
         return 0
     end
-    verb.note("These checks failed: " .. table.concat(self.failed, ", ") .. ".")
+    dev_command.note("These checks failed: " .. table.concat(self.failed, ", ") .. ".")
     return 1
 end
 

@@ -3,7 +3,7 @@ local fs = require("dev.fs")
 local t = require("dev.testing")
 local testenv = require("dev.testenv")
 local seeder = require("pomb.seeder")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local function stub(code)
     local dir = assert(fs.realpath(testenv.tempdir()))
@@ -54,14 +54,14 @@ end)
 
 t.test("seeder should die with the usage when an argument is missing", function()
     local dir = stub(0)
-    local die = verb.die
-    verb.die = function(msg)
+    local die = dev_command.die
+    dev_command.die = function(msg)
         error(msg, 0)
     end
     local ok, err = run(dir, { "http://x" }, function()
         return "b1"
     end)
-    verb.die = die
+    dev_command.die = die
     t.ok(not ok)
     t.eq(err, "Cookie jar is required. Usage: dev parity seed-x BASE_URL COOKIE_JAR.")
 end)

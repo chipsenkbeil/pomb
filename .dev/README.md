@@ -37,7 +37,7 @@ after the first `--` reaches the script untouched.
 A Lua verb loads each module below with `require` by its dotted name. The
 doc comments of the module hold every function.
 
-### dev.verb
+### dev.command
 
 The helpers a verb needs: `usage_error(ctx, msg)` exits 2, `no_args(ctx)`
 refuses any positional argument, `note(msg)` writes to standard error,
@@ -45,12 +45,12 @@ refuses any positional argument, `note(msg)` writes to standard error,
 `need(binary, install)` exits 1 when `binary` is not on `PATH`.
 
 ```lua
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local ctx = ...
-verb.no_args(ctx)
-verb.need("rg", "brew install ripgrep")
-verb.note("searching " .. ctx.root)
+dev_command.no_args(ctx)
+dev_command.need("rg", "brew install ripgrep")
+dev_command.note("searching " .. ctx.root)
 ```
 
 ### dev.fs
@@ -150,11 +150,11 @@ the jj or git backend, and `remotes(root, backend)` and
 
 ```lua
 local vcs = require("dev.vcs")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local backend, err = vcs.backend(ctx.root)
 if not backend then
-    return verb.die(err)
+    return dev_command.die(err)
 end
 for _, name in ipairs(vcs.branches(ctx.root, backend)) do
     print(name)
@@ -213,10 +213,10 @@ or `flags:` line is the description in `dev help`. This verb runs as
 Print a greeting.
 usage: greet [NAME=who]
 ]]
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local ctx = ...
-verb.no_args(ctx)
+dev_command.no_args(ctx)
 print("hello " .. (ctx.vars.NAME or "world"))
 return 0
 ```
@@ -234,10 +234,10 @@ subcommands. Saved as `.dev/cache/show.lua`, this verb runs as
 --[[
 Print the noun's state.
 ]]
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local ctx = ...
-verb.no_args(ctx)
+dev_command.no_args(ctx)
 print(ctx.name)
 ```
 
@@ -253,7 +253,7 @@ Print a greeting.
 usage: greet [--loud]
 flags: --loud
 ]]
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local ctx = ...
 local loud = false
@@ -261,7 +261,7 @@ for _, arg in ipairs(ctx.args) do
     if arg == "--loud" then
         loud = true
     else
-        verb.usage_error(ctx, "unknown argument " .. arg)
+        dev_command.usage_error(ctx, "unknown argument " .. arg)
     end
 end
 print(loud and "HELLO" or "hello")
@@ -280,10 +280,10 @@ group: Check your work
 hidden
 Print the checks this repo runs.
 ]]
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local ctx = ...
-verb.no_args(ctx)
+dev_command.no_args(ctx)
 print("lint")
 ```
 

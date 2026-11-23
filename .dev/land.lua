@@ -20,7 +20,7 @@ local drain = require("pomb.drain")
 local forge = require("pomb.forge")
 local lock = require("pomb.lock")
 local standalone = require("dev.standalone")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local ctx = ...
 
@@ -49,7 +49,7 @@ end
 
 local function die(message)
     drop_land_lock()
-    verb.die(message)
+    dev_command.die(message)
 end
 
 local function usage()

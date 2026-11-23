@@ -13,7 +13,7 @@ The last fixture column becomes the Done column. Its tasks are created in the fi
 local devos = require("dev.os")
 local fs = require("dev.fs")
 local json = require("dev.json")
-local verb = require("dev.verb")
+local dev_command = require("dev.command")
 
 local ctx = ...
 
@@ -91,7 +91,7 @@ local function parse_arguments()
         local arg = args[i]
         if arg == "--as-of" then
             if i == #args then
-                verb.usage_error(ctx, "The --as-of flag takes a date.")
+                dev_command.usage_error(ctx, "The --as-of flag takes a date.")
             end
             as_of = args[i + 1]
             i = i + 2
@@ -104,7 +104,7 @@ local function parse_arguments()
         end
     end
     if #positional < 2 or #positional > 3 then
-        verb.usage_error(ctx, "Pass BASE_URL and COOKIE_JAR, then optionally FIXTURE_JSON.")
+        dev_command.usage_error(ctx, "Pass BASE_URL and COOKIE_JAR, then optionally FIXTURE_JSON.")
     end
     return as_of, positional
 end
@@ -116,15 +116,15 @@ local fixture_path = positional[3] or (ctx.root .. "/.dev/golden-master-board.js
 
 local as_of_days = parse_date(as_of)
 if not as_of_days then
-    verb.die("--as-of must be YYYY-MM-DD, got '" .. as_of .. "'.")
+    dev_command.die("--as-of must be YYYY-MM-DD, got '" .. as_of .. "'.")
 end
 if not fs.is_file(cookie_jar) then
-    verb.die("The cookie jar is not readable: " .. cookie_jar)
+    dev_command.die("The cookie jar is not readable: " .. cookie_jar)
 end
 
 local fixture_text = fs.read(fixture_path)
 if not fixture_text then
-    verb.die("The fixture is not readable: " .. fixture_path)
+    dev_command.die("The fixture is not readable: " .. fixture_path)
 end
 local fixture = json.decode(fixture_text)
 if
@@ -134,7 +134,7 @@ if
     or #fixture.columns == 0
     or type(fixture.tasks) ~= "table"
 then
-    verb.die("The fixture lacks board_name, columns and tasks: " .. fixture_path)
+    dev_command.die("The fixture lacks board_name, columns and tasks: " .. fixture_path)
 end
 
 local capture_days = parse_date(CAPTURE_DATE)
@@ -158,7 +158,7 @@ local function api(method, path, body)
     if body ~= nil then
         local encoded, message = json.encode(body)
         if not encoded then
-            verb.die(
+            dev_command.die(
                 "The request " .. method .. " " .. path .. " could not encode its body: " .. message
             )
         end
@@ -173,13 +173,13 @@ local function api(method, path, body)
         output, code = devos.capture(argv)
     end
     if code ~= 0 then
-        verb.die("The request " .. method .. " " .. path .. " failed in curl.")
+        dev_command.die("The request " .. method .. " " .. path .. " failed in curl.")
     end
     local split = output:match("^.*()\n")
     local status = split and output:sub(split + 1) or ""
     local text = split and output:sub(1, split - 1) or output
     if not status:match("^2%d%d$") then
-        verb.die(
+        dev_command.die(
             "The request " .. method .. " " .. path .. " answered HTTP " .. status .. ". " .. text
         )
     end
@@ -188,7 +188,9 @@ local function api(method, path, body)
     end
     local value, message = json.decode(text)
     if value == nil then
-        verb.die("The request " .. method .. " " .. path .. " answered invalid JSON. " .. message)
+        dev_command.die(
+            "The request " .. method .. " " .. path .. " answered invalid JSON. " .. message
+        )
     end
     return value
 end
@@ -197,7 +199,7 @@ local function shift_due(value)
     local day, time = value:match("^([^T]+)T?(.*)$")
     local days = parse_date(day)
     if not days then
-        verb.die("The fixture date '" .. value .. "' is not YYYY-MM-DD.")
+        dev_command.die("The fixture date '" .. value .. "' is not YYYY-MM-DD.")
     end
     local shifted = format_date(days + shift_days)
     if time ~= "" then
@@ -222,7 +224,7 @@ log(string.format("Created the board '%s' (%s).", board_name, board_id))
 local columns = api("GET", "/api/boards/" .. board_id .. "/columns")
 local existing_count = #columns
 if existing_count < 1 then
-    verb.die("The new board has no columns.")
+    dev_command.die("The new board has no columns.")
 end
 local column_count = #fixture.columns
 
@@ -257,14 +259,14 @@ for i, spec in ipairs(fixture.columns) do
     wanted_names[i] = spec.name
 end
 if table.concat(names, "\0") ~= table.concat(wanted_names, "\0") then
-    verb.die("The column order does not match after creation: " .. table.concat(names, ", "))
+    dev_command.die("The column order does not match after creation: " .. table.concat(names, ", "))
 end
 
 for _, spec in ipairs(fixture.columns) do
     if truthy(spec.card_properties) then
         local config, message = json.encode(spec.card_properties)
         if not config then
-            verb.die("The column card properties could not be encoded: " .. message)
+            dev_command.die("The column card properties could not be encoded: " .. message)
         end
         api(
             "PATCH",
@@ -299,7 +301,7 @@ for _, want in ipairs(fixture.colors) do
     end
 end
 if #missing > 0 then
-    verb.die("Fixture colors are not in the board palette: " .. table.concat(missing, ", "))
+    dev_command.die("Fixture colors are not in the board palette: " .. table.concat(missing, ", "))
 end
 
 for _, color in ipairs(colors) do
@@ -340,11 +342,13 @@ local function seed_task(i, task)
     local name = task.name
     local column = find_by_name(columns, task.column)
     if not column then
-        verb.die(string.format("Task '%s' names the unknown column '%s'.", name, task.column))
+        dev_command.die(
+            string.format("Task '%s' names the unknown column '%s'.", name, task.column)
+        )
     end
     local color_id = color_map[task.color]
     if not color_id then
-        verb.die(string.format("Task '%s' has a color outside the palette.", name))
+        dev_command.die(string.format("Task '%s' has a color outside the palette.", name))
     end
 
     local create_column = column.id
@@ -368,14 +372,14 @@ local function seed_task(i, task)
     if truthy(task.assignee) then
         local assignee_id = member_id(task.assignee)
         if not assignee_id then
-            verb.die(string.format("Task '%s' has an assignee with no matching user.", name))
+            dev_command.die(string.format("Task '%s' has an assignee with no matching user.", name))
         end
         patch.member_ids = { assignee_id }
     end
     if truthy(task.due_target_column) then
         local target = find_by_name(columns, task.due_target_column)
         if not target then
-            verb.die(
+            dev_command.die(
                 string.format(
                     "Task '%s' names the unknown due target column '%s'.",
                     name,
@@ -403,7 +407,9 @@ local function seed_task(i, task)
     local minutes = math.floor(hours * 60 + 0.5)
     if minutes > 0 then
         if minutes > MAX_LOGGED_MINUTES then
-            verb.die(string.format("Task '%s' has logged_hours that do not fit in one day.", name))
+            dev_command.die(
+                string.format("Task '%s' has logged_hours that do not fit in one day.", name)
+            )
         end
         api("POST", "/api/time/manual", {
             task_id = task_id,
