@@ -9,6 +9,7 @@ var csvEnd = src.indexOf('  function downloadCsv(', csvStart);
 if (csvStart < 0 || csvEnd < csvStart) throw new Error('csvText not found');
 eval(src.slice(csvStart, csvEnd));
 eval(src.slice(src.indexOf('  var ReportFile = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ReportFile = (function () {')) + '\n  })();'.length));
+eval(src.slice(src.indexOf('  var ColumnHistory = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ColumnHistory = (function () {')) + '\n  })();'.length));
 eval(src.slice(start, end));
 
 var MIN = 60000, HOUR = 60 * MIN, DAY = 24 * HOUR;
@@ -73,6 +74,12 @@ check('task row intervals', ta[1].intervals.map(function (iv) { return [iv.start
   [[NOW - 6 * DAY, NOW - 4 * DAY - 3 * HOUR - 7 * MIN, false]]);
 check('current column interval is open and ends now', ta[2].intervals.map(function (iv) { return [iv.end, iv.open]; }), [[NOW, true]]);
 check('task without moves', TimeInColumnPage.taskRows(data, b, NOW).map(function (r) { return [r.id, r.ms]; }), [['todo', 2 * DAY]]);
+var backData = { columns: [{ id: 'todo', name: 'To-do', former_names: [] }, { id: 'back', name: 'Back to work', former_names: [] }] };
+var back = {
+  id: 'c', name: 'C', column_id: 'back', created_at: iso(NOW - 3 * DAY), color_id: null, labels: [], member_ids: [],
+  history: [ev('created', 'Task created in To-do', 'todo', NOW - 3 * DAY), ev('moved', 'Moved from To-do to Back to work', 'back', NOW - DAY)],
+};
+check('time-in-column-parses-a-name-containing-to', TimeInColumnPage.taskRows(backData, back, NOW).map(function (r) { return [r.id, r.ms]; }), [['todo', 2 * DAY], ['back', DAY]]);
 
 var ms = 27 * DAY + 3 * HOUR + 7 * MIN + 40000;
 check('minutes', TimeInColumnPage.fmtDuration(ms, 'minutes'), '27d 03h 08m');

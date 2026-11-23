@@ -14192,7 +14192,7 @@
       return tl;
     }
 
-    return { lookup: columnLookup, eventKey: eventKey, timelineFor: timelineFor };
+    return { lookup: columnLookup, eventKey: eventKey, timelineFor: timelineFor, recordedDestination: recordedDestination };
   })();
 
   var BurndownPage = (function () {
@@ -17658,20 +17658,6 @@
       return m + 'm';
     }
 
-    function destination(e) {
-      var detail = e.detail || '';
-      if (e.kind === 'created' && detail.indexOf('Task created in ') === 0) {
-        return detail.slice('Task created in '.length);
-      }
-      if (e.kind === 'moved' && detail.indexOf('Moved from ') === 0) {
-        var body = detail.slice('Moved from '.length);
-        var sep = ' to ';
-        var i = body.lastIndexOf(sep);
-        return i === -1 ? null : body.slice(i + sep.length);
-      }
-      return null;
-    }
-
     function columnIdByName(columns) {
       var byName = {};
       columns.forEach(function (c) { byName[c.name] = c.id; });
@@ -17686,7 +17672,7 @@
     function timeline(task, current, byName) {
       var tl = [];
       (task.history || []).forEach(function (e) {
-        var name = destination(e);
+        var name = ColumnHistory.recordedDestination(e);
         var at = Date.parse(e.created_at);
         if (name == null || isNaN(at)) return;
         var col = e.column_id || byName[name];
