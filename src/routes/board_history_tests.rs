@@ -268,6 +268,51 @@ async fn history_should_give_the_old_and_new_value_of_a_change() {
 }
 
 #[tokio::test]
+async fn history_should_give_null_for_a_missing_old_or_new_value() {
+    let (_dir, fx) = fixture();
+    let mut cleared = event(
+        HistoryKind::Moved,
+        "Cleared the column",
+        "ann",
+        "2026-10-20T10:00:00Z",
+    );
+    cleared.from = Some("Todo".to_string());
+    let id = task_with(&fx, "Gap", vec![cleared]);
+    add_comment(&fx, &id, "c1", "Looks fine", "2026-10-27T10:00:00Z");
+    let moved = &rows(&fx, "property=moved").await["rows"][0];
+    assert_eq!(moved["changed"], true);
+    assert_eq!(moved["old_value"], "Todo");
+    assert!(moved["new_value"].is_null(), "{moved}");
+    let comment = &rows(&fx, "event=comment").await["rows"][0];
+    assert!(comment["old_value"].is_null(), "{comment}");
+    assert!(comment["new_value"].is_null(), "{comment}");
+}
+
+#[tokio::test]
+async fn history_export_should_leave_a_missing_value_empty() {
+    let (_dir, fx) = fixture();
+    let mut cleared = event(
+        HistoryKind::Moved,
+        "Cleared the column",
+        "ann",
+        "2026-10-20T10:00:00Z",
+    );
+    cleared.from = Some("Todo".to_string());
+    task_with(&fx, "Gap", vec![cleared]);
+    let uri = format!(
+        "/api/boards/{}/history?format=csv&property=moved",
+        fx.board_id
+    );
+    let (status, csv) = send(&fx, "GET", &uri).await;
+    assert_eq!(status, StatusCode::OK, "{csv}");
+    assert!(
+        csv.contains("\"Todo\",\"\",\"Cleared the column\""),
+        "{csv}"
+    );
+    assert!(!csv.contains("(none)"), "{csv}");
+}
+
+#[tokio::test]
 async fn history_should_hold_comments_and_deleted_tasks() {
     let (_dir, fx) = fixture();
     let id = task_with(

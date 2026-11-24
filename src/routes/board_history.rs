@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use super::{NO_VALUE, history_actor};
+use super::history_actor;
 use crate::models::{BinRow, HistoryKind, TaskComment, TaskEvent, TaskRow, attribution};
 
 /// The titles of the columns of a history export.
@@ -199,10 +199,10 @@ pub(crate) struct HistoryRow {
     /// Whether the event replaced one value with another, so `old_value` and `new_value` hold
     /// them.
     pub(crate) changed: bool,
-    /// The value the change replaced, or `(none)`.
-    pub(crate) old_value: String,
-    /// The value the change set, or `(none)`.
-    pub(crate) new_value: String,
+    /// The value the change replaced, or null when there is none.
+    pub(crate) old_value: Option<String>,
+    /// The value the change set, or null when there is none.
+    pub(crate) new_value: Option<String>,
     #[serde(skip)]
     actor: String,
 }
@@ -241,8 +241,8 @@ fn event_row(task: &str, event: &TaskEvent) -> HistoryRow {
         kind: event.kind,
         detail: event.detail.clone(),
         changed: from.is_some() || to.is_some(),
-        old_value: from.unwrap_or_else(|| NO_VALUE.to_string()),
-        new_value: to.unwrap_or_else(|| NO_VALUE.to_string()),
+        old_value: from,
+        new_value: to,
         actor: event.actor.clone(),
     }
 }
@@ -302,8 +302,8 @@ fn comment_row(task: &str, comment: &TaskComment) -> HistoryRow {
         kind: HistoryKind::Comment,
         detail: comment.body.clone(),
         changed: false,
-        old_value: NO_VALUE.to_string(),
-        new_value: NO_VALUE.to_string(),
+        old_value: None,
+        new_value: None,
         actor: comment.author.clone(),
     }
 }
@@ -355,8 +355,8 @@ pub(crate) fn export_cells(page: &HistoryPage) -> Vec<Vec<String>> {
         let (property, old, new) = if row.changed {
             (
                 row.event.clone(),
-                row.old_value.clone(),
-                row.new_value.clone(),
+                row.old_value.clone().unwrap_or_default(),
+                row.new_value.clone().unwrap_or_default(),
             )
         } else {
             (String::new(), String::new(), String::new())

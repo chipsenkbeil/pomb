@@ -15726,8 +15726,8 @@
         html += '<details class="history-compare"' + (open ? ' open' : '') + '>' +
           '<summary>Compare values</summary>' +
           '<table class="bshell-table"><thead><tr><th>Property</th><th>Old value</th><th>New value</th></tr></thead>' +
-          '<tbody><tr><th>' + escapeHtml(row.event) + '</th><td>' + escapeHtml(row.old_value) +
-          '</td><td>' + escapeHtml(row.new_value) + '</td></tr></tbody></table></details>';
+          '<tbody><tr><th>' + escapeHtml(row.event) + '</th><td>' + escapeHtml(previewCell(row.old_value)) +
+          '</td><td>' + escapeHtml(previewCell(row.new_value)) + '</td></tr></tbody></table></details>';
       }
       html += '</div>';
       return html;
