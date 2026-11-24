@@ -286,6 +286,63 @@ async fn settings_page_should_show_the_backups_pane() {
 }
 
 #[tokio::test]
+async fn the_backups_pane_should_render_four_sub_tabs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let app = app_for(open_db(dir.path()));
+
+    let page = call(&app, "GET", "/settings", None).await;
+
+    let html = page.body.as_str().expect("html");
+    let start = html.find("<div id=\"backups\"").expect("backups pane");
+    let end = html[start..]
+        .find("<div id=\"storage\"")
+        .map_or(html.len(), |i| start + i);
+    let pane = &html[start..end];
+    for label in [
+        "Schedule",
+        "Last backup",
+        "Kept backups",
+        "Unnamed attachment files",
+    ] {
+        assert!(pane.contains(&format!(">{label}</button>")), "{label}");
+    }
+    for id in [
+        "backup-panel-schedule",
+        "backup-panel-last",
+        "backup-panel-kept",
+        "backup-panel-unnamed",
+    ] {
+        assert!(
+            pane.contains(&format!("id=\"{id}\" role=\"tabpanel\"")),
+            "{id}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_backups_sub_tabs_should_keep_the_script_ids() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let app = app_for(open_db(dir.path()));
+
+    let page = call(&app, "GET", "/settings", None).await;
+
+    let html = page.body.as_str().expect("html");
+    for id in [
+        "backup-settings-form",
+        "backup-enabled",
+        "backup-interval",
+        "backup-keep",
+        "backup-error",
+        "backup-last",
+        "backup-now",
+        "backup-list",
+        "unnamed-files",
+    ] {
+        assert!(html.contains(&format!("id=\"{id}\"")), "{id}");
+    }
+}
+
+#[tokio::test]
 async fn settings_should_refuse_a_typo_or_an_omitted_field() {
     let dir = tempfile::tempdir().expect("tempdir");
     let app = app_for(open_db(dir.path()));

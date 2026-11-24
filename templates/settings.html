@@ -379,6 +379,13 @@
   <div id="backups" class="settings-pane">
   <section class="settings-section">
     <h2>Backups</h2>
+    <div class="tk-tabs" role="tablist" aria-label="Backup sections" data-pane-tabs>
+      <button type="button" class="tm-tab" role="tab" id="backup-tab-schedule" data-pane-tab="schedule" aria-controls="backup-panel-schedule" aria-selected="true">Schedule</button>
+      <button type="button" class="tm-tab" role="tab" id="backup-tab-last" data-pane-tab="last" aria-controls="backup-panel-last" aria-selected="false" tabindex="-1">Last backup</button>
+      <button type="button" class="tm-tab" role="tab" id="backup-tab-kept" data-pane-tab="kept" aria-controls="backup-panel-kept" aria-selected="false" tabindex="-1">Kept backups</button>
+      <button type="button" class="tm-tab" role="tab" id="backup-tab-unnamed" data-pane-tab="unnamed" aria-controls="backup-panel-unnamed" aria-selected="false" tabindex="-1">Unnamed attachment files</button>
+    </div>
+    <div id="backup-panel-schedule" role="tabpanel" aria-labelledby="backup-tab-schedule" data-pane-panel="schedule">
     <p class="settings-hint">Pomb can copy its database file and attachment files to
       <code>{{ backups.directory }}</code> on a schedule. Backups are off until you turn them on. To
       restore one, stop Pomb, copy the backup over the database file, copy its
@@ -395,8 +402,9 @@
       <button type="submit" class="kf-btn kf-btn-success">Save backup settings</button>
     </form>
     <p class="settings-hint" id="backup-error" role="alert" hidden></p>
+    </div>
 
-    <h3>Last backup</h3>
+    <div id="backup-panel-last" role="tabpanel" aria-labelledby="backup-tab-last" data-pane-panel="last" hidden>
     <div id="backup-last">
       {% if let Some(last) = backups.last %}
       {% if last.ok %}
@@ -409,8 +417,9 @@
       {% endif %}
     </div>
     <button type="button" class="kf-btn" id="backup-now">Back up now</button>
+    </div>
 
-    <h3>Unnamed attachment files</h3>
+    <div id="backup-panel-unnamed" role="tabpanel" aria-labelledby="backup-tab-unnamed" data-pane-panel="unnamed" hidden>
     <div id="unnamed-files" data-count="{{ backups.unnamed_count }}" data-size="{{ backups.unnamed_size }}">
       {% if backups.unnamed_count == 0 %}
       <p class="settings-hint">Every attachment file belongs to a task.</p>
@@ -419,8 +428,9 @@
       <button type="button" class="kf-btn kf-btn-danger" id="unnamed-remove">Remove unnamed files</button>
       {% endif %}
     </div>
+    </div>
 
-    <h3>Kept backups</h3>
+    <div id="backup-panel-kept" role="tabpanel" aria-labelledby="backup-tab-kept" data-pane-panel="kept" hidden>
     <div id="backup-list">
       {% if backups.files.is_empty() %}
       <p class="settings-hint">No backup files yet.</p>
@@ -434,6 +444,7 @@
         </tbody>
       </table></div>
       {% endif %}
+    </div>
     </div>
   </section>
   </div>
