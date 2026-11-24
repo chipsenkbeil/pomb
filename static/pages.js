@@ -2426,6 +2426,27 @@
         error.hidden = false;
       });
     });
+    const countsBox = document.getElementById('show-card-counts');
+    const countsError = document.getElementById('show-card-counts-error');
+    countsBox.addEventListener('change', () => {
+      const wanted = countsBox.checked;
+      countsError.hidden = true;
+      countsBox.disabled = true;
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ show_card_counts: wanted }),
+      }).then((res) => {
+        if (!res.ok) throw new Error('save failed');
+        countsBox.disabled = false;
+      }).catch(() => {
+        countsBox.checked = !wanted;
+        countsBox.disabled = false;
+        countsError.textContent = 'Could not save the setting.';
+        countsError.hidden = false;
+      });
+    });
   };
 
   pages['board-settings-fields'] = function () {

@@ -110,6 +110,10 @@ impl EscalationTier {
 /// bin for good.
 pub const BIN_PERMANENT_DELETE_KEY: &str = "bin_permanent_delete";
 
+/// Key in a board's config bag of the setting that shows a card count in the header of every
+/// column that has no WIP limit and no Column sum of its own.
+pub const SHOW_CARD_COUNTS_KEY: &str = "show_card_counts";
+
 /// Key in a board's config bag of the member new tasks start with.
 pub const DEFAULT_MEMBER_KEY: &str = "default_member";
 

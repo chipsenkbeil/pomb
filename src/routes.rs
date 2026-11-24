@@ -6115,6 +6115,7 @@ fn board_template(
 
     let label_settings = LabelSettings::from_config(&board.row().config_json);
     let unit = EstimateUnit::of(board.row());
+    let show_card_counts = board.row().config_bool(SHOW_CARD_COUNTS_KEY);
     let groups = limit_groups::LimitGroupView::all(db, &board.row().limit_groups)?;
     tasks.retain(|t| {
         !archived_lanes
@@ -6195,7 +6196,7 @@ fn board_template(
                     ColumnSum::EstimatedHours if unit.is_points() => None,
                     ColumnSum::EstimatedHours => Some(format_column_hours(estimate_total)),
                     ColumnSum::TaskCount => Some(count.to_string()),
-                    ColumnSum::None => None,
+                    ColumnSum::None => show_card_counts.then(|| count.to_string()),
                 },
                 sum_kind: match ColumnSettings::from_column(col).sum {
                     ColumnSum::EstimatedHours => "hours",
@@ -22496,6 +22497,9 @@ struct BoardConfigInput {
     /// `DELETE /api/bin/{id}` remove a deleted task of this board for good, false (the default)
     /// refuses it.
     bin_permanent_delete: Option<bool>,
+    /// Show card counts: true shows the card count in the header of every column that has no WIP
+    /// limit and no Column sum, false (the default) leaves those headers without a count.
+    show_card_counts: Option<bool>,
     /// The member new tasks start with: `none` (the default), `creator` for the account that
     /// creates the task, or the user id of one member from `GET /api/members`.
     default_member: Option<String>,
@@ -22673,6 +22677,8 @@ struct BoardConfigView {
     due_time: String,
     /// Whether the board's owner may delete tasks from its recycle bin for good.
     bin_permanent_delete: bool,
+    /// Whether columns with no WIP limit and no Column sum show their card count.
+    show_card_counts: bool,
     /// The member new tasks start with: `none`, `creator` or a user id.
     default_member: String,
     /// Whether the default member also becomes responsible.
@@ -22744,6 +22750,12 @@ async fn update_board_config(
         updates.insert(
             BIN_PERMANENT_DELETE_KEY.to_string(),
             serde_json::Value::Bool(allowed),
+        );
+    }
+    if let Some(shown) = input.show_card_counts {
+        updates.insert(
+            SHOW_CARD_COUNTS_KEY.to_string(),
+            serde_json::Value::Bool(shown),
         );
     }
     if let Some(member) = input.default_member.as_deref() {
@@ -22843,6 +22855,7 @@ async fn update_board_config(
         lane_names_folded: board.row().lane_names_folded(),
         due_time: board.row().due_time().format("%H:%M").to_string(),
         bin_permanent_delete: board.row().config_bool(BIN_PERMANENT_DELETE_KEY),
+        show_card_counts: board.row().config_bool(SHOW_CARD_COUNTS_KEY),
         default_member: board.row().default_member(),
         default_member_responsible: board.row().default_member_responsible(),
         blocked_column_id: board.row().blocked_column_id(),
@@ -24037,6 +24050,8 @@ struct BoardSettingsTemplate {
     new_tasks_at_top: bool,
     /// Whether the board's owner may delete tasks from its recycle bin for good.
     bin_permanent_delete: bool,
+    /// Whether columns with no WIP limit and no Column sum show their card count.
+    show_card_counts: bool,
     /// What the board estimates in.
     estimate_unit: EstimateUnit,
     /// The board's task numbering, or none.
@@ -24505,6 +24520,7 @@ fn board_settings_context(
         .unwrap_or_default();
     let new_tasks_at_top = board.config_bool("new_tasks_at_top");
     let bin_permanent_delete = board.config_bool(BIN_PERMANENT_DELETE_KEY);
+    let show_card_counts = board.config_bool(SHOW_CARD_COUNTS_KEY);
     let estimate_unit = EstimateUnit::of(&board);
     let numbering = board.numbering().map(NumberingView::from);
     let due_time = board.due_time();
@@ -24574,6 +24590,7 @@ fn board_settings_context(
         done_column_name,
         new_tasks_at_top,
         bin_permanent_delete,
+        show_card_counts,
         estimate_unit,
         numbering,
         board_position: board.position,
@@ -31126,6 +31143,9 @@ mod backup_tests;
 
 #[cfg(test)]
 mod bin_tests;
+
+#[cfg(test)]
+mod board_counts_tests;
 
 #[cfg(test)]
 mod board_history_tests;
@@ -38826,6 +38846,7 @@ mod tests {
                 "name",
                 "new_tasks_at_top",
                 "numbering",
+                "show_card_counts",
             ]
         );
     }

@@ -13,6 +13,7 @@ ignores:
   - src/routes/agentctl_tests.rs
   - src/routes/attachment_tests.rs
   - src/routes/backup_tests.rs
+  - src/routes/board_counts_tests.rs
   - src/routes/board_history_tests.rs
   - src/routes/bin_tests.rs
   - src/routes/boards_tests.rs
