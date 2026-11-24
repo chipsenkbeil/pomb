@@ -3086,7 +3086,7 @@ async fn agent_roles_should_render_one_tab_per_role() {
     let pane = roles_pane(&html);
 
     assert_eq!(pane.matches("role=\"tablist\"").count(), 1, "{pane}");
-    assert_eq!(pane.matches("role=\"tab\"").count(), 2, "{pane}");
+    assert_eq!(pane.matches("role=\"tab\"").count(), 3, "{pane}");
     for (role, name, selected) in [
         (&planner, "planner", "true"),
         (&reviewer, "reviewer", "false"),
@@ -3117,6 +3117,47 @@ async fn agent_roles_should_render_one_tab_per_role() {
     assert!(
         second.split('>').next().expect("tag").contains(" hidden"),
         "{second}"
+    );
+}
+
+#[tokio::test]
+async fn settings_should_offer_a_new_role_tab() {
+    let fx = Fixture::new();
+
+    let html = settings_html(&fx).await;
+    let pane = roles_pane(&html);
+
+    assert_eq!(pane.matches("role=\"tablist\"").count(), 1, "{pane}");
+    assert_eq!(pane.matches("role=\"tab\"").count(), 1, "{pane}");
+    assert!(
+        pane.contains("data-role-tab=\"new\" aria-controls=\"role-panel-new\" aria-selected=\"true\">New role</button>"),
+        "{pane}"
+    );
+    let panel = pane
+        .split("class=\"role-new-card\"")
+        .nth(1)
+        .expect("new role panel");
+    let tag = panel.split('>').next().expect("tag");
+    assert!(!tag.contains("hidden"), "{tag}");
+    assert!(tag.contains("data-role-id=\"new\""), "{tag}");
+    assert!(panel.contains("role-name-input"), "{panel}");
+    assert!(panel.contains("perm-picker role-picker"), "{panel}");
+    assert!(panel.contains(">Create role</button>"), "{panel}");
+
+    fx.create(ALICE, "planner").await;
+    let html = settings_html(&fx).await;
+    let pane = roles_pane(&html);
+    assert!(
+        pane.contains("data-role-tab=\"new\" aria-controls=\"role-panel-new\" aria-selected=\"false\" tabindex=\"-1\">New role</button>"),
+        "{pane}"
+    );
+    let panel = pane
+        .split("class=\"role-new-card\"")
+        .nth(1)
+        .expect("new role panel");
+    assert!(
+        panel.split('>').next().expect("tag").contains(" hidden"),
+        "{panel}"
     );
 }
 

@@ -1409,6 +1409,13 @@
     },
   };
 
+  const RoleForm = {
+    body: (name, catalog, held) => ({
+      name: name.trim(),
+      permissions: catalog.map((item) => item.name).filter((permission) => held.includes(permission)),
+    }),
+  };
+
   var TokenSort = {
     columns: ['name', 'token', 'scope', 'created', 'last_used', 'expires'],
     numeric: ['created', 'last_used', 'expires'],
@@ -1849,8 +1856,12 @@
       const rolesError = document.getElementById('roles-error');
       const rolePickers = {};
       const roleTabs = Array.from(rolesPane.querySelectorAll('[data-role-tab]'));
-      const roleCards = Array.from(rolesPane.querySelectorAll('.role-card'));
+      const roleCards = Array.from(rolesPane.querySelectorAll('.role-card, .role-new-card'));
       const roleIds = roleTabs.map((tab) => tab.dataset.roleTab);
+      const freshCard = rolesPane.querySelector('.role-new-card');
+      const madeRole = sessionStorage.getItem('pomb-new-role');
+      sessionStorage.removeItem('pomb-new-role');
+      if (madeRole && roleIds.includes(madeRole)) RoleTabs.show(roleTabs, roleCards, madeRole);
       roleTabs.forEach((tab) => {
         tab.addEventListener('click', () => RoleTabs.show(roleTabs, roleCards, tab.dataset.roleTab));
         tab.addEventListener('keydown', (e) => {
@@ -1862,10 +1873,14 @@
           roleTabs[roleIds.indexOf(next)].focus();
         });
       });
-      const changeRole = (method, url, body, undo) => {
+      const changeRole = (method, url, body, undo, select) => {
         rolesError.hidden = true;
         return jsonRequest(method, url, body)
-          .then(() => { location.hash = 'agent-roles'; location.reload(); })
+          .then((made) => {
+            if (select) sessionStorage.setItem('pomb-new-role', made.id);
+            location.hash = 'agent-roles';
+            location.reload();
+          })
           .catch((ex) => {
             if (undo) undo();
             failed(rolesError, 'Could not change the role: ')(ex);
@@ -1878,20 +1893,26 @@
           picker.start(card.dataset.permissions.split(','));
           rolePickers[card.dataset.roleId] = { catalog, picker };
         });
+        const freshPicker = mountPermissionPicker(freshCard.querySelector('.role-picker'), catalog, []);
+        freshPicker.start([]);
+        rolePickers.new = { catalog, picker: freshPicker };
       }).catch(failed(rolesError, 'Could not load permissions: '));
       document.getElementById('roles-standard').addEventListener('click', () => {
         changeRole('POST', '/api/v1/agent-roles/standard', { boards: [] });
+      });
+      freshCard.querySelector('.role-create').addEventListener('click', () => {
+        const loaded = rolePickers.new;
+        if (!loaded) return;
+        changeRole('POST', '/api/v1/agent-roles', RoleForm.body(
+          freshCard.querySelector('.role-name-input').value, loaded.catalog, loaded.picker.held()), undefined, true);
       });
       rolesPane.querySelectorAll('.role-card').forEach((card) => {
         const name = card.dataset.name;
         card.querySelector('.role-save').addEventListener('click', () => {
           const loaded = rolePickers[card.dataset.roleId];
           if (!loaded) return;
-          const held = loaded.picker.held();
-          changeRole('PATCH', roleUrl(card), {
-            name: card.querySelector('.role-name-input').value.trim(),
-            permissions: loaded.catalog.map((item) => item.name).filter((permission) => held.includes(permission)),
-          });
+          changeRole('PATCH', roleUrl(card), RoleForm.body(
+            card.querySelector('.role-name-input').value, loaded.catalog, loaded.picker.held()));
         });
         card.querySelector('.role-revoke-all').addEventListener('click', () => {
           confirmThen('Revoke all tokens',
