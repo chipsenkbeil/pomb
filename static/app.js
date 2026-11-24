@@ -248,10 +248,7 @@
             if (!res.ok) {
               if (res.status === 409) return refuseMove(res, card, fromList, evt.oldDraggableIndex);
               if (res.status === 403 || res.status === 422) {
-                return toastRefusal(res, 'Could not move task.').then(function () {
-                  setTimeout(function () { window.location.reload(); }, 2500);
-                  return null;
-                });
+                return reloadWithRefusal(res, 'Could not move task.');
               }
               window.location.reload();
               return null;
@@ -7524,13 +7521,27 @@
     return res.json();
   }
 
-  function toastRefusal(res, title) {
-    return res.text().then(function (text) {
-      var message = text;
+  function refusalMessage(res) {
+    return res.text().then((text) => {
+      let message = text;
       try {
         message = JSON.parse(text).message || text;
       } catch (e) { /* a plain-text body */ }
+      return message;
+    });
+  }
+
+  function toastRefusal(res, title) {
+    return refusalMessage(res).then((message) => {
       toast(title, message);
+      return null;
+    });
+  }
+
+  function reloadWithRefusal(res, title) {
+    return refusalMessage(res).then((message) => {
+      try { window.sessionStorage.setItem('pomb.pendingToast', title + ' ' + message); } catch (e) {}
+      window.location.reload();
       return null;
     });
   }
