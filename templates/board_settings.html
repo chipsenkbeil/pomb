@@ -41,6 +41,23 @@
           <button type="submit" class="kf-btn kf-btn-success">Make owner</button>
           <button type="button" class="kf-btn kf-btn-link" id="board-owner-cancel">Cancel</button>
         </form>
+        <div id="commit-url-view">
+          <div class="kf-setting-head"><span class="kf-setting-label">Commit URL</span><button type="button" class="kf-btn kf-btn-link" id="commit-url-edit">Edit</button></div>
+          <p class="kf-setting-text" id="commit-url-label">{% if commit_url_template.is_empty() %}Not set{% else %}{{ commit_url_template }}{% endif %}</p>
+        </div>
+        <div id="commit-url-dialog" class="dlg-overlay" hidden>
+          <div class="dlg dlg-light" role="dialog" aria-label="Change commit URL">
+            <div class="dlg-title">Change commit URL</div>
+            <label class="dlg-field"><span>Commit URL with one {hash}</span>
+              <input type="text" id="commit-url-input" value="{{ commit_url_template }}" maxlength="300"></label>
+            <div id="commit-url-error" class="form-error" hidden></div>
+            <div class="dlg-actions">
+              <button type="button" class="btn" id="commit-url-cancel">Cancel</button>
+              <button type="button" class="btn btn-success" id="commit-url-save">Save</button>
+            </div>
+          </div>
+        </div>
+        <div hidden data-page="board-settings-commit-url"></div>
         <hr class="kf-hr kf-general-rule">
         <h2 class="kf-actions-title">Actions</h2>
         <div class="kf-general-actions">

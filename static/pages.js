@@ -2240,6 +2240,61 @@
     });
   };
 
+  const CommitUrl = {
+    check: (text) => {
+      if (text === '') return '';
+      if (!/^https?:\/\//.test(text)) return 'The URL must start with https:// or http://.';
+      if (text.split('{hash}').length !== 2) return 'The URL must hold {hash} exactly once.';
+      return '';
+    },
+  };
+
+  pages['board-settings-commit-url'] = () => {
+    const dialog = document.getElementById('commit-url-dialog');
+    const input = document.getElementById('commit-url-input');
+    const error = document.getElementById('commit-url-error');
+    const label = document.getElementById('commit-url-label');
+    const boardId = document.querySelector('.board-settings-page').dataset.boardId;
+    const close = () => {
+      dialog.hidden = true;
+      error.hidden = true;
+    };
+    const fail = (text) => {
+      error.textContent = text;
+      error.hidden = false;
+    };
+    document.getElementById('commit-url-edit').addEventListener('click', (e) => {
+      e.preventDefault();
+      dialog.hidden = false;
+      input.focus();
+    });
+    document.getElementById('commit-url-cancel').addEventListener('click', close);
+    document.getElementById('commit-url-save').addEventListener('click', () => {
+      const text = input.value.trim();
+      const problem = CommitUrl.check(text);
+      if (problem) {
+        fail(problem);
+        return;
+      }
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ commit_url_template: text }),
+      }).then((res) => {
+        if (!res.ok) throw new Error('save failed');
+        return res.json();
+      }).then((config) => {
+        const saved = config.commit_url_template || '';
+        label.textContent = saved || 'Not set';
+        input.value = saved;
+        close();
+      }).catch(() => {
+        fail('The commit URL was not saved.');
+      });
+    });
+  };
+
   pages['board-settings-default-member'] = function () {
     'use strict';
     var dialog = document.getElementById('default-member-dialog');

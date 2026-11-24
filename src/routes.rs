@@ -24034,6 +24034,8 @@ struct BoardSettingsTemplate {
     /// The board's "Due date time" as "HH:MM" and as "5:00 PM".
     due_time: String,
     due_time_label: String,
+    /// The board's commit URL template, empty when none is set.
+    commit_url_template: String,
     /// The board's webhooks, for the API & Webhooks tab.
     webhooks: Vec<WebhookListItem>,
     /// The webhook the Add and Edit page shows.
@@ -24541,6 +24543,7 @@ fn board_settings_context(
         members,
         due_time: due_time.format("%H:%M").to_string(),
         due_time_label: due_time.format(TimeFormat::current().clock()).to_string(),
+        commit_url_template: board.commit_url_template().unwrap_or_default(),
         board_id: board.id,
         board_name: board.name,
         tab: tab.to_string(),
@@ -36323,6 +36326,33 @@ mod tests {
         ] {
             assert!(html.contains(needle), "missing {needle}");
         }
+    }
+
+    /// The board settings page shows the stored commit URL template, or a note that none is set,
+    /// with an Edit button.
+    #[tokio::test]
+    async fn board_settings_should_show_the_commit_url_template() {
+        let (_dir, fx) = kf221_fixture();
+        let page = format!("/b/{}/settings", fx.board_id);
+        let (_, html) = send(&fx, "GET", &page, None).await;
+        assert!(html.contains("id=\"commit-url-label\">Not set<"), "{html}");
+        assert!(html.contains("id=\"commit-url-edit\""));
+
+        let template = "https://git.example.test/commit/{hash}";
+        let (status, text) = send(
+            &fx,
+            "PUT",
+            &format!("/api/boards/{}/config", fx.board_id),
+            Some(serde_json::json!({"commit_url_template": template})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let (_, html) = send(&fx, "GET", &page, None).await;
+        assert!(
+            html.contains(&format!("id=\"commit-url-label\">{template}<")),
+            "{html}"
+        );
+        assert!(html.contains(&format!("id=\"commit-url-input\" value=\"{template}\"")));
     }
 
     /// The Active tokens list keeps its inner scroll and styles its scrollbar so it shows at rest.
