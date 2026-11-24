@@ -2862,7 +2862,7 @@ struct TaskView {
     /// The pomodori the children's sizes add up to.
     children_size: i64,
     /// The size of an epic's own acceptance list, or none while the list is empty.
-    final_check: Option<Size>,
+    acceptance: Option<Size>,
     /// The umbrella's children with their columns, filled in only where the full task is loaded.
     children: Vec<ChildRef>,
     /// Card link-chip tooltip: one "Blocked by: …" / "Blocks: …" /
@@ -4096,7 +4096,7 @@ impl TaskView {
     /// nothing while the list is empty.
     #[must_use]
     fn chip_count(&self) -> &'static str {
-        match self.final_check {
+        match self.acceptance {
             None => "",
             Some(Size::One) => "1",
             Some(Size::Two) => "2",
@@ -4264,7 +4264,7 @@ impl TaskView {
             kind: row.kind,
             children_size: 0,
             open_children: 0,
-            final_check: (row.kind == TaskKind::Epic && !row.subtasks.is_empty())
+            acceptance: (row.kind == TaskKind::Epic && !row.subtasks.is_empty())
                 .then(|| Size::from_i64(row.size)),
             children: Vec::new(),
             links_title: String::new(),
