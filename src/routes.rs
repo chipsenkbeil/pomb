@@ -32274,7 +32274,7 @@ mod tests {
         .expect("connect");
         let user_id = db.create_user("admin").expect("create user");
         let token = db.create_session(&user_id, "").expect("session");
-        let board_id = db.create_board(&user_id, "KF-221").expect("board");
+        let board_id = db.create_board(&user_id, "Fixture board").expect("board");
         let col_wip = db.create_column(&board_id, "Wip", Some(3)).expect("column");
         let col_done = db.create_column(&board_id, "Done", None).expect("column");
         db.set_column_done(&col_done, true).expect("set done");
@@ -32616,7 +32616,7 @@ mod tests {
             "session={}",
             db.create_session(&user_id, "").expect("session")
         );
-        let board_id = db.create_board(&user_id, "KF-420").expect("board");
+        let board_id = db.create_board(&user_id, "Fixture board").expect("board");
         let app = super::router(crate::AppState::new(db.clone(), None, passkey_mode()));
         Kf420Fixture {
             _dir: dir,
@@ -33163,7 +33163,7 @@ mod tests {
             "session={}",
             db.create_session(&user_id, "").expect("session")
         );
-        let board_id = db.create_board(&user_id, "KF-422").expect("board");
+        let board_id = db.create_board(&user_id, "Fixture board").expect("board");
         let column_id = db.create_column(&board_id, "Wip", Some(3)).expect("column");
         let app = super::router(crate::AppState::new(db.clone(), None, passkey_mode()));
         let stored = || serde_json::to_value(db.column(&column_id).expect("get")).expect("json");
@@ -35427,7 +35427,7 @@ mod tests {
             "session={}",
             db.create_session(&user_id, "").expect("session")
         );
-        let board_id = db.create_board(&user_id, "KF-391").expect("board");
+        let board_id = db.create_board(&user_id, "Fixture board").expect("board");
         let column_id = db.create_column(&board_id, "Todo", None).expect("column");
         let task_id = db
             .create_task(&column_id, None, "Task", 1, None)
@@ -36146,7 +36146,7 @@ mod tests {
         .expect("connect");
         let user_id = db.create_user("admin").expect("create user");
         let token = db.create_session(&user_id, "").expect("session");
-        let board_id = db.create_board(&user_id, "KF-223").expect("board");
+        let board_id = db.create_board(&user_id, "Fixture board").expect("board");
         db.ensure_default_swimlane(&board_id).expect("lane");
         let lane = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
         let col = db.create_column(&board_id, "Queue", None).expect("column");
@@ -39082,7 +39082,7 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::OK, "{text}");
         let board: serde_json::Value = serde_json::from_str(&text).expect("json");
         assert_eq!(board["id"], fx.board_id.as_str());
-        assert_eq!(board["name"], "KF-221");
+        assert_eq!(board["name"], "Fixture board");
         assert_eq!(board["columns"][0]["name"], "Wip");
         assert_eq!(board["columns"][0]["wip_limit"], 3);
         assert_eq!(board["columns"][0]["is_done"], false);

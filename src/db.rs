@@ -8364,7 +8364,7 @@ impl Db {
             let lanes = self.list_swimlanes(&board.id)?;
             if let Some(id) = board.main_swimlane(&lanes) {
                 self.merge_board_config(&board.id, main_swimlane_entry(&id))?;
-                println!("pomb: board {} got main swimlane {id} (KF-406)", board.id);
+                println!("pomb: board {} got main swimlane {id}", board.id);
             }
         }
         Ok(())

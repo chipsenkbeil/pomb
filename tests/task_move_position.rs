@@ -69,7 +69,7 @@ fn move_task_mid_list_drops_should_land_exactly_at_index() {
     assert_eq!(
         column_task_names(&db, &board, &col_a),
         ["a", "x", "b", "c", "d"],
-        "KF-120: cross-column drop at index 1"
+        "cross-column drop at index 1"
     );
 
     // Same-column reorder to a later non-end position
@@ -84,7 +84,7 @@ fn move_task_mid_list_drops_should_land_exactly_at_index() {
     assert_eq!(
         column_task_names(&db, &board, &col_a),
         ["a", "x", "c", "b", "d"],
-        "KF-120: same-column move to index 3"
+        "same-column move to index 3"
     );
 
     // Drop at index 0 (front)
@@ -99,7 +99,7 @@ fn move_task_mid_list_drops_should_land_exactly_at_index() {
     assert_eq!(
         column_task_names(&db, &board, &col_a),
         ["y", "a", "x", "c", "b", "d"],
-        "KF-120: cross-column drop at index 0"
+        "cross-column drop at index 0"
     );
 
     // Positions stay dense 0..n with no collisions after every move
@@ -111,18 +111,14 @@ fn move_task_mid_list_drops_should_land_exactly_at_index() {
         .map(|task| task.position as i64)
         .collect();
     positions.sort_unstable();
-    assert_eq!(
-        positions,
-        [0, 1, 2, 3, 4, 5],
-        "KF-120: positions dense after moves"
-    );
+    assert_eq!(positions, [0, 1, 2, 3, 4, 5], "positions dense after moves");
 
     // Out-of-range indices clamp instead of corrupting order
     db.move_task(&y, &col_a, None, 99.0).expect("move y to 99");
     assert_eq!(
         column_task_names(&db, &board, &col_a),
         ["a", "x", "c", "b", "d", "y"],
-        "KF-120: oversized index clamps to the end"
+        "oversized index clamps to the end"
     );
 }
 
