@@ -4132,7 +4132,7 @@
     var id = modalTaskId();
     var board = modalBoardId();
     if (!id || !board) return;
-    fetch('/api/boards/' + encodeURIComponent(board) + '/export-data', { headers: { 'Accept': 'application/json' } })
+    apiJson('/api/boards/' + encodeURIComponent(board) + '/export-data', 'GET')
       .then(function (res) { return res.ok ? res.json() : Promise.reject(res.status); })
       .then(function (data) {
         var task = (data.tasks || []).filter(function (t) { return String(t.id) === String(id); })[0];
@@ -4682,7 +4682,7 @@
   function loadSidebarFolds() {
     if (sidebarFolds) return Promise.resolve(true);
     if (sidebarFoldLoad) return sidebarFoldLoad;
-    sidebarFoldLoad = fetch('/api/settings', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+    sidebarFoldLoad = apiJson('/api/settings', 'GET')
       .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(function (s) {
         sidebarFolds = {
@@ -4881,12 +4881,7 @@
     }
     var patch = { fields: {} };
     patch.fields[field.dataset.fieldKey] = value;
-    fetch('/api/tasks/' + encodeURIComponent(id), {
-      method: 'PATCH',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify(patch),
-    }).then(function (res) {
+    apiJson('/api/tasks/' + encodeURIComponent(id), 'PATCH', patch).then(function (res) {
       if (!res.ok && field.dataset.fieldKind === 'table') {
         return res.text().then(function (text) {
           if (onRejected) onRejected();
@@ -5276,9 +5271,7 @@
   }
 
   const fetchBoardEpics = (board) => {
-    return fetch('/api/boards/' + encodeURIComponent(board) + '/epics', {
-      headers: { 'Accept': 'application/json' },
-    })
+    return apiJson('/api/boards/' + encodeURIComponent(board) + '/epics', 'GET')
       .then((res) => (res.ok ? res.json() : null))
       .then((list) => (Array.isArray(list) ? list : null))
       .catch(() => null);
@@ -7092,7 +7085,7 @@
 
     open: function () {
       var self = this;
-      fetch('/api/settings', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      apiJson('/api/settings', 'GET')
         .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
         .then(function (s) {
           self.settings = s;
@@ -7554,7 +7547,7 @@
     var all = [];
     function page(cursor) {
       var url = '/api/tasks?limit=1000' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
-      return fetch(url, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      return apiJson(url, 'GET')
         .then(function (res) { return jsonIfJson(res); })
         .then(function (body) {
           if (!body || !body.items) return null;
@@ -7605,7 +7598,7 @@
       this.selectedTask = this.loadSelectedTask();
       this.watchSelectedCard();
       this.watchOtherTabs();
-      fetch('/api/timer/settings', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      apiJson('/api/timer/settings', 'GET')
         .then(function (res) { return jsonIfJson(res); })
         .then(function (settings) {
           if (settings) self.settings = settings;
@@ -7673,7 +7666,7 @@
 
     refresh: function () {
       var self = this;
-      return fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      return apiJson('/api/timer/status', 'GET')
         .then(function (res) { return jsonIfJson(res); })
         .then(function (status) {
           if (!status) return;
@@ -8128,10 +8121,7 @@
       var list = document.getElementById('timer-today-list');
       if (!list) return;
       var self = this;
-      fetch('/api/timer/today', {
-        headers: { 'Accept': 'application/json' },
-        credentials: 'same-origin',
-      }).then(function (res) { return jsonIfJson(res); })
+      apiJson('/api/timer/today', 'GET').then(function (res) { return jsonIfJson(res); })
         .then(function (entries) {
           self.drawToday((entries || []).filter(function (e) {
             return e.kind !== 'short_break' && e.kind !== 'long_break';
@@ -8744,7 +8734,7 @@
         if (!data || data.already_stopped) { self.refresh(); return; }
         self.broadcastTimer();
         refreshBoardCard(loggedTask);
-        fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        apiJson('/api/timer/status', 'GET')
           .then(function (res) { return jsonIfJson(res); })
           .then(function (status) {
             var count = status ? status.pomodoro_count : 0;

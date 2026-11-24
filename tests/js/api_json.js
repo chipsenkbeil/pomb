@@ -39,4 +39,24 @@ const bodyOf = (name) => {
   check(suite + name + ' no longer calls fetch', /\bfetch\(/.test(text), false);
 });
 
+const groupOne = [
+  "apiJson('/api/boards/' + encodeURIComponent(board) + '/export-data', 'GET')",
+  "sidebarFoldLoad = apiJson('/api/settings', 'GET')",
+  "apiJson('/api/tasks/' + encodeURIComponent(id), 'PATCH', patch)",
+  "apiJson('/api/boards/' + encodeURIComponent(board) + '/epics', 'GET')",
+  "apiJson('/api/settings', 'GET')\n        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })\n        .then(function (s) {\n          self.settings = s;",
+  "return apiJson(url, 'GET')\n        .then(function (res) { return jsonIfJson(res); })\n        .then(function (body) {\n          if (!body || !body.items)",
+  "apiJson('/api/timer/settings', 'GET')",
+  "return apiJson('/api/timer/status', 'GET')",
+  "apiJson('/api/timer/today', 'GET')",
+  "apiJson('/api/timer/status', 'GET')\n          .then(function (res) { return jsonIfJson(res); })\n          .then(function (status) {\n            var count",
+];
+groupOne.forEach((call) => {
+  const at = src.indexOf(call);
+  const name = suite + 'api_json_should_move_group_one ' + call.split('\n')[0];
+  check(name + ' uses apiJson', at >= 0, true);
+  const before = src.slice(Math.max(0, at - 40), at + call.indexOf('apiJson'));
+  check(name + ' has no fetch', /\bfetch\(/.test(before), false);
+});
+
 finish();
