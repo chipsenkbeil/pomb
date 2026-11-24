@@ -74,6 +74,21 @@ check('task row intervals', ta[1].intervals.map(function (iv) { return [iv.start
   [[NOW - 6 * DAY, NOW - 4 * DAY - 3 * HOUR - 7 * MIN, false]]);
 check('current column interval is open and ends now', ta[2].intervals.map(function (iv) { return [iv.end, iv.open]; }), [[NOW, true]]);
 check('task without moves', TimeInColumnPage.taskRows(data, b, NOW).map(function (r) { return [r.id, r.ms]; }), [['todo', 2 * DAY]]);
+const gone = {
+  id: 'g', name: 'G', column_id: 'done', created_at: iso(NOW - 6 * DAY), color_id: null, labels: [], member_ids: [],
+  history: [
+    ev('created', 'Task created in To-do', 'todo', NOW - 6 * DAY),
+    ev('moved', 'Moved from To-do to Parked', 'parked', NOW - 4 * DAY),
+    ev('moved', 'Moved from Parked to Done', 'done', NOW - DAY),
+  ],
+};
+const goneData = { columns: columns, tasks: [gone] };
+const goneTable = TimeInColumnPage.buildTable(goneData, all, NOW);
+check('time-in-column-keeps-a-deleted-column',
+  [goneTable.columns.map((c) => c.id + ':' + c.name), row(goneTable, 'G').ms],
+  [['todo:To-do', 'rev:Reviewing', 'done:Done', 'parked:Parked'], { todo: 2 * DAY, parked: 3 * DAY, done: DAY }]);
+check('time-in-column-keeps-a-deleted-column-unfiltered-only',
+  TimeInColumnPage.buildTable(goneData, opts({ columns: ['todo'] }), NOW).columns.map((c) => c.id), ['todo']);
 var backData = { columns: [{ id: 'todo', name: 'To-do', former_names: [] }, { id: 'back', name: 'Back to work', former_names: [] }] };
 var back = {
   id: 'c', name: 'C', column_id: 'back', created_at: iso(NOW - 3 * DAY), color_id: null, labels: [], member_ids: [],

@@ -17672,7 +17672,7 @@
         var at = Date.parse(e.created_at);
         if (name == null || isNaN(at)) return;
         var col = e.column_id || byName[name];
-        if (col !== undefined) tl.push({ at: at, col: col });
+        if (col !== undefined) tl.push({ at: at, col: col, name: name });
       });
       tl.sort(function (a, b) { return a.at - b.at; });
       var created = Date.parse(task.created_at);
@@ -17687,7 +17687,7 @@
       tl.forEach(function (p, i) {
         var end = Math.min(i + 1 < tl.length ? tl[i + 1].at : now, now);
         var start = Math.max(p.at, from);
-        if (end - start > 0 && current[p.col]) out.push({ col: p.col, start: start, end: end, open: i + 1 >= tl.length });
+        if (end - start > 0) out.push({ col: p.col, start: start, end: end, open: i + 1 >= tl.length, at: p.at, name: p.name });
       });
       return out;
     }
@@ -17718,6 +17718,8 @@
       });
       var from = opts.periodDays ? now - opts.periodDays * DAY_MIN * MIN_MS : -Infinity;
       var rows = [];
+      const deleted = [];
+      const deletedById = {};
       (data.tasks || []).forEach(function (t) {
         if (opts.user && (t.member_ids || []).indexOf(opts.user) === -1) return;
         if (opts.color === 'none' ? t.color_id : (opts.color && t.color_id !== opts.color)) return;
@@ -17727,11 +17729,20 @@
         intervals(t, current, byName, now, from).forEach(function (iv) {
           ms[iv.col] = (ms[iv.col] || 0) + (iv.end - iv.start);
           (periods[iv.col] = periods[iv.col] || []).push(iv);
+          if (opts.columns || current[iv.col]) return;
+          const known = deletedById[iv.col];
+          if (!known) {
+            deletedById[iv.col] = { id: iv.col, name: iv.name, at: iv.at };
+            deleted.push(deletedById[iv.col]);
+          } else if (iv.at >= known.at) {
+            known.name = iv.name;
+            known.at = iv.at;
+          }
         });
-        if (!shown.some(function (c) { return ms[c.id]; })) return;
         rows.push({ id: t.id, name: t.name, ms: ms, periods: periods });
       });
-      return { columns: shown, rows: rows };
+      const columns = shown.concat(deleted.map((d) => ({ id: d.id, name: d.name })));
+      return { columns: columns, rows: rows.filter((r) => columns.some((c) => r.ms[c.id])) };
     }
 
     function render(table, unit) {
