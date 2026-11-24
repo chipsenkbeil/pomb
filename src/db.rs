@@ -4814,18 +4814,28 @@ fn txn_issue_as_role(
 /// other live or suspended token of the same name, whatever its letter case, inside an open write
 /// transaction.
 fn txn_create_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<()> {
+    let tokens = txn_account_tokens(txn, &token.account_id)?;
+    txn_create_token_with(txn, token, &tokens)
+}
+
+/// Runs the checks of `txn_create_token` against `tokens`, the tokens of the account of `token`
+/// that the caller read in the same write transaction, and stores `token`.
+fn txn_create_token_with(
+    txn: &WriteTransaction,
+    token: &ApiTokenRecord,
+    tokens: &[ApiTokenRecord],
+) -> DbResult<()> {
     let account = AccountId::new(token.account_id.as_str());
     txn_refuse_stranded(txn, &account)?;
     if !txn_account_active(txn, &account)? {
         return Err(ACCOUNT_NOT_ACTIVE.into());
     }
-    let tokens = txn_account_tokens(txn, &token.account_id)?;
     if token.parent_id.is_none()
-        && let Some(refusal) = token_cap_refusal(&tokens)
+        && let Some(refusal) = token_cap_refusal(tokens)
     {
         return Err(Box::new(refusal));
     }
-    if txn_token_name_taken(&tokens, &token.name, None) {
+    if txn_token_name_taken(tokens, &token.name, None) {
         return Err(Box::new(TokenNameTaken));
     }
     txn_store_token(txn, token)
@@ -4835,13 +4845,13 @@ fn txn_create_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<
 /// of `record`, which names its parent. Returns the refusal, with nothing written beyond the
 /// deletion of the account's expired issued tokens, when the parent is gone, is itself issued and
 /// the child would hold `tokens.issue`, allows its children fewer than `hours`, or another token
-/// of the account has the name.
+/// of the account has the name. Otherwise returns the account's remaining tokens it read.
 fn txn_check_child_token(
     txn: &WriteTransaction,
     record: &mut ApiTokenRecord,
     hours: i64,
     now: i64,
-) -> DbResult<Result<(), ChildTokenRefusal>> {
+) -> DbResult<Result<Vec<ApiTokenRecord>, ChildTokenRefusal>> {
     let Some(parent_id) = record.parent_id.as_deref() else {
         return Err("a child token must name its parent".into());
     };
@@ -4867,7 +4877,7 @@ fn txn_check_child_token(
     if txn_token_name_taken(&tokens, &record.name, None) {
         return Ok(Err(ChildTokenRefusal::NameTaken));
     }
-    Ok(Ok(()))
+    Ok(Ok(tokens))
 }
 
 /// Returns whether a token of `tokens` other than `except` has `name`, whatever its letter case.
@@ -7247,10 +7257,11 @@ impl Db {
         now: i64,
     ) -> DbResult<Result<ApiTokenRecord, ChildTokenRefusal>> {
         let txn = self.db.begin_write()?;
-        if let Err(refusal) = txn_check_child_token(&txn, &mut record, hours, now)? {
-            return Ok(Err(refusal));
-        }
-        txn_create_token(&txn, &record)?;
+        let tokens = match txn_check_child_token(&txn, &mut record, hours, now)? {
+            Ok(tokens) => tokens,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        txn_create_token_with(&txn, &record, &tokens)?;
         txn.commit()?;
         Ok(Ok(record))
     }
