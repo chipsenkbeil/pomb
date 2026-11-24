@@ -294,6 +294,40 @@ async fn a_member_should_leave_a_board_but_not_remove_another_account() {
 }
 
 #[tokio::test]
+async fn a_viewer_should_not_remove_another_account() {
+    let fx = Fixture::new();
+
+    // Refuse a viewer removing another member or the owner
+    let member = fx.fill("/api/boards/{board}/members?username=bob");
+    let refused = fx.send(VIEWER, "DELETE", &member, None).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    let owner = fx.fill("/api/boards/{board}/members?username=alice");
+    let refused = fx.send(VIEWER, "DELETE", &owner, None).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+
+    // Read the members as the owner
+    let roles = fx
+        .send(OWNER, "GET", &fx.fill("/api/boards/{board}/members"), None)
+        .await;
+    assert!(roles.status.is_success(), "{}", roles.body);
+    let names: Vec<&str> = roles
+        .body
+        .as_array()
+        .expect("members")
+        .iter()
+        .map(|entry| entry["username"].as_str().expect("text"))
+        .collect();
+
+    // Check every account is still on the board
+    for kept in ["alice", "bob", "carol"] {
+        assert!(
+            names.contains(&kept),
+            "{kept} stays on the board: {names:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_member_should_see_only_the_time_it_logged_itself() {
     let fx = Fixture::new();
     let uri = fx.fill("/api/tasks/{task}/time");
