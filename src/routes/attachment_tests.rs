@@ -995,3 +995,46 @@ async fn base64_list_should_answer_busy_while_download_slots_are_held() {
     let (status, body) = fx.call("GET", &base64, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
+
+#[tokio::test]
+async fn comment_should_link_its_commit_hash_to_the_board_template() {
+    let fx = fixture().await;
+    let board = fx
+        .db
+        .column(&fx.column)
+        .expect("read")
+        .expect("column")
+        .board_id
+        .clone();
+    let (status, body) = fx
+        .json(
+            "PUT",
+            &format!("/api/boards/{board}/config"),
+            Some(json!({"commit_url_template": "https://git.example.test/commit/{hash}"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let uri = format!("/api/tasks/{}", fx.task);
+    let (status, body) = fx
+        .json(
+            "PATCH",
+            &uri,
+            Some(json!({"description": "Seen in abc1234"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = fx
+        .json(
+            "POST",
+            &format!("{uri}/comments"),
+            Some(json!({"body": "Landed def5678"})),
+        )
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+    let (_, modal) = fx.call("GET", &format!("{uri}/modal"), None).await;
+    assert!(
+        modal.contains(r#"<a href="https://git.example.test/commit/def5678""#),
+        "{modal}"
+    );
+    assert!(!modal.contains("commit/abc1234"), "{modal}");
+}

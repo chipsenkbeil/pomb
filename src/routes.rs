@@ -16887,13 +16887,26 @@ async fn task_modal(
         .flat_map(markdown::attachment_ids)
         .collect();
     let servable = servable_images(db, &row, &referenced).await;
+    let board_id = column
+        .as_ref()
+        .map(|c| c.row().board_id.clone())
+        .unwrap_or_default();
+    let board = db.board(&board_id).map_err(AppError::from)?;
+    let commit_url_template = board
+        .as_ref()
+        .and_then(|board| board.row().commit_url_template());
     let scope = markdown::Scope {
         task_id: &id,
         attachments: &row.row().attachments,
         servable: &servable,
+        commit_url_template: None,
+    };
+    let comment_scope = markdown::Scope {
+        commit_url_template: commit_url_template.as_deref(),
+        ..scope
     };
     for comment in &mut task.comments {
-        comment.body_html = markdown::render_in(&comment.body, scope);
+        comment.body_html = markdown::render_in(&comment.body, comment_scope);
     }
     let description_html = if user.has(Permission::TasksEdit) {
         markdown::render_tickable_in(&task.description, scope)
@@ -16925,11 +16938,6 @@ async fn task_modal(
         _ => None,
     };
     let subtask_chips = subtask_member_chips(&row.row().subtasks, &users, &settings);
-    let board_id = column
-        .as_ref()
-        .map(|c| c.row().board_id.clone())
-        .unwrap_or_default();
-    let board = db.board(&board_id).map_err(AppError::from)?;
     let board_name = board
         .as_ref()
         .map(|board| board.row().name.clone())

@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use std::sync::LazyLock;
 
 use ammonia::Builder;
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd, html};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
@@ -42,6 +42,8 @@ pub struct Scope<'a> {
     pub attachments: &'a [TaskAttachment],
     /// The ids of those attachments whose bytes the image route serves.
     pub servable: &'a HashSet<String>,
+    /// The board's commit URL template, which turns a commit hash in the text into a link.
+    pub commit_url_template: Option<&'a str>,
 }
 
 impl Scope<'_> {
@@ -133,6 +135,8 @@ fn render_with(source: &str, boxes: Boxes, scope: Option<Scope<'_>>) -> String {
     let mut images: Vec<(String, String)> = Vec::new();
     let mut capture: Option<(String, String, usize)> = None;
     let mut events = Vec::new();
+    let template = scope.and_then(|s| s.commit_url_template);
+    let mut inert = 0usize;
     for event in Parser::new_ext(source, options()) {
         if let Some((id, alt, depth)) = capture.as_mut() {
             match event {
@@ -166,6 +170,7 @@ fn render_with(source: &str, boxes: Boxes, scope: Option<Scope<'_>>) -> String {
                     capture = Some((image, String::new(), 0));
                     continue;
                 }
+                inert += 1;
                 Event::Start(Tag::Link {
                     link_type,
                     dest_url,
@@ -173,7 +178,25 @@ fn render_with(source: &str, boxes: Boxes, scope: Option<Scope<'_>>) -> String {
                     id,
                 })
             }
-            Event::End(TagEnd::Image) => Event::End(TagEnd::Link),
+            Event::End(TagEnd::Image) => {
+                inert = inert.saturating_sub(1);
+                Event::End(TagEnd::Link)
+            }
+            Event::Start(Tag::Link { .. } | Tag::CodeBlock(_)) => {
+                inert += 1;
+                event
+            }
+            Event::End(TagEnd::Link | TagEnd::CodeBlock) => {
+                inert = inert.saturating_sub(1);
+                event
+            }
+            Event::Text(text) if inert == 0 => match template {
+                Some(template) => {
+                    push_hash_links(&text, template, &mut events);
+                    continue;
+                }
+                None => Event::Text(text),
+            },
             other => other,
         });
     }
@@ -183,6 +206,51 @@ fn render_with(source: &str, boxes: Boxes, scope: Option<Scope<'_>>) -> String {
     let task_id = scope.map_or("", |scope| scope.task_id);
     let shown = put_images(&clean, &token, task_id, &images);
     put_boxes(&shown, &token, boxes)
+}
+
+/// Pushes `text` onto `events`, with each commit hash in it turned into a link to `template` with
+/// `{hash}` replaced by the hash.
+fn push_hash_links(text: &str, template: &str, events: &mut Vec<Event<'_>>) {
+    let mut last = 0;
+    let mut word_start = None;
+    for (at, c) in text.char_indices().chain([(text.len(), ' ')]) {
+        let in_word = c.is_alphanumeric() || c == '_';
+        match (word_start, in_word) {
+            (None, true) => word_start = Some(at),
+            (Some(start), false) => {
+                word_start = None;
+                let word = &text[start..at];
+                if !is_commit_hash(word) {
+                    continue;
+                }
+                if start > last {
+                    events.push(Event::Text(text[last..start].to_string().into()));
+                }
+                events.push(Event::Start(Tag::Link {
+                    link_type: LinkType::Inline,
+                    dest_url: template.replace("{hash}", word).into(),
+                    title: "".into(),
+                    id: "".into(),
+                }));
+                events.push(Event::Text(word.to_string().into()));
+                events.push(Event::End(TagEnd::Link));
+                last = at;
+            }
+            _ => {}
+        }
+    }
+    if last < text.len() {
+        events.push(Event::Text(text[last..].to_string().into()));
+    }
+}
+
+/// Returns whether `word` is 7 to 40 hex digits with at least one decimal digit, so a word such as
+/// `defaced` is never taken for a hash.
+#[must_use]
+fn is_commit_hash(word: &str) -> bool {
+    (7..=40).contains(&word.len())
+        && word.bytes().all(|b| b.is_ascii_hexdigit())
+        && word.bytes().any(|b| b.is_ascii_digit())
 }
 
 /// Replaces each image marker `token` left in `clean` with an `img` that loads the image from the
@@ -323,6 +391,7 @@ mod tests {
             task_id: "t",
             attachments: &[],
             servable: &HashSet::new(),
+            commit_url_template: None,
         };
         let out = render_tickable_in("- [ ] a", scope);
         assert!(
@@ -519,6 +588,7 @@ mod tests {
             task_id: "task9",
             attachments: &attachments,
             servable: &servable,
+            commit_url_template: None,
         };
         let out = render_in(
             "![a *b* \"c\"](attachment:a1) ![x](attachment:t1) ![y](attachment:zz) ![z](http://e.com/p.png)",
@@ -533,6 +603,55 @@ mod tests {
         assert!(!out.contains("attachment:"), "{out}");
     }
 
+    const TEMPLATE: &str = "https://git.example.test/commit/{hash}";
+
+    #[must_use]
+    fn render_commits(source: &str, template: Option<&str>) -> String {
+        let scope = Scope {
+            task_id: "t",
+            attachments: &[],
+            servable: &HashSet::new(),
+            commit_url_template: template,
+        };
+        render_in(source, scope)
+    }
+
+    #[test]
+    fn render_should_link_a_commit_hash() {
+        let out = render_commits(
+            "Landed abc1234 and (0123456789abcdef0123456789abcdef01234567).",
+            Some(TEMPLATE),
+        );
+        assert!(
+            out.contains(r#"<a href="https://git.example.test/commit/abc1234""#),
+            "{out}"
+        );
+        assert!(
+            out.contains(">abc1234</a> and (<a href=\"https://git.example.test/commit/0123456789abcdef0123456789abcdef01234567\""),
+            "{out}"
+        );
+        let source =
+            "Landed abc1234, 123456 and 41 digits 0123456789abcdef0123456789abcdef012345678";
+        assert_eq!(render_commits(source, None), render(source));
+        assert_eq!(
+            render_commits(source, Some(TEMPLATE))
+                .matches("<a ")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn render_should_leave_hash_like_text_in_code_alone() {
+        let out = render_commits(
+            "`abc1234` defaced\n\n```\nabc1234\n```\n\n[abc1234](https://e.com) ![abc1234](https://e.com/p.png)",
+            Some(TEMPLATE),
+        );
+        assert!(!out.contains("commit/"), "{out}");
+        assert!(out.contains("defaced"), "{out}");
+        assert_eq!(out.matches("<a ").count(), 2, "{out}");
+    }
+
     #[test]
     fn render_in_should_keep_raw_img_and_forged_markers_out() {
         let attachments = [attachment("a1", "image/png")];
@@ -541,6 +660,7 @@ mod tests {
             task_id: "t",
             attachments: &attachments,
             servable: &servable,
+            commit_url_template: None,
         };
         let out = render_in(
             "<img src=\"/api/tasks/t/attachments/a1/image\">\n\ncf00g0_ ![a](attachment:a1)",
