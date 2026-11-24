@@ -6610,6 +6610,27 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   padding: 15px 15px 1.25rem;
 }
 
+@media (min-width: 700px) {
+  body:has(.bshell-fill) {
+    display: flex; flex-direction: column;
+    height: 100vh; height: 100dvh;
+  }
+  body:has(.bshell-fill) > * { flex: none; }
+  body:has(.bshell-fill) > .board-settings-page {
+    flex: 1; min-height: 0;
+    display: flex; flex-direction: column;
+  }
+  .bshell-fill {
+    width: 100%;
+    flex: 1; min-height: 0;
+    display: flex; flex-direction: column;
+  }
+  .bshell-fill .bshell-header { flex: none; }
+  .board-settings-page .bshell-fill .bshell-body { flex: 1; min-height: 0; }
+  .bshell-fill .bshell-nav,
+  .bshell-fill .bshell-content { min-height: 0; overflow-y: auto; }
+}
+
 /* KF-331: inside the single container there are no cards — sections
    flow directly on the white content face, separated by whitespace.
    Scoped to the board settings page only. */

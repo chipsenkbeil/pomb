@@ -1,6 +1,7 @@
 {% extends "shell.html" %}
 {% block title %}Settings | Pomb{% endblock %}
 {% block body_attrs %}{% if chrome.dark %} class="dark"{% endif %}{% endblock %}
+{% block shell_class %} bshell-fill{% endblock %}
 {% block shell_title %}Settings{% endblock %}
 {% block shell_nav %}
     <nav class="bshell-nav" aria-label="Settings">

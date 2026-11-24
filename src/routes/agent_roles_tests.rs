@@ -3027,6 +3027,48 @@ async fn settings_html(fx: &Fixture) -> String {
     page.body.as_str().expect("html").to_string()
 }
 
+#[must_use]
+fn fill_rules(css: &str) -> &str {
+    let start = css
+        .find("@media (min-width: 700px) {\n  body:has(.bshell-fill)")
+        .expect("fill media");
+    let rest = &css[start..];
+    &rest[..rest.find("\n}\n").expect("media end")]
+}
+
+#[tokio::test]
+async fn the_settings_card_should_fill_the_window_and_scroll_its_content() {
+    let fx = Fixture::new();
+    let html = settings_html(&fx).await;
+    assert!(html.contains("class=\"bshell bshell-fill\""), "{html}");
+    assert_eq!(html.matches("class=\"bshell-content\"").count(), 1);
+    let rules = fill_rules(include_str!("../../static/style.css"));
+    assert!(rules.contains("height: 100vh; height: 100dvh;"));
+    assert!(rules.contains("  .bshell-fill {\n    width: 100%;\n    flex: 1; min-height: 0;"));
+}
+
+#[tokio::test]
+async fn the_settings_card_should_scroll_its_content_pane() {
+    let fx = Fixture::new();
+    let html = settings_html(&fx).await;
+    assert!(html.contains("<nav class=\"bshell-nav\""));
+    let rules = fill_rules(include_str!("../../static/style.css"));
+    assert!(rules.contains(".bshell-fill .bshell-nav,\n  .bshell-fill .bshell-content { min-height: 0; overflow-y: auto; }"));
+    assert!(
+        rules
+            .contains(".board-settings-page .bshell-fill .bshell-body { flex: 1; min-height: 0; }")
+    );
+}
+
+#[test]
+fn the_settings_fill_should_switch_off_on_a_narrow_window() {
+    let css = include_str!("../../static/style.css");
+    let rules = fill_rules(css);
+    assert!(rules.contains("height: 100vh; height: 100dvh;"));
+    let outside = css.replace(rules, "");
+    assert!(!outside.contains(".bshell-fill"));
+}
+
 fn roles_pane(html: &str) -> &str {
     let pane = html.split("id=\"agent-roles\"").nth(1).expect("roles pane");
     pane.split("class=\"settings-pane\"")
