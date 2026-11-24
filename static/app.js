@@ -12136,6 +12136,14 @@
         }).catch(() => { toast('Could not load the bookmarks.'); });
       },
       migrate() {
+        const run = () => fetchJson('/api/settings').then((settings) => {
+          this.list = settings.spent_bookmarks || [];
+          return this.moveOld();
+        }).catch(() => { toast('Could not move the old bookmarks to your account.'); });
+        const locks = window.navigator && window.navigator.locks;
+        return locks ? locks.request(this.key, run) : run();
+      },
+      moveOld() {
         const found = this.localList().filter((b) => b && typeof b.name === 'string'
           && b.name.trim() !== '' && b.name.trim().length <= MAX_SPENT_BOOKMARK_NAME
           && b.filters && typeof b.filters === 'object'
@@ -12159,11 +12167,11 @@
           return;
         }
         if (merged.length > MAX_SPENT_BOOKMARKS) toast('Some old bookmarks were over the limit and were dropped.');
-        this.put(merged.slice(0, MAX_SPENT_BOOKMARKS)).then((saved) => {
+        return this.put(merged.slice(0, MAX_SPENT_BOOKMARKS)).then((saved) => {
           this.list = saved;
           this.render();
           forget();
-        }).catch(() => { toast('Could not move the old bookmarks to your account.'); });
+        });
       },
       render: function () {
         var self = this;

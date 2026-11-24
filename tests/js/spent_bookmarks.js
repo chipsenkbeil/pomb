@@ -20,11 +20,19 @@ const store = (initial) => {
 
 const entry = (name, board) => ({ name, filters: { 'spent-board': board } });
 
-const load = (localStorage, saved, status) => {
-  const calls = [];
+const load = (localStorage, saved, status, shared) => {
+  const world = shared || { calls: [], state: { renders: 0, server: saved.slice() }, queue: Promise.resolve() };
+  const { calls, state } = world;
   const toasts = [];
-  const state = { renders: 0, server: saved.slice() };
-  const window = { localStorage };
+  const locks = {
+    request: (name, run) => {
+      const result = world.queue.then(run);
+      world.queue = result.catch(() => {});
+      return result;
+    },
+  };
+  const window = { localStorage, navigator: { locks } };
+  const fetchJson = () => Promise.resolve({ spent_bookmarks: state.server.slice() });
   const toast = (message) => { toasts.push(message); };
   const fetch = (url, init) => {
     const body = init.body === undefined ? null : JSON.parse(init.body);
@@ -50,7 +58,7 @@ const load = (localStorage, saved, status) => {
   SpentBookmarks.list = saved;
   SpentBookmarks.ready = true;
   SpentBookmarks.render = () => { state.renders++; };
-  return { spent: SpentBookmarks, calls, toasts, state };
+  return { spent: SpentBookmarks, calls, toasts, state, world };
 };
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -129,6 +137,38 @@ test('spent_bookmark_migrate_should_drop_entries_past_the_limit', () => {
       page.calls, [['/api/settings', 'PUT', { spent_bookmarks: saved }]]);
     check('the limit toast shows', page.toasts, [LIMIT_TOAST]);
     check('the key is removed after the save', ls.getItem(KEY), null);
+  });
+});
+
+test('spent_bookmark_migrate_should_run_once_when_two_tabs_load_together', () => {
+  const ls = store();
+  ls.setItem(KEY, JSON.stringify([entry('Week', 'b2')]));
+  const first = load(ls, [entry('Sprint', 'b1')], 0);
+  const second = load(ls, [entry('Sprint', 'b1')], 0, first.world);
+  first.spent.migrate();
+  second.spent.migrate();
+  return flush().then(() => {
+    const merged = [entry('Sprint', 'b1'), entry('Week', 'b2')];
+    check('one PUT in all', first.calls, [['/api/settings', 'PUT', { spent_bookmarks: merged }]]);
+    check('the server holds the merged list', first.state.server, merged);
+    check('the key is removed', ls.getItem(KEY), null);
+    check('the second tab shows the saved list', second.spent.list, merged);
+    check('no toast', first.toasts.concat(second.toasts), []);
+  });
+});
+
+test('spent_bookmark_migrate_should_keep_a_bookmark_another_tab_added', () => {
+  const ls = store();
+  ls.setItem(KEY, JSON.stringify([entry('Week', 'b2')]));
+  const page = load(ls, [entry('Sprint', 'b1')], 0);
+  page.state.server = [entry('Sprint', 'b1'), entry('Other', 'b8')];
+  page.spent.migrate();
+  return flush().then(() => {
+    const merged = [entry('Sprint', 'b1'), entry('Other', 'b8'), entry('Week', 'b2')];
+    check('the PUT keeps the bookmark the other tab saved',
+      page.calls, [['/api/settings', 'PUT', { spent_bookmarks: merged }]]);
+    check('the list shows the merged entries', page.spent.list, merged);
+    check('the key is removed', ls.getItem(KEY), null);
   });
 });
 
