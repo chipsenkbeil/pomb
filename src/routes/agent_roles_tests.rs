@@ -3061,6 +3061,55 @@ async fn the_settings_card_should_scroll_its_content_pane() {
 }
 
 #[tokio::test]
+async fn the_timer_pane_should_render_sub_tabs_in_one_form() {
+    let fx = Fixture::new();
+    let html = settings_html(&fx).await;
+    let start = html.find("<div id=\"timer\"").expect("timer pane");
+    let pane = &html[start
+        ..html[start..]
+            .find("<div id=\"notifications\"")
+            .expect("end")
+            + start];
+    assert_eq!(pane.matches("<form").count(), 1, "{pane}");
+    assert!(
+        pane.contains("class=\"tk-tabs\" role=\"tablist\""),
+        "{pane}"
+    );
+    assert!(pane.contains(">Lengths</button>"), "{pane}");
+    assert!(pane.contains(">Interruption reasons</button>"), "{pane}");
+    assert_eq!(pane.matches("role=\"tabpanel\"").count(), 2, "{pane}");
+    let form_end = pane.find("</form>").expect("form end");
+    for field in ["pomodoro_minutes", "interrupt_reasons", "settings-savebar"] {
+        assert!(pane.find(field).expect(field) < form_end, "{field}");
+    }
+    assert!(
+        pane.find("Alerts").expect("alerts")
+            < pane.find("id=\"timer-panel-reasons\"").expect("reasons")
+    );
+}
+
+#[tokio::test]
+async fn the_passkeys_pane_should_render_three_sub_tabs() {
+    let fx = Fixture::new();
+    let html = settings_html(&fx).await;
+    let start = html.find("<div id=\"passkeys\"").expect("passkeys pane");
+    let pane = &html[start..];
+    for label in ["Passkeys", "Sessions", "Other browsers"] {
+        assert!(pane.contains(&format!(">{label}</button>")), "{label}");
+    }
+    for id in [
+        "passkey-panel-keys",
+        "passkey-panel-sessions",
+        "passkey-panel-others",
+    ] {
+        assert!(
+            pane.contains(&format!("id=\"{id}\" role=\"tabpanel\"")),
+            "{id}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn the_timer_form_save_button_should_sit_in_a_savebar() {
     let fx = Fixture::new();
     let html = settings_html(&fx).await;

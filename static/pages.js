@@ -1409,6 +1409,21 @@
     },
   };
 
+  const PaneTabs = {
+    owner: (field) => {
+      const panel = field.closest('[data-pane-panel]');
+      return panel ? panel.dataset.panePanel : null;
+    },
+    show: (tabs, panels, id) => {
+      tabs.forEach((tab) => {
+        const on = tab.dataset.paneTab === id;
+        tab.setAttribute('aria-selected', on ? 'true' : 'false');
+        tab.tabIndex = on ? 0 : -1;
+      });
+      panels.forEach((panel) => { panel.hidden = panel.dataset.panePanel !== id; });
+    },
+  };
+
   const RoleForm = {
     body: (name, catalog, held) => ({
       name: name.trim(),
@@ -1851,6 +1866,30 @@
       });
     }
     bindTokenSort(document);
+    document.querySelectorAll('[data-pane-tabs]').forEach((group) => {
+      const pane = group.closest('.settings-pane');
+      const paneTabs = Array.from(group.querySelectorAll('[data-pane-tab]'));
+      const panePanels = Array.from(pane.querySelectorAll('[data-pane-panel]'));
+      const paneIds = paneTabs.map((tab) => tab.dataset.paneTab);
+      const paneForm = group.closest('form');
+      if (paneForm) {
+        paneForm.addEventListener('invalid', (e) => {
+          const owner = PaneTabs.owner(e.target);
+          if (owner !== null) PaneTabs.show(paneTabs, panePanels, owner);
+        }, true);
+      }
+      paneTabs.forEach((tab) => {
+        tab.addEventListener('click', () => PaneTabs.show(paneTabs, panePanels, tab.dataset.paneTab));
+        tab.addEventListener('keydown', (e) => {
+          if (e.metaKey || e.ctrlKey || e.altKey) return;
+          const next = TabKeys.step(paneIds, tab.dataset.paneTab, e.key);
+          if (next === null) return;
+          e.preventDefault();
+          PaneTabs.show(paneTabs, panePanels, next);
+          paneTabs[paneIds.indexOf(next)].focus();
+        });
+      });
+    });
     const rolesPane = document.getElementById('agent-roles');
     if (rolesPane) {
       const rolesError = document.getElementById('roles-error');

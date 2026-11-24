@@ -75,6 +75,11 @@
 
   <div id="timer" class="settings-pane" hidden>
   <form method="post" action="/settings" class="settings-form">
+    <div class="tk-tabs" role="tablist" aria-label="Timer sections" data-pane-tabs>
+      <button type="button" class="tm-tab" role="tab" id="timer-tab-lengths" data-pane-tab="lengths" aria-controls="timer-panel-lengths" aria-selected="true">Lengths</button>
+      <button type="button" class="tm-tab" role="tab" id="timer-tab-reasons" data-pane-tab="reasons" aria-controls="timer-panel-reasons" aria-selected="false" tabindex="-1">Interruption reasons</button>
+    </div>
+    <div id="timer-panel-lengths" role="tabpanel" aria-labelledby="timer-tab-lengths" data-pane-panel="lengths">
     <section class="settings-section">
       <h2>Timer</h2>
       <label>Pomodoro length (minutes)
@@ -95,13 +100,16 @@
       <h2>Alerts</h2>
       <p class="settings-hint">Timer sounds are configured in the Timer settings modal (open the timer popup and click Settings).</p>
     </section>
+    </div>
 
+    <div id="timer-panel-reasons" role="tabpanel" aria-labelledby="timer-tab-reasons" data-pane-panel="reasons" hidden>
     <section class="settings-section">
       <h2>Interruption reasons</h2>
       <p class="settings-hint">One per line. These appear in the &ldquo;Why did you stop?&rdquo; menu when you stop a pomodoro early. Add new reasons on the Interruptions tab of the timer settings.</p>
       <textarea name="interrupt_reasons" rows="10">{% for reason in settings.interrupt_reasons %}{{ reason }}
 {% endfor %}</textarea>
     </section>
+    </div>
 
     <div class="settings-savebar">
       <button type="submit" class="kf-btn kf-btn-success">Save settings</button>
@@ -279,6 +287,14 @@
     <h2>Passkeys</h2>
     <p class="settings-hint">Passkeys sign you in when Pomb runs with <code>--auth passkey</code>.
       The last passkey cannot be removed.</p>
+    <div class="tk-tabs" role="tablist" aria-label="Passkey sections" data-pane-tabs>
+      <button type="button" class="tm-tab" role="tab" id="passkey-tab-keys" data-pane-tab="keys" aria-controls="passkey-panel-keys" aria-selected="true">Passkeys</button>
+      {% if chrome.sign_out %}
+      <button type="button" class="tm-tab" role="tab" id="passkey-tab-sessions" data-pane-tab="sessions" aria-controls="passkey-panel-sessions" aria-selected="false" tabindex="-1">Sessions</button>
+      <button type="button" class="tm-tab" role="tab" id="passkey-tab-others" data-pane-tab="others" aria-controls="passkey-panel-others" aria-selected="false" tabindex="-1">Other browsers</button>
+      {% endif %}
+    </div>
+    <div id="passkey-panel-keys" role="tabpanel" aria-labelledby="passkey-tab-keys" data-pane-panel="keys">
     {% if passkeys_available %}
     <form id="passkey-add-form" class="settings-form token-form">
       <label>Passkey name
@@ -310,8 +326,9 @@
       </table></div>
       {% endif %}
     </div>
+    </div>
     {% if chrome.sign_out %}
-    <h3>Sessions</h3>
+    <div id="passkey-panel-sessions" role="tabpanel" aria-labelledby="passkey-tab-sessions" data-pane-panel="sessions" hidden>
     <p class="settings-hint">The browsers signed in to this account. A revoked browser is signed out on
       its next request.</p>
     <div class="bshell-scroll"><table class="bshell-table token-table" id="sessions-table">
@@ -327,11 +344,13 @@
       </tbody>
     </table></div>
     <p class="settings-hint" id="session-revoke-result" role="status" hidden></p>
-    <h3>Other browsers</h3>
+    </div>
+    <div id="passkey-panel-others" role="tabpanel" aria-labelledby="passkey-tab-others" data-pane-panel="others" hidden>
     <p class="settings-hint">End the session of every other browser signed in to this account.
       Removing a passkey does this too. API tokens keep working.</p>
     <button type="button" class="kf-btn" id="sign-out-others">Sign out other sessions</button>
     <p class="settings-hint" id="sign-out-others-result" role="status" hidden></p>
+    </div>
     {% endif %}
   </section>
   </div>
