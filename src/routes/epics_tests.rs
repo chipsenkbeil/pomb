@@ -762,10 +762,7 @@ async fn an_epics_modal_should_tab_description_its_cards_comments_relations_file
             pair[1]
         );
     }
-    assert!(
-        modal.contains(">Its cards &middot; 0/0</button>"),
-        "{modal}"
-    );
+    assert!(modal.contains(">Cards &middot; 0/0</button>"), "{modal}");
     assert!(!modal.contains(">About</h3>"), "{modal}");
     assert!(
         modal.contains("class=\"task-modal taskColorVars-"),
@@ -980,10 +977,7 @@ async fn an_empty_epic_should_still_show_its_cards_with_an_empty_note() {
     .await;
     let modal = modal_of(&fx, &epic).await;
     let cards = section(&modal, "tm-panel-children");
-    assert!(
-        modal.contains(">Its cards &middot; 0/0</button>"),
-        "{modal}"
-    );
+    assert!(modal.contains(">Cards &middot; 0/0</button>"), "{modal}");
     assert!(cards.contains("tm-children-empty"), "{cards}");
     assert!(!cards.contains("<li "), "{cards}");
     assert!(!cards.contains("data-children-hide-done"), "{cards}");
@@ -1064,7 +1058,7 @@ async fn a_plain_cards_modal_should_keep_its_controls_and_show_no_about() {
     }
     for absent in [
         ">About</h3>",
-        "Its cards",
+        ">Cards &middot;",
         " tm-epic\"",
         "tm-pill-closed",
         "id=\"tm-panel-children\"",
@@ -1149,6 +1143,37 @@ async fn a_plain_card_with_children_should_list_them_without_offering_to_add_mor
     ] {
         assert!(!modal.contains(absent), "{absent} in {modal}");
     }
+}
+
+#[tokio::test]
+async fn epic_modal_should_label_its_tab_cards() {
+    let (_dir, fx) = fixture();
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let child = create(&fx, json!({"column_id": fx.col_todo, "name": "Child"})).await;
+    adopt(&fx, &child, &epic).await;
+    let modal = modal_of(&fx, &epic).await;
+    assert!(modal.contains(">Cards &middot; 0/1</button>"), "{modal}");
+    assert!(!modal.contains(">Children &middot;"), "{modal}");
+}
+
+#[tokio::test]
+async fn parent_modal_should_keep_children_tab() {
+    let (_dir, fx) = fixture();
+    let parent = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Parent", "kind": "epic"}),
+    )
+    .await;
+    let child = create(&fx, json!({"column_id": fx.col_todo, "name": "Child"})).await;
+    adopt(&fx, &child, &parent).await;
+    make_plain(&fx.db, &[&parent]);
+    let modal = modal_of(&fx, &parent).await;
+    assert!(modal.contains(">Children &middot; 0/1</button>"), "{modal}");
+    assert!(!modal.contains(">Cards &middot;"), "{modal}");
 }
 
 #[tokio::test]

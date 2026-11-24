@@ -5670,7 +5670,7 @@ struct ModalTemplate {
     custom_css: String,
     /// The role the signed-in account holds on the task's board.
     role: BoardRole,
-    /// Whether the task is an epic, which the modal tabs as Description, Its cards, Final check, Comments, Relations, Files and History.
+    /// Whether the task is an epic, which the modal tabs as Description, Cards, Final check, Comments, Relations, Files and History.
     is_epic: bool,
     /// Whether the epic is closed, by someone closing it or by a move into a Done column.
     closed: bool,
