@@ -54,6 +54,10 @@ pub const LANE_NAMES_FOLDED_KEY: &str = "lane_names_folded";
 /// card.
 pub const BLOCKED_COLUMN_KEY: &str = "blocked_column_id";
 
+/// Key in a board's config bag of the template that turns a commit hash into a link to the
+/// board's repository.
+pub const COMMIT_URL_TEMPLATE_KEY: &str = "commit_url_template";
+
 /// Label a posted question puts on its card and an answer removes.
 pub const NEEDS_HUMAN_LABEL: &str = "needs:human";
 
@@ -692,6 +696,12 @@ impl BoardRow {
     pub fn blocked_column_id(&self) -> Option<String> {
         self.config_string(BLOCKED_COLUMN_KEY)
             .filter(|id| !id.is_empty())
+    }
+
+    /// Returns the board's commit URL template, or none when unset or empty.
+    pub fn commit_url_template(&self) -> Option<String> {
+        self.config_string(COMMIT_URL_TEMPLATE_KEY)
+            .filter(|template| !template.is_empty())
     }
 
     /// Returns whether `column_id` is the column the board marks as Blocked.

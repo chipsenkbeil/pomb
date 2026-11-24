@@ -3790,6 +3790,9 @@ fn task_color_view(
     Ok((fields, false))
 }
 
+/// Longest commit URL template, in characters.
+const MAX_COMMIT_URL_TEMPLATE_CHARS: usize = 300;
+
 /// Config key of the board setting that estimates in points instead of hours.
 const ESTIMATE_IN_POINTS_KEY: &str = "estimate_in_points";
 
@@ -22489,6 +22492,11 @@ struct BoardConfigInput {
     /// The id of the column a posted question moves its card to, which must be a column of this
     /// board. An empty string clears it.
     blocked_column_id: Option<String>,
+    /// The address of the board's commit page with one `{hash}` placeholder, such as
+    /// `https://example.test/commit/{hash}`. It must start with `https://` or `http://`, hold
+    /// `{hash}` exactly once and stay within 300 characters, or the request answers 400. An empty
+    /// string clears it.
+    commit_url_template: Option<String>,
     /// "Estimation unit": true estimates in points instead of hours and false (the default) in
     /// hours. It switches at once in either direction, and each task keeps both its hour estimate
     /// and its points.
@@ -22659,6 +22667,8 @@ struct BoardConfigView {
     /// The id of the board's Blocked column, where a posted question moves its card, or null when
     /// it has none.
     blocked_column_id: Option<String>,
+    /// The board's commit URL template with one `{hash}` placeholder, or null when it has none.
+    commit_url_template: Option<String>,
     /// Whether the board estimates in points instead of hours.
     estimate_in_points: bool,
     /// The board's task numbering, or null when it has none.
@@ -22676,7 +22686,7 @@ struct BoardConfigView {
     request_body = BoardConfigInput,
     responses(
         (status = 200, description = "Current board config", body = BoardConfigView),
-        (status = 400, description = "A blank or over-100-character name, invalid due_time, unknown default_member, a blocked_column_id that is not a column of the board, or archiving the last unarchived board"),
+        (status = 400, description = "A blank or over-100-character name, invalid due_time, unknown default_member, a blocked_column_id that is not a column of the board, an invalid commit_url_template, or archiving the last unarchived board"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -22767,6 +22777,21 @@ async fn update_board_config(
             serde_json::Value::String(column_id.to_string()),
         );
     }
+    if let Some(template) = input.commit_url_template.as_deref().map(str::trim) {
+        let valid = template.is_empty()
+            || (template.chars().count() <= MAX_COMMIT_URL_TEMPLATE_CHARS
+                && (template.starts_with("https://") || template.starts_with("http://"))
+                && template.matches("{hash}").count() == 1);
+        if !valid {
+            return Err(AppError::bad_request(
+                "commit_url_template must start with https:// or http://, hold {hash} once and stay within 300 characters",
+            ));
+        }
+        updates.insert(
+            COMMIT_URL_TEMPLATE_KEY.to_string(),
+            serde_json::Value::String(template.to_string()),
+        );
+    }
     if let Some(raw) = input.due_time.as_deref() {
         let time = parse_due_time(raw.trim()).ok_or_else(|| {
             AppError::bad_request(format!("invalid due_time \"{raw}\": use 24-hour HH:MM"))
@@ -22808,6 +22833,7 @@ async fn update_board_config(
         default_member: board.row().default_member(),
         default_member_responsible: board.row().default_member_responsible(),
         blocked_column_id: board.row().blocked_column_id(),
+        commit_url_template: board.row().commit_url_template(),
         estimate_in_points: board.row().config_bool(ESTIMATE_IN_POINTS_KEY),
         numbering: board.row().numbering().map(NumberingView::from),
     }))
@@ -31246,16 +31272,16 @@ mod tests {
     use super::{
         ApiDoc, AvatarView, BandView, BoardDeleteTemplate, BoardLayout, BoardTemplate, Build,
         COMPLETION_GRACE_SECS, CellView, ColorView, ColumnHead, CommentReaction,
-        CreatedWebhookView, EstimateUnit, RepeatCadence, ShellChrome, SubtaskDisplay,
-        TaskCardDisplay, TimerSession, UpdateColumnInput, UpdateTaskInput, build_board_export_data,
-        build_ical_feed, csv_field, done_drop_position, done_group_label, entry_badge,
-        estimate_hours_to_size, folds_done_subtasks, format_added, format_due,
-        format_entry_duration, format_estimate_hours, format_pomodori, format_relative_day,
-        format_time_kf, format_timeline, generate_feed_token, history_csv, ical_escape, ical_fold,
-        is_overdue, log_timer_session, needs_lane_label_column, normalize_due_input,
-        normalize_due_input_at, normalize_due_input_in, normalize_estimate_hours,
-        parse_manual_range, parse_repeat_cadence, place_overdue_strips, reaction_pills, router,
-        static_response, subtasks_on_face, timer_status_view, version_info,
+        CreatedWebhookView, EstimateUnit, MAX_COMMIT_URL_TEMPLATE_CHARS, RepeatCadence,
+        ShellChrome, SubtaskDisplay, TaskCardDisplay, TimerSession, UpdateColumnInput,
+        UpdateTaskInput, build_board_export_data, build_ical_feed, csv_field, done_drop_position,
+        done_group_label, entry_badge, estimate_hours_to_size, folds_done_subtasks, format_added,
+        format_due, format_entry_duration, format_estimate_hours, format_pomodori,
+        format_relative_day, format_time_kf, format_timeline, generate_feed_token, history_csv,
+        ical_escape, ical_fold, is_overdue, log_timer_session, needs_lane_label_column,
+        normalize_due_input, normalize_due_input_at, normalize_due_input_in,
+        normalize_estimate_hours, parse_manual_range, parse_repeat_cadence, place_overdue_strips,
+        reaction_pills, router, static_response, subtasks_on_face, timer_status_view, version_info,
     };
     use crate::auth::is_event_wait;
     use crate::db::{BootstrapToken, Db, NewTimeEntry, SwimlanePatch};
@@ -38647,6 +38673,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn board_config_should_store_a_commit_url_template() {
+        let (_dir, fx) = kf221_fixture();
+        let uri = format!("/api/boards/{}/config", fx.board_id);
+        let template = "https://git.example.test/commit/{hash}";
+        let (status, text) = send(
+            &fx,
+            "PUT",
+            &uri,
+            Some(serde_json::json!({"commit_url_template": template})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let view: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(view["commit_url_template"], template);
+        let board = fx.db.board(&fx.board_id).expect("read").expect("board");
+        assert_eq!(board.commit_url_template().as_deref(), Some(template));
+
+        let (status, text) = send(
+            &fx,
+            "PUT",
+            &uri,
+            Some(serde_json::json!({"commit_url_template": ""})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let view: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert!(view["commit_url_template"].is_null());
+        let board = fx.db.board(&fx.board_id).expect("read").expect("board");
+        assert_eq!(board.commit_url_template(), None);
+    }
+
+    #[tokio::test]
+    async fn board_config_should_refuse_a_bad_commit_url_template() {
+        let (_dir, fx) = kf221_fixture();
+        let uri = format!("/api/boards/{}/config", fx.board_id);
+        let long = format!(
+            "https://git.example.test/{}/{{hash}}",
+            "a".repeat(MAX_COMMIT_URL_TEMPLATE_CHARS)
+        );
+        for bad in [
+            "https://git.example.test/commit".to_string(),
+            "https://git.example.test/{hash}/{hash}".to_string(),
+            "ftp://git.example.test/{hash}".to_string(),
+            long,
+        ] {
+            let (status, text) = send(
+                &fx,
+                "PUT",
+                &uri,
+                Some(serde_json::json!({"commit_url_template": bad})),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{bad}: {text}");
+            let board = fx.db.board(&fx.board_id).expect("read").expect("board");
+            assert_eq!(board.commit_url_template(), None, "{bad}");
+        }
+    }
+
+    #[tokio::test]
     async fn board_config_should_answer_with_exactly_the_flat_keys() {
         let (_dir, fx) = kf221_fixture();
         let uri = format!("/api/boards/{}/config", fx.board_id);
@@ -38666,6 +38751,7 @@ mod tests {
                 "archived",
                 "bin_permanent_delete",
                 "blocked_column_id",
+                "commit_url_template",
                 "default_member",
                 "default_member_responsible",
                 "due_time",
