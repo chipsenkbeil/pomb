@@ -6610,6 +6610,19 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   padding: 15px 15px 1.25rem;
 }
 
+.settings-savebar {
+  position: sticky;
+  bottom: 0;
+  margin: 0.8rem -15px 0;
+  padding: 0.6rem 15px;
+  background: var(--surface-white);
+  border-top: 1px solid var(--divider);
+}
+
+@media (min-width: 700px) {
+  .settings-savebar { bottom: -1.25rem; padding-bottom: 1.25rem; margin-bottom: -1.25rem; }
+}
+
 @media (min-width: 700px) {
   body:has(.bshell-fill) {
     display: flex; flex-direction: column;
@@ -8454,6 +8467,7 @@ body.dark .token-scroll::-webkit-scrollbar-thumb { background-color: #777777; }
   .bshell-nav-item { line-height: 36px; padding: 0 12px; }
   .bshell-nav-active { box-shadow: inset 0 -3px 0 var(--nav-active-blue); }
   .bshell-content { padding: 12px; }
+  .settings-savebar { margin-inline: -12px; padding-inline: 12px; }
   .bshell-defs { grid-template-columns: 1fr; }
   .kf-section-header { height: auto; flex-wrap: wrap; gap: 6px; }
   .bshell-content .kf-table { display: block; max-width: 100%; overflow-x: auto; }

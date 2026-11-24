@@ -3060,6 +3060,30 @@ async fn the_settings_card_should_scroll_its_content_pane() {
     );
 }
 
+#[tokio::test]
+async fn the_timer_form_save_button_should_sit_in_a_savebar() {
+    let fx = Fixture::new();
+    let html = settings_html(&fx).await;
+    assert!(
+        html.contains(
+            "<div class=\"settings-savebar\">\n      <button type=\"submit\" class=\"kf-btn kf-btn-success\">Save settings</button>"
+        ),
+        "{html}"
+    );
+}
+
+#[test]
+fn the_savebar_should_stick_to_the_bottom_edge() {
+    let css = include_str!("../../static/style.css");
+    let rest = &css[css.find("\n.settings-savebar {").expect("rule")..];
+    let rule = &rest[..rest.find('}').expect("end")];
+    assert!(rule.contains("position: sticky"), "{rule}");
+    assert!(rule.contains("bottom: 0"), "{rule}");
+    assert!(rule.contains("background: var(--surface-white)"), "{rule}");
+    assert!(rule.contains("border-top"), "{rule}");
+    assert!(rule.contains("margin: 0.8rem -15px 0"), "{rule}");
+}
+
 #[test]
 fn the_settings_fill_should_switch_off_on_a_narrow_window() {
     let css = include_str!("../../static/style.css");

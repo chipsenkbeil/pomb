@@ -103,7 +103,9 @@
 {% endfor %}</textarea>
     </section>
 
-    <button type="submit" class="kf-btn kf-btn-success">Save settings</button>
+    <div class="settings-savebar">
+      <button type="submit" class="kf-btn kf-btn-success">Save settings</button>
+    </div>
   </form>
   </div>
 
@@ -440,7 +442,9 @@
         <input type="number" id="storage-max-attachment" min="{{ DiskLimits::MIN_ATTACHMENT_MIB }}" max="{{ DiskLimits::MAX_ATTACHMENT_MIB }}" value="{{ limits.max_attachment_mib }}" required>
       </label>
       <p class="settings-hint" id="attachment-use">Largest attachment right now: {{ usage.file }}.</p>
-      <button type="submit" class="kf-btn kf-btn-success">Save storage settings</button>
+      <div class="settings-savebar">
+        <button type="submit" class="kf-btn kf-btn-success">Save storage settings</button>
+      </div>
     </form>
     <p class="settings-hint" id="storage-error" role="alert" hidden></p>
   </section>

@@ -1240,6 +1240,19 @@ fn cramped_except(roomy: &Path) -> DiskGuard {
 }
 
 #[tokio::test]
+async fn the_storage_form_save_button_should_sit_in_a_savebar() {
+    let fx = Fixture::new(InstanceMode::Single, unthrottled_limits(), |_| roomy());
+    let page = fx.admin("GET", "/settings", None).await;
+    let html = page.body.as_str().expect("html");
+    assert!(
+        html.contains(
+            "<div class=\"settings-savebar\">\n        <button type=\"submit\" class=\"kf-btn kf-btn-success\">Save storage settings</button>"
+        ),
+        "{html}"
+    );
+}
+
+#[tokio::test]
 async fn single_mode_should_edit_the_rate_and_disk_limits() {
     const FLOOR_MIB: u32 = 1024;
     let fx = Fixture::new(InstanceMode::Single, unthrottled_limits(), |_| roomy());
