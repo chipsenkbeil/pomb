@@ -25,6 +25,12 @@ check('modal other day', LocalTime.write('due-modal', Date.parse('2026-10-20T20:
 check('past is absolute', LocalTime.write('due-card', Date.parse('2026-09-25T20:30:00Z'), now, chicago, true), '25 September 3:30 PM');
 check('comment yesterday', LocalTime.write('comment', Date.parse('2026-09-30T20:30:00Z'), now, chicago, true), 'Yesterday 3:30 PM');
 check('comment older', LocalTime.write('comment', Date.parse('2026-09-27T20:30:00Z'), now, chicago, true), 'Sep 27 3:30 PM');
+const afternoon = new Date(2026, 9, 1, 15, 5);
+check('clockOf a date, 12h', LocalTime.clockOf(afternoon, 'x'), '3:05 PM');
+LocalTime.use({ hour12: false });
+check('clockOf a date, 24h', LocalTime.clockOf(afternoon, 'x'), '15:05');
+check('clockOf an invalid date falls back', LocalTime.clockOf(new Date(NaN), 'x'), 'x');
+LocalTime.use({ hour12: true });
 check('span', LocalTime.writeSpan(due, due + 25 * 60000, now, chicago, true), '3:30 PM - 3:55 PM');
 
 function element(attrs) {

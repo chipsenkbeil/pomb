@@ -2,7 +2,7 @@ var fs = require('fs');
 var src = fs.readFileSync(process.argv[2], 'utf8');
 const prelude = require('./support/report_prelude.js');
 const { block, fn } = prelude.extractors(src);
-const { isoDate, ColumnHistory, ReportRange, ReportValue } = require('../../static/pure.js');
+const { ColumnHistory, LocalTime, ReportChart, ReportRange, ReportValue, escapeHtml, isoDate } = require('../../static/pure.js');
 var page = {};
 var document = {
   getElementById: function (id) {
@@ -10,13 +10,9 @@ var document = {
     return page[id];
   },
 };
-function escapeHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
 const accountPrefs = prelude.accountPrefs(1);
+LocalTime.use(accountPrefs);
 eval(fn('  function daysIntoWeek(d) {'));
-eval(fn('  function clockText(d) {'));
-eval(block('  var ReportChart = (function () {'));
 eval(block('  var ReportBreakdown = (function () {'));
 eval(block('  var ReportFilter = (function () {'));
 eval(block('  var CumulativeFlowPage = (function () {'));

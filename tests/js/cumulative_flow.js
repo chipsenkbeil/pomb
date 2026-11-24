@@ -12,12 +12,11 @@ var document = {
   getElementById: function () { return null; },
   createElement: function () { return { style: {}, offsetWidth: 100, hidden: false }; },
 };
-function escapeHtml(s) { return String(s); }
+globalThis.document = document;
+const { ColumnHistory, LocalTime, ReportChart, ReportRange, ReportValue, escapeHtml } = require('../../static/pure.js');
 const accountPrefs = prelude.accountPrefs(1);
+LocalTime.use(accountPrefs);
 eval(fn('  function daysIntoWeek(d) {'));
-eval(fn('  function clockText(d) {'));
-eval(src.slice(src.indexOf('  var ReportChart = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ReportChart = (function () {')) + '\n  })();'.length));
-const { ColumnHistory, ReportRange, ReportValue } = require('../../static/pure.js');
 eval(src.slice(start, end));
 
 function at(offset, h) {

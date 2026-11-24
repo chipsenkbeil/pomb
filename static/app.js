@@ -83,14 +83,6 @@
     return names.slice(accountPrefs.weekStart).concat(names.slice(0, accountPrefs.weekStart));
   }
 
-  function clockText(d) {
-    var h = d.getHours();
-    var m = d.getMinutes();
-    var minutes = (m < 10 ? '0' : '') + m;
-    if (!accountPrefs.hour12) return (h < 10 ? '0' : '') + h + ':' + minutes;
-    return (h % 12 || 12) + ':' + minutes + ' ' + (h < 12 ? 'AM' : 'PM');
-  }
-
   LocalTime.use(accountPrefs);
   LocalTime.watch();
 
@@ -143,14 +135,6 @@
   // does not abort the request ("net::ERR_ABORTED" in the browser).
   function drained(res) {
     return res.text().then(function () { return res; }, function () { return res; });
-  }
-
-  function escapeHtml(s) {
-    return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
   }
 
   var toastTimer = null;
@@ -9025,7 +9009,7 @@
 
   // "5:43 PM", or "17:43" on the account's 24-hour clock.
   function clockTime(d) {
-    return clockText(d);
+    return LocalTime.clockOf(d);
   }
 
   function toTimeStr(d, withSeconds) {
@@ -13047,145 +13031,6 @@
     return { init: init };
   })();
 
-  var ReportChart = (function () {
-    var SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    var LONG_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'];
-
-    function shortDate(d) {
-      return SHORT_MONTHS[d.getMonth()] + ' ' + d.getDate();
-    }
-
-    function longDate(d) {
-      return d.getDate() + ' ' + LONG_MONTHS[d.getMonth()] + ' ' + clockText(d);
-    }
-
-    function dayStart(d) {
-      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    }
-
-    function pointX(geo, n, i) {
-      var innerW = geo.W - geo.padL - geo.padR;
-      return geo.padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
-    }
-
-    function pointIndex(geo, n, rect, clientX, clientY) {
-      if (n < 1 || rect.width <= 0 || rect.height <= 0) return -1;
-      var px = (clientX - rect.left) * geo.W / rect.width;
-      var py = (clientY - rect.top) * geo.H / rect.height;
-      if (px < geo.padL || px > geo.W - geo.padR || py < geo.padT || py > geo.H - geo.padB) return -1;
-      if (n === 1) return 0;
-      var i = Math.round((px - geo.padL) / (geo.W - geo.padL - geo.padR) * (n - 1));
-      return Math.max(0, Math.min(n - 1, i));
-    }
-
-    function crosshairLine(geo) {
-      return '<line class="chart-crosshair" x1="0" x2="0" y1="' + geo.padT + '" y2="' +
-        (geo.H - geo.padB) + '" visibility="hidden"/>';
-    }
-
-    function tipHtml(tip) {
-      var html = '<div class="chart-tip-title">' + escapeHtml(tip.title) + '</div>';
-      tip.rows.forEach(function (r) {
-        html += '<div class="chart-tip-row">' +
-          (r.color ? '<span class="chart-tip-swatch" style="background:' + escapeHtml(r.color) + '"></span>' : '') +
-          '<span class="chart-tip-label">' + escapeHtml(r.label) + '</span>' +
-          '<strong>' + escapeHtml(String(r.value)) + '</strong></div>';
-      });
-      return html;
-    }
-
-    function tipBox(host) {
-      var box = host.querySelector('.chart-tip');
-      if (!box) {
-        box = document.createElement('div');
-        box.className = 'chart-tip';
-        box.hidden = true;
-        host.appendChild(box);
-      }
-      return box;
-    }
-
-    function placeTip(host, box, clientX, clientY) {
-      var rect = host.getBoundingClientRect();
-      var left = clientX - rect.left + 14;
-      if (left + box.offsetWidth > rect.width) left = clientX - rect.left - box.offsetWidth - 14;
-      box.style.left = Math.max(0, left) + 'px';
-      box.style.top = (clientY - rect.top + 14) + 'px';
-    }
-
-    function attachCrosshair(host, geo, n, describe) {
-      var svg = host.querySelector('svg');
-      var line = svg && svg.querySelector('.chart-crosshair');
-      if (!line) return;
-      var box = tipBox(host);
-      function hide() {
-        line.setAttribute('visibility', 'hidden');
-        box.hidden = true;
-      }
-      svg.addEventListener('pointermove', function (e) {
-        var i = pointIndex(geo, n, svg.getBoundingClientRect(), e.clientX, e.clientY);
-        if (i < 0) { hide(); return; }
-        var x = pointX(geo, n, i).toFixed(1);
-        line.setAttribute('x1', x);
-        line.setAttribute('x2', x);
-        line.setAttribute('visibility', 'visible');
-        box.innerHTML = tipHtml(describe(i));
-        box.hidden = false;
-        placeTip(host, box, e.clientX, e.clientY);
-      });
-      svg.addEventListener('pointerleave', hide);
-    }
-
-    function dotTip(el) {
-      return {
-        title: el.dataset.name,
-        rows: [
-          { label: 'From', value: el.dataset.from },
-          { label: 'To', value: el.dataset.to },
-          { label: 'Days', value: el.dataset.days },
-        ],
-      };
-    }
-
-    function attachDots(host, selector, onOpen) {
-      function dotOf(e) {
-        return e.target && e.target.closest ? e.target.closest(selector) : null;
-      }
-      function show(e) {
-        var el = dotOf(e);
-        if (!el) return;
-        var box = tipBox(host);
-        box.innerHTML = tipHtml(dotTip(el));
-        box.hidden = false;
-        placeTip(host, box, e.clientX, e.clientY);
-      }
-      host.addEventListener('pointerover', show);
-      host.addEventListener('pointermove', show);
-      host.addEventListener('pointerout', function (e) {
-        if (dotOf(e)) tipBox(host).hidden = true;
-      });
-      host.addEventListener('click', function (e) {
-        var el = dotOf(e);
-        if (el) onOpen(el.dataset.taskId);
-      });
-      host.addEventListener('keydown', function (e) {
-        var el = dotOf(e);
-        if (el && (e.key === 'Enter' || e.key === ' ')) {
-          e.preventDefault();
-          onOpen(el.dataset.taskId);
-        }
-      });
-    }
-
-    return {
-      shortDate: shortDate, longDate: longDate, dayStart: dayStart, pointX: pointX,
-      pointIndex: pointIndex, crosshairLine: crosshairLine, tipHtml: tipHtml,
-      attachCrosshair: attachCrosshair, dotTip: dotTip, attachDots: attachDots,
-    };
-  })();
-
   // Throughput report page. Counts the tasks that arrive in a target
   // column, or their time estimate, per day, week, several weeks or month.
   var ThroughputPage = (function () {
@@ -14963,7 +14808,7 @@
     function fmtDateTime(ms) {
       var d = new Date(ms);
       return d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }) +
-        ', ' + clockText(d);
+        ', ' + LocalTime.clockOf(d);
     }
 
     // Classify each task that has a parseable due date.
@@ -15476,7 +15321,7 @@
     function fmtTime(ms) {
       var d = new Date(ms);
       var now = new Date();
-      var time = clockText(d);
+      var time = LocalTime.clockOf(d);
       var dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
       var dStart = new Date(d); dStart.setHours(0, 0, 0, 0);
       var diffDays = Math.round((dayStart - dStart) / 86400000);

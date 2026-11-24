@@ -9,14 +9,10 @@ var document = {
     return page[id];
   },
 };
-function escapeHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
+const { ColumnHistory, LocalTime, ReportChart, ReportRange, ReportValue, escapeHtml, isoDate } = require('../../static/pure.js');
 const accountPrefs = prelude.accountPrefs(1);
+LocalTime.use(accountPrefs);
 eval(fn('  function daysIntoWeek(d) {'));
-eval(fn('  function clockText(d) {'));
-const { isoDate, ColumnHistory, ReportRange, ReportValue } = require('../../static/pure.js');
-eval(block('  var ReportChart = (function () {'));
 eval(block('  var ReportBreakdown = (function () {'));
 eval(block('  var ReportFilter = (function () {'));
 eval(block('  var ThroughputPage = (function () {'));

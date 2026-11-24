@@ -7,13 +7,12 @@ var document = {
   createElement: function () { return { style: {}, offsetWidth: 100, hidden: false }; },
   querySelector: function (sel) { return currentDocument.querySelector(sel); },
 };
-function escapeHtml(s) { return String(s); }
+globalThis.document = document;
+const { ColumnHistory, LocalTime, ReportChart, ReportRange, ReportValue, escapeHtml } = require('../../static/pure.js');
 const accountPrefs = prelude.accountPrefs(1);
+LocalTime.use(accountPrefs);
 eval(fn('  function daysIntoWeek(d) {'));
-eval(fn('  function clockText(d) {'));
-eval(block('  var ReportChart = (function () {'));
 eval(block('  var ThroughputPage = (function () {'));
-const { ColumnHistory, ReportRange, ReportValue } = require('../../static/pure.js');
 eval(block('  var BurndownPage = (function () {'));
 eval(block('  var CycleLeadPage = (function () {'));
 eval(block('  var CumulativeFlowPage = (function () {'));

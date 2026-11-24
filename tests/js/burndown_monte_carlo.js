@@ -2,13 +2,11 @@ var fs = require('fs');
 var src = fs.readFileSync(process.argv[2], 'utf8');
 const prelude = require('./support/report_prelude.js');
 const { block, fn } = prelude.extractors(src);
-const { isoDate, ReportRange, ReportValue } = require('../../static/pure.js');
+const { LocalTime, ReportChart, ReportRange, ReportValue, escapeHtml, isoDate } = require('../../static/pure.js');
 var document = { getElementById: function () { return null; } };
-function escapeHtml(s) { return String(s); }
 const accountPrefs = prelude.accountPrefs(1);
+LocalTime.use(accountPrefs);
 eval(fn('  function daysIntoWeek(d) {'));
-eval(fn('  function clockText(d) {'));
-eval(block('  var ReportChart = (function () {'));
 eval(block('  var ReportBreakdown = (function () {'));
 eval(block('  var BurndownPage = (function () {'));
 eval(block('  var MonteCarloPage = (function () {'));
