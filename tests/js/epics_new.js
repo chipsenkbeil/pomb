@@ -91,6 +91,7 @@ function load() {
     state.fetches.push({ url: url, opts: opts || {}, d: d });
     return d.promise;
   };
+  var apiJson = eval('(() => {' + src.slice(src.indexOf('  function api(path'), src.indexOf('  // read the response body')) + '\nreturn apiJson; })()');
   var EPICS_REFRESH_DEBOUNCE_MS = 150;
   var window = { setTimeout: function () { return 0; }, clearTimeout: clearTimeout };
   eval(postSrc);

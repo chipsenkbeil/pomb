@@ -1,4 +1,5 @@
 var src = require('fs').readFileSync(process.argv[2], 'utf8');
+const apiJson = eval('(() => {' + src.slice(src.indexOf('  function api(path'), src.indexOf('  // read the response body')) + '\nreturn apiJson; })()');
 function fn(start) {
   var from = src.indexOf(start);
   if (from < 0) throw new Error(start + ' not found');

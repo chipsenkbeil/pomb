@@ -1,4 +1,5 @@
 var src = require('fs').readFileSync(process.argv[2], 'utf8');
+const apiJson = eval('(() => {' + src.slice(src.indexOf('  function api(path'), src.indexOf('  // read the response body')) + '\nreturn apiJson; })()');
 const { CARD_KIND, CARD_SUBMENU, CARD_ACT } = require('../../static/pure.js');
 function fn(start, indent) {
   var pad = indent || '  ';

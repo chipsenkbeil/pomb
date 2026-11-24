@@ -137,6 +137,8 @@
     });
   }
 
+  const apiJson = (path, method, data, extra) => api(path, method, data, Object.assign({ Accept: 'application/json' }, extra));
+
   // read the response body before the page reloads, so the reload
   // does not abort the request ("net::ERR_ABORTED" in the browser).
   function drained(res) {
@@ -3492,11 +3494,7 @@
     if (modal.dataset.swimlaneId) body.swimlane_id = modal.dataset.swimlaneId;
     newChildBusy = true;
     var created = null;
-    withWip((force) => fetch('/api/tasks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify(withForce(body, force)),
-    }), 'Add anyway', body.column_id)
+    withWip((force) => apiJson('/api/tasks', 'POST', withForce(body, force)), 'Add anyway', body.column_id)
       .then(function (res) {
         if (!res) throw WIP_DECLINED;
         return res.text().then(function (text) {
@@ -5069,11 +5067,7 @@
   }
 
   function epicRequest(path, method, body, verb) {
-    const send = (force) => fetch(path, {
-      method: method,
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(verb ? withForce(body, force) : body),
-    });
+    const send = (force) => apiJson(path, method, verb ? withForce(body, force) : body);
     return (verb ? withWip(send, verb) : send(false)).then(function (res) {
       if (!res) throw WIP_DECLINED;
       return res.text().then(function (text) {
@@ -5236,11 +5230,7 @@
     if (!name || !board) return Promise.resolve(null);
     const panel = document.getElementById('epics-panel');
     const epic = { kind: 'epic', board_id: board, name: name, description: panel ? panel.dataset.epicTemplate : undefined };
-    return withWip((force) => fetch('/api/tasks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify(withForce(epic, force)),
-    }), 'Add anyway')
+    return withWip((force) => apiJson('/api/tasks', 'POST', withForce(epic, force)), 'Add anyway')
       .then((res) => {
         if (!res) return null;
         return res.ok ? res.json() : toastRefusal(res, 'Could not create the epic.');
