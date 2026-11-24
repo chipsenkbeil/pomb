@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Delete board — Pomb{% endblock %}
+{% block body_attrs %}{% if chrome.dark %} class="dark"{% endif %}{% endblock %}
 {% block content %}
 {# KF-357: KanbanFlow's global top bar sits above the settings pages. #}
 <header class="topbar">

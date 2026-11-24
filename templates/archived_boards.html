@@ -1,5 +1,6 @@
 {% extends "shell.html" %}
 {% block title %}Archived boards | Pomb{% endblock %}
+{% block body_attrs %}{% if chrome.dark %} class="dark"{% endif %}{% endblock %}
 {% block shell_class %} bshell-nonav{% endblock %}
 {% block shell_title %}Archived boards{% endblock %}
 {% block shell_body %}

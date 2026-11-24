@@ -1,5 +1,6 @@
 {% extends "shell.html" %}
 {% block title %}Admin | Pomb{% endblock %}
+{% block body_attrs %}{% if chrome.dark %} class="dark"{% endif %}{% endblock %}
 {% block shell_title %}Admin{% endblock %}
 {% block shell_nav %}
     <nav class="bshell-nav" aria-label="Admin">

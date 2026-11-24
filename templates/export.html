@@ -1,5 +1,6 @@
 {% extends "shell.html" %}
 {% block title %}Export | Pomb{% endblock %}
+{% block body_attrs %}{% if chrome.dark %} class="dark"{% endif %}{% endblock %}
 {% block shell_class %} bshell-nonav bshell-report{% endblock %}
 {% block shell_title %}Export{% endblock %}
 {% block shell_body %}

@@ -2235,6 +2235,27 @@ async fn admin_view_should_hold_no_board_content() {
 }
 
 #[tokio::test]
+async fn admin_page_should_carry_the_dark_class_when_dark_is_on() {
+    let fx = pair(None).await;
+    let app = &fx.instance.app;
+    let dark = r#"<body class="dark">"#;
+    let light = get(app, "/admin", &fx.admin).await;
+    assert_eq!(light.status, StatusCode::OK, "{}", light.body);
+    assert!(!light.body.as_str().expect("html").contains(dark));
+    let saved = call(
+        app,
+        "PUT",
+        "/api/settings",
+        &[("cookie", &fx.admin)],
+        Some(json!({ "dark": true })),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    let page = get(app, "/admin", &fx.admin).await;
+    assert!(page.body.as_str().expect("html").contains(dark));
+}
+
+#[tokio::test]
 async fn admin_should_not_suspend_or_delete_itself() {
     let fx = pair(None).await;
     let app = &fx.instance.app;

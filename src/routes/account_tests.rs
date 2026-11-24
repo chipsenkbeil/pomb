@@ -484,6 +484,26 @@ async fn settings_pages_should_carry_the_dark_class_when_dark_is_on() {
 }
 
 #[tokio::test]
+async fn shell_pages_should_carry_the_dark_class_when_dark_is_on() {
+    let fx = Fixture::new();
+    let pages = [
+        "/boards/new".to_string(),
+        "/boards/archived".to_string(),
+        format!("/b/{}/export", fx.board),
+        format!("/b/{}/settings/delete", fx.board),
+    ];
+    let dark = r#"<body class="dark">"#;
+    for page in &pages {
+        assert!(!fx.page(page).await.contains(dark), "{page}");
+    }
+    fx.send("PUT", "/api/settings", Some(json!({ "dark": true })))
+        .await;
+    for page in &pages {
+        assert!(fx.page(page).await.contains(dark), "{page}");
+    }
+}
+
+#[tokio::test]
 async fn unknown_date_and_time_choices_should_be_refused() {
     let fx = Fixture::new();
     for body in [
