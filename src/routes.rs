@@ -95,7 +95,7 @@ use crate::passkey::{
     Registered, RelyingParty, SignedIn,
 };
 use crate::permissions::{Permission, Preset, STANDARD_ROLES, StandardKey};
-use crate::rules::{self, ColumnRules, EntryRule};
+use crate::rules::{self, ColumnRules, EntryRule, LabelMove};
 use crate::webhook::{HostCheck, ProbeError};
 use crate::{AppState, image, markdown, search, webhook};
 
@@ -24090,8 +24090,10 @@ struct BoardSettingsTemplate {
     rules_roles: Vec<RulesRoleView>,
     /// The closed role ids as a JSON array, which the Column rules form sends back on a save.
     rules_closed_roles: String,
-    /// The label move rules as a JSON array, which the Column rules form sends back on a save.
-    rules_label_moves: String,
+    /// Each label move rule, for the Column rules tab.
+    rules_label_moves: Vec<RulesLabelMoveView>,
+    /// A list holding one empty label move rule, which the Add rule button copies.
+    rules_label_blank: Vec<RulesLabelMoveView>,
     /// The Labels tab.
     labels_tab: LabelsTabView,
 }
@@ -24304,6 +24306,49 @@ struct RulesMoveTargetView {
     name: String,
     /// Whether the role may move a task into the column.
     checked: bool,
+}
+
+/// One label move rule as the Column rules tab shows it.
+struct RulesLabelMoveView {
+    /// Every column of the board, selected when a task leaving it meets the rule.
+    from: Vec<RulesColumnChoiceView>,
+    /// Every column of the board, selected when a task entering it meets the rule.
+    to: Vec<RulesColumnChoiceView>,
+    /// Whether entering any Done column also applies the rule.
+    into_done: bool,
+    /// The labels to strip, one per line.
+    strip: String,
+}
+
+/// One column in a label move rule's From or To list.
+struct RulesColumnChoiceView {
+    /// The column id the rule stores.
+    id: String,
+    /// The column name.
+    name: String,
+    /// Whether the rule names the column.
+    selected: bool,
+}
+
+impl RulesLabelMoveView {
+    fn new(rule: &LabelMove, columns: &[ColumnRow]) -> Self {
+        let choices = |ids: &[String]| {
+            columns
+                .iter()
+                .map(|column| RulesColumnChoiceView {
+                    id: column.id.clone(),
+                    name: column.name.clone(),
+                    selected: ids.contains(&column.id),
+                })
+                .collect()
+        };
+        Self {
+            from: choices(&rule.from),
+            to: choices(&rule.to),
+            into_done: rule.into_done,
+            strip: rule.strip.join("\n"),
+        }
+    }
 }
 
 /// One board field a rule may require.
@@ -24607,15 +24652,20 @@ fn board_settings_context(
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_default(),
-        rules_label_moves: serde_json::to_string(
-            &rules.label_moves_within(
+        rules_label_moves: rules
+            .label_moves_within(
                 &board_columns
                     .iter()
                     .map(|column| column.id.as_str())
                     .collect(),
-            ),
-        )
-        .unwrap_or_default(),
+            )
+            .iter()
+            .map(|rule| RulesLabelMoveView::new(rule, &board_columns))
+            .collect(),
+        rules_label_blank: vec![RulesLabelMoveView::new(
+            &LabelMove::default(),
+            &board_columns,
+        )],
         labels_tab: LabelsTabView {
             rows: label_rows,
             palette: HIGHLIGHT_COLORS.join(","),

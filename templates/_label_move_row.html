@@ -1,0 +1,24 @@
+<fieldset class="br-label-move">
+  <legend>Rule</legend>
+  <div class="br-fields">
+    <label>From
+      <select class="br-lm-from" multiple>
+        {% for column in rule.from %}
+        <option value="{{ column.id }}"{% if column.selected %} selected{% endif %}>{{ column.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>To
+      <select class="br-lm-to" multiple>
+        {% for column in rule.to %}
+        <option value="{{ column.id }}"{% if column.selected %} selected{% endif %}>{{ column.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+  <label class="check-label"><input type="checkbox" class="br-lm-done"{% if rule.into_done %} checked{% endif %}> Into any Done column</label>
+  <label>Labels to strip
+    <textarea class="br-lm-strip" rows="3" placeholder="One per line">{{ rule.strip }}</textarea>
+  </label>
+  <button type="button" class="kf-btn br-lm-remove">Remove rule</button>
+</fieldset>

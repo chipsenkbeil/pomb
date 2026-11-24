@@ -507,6 +507,31 @@ mod role_moves {
     }
 
     #[tokio::test]
+    async fn rules_tab_should_list_label_moves() {
+        let fx = Fixture::new();
+        let rule =
+            json!({"from": [fx.ready], "to": [], "into_done": true, "strip": ["needs:*", "hold"]});
+        assert_eq!(
+            fx.put_rules(json!({"label_moves": [rule]})).await,
+            StatusCode::OK
+        );
+        let uri = format!("/b/{}/settings/rules", fx.board);
+        let (status, text) = fx.call(Who::Session, "GET", &uri, Body::Empty).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(text.contains("Strip labels on a move"), "{text}");
+        assert!(
+            text.contains(&format!("<option value=\"{}\" selected>", fx.ready)),
+            "{text}"
+        );
+        assert!(
+            text.contains("class=\"br-lm-done\" checked> Into any Done column"),
+            "{text}"
+        );
+        assert!(text.contains(">needs:*\nhold</textarea>"), "{text}");
+        assert!(text.contains("id=\"br-lm-blank\""), "{text}");
+    }
+
+    #[tokio::test]
     async fn token_should_not_edit_the_moves() {
         let fx = Fixture::new();
         let status = fx

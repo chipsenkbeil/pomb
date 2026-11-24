@@ -535,7 +535,7 @@
           change these rules.</p>
         <div id="br-error" class="form-error" hidden></div>
         <p id="br-saved" class="settings-saved" hidden>Column rules saved.</p>
-        <form id="br-form" class="settings-form" data-closed-roles="{{ rules_closed_roles }}" data-label-moves="{{ rules_label_moves }}" novalidate>
+        <form id="br-form" class="settings-form" data-closed-roles="{{ rules_closed_roles }}" novalidate>
           <label>Locked labels
             <textarea id="br-locked" rows="2" placeholder="One per line">{{ rules_labels }}</textarea>
           </label>
@@ -583,6 +583,22 @@
             {% endfor %}
           </fieldset>
           {% endfor %}
+          <h3>Strip labels on a move</h3>
+          <p class="settings-hint">A rule removes its labels from a task that moves out of one of the
+            From columns into one of the To columns. An empty From matches any column, and an empty
+            To matches any column unless Into any Done column is ticked. Put one label on each line, and end a line with
+            <code>*</code> to match every label that starts with it.</p>
+          <div id="br-lm-rows">
+            {% for rule in rules_label_moves %}
+            {% include "_label_move_row.html" %}
+            {% endfor %}
+          </div>
+          <template id="br-lm-blank">
+            {% for rule in rules_label_blank %}
+            {% include "_label_move_row.html" %}
+            {% endfor %}
+          </template>
+          <button type="button" id="br-lm-add" class="kf-btn">Add rule</button>
           <button type="submit" class="kf-btn kf-btn-success">Save rules</button>
           <button type="button" id="br-standard" class="kf-btn">Restore standard moves</button>
         </form>

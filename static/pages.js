@@ -3285,7 +3285,22 @@
       return input.value.trim() === '' ? null : Number(input.value);
     }
     const closedRoles = JSON.parse(form.dataset.closedRoles || '[]');
-    const labelMoves = JSON.parse(form.dataset.labelMoves || '[]');
+    const chosen = (select) => [...select.selectedOptions].map((option) => option.value);
+    const labelMoves = () => [...form.querySelectorAll('.br-label-move')].map((row) => ({
+      from: chosen(row.querySelector('.br-lm-from')),
+      to: chosen(row.querySelector('.br-lm-to')),
+      into_done: row.querySelector('.br-lm-done').checked,
+      strip: lines(row.querySelector('.br-lm-strip').value),
+    }));
+    form.addEventListener('click', (event) => {
+      const remove = event.target.closest('.br-lm-remove');
+      if (remove) {
+        remove.closest('.br-label-move').remove();
+      } else if (event.target.closest('#br-lm-add')) {
+        const blank = document.getElementById('br-lm-blank').content.firstElementChild;
+        document.getElementById('br-lm-rows').appendChild(blank.cloneNode(true));
+      }
+    });
     let standard = false;
     document.getElementById('br-standard').addEventListener('click', () => {
       standard = true;
@@ -3324,8 +3339,8 @@
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify(restore
-          ? { locked_labels: lines(document.getElementById('br-locked').value), columns: columns, closed_roles: closedRoles, label_moves: labelMoves }
-          : { locked_labels: lines(document.getElementById('br-locked').value), columns: columns, role_moves: roleMoves(), closed_roles: closedRoles, label_moves: labelMoves }),
+          ? { locked_labels: lines(document.getElementById('br-locked').value), columns: columns, closed_roles: closedRoles, label_moves: labelMoves() }
+          : { locked_labels: lines(document.getElementById('br-locked').value), columns: columns, role_moves: roleMoves(), closed_roles: closedRoles, label_moves: labelMoves() }),
       }).then(function (res) {
         if (res.ok) {
           if (restore) { window.location.reload(); return; }

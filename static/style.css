@@ -9103,6 +9103,7 @@ body.dark .task-modal .tm-child-done .tm-child-column {
   display: none;
 }
 .br-column,
+.br-label-move,
 .br-role {
   border: 1px solid var(--card-border);
   border-radius: var(--radius);
@@ -9111,7 +9112,10 @@ body.dark .task-modal .tm-child-done .tm-child-column {
   min-width: 0;
 }
 .br-column legend,
+.br-label-move legend,
 .br-role legend { padding: 0 0.3rem; font-weight: 600; }
+.br-lm-from,
+.br-lm-to { min-width: 12rem; }
 .br-move { margin: 0 0 0.6rem; }
 .br-outcomes,
 .br-fields { display: flex; flex-wrap: wrap; gap: 0 1rem; }
