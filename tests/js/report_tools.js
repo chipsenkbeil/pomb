@@ -8,7 +8,7 @@ function block(start) {
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
-var ReportFile = null;
+const { ReportFile } = require('../../static/pure.js');
 var saveBlob = function () {};
 var toast = function () {};
 eval(block('  var ReportTools = (function () {'));

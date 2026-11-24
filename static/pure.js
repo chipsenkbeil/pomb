@@ -292,6 +292,190 @@ function boardEventPlan(events, cardColumns) {
     return { lookup: columnLookup, eventKey: eventKey, timelineFor: timelineFor, recordedDestination: recordedDestination };
   })();
 
+  var ReportFile = (function () {
+    var CRC_TABLE = (function () {
+      var t = [];
+      for (var n = 0; n < 256; n++) {
+        var c = n;
+        for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+        t.push(c >>> 0);
+      }
+      return t;
+    })();
+
+    function crc32(bytes) {
+      var c = 0xFFFFFFFF;
+      for (var i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+      return (c ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    var LOCAL_HEADER_LEN = 30;
+    var CENTRAL_ENTRY_LEN = 46;
+    var END_RECORD_LEN = 22;
+    var ZIP_VERSION = 20;
+    var UTF8_FLAG = 0x0800;
+    var DOS_DATE_1980 = 33;
+
+    function zipStored(files) {
+      var enc = new TextEncoder();
+      var parts = [];
+      var central = [];
+      var offset = 0;
+      files.forEach(function (f) {
+        var name = enc.encode(f.name);
+        var data = enc.encode(f.text);
+        var crc = crc32(data);
+        var head = new DataView(new ArrayBuffer(LOCAL_HEADER_LEN));
+        head.setUint32(0, 0x04034b50, true);
+        head.setUint16(4, ZIP_VERSION, true);
+        head.setUint16(6, UTF8_FLAG, true);
+        head.setUint16(12, DOS_DATE_1980, true);
+        head.setUint32(14, crc, true);
+        head.setUint32(18, data.length, true);
+        head.setUint32(22, data.length, true);
+        head.setUint16(26, name.length, true);
+        var entry = new DataView(new ArrayBuffer(CENTRAL_ENTRY_LEN));
+        entry.setUint32(0, 0x02014b50, true);
+        entry.setUint16(4, ZIP_VERSION, true);
+        entry.setUint16(6, ZIP_VERSION, true);
+        entry.setUint16(8, UTF8_FLAG, true);
+        entry.setUint16(14, DOS_DATE_1980, true);
+        entry.setUint32(16, crc, true);
+        entry.setUint32(20, data.length, true);
+        entry.setUint32(24, data.length, true);
+        entry.setUint16(28, name.length, true);
+        entry.setUint32(42, offset, true);
+        parts.push(new Uint8Array(head.buffer), name, data);
+        central.push(new Uint8Array(entry.buffer), name);
+        offset += LOCAL_HEADER_LEN + name.length + data.length;
+      });
+      var size = 0;
+      central.forEach(function (p) { size += p.length; });
+      var end = new DataView(new ArrayBuffer(END_RECORD_LEN));
+      end.setUint32(0, 0x06054b50, true);
+      end.setUint16(8, files.length, true);
+      end.setUint16(10, files.length, true);
+      end.setUint32(12, size, true);
+      end.setUint32(16, offset, true);
+      var all = parts.concat(central, [new Uint8Array(end.buffer)]);
+      var total = 0;
+      all.forEach(function (p) { total += p.length; });
+      var out = new Uint8Array(total);
+      var at = 0;
+      all.forEach(function (p) { out.set(p, at); at += p.length; });
+      return out;
+    }
+
+    var XLSX_CELL_MAX = 32767;
+
+    function colLetters(i) {
+      var s = '';
+      for (var n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
+      return s;
+    }
+
+    function xmlText(s) {
+      var text = String(s);
+      if (text.length > XLSX_CELL_MAX) text = text.slice(0, XLSX_CELL_MAX - 4) + ' ...';
+      return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function xlsxBytes(rows, sheetName) {
+      var sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>';
+      rows.forEach(function (r, y) {
+        sheet += '<row r="' + (y + 1) + '">';
+        r.forEach(function (v, x) {
+          var ref = colLetters(x) + (y + 1);
+          sheet += typeof v === 'number'
+            ? '<c r="' + ref + '"><v>' + v + '</v></c>'
+            : '<c r="' + ref + '" t="inlineStr"><is><t xml:space="preserve">' + xmlText(v == null ? '' : v) + '</t></is></c>';
+        });
+        sheet += '</row>';
+      });
+      sheet += '</sheetData></worksheet>';
+      var head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+      var rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+      return zipStored([
+        { name: '[Content_Types].xml', text: head +
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+          '<Default Extension="xml" ContentType="application/xml"/>' +
+          '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+          '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+          '</Types>' },
+        { name: '_rels/.rels', text: head +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="' + rel + '/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+        { name: 'xl/workbook.xml', text: head +
+          '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="' + rel + '">' +
+          '<sheets><sheet name="' + xmlText(sheetName) + '" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+        { name: 'xl/_rels/workbook.xml.rels', text: head +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="' + rel + '/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' },
+        { name: 'xl/worksheets/sheet1.xml', text: sheet },
+      ]);
+    }
+
+    var XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    var PDF_PAGE_WIDTH = 612;
+    var PDF_PAGE_HEIGHT = 792;
+    var PDF_TITLE_PT = 16;
+    var PDF_BODY_PT = 11;
+    var PDF_LINES_PER_PAGE = 42;
+    var PDF_LEFT = 50;
+    var PDF_TITLE_Y = 750;
+    var PDF_FIRST_LINE_Y = 715;
+    var PDF_LEADING = 16;
+
+    function pdfText(s) {
+      return String(s).replace(/[^\x20-\x7E]/g, '?').replace(/[\\()]/g, '\\$&');
+    }
+
+    function pdfBytes(title, lines) {
+      var pages = [];
+      for (var at = 0; at < lines.length || !pages.length; at += PDF_LINES_PER_PAGE) {
+        pages.push(lines.slice(at, at + PDF_LINES_PER_PAGE));
+      }
+      var objects = [
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [' + pages.map(function (_, i) { return (4 + 2 * i) + ' 0 R'; }).join(' ') +
+          '] /Count ' + pages.length + ' >>',
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+      ];
+      pages.forEach(function (page, i) {
+        var stream = i === 0
+          ? 'BT /F1 ' + PDF_TITLE_PT + ' Tf ' + PDF_LEFT + ' ' + PDF_TITLE_Y + ' Td (' + pdfText(title) + ') Tj ET\n'
+          : '';
+        page.forEach(function (line, k) {
+          stream += 'BT /F1 ' + PDF_BODY_PT + ' Tf ' + PDF_LEFT + ' ' + (PDF_FIRST_LINE_Y - k * PDF_LEADING) +
+            ' Td (' + pdfText(line) + ') Tj ET\n';
+        });
+        objects.push('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + PDF_PAGE_WIDTH + ' ' + PDF_PAGE_HEIGHT + '] /Contents ' + (5 + 2 * i) +
+          ' 0 R /Resources << /Font << /F1 3 0 R >> >> >>');
+        objects.push('<< /Length ' + stream.length + ' >>\nstream\n' + stream + 'endstream');
+      });
+      var out = '%PDF-1.4\n';
+      var offsets = [];
+      objects.forEach(function (body, i) {
+        offsets.push(out.length);
+        out += (i + 1) + ' 0 obj\n' + body + '\nendobj\n';
+      });
+      var xref = out.length;
+      out += 'xref\n0 ' + (objects.length + 1) + '\n0000000000 65535 f \n';
+      offsets.forEach(function (o) {
+        out += ('0000000000' + o).slice(-10) + ' 00000 n \n';
+      });
+      out += 'trailer\n<< /Size ' + (objects.length + 1) + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n';
+      var bytes = new Uint8Array(out.length);
+      for (var c = 0; c < out.length; c++) bytes[c] = out.charCodeAt(c);
+      return bytes;
+    }
+
+    return { xlsxBytes: xlsxBytes, pdfBytes: pdfBytes, crc32: crc32, XLSX_MIME: XLSX_MIME };
+  })();
+
 if (typeof module !== 'undefined') {
-  module.exports = { LocalTime: LocalTime, isoDate: isoDate, ReportRange: ReportRange, ReportValue: ReportValue, ColumnHistory: ColumnHistory, previewCell: previewCell, CARD_KIND: CARD_KIND, CARD_SUBMENU: CARD_SUBMENU, CARD_ACT: CARD_ACT, BULK_ACT: BULK_ACT, BULK_SUB: BULK_SUB, boardEventPlan: boardEventPlan };
+  module.exports = { LocalTime: LocalTime, isoDate: isoDate, ReportRange: ReportRange, ReportValue: ReportValue, ColumnHistory: ColumnHistory, ReportFile: ReportFile, previewCell: previewCell, CARD_KIND: CARD_KIND, CARD_SUBMENU: CARD_SUBMENU, CARD_ACT: CARD_ACT, BULK_ACT: BULK_ACT, BULK_SUB: BULK_SUB, boardEventPlan: boardEventPlan };
 }

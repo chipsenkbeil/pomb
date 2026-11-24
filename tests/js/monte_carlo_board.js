@@ -1,6 +1,6 @@
 var fs = require('fs');
 var src = fs.readFileSync(process.argv[2], 'utf8');
-const { isoDate } = require('../../static/pure.js');
+const { isoDate, ReportFile } = require('../../static/pure.js');
 function block(start) {
   var from = src.indexOf(start);
   if (from < 0) throw new Error(start + ' not found');
@@ -11,7 +11,6 @@ var document = { getElementById: function () { return null; } };
 function escapeHtml(s) { return String(s); }
 eval(block('  var ReportChart = (function () {'));
 eval(block('  var ReportBreakdown = (function () {'));
-eval(block('  var ReportFile = (function () {'));
 eval(block('  var MonteCarloPage = (function () {'));
 
 const { check, finish } = require('./support/check.js');
