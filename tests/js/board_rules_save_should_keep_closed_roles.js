@@ -4,8 +4,8 @@ const stop = source.indexOf("\n  pages['board-settings-labels']");
 if (start < 0 || stop < start) throw new Error('column rules page not found');
 
 const template = require('fs').readFileSync(process.argv[2].replace(/static\/app\.js$/, 'templates/board_settings.html'), 'utf8');
-if (!template.includes('id="br-form"') || !template.includes('data-closed-roles="{{ rules_closed_roles }}"')) {
-  throw new Error('the rules form does not carry the closed roles');
+if (!template.includes('id="br-form"') || !template.includes('data-closed-roles="{{ rules_closed_roles }}"') || !template.includes('data-label-moves="{{ rules_label_moves }}"')) {
+  throw new Error('the rules form does not carry the closed roles and the label moves');
 }
 
 const node = (props) => {
@@ -18,7 +18,8 @@ const node = (props) => {
 };
 
 const sent = [];
-const form = node({ dataset: { closedRoles: '["r1","r2"]' } });
+const labelMoves = [{ from: ['c1'], to: [], into_done: true, strip: ['needs:*'] }];
+const form = node({ dataset: { closedRoles: '["r1","r2"]', labelMoves: JSON.stringify(labelMoves) } });
 form.requestSubmit = () => { form.listeners.submit({ preventDefault: () => {} }); };
 const elements = {
   'br-form': form,
@@ -51,5 +52,7 @@ form.listeners.submit({ preventDefault: () => {} });
 expect('board_rules_save_should_keep_closed_roles sends the loaded closed roles', JSON.parse(sent[0].options.body).closed_roles, ['r1', 'r2']);
 elements['br-standard'].listeners.click();
 expect('board_rules_save_should_keep_closed_roles keeps them on a restore', JSON.parse(sent[1].options.body).closed_roles, ['r1', 'r2']);
+expect('board_rules_save_should_keep_closed_roles sends the stored label moves', JSON.parse(sent[0].options.body).label_moves, labelMoves);
+expect('board_rules_save_should_keep_closed_roles keeps the label moves on a restore', JSON.parse(sent[1].options.body).label_moves, labelMoves);
 
 process.exit(failures ? 1 : 0);

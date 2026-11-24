@@ -22882,7 +22882,9 @@ async fn get_board_rules(
 /// with 403 `role_move_forbidden` otherwise. Leave `role_moves` out to give the standard roles
 /// their standard moves, which apply only where the board's columns hold the stages that set. Send
 /// `{}` to limit no role. A role id in `closed_roles` is also refused every move out of a column
-/// `role_moves` gives it no entry for.
+/// `role_moves` gives it no entry for. Each `label_moves` rule names the columns a task leaves
+/// (`from`), the columns it enters (`to`) or any Done column (`into_done`), and the labels it
+/// strips (`strip`, a label or a prefix ending in `*`). This only stores the rules.
 #[utoipa::path(
     put,
     path = "/api/boards/{id}/rules",
@@ -22892,7 +22894,7 @@ async fn get_board_rules(
     request_body = ColumnRules,
     responses(
         (status = 200, description = "The rules as stored", body = ColumnRules),
-        (status = 400, description = "Unknown column or field, a list over 20 entries or an entry over 100 characters, a fewest above the most, a `role_moves` entry or a `closed_roles` id for a role the account lacks, or an unknown property"),
+        (status = 400, description = "Unknown column or field, a list over 20 entries or an entry over 100 characters, a fewest above the most, a `role_moves` entry or a `closed_roles` id for a role the account lacks, a `label_moves` rule with an unknown column, an empty `strip`, or no `from`, `to` or `into_done`, more than 20 `label_moves` rules, or an unknown property"),
         (status = 403, description = "`session_required`: the request came from an API token"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -24073,6 +24075,8 @@ struct BoardSettingsTemplate {
     rules_roles: Vec<RulesRoleView>,
     /// The closed role ids as a JSON array, which the Column rules form sends back on a save.
     rules_closed_roles: String,
+    /// The label move rules as a JSON array, which the Column rules form sends back on a save.
+    rules_label_moves: String,
     /// The Labels tab.
     labels_tab: LabelsTabView,
 }
@@ -24584,6 +24588,15 @@ fn board_settings_context(
                 .iter()
                 .filter(|id| agent_roles.iter().any(|role| &role.id == *id))
                 .collect::<Vec<_>>(),
+        )
+        .unwrap_or_default(),
+        rules_label_moves: serde_json::to_string(
+            &rules.label_moves_within(
+                &board_columns
+                    .iter()
+                    .map(|column| column.id.as_str())
+                    .collect(),
+            ),
         )
         .unwrap_or_default(),
         labels_tab: LabelsTabView {

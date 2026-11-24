@@ -486,6 +486,27 @@ mod role_moves {
     }
 
     #[tokio::test]
+    async fn put_rules_should_store_label_moves() {
+        let fx = Fixture::new();
+        let rule = json!({"from": [fx.ready], "to": [], "into_done": true, "strip": ["needs:*"]});
+        let rules = json!({"label_moves": [rule]});
+        let (status, text) = fx
+            .json(Who::Session, "PUT", &fx.rules_uri(), rules.clone())
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert_eq!(parse(&text)["label_moves"], rules["label_moves"]);
+        let (status, text) = fx
+            .call(Who::Session, "GET", &fx.rules_uri(), Body::Empty)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert_eq!(parse(&text)["label_moves"], rules["label_moves"]);
+        let unknown = json!({"label_moves": [{"to": ["nope"], "strip": ["a"]}]});
+        assert_eq!(fx.put_rules(unknown).await, StatusCode::BAD_REQUEST);
+        let empty = json!({"label_moves": [{"to": [fx.ready], "strip": []}]});
+        assert_eq!(fx.put_rules(empty).await, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn token_should_not_edit_the_moves() {
         let fx = Fixture::new();
         let status = fx

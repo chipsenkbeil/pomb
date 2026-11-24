@@ -3264,6 +3264,7 @@
       return input.value.trim() === '' ? null : Number(input.value);
     }
     const closedRoles = JSON.parse(form.dataset.closedRoles || '[]');
+    const labelMoves = JSON.parse(form.dataset.labelMoves || '[]');
     let standard = false;
     document.getElementById('br-standard').addEventListener('click', () => {
       standard = true;
@@ -3302,8 +3303,8 @@
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify(restore
-          ? { locked_labels: lines(document.getElementById('br-locked').value), columns: columns, closed_roles: closedRoles }
-          : { locked_labels: lines(document.getElementById('br-locked').value), columns: columns, role_moves: roleMoves(), closed_roles: closedRoles }),
+          ? { locked_labels: lines(document.getElementById('br-locked').value), columns: columns, closed_roles: closedRoles, label_moves: labelMoves }
+          : { locked_labels: lines(document.getElementById('br-locked').value), columns: columns, role_moves: roleMoves(), closed_roles: closedRoles, label_moves: labelMoves }),
       }).then(function (res) {
         if (res.ok) {
           if (restore) { window.location.reload(); return; }

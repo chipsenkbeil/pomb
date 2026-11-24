@@ -40,6 +40,29 @@ pub struct ColumnRules {
     /// Role ids refused every move out of a column the rules give them no entry for.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub closed_roles: BTreeSet<String>,
+    /// Rules that strip labels from a task when it moves between columns. Absent means none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub label_moves: Vec<LabelMove>,
+}
+
+/// One rule that strips labels from a task when it changes column.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LabelMove {
+    /// Ids of the columns a task leaves for the rule to apply. Empty means any column.
+    #[serde(default)]
+    pub from: Vec<String>,
+    /// Ids of the columns a task enters for the rule to apply. Empty means any column, unless
+    /// `into_done` is set.
+    #[serde(default)]
+    pub to: Vec<String>,
+    /// Whether entering any column the board marks Done also applies the rule.
+    #[serde(default)]
+    pub into_done: bool,
+    /// The labels to strip: a label, or a prefix ending in `*` such as `needs:*`. The match
+    /// ignores case and surrounding space.
+    #[serde(default)]
+    pub strip: Vec<String>,
 }
 
 /// The ids of the columns each role may move a task into, by role id, then by the id of the
@@ -82,6 +105,7 @@ impl Default for ColumnRules {
             columns: BTreeMap::new(),
             role_moves: None,
             closed_roles: BTreeSet::new(),
+            label_moves: Vec::new(),
         }
     }
 }
@@ -139,6 +163,33 @@ impl ColumnRules {
                 .iter()
                 .any(|locked| locked.trim().to_lowercase() == label)
         })
+    }
+
+    /// Returns the label move rules with every column id that is not in `column_ids` removed. A
+    /// rule whose `from` list loses all its columns, or whose `to` list does without `into_done`
+    /// set, is dropped, so it never widens to any column.
+    #[must_use]
+    pub fn label_moves_within(&self, column_ids: &BTreeSet<&str>) -> Vec<LabelMove> {
+        self.label_moves
+            .iter()
+            .filter_map(|rule| {
+                let keep = |ids: &[String]| -> Vec<String> {
+                    ids.iter()
+                        .filter(|id| column_ids.contains(id.as_str()))
+                        .cloned()
+                        .collect()
+                };
+                let from = keep(&rule.from);
+                let to = keep(&rule.to);
+                let emptied = (from.is_empty() && !rule.from.is_empty())
+                    || (to.is_empty() && !rule.to.is_empty() && !rule.into_done);
+                (!emptied).then(|| LabelMove {
+                    from,
+                    to,
+                    ..rule.clone()
+                })
+            })
+            .collect()
     }
 
     /// Returns the ids of the columns a token issued as role `role_id`, which stands for the
@@ -199,7 +250,9 @@ impl ColumnRules {
     ///
     /// Returns the reason when a column id or a field key is not one of the board's, a list
     /// holds too many items or an item is too long, the fewest outcomes exceed the most, or a role
-    /// move names a role that is not one of the account's.
+    /// move names a role that is not one of the account's, or a label move names an unknown
+    /// column, strips no label, names no `from` or `to` column and not `into_done`, or is one of
+    /// more than 20.
     pub fn validated(
         mut self,
         column_ids: &BTreeSet<&str>,
@@ -243,6 +296,30 @@ impl ColumnRules {
             .find(|role_id| !role_ids.contains(role_id.as_str()))
         {
             return Err(format!("unknown role \"{role_id}\""));
+        }
+        if self.label_moves.len() > MAX_ITEMS {
+            return Err(format!("label_moves holds at most {MAX_ITEMS} entries"));
+        }
+        for rule in &mut self.label_moves {
+            rule.from = clean_list("label_moves from", &rule.from)?;
+            rule.to = clean_list("label_moves to", &rule.to)?;
+            rule.strip = clean_list("label_moves strip", &rule.strip)?;
+            if let Some(id) = rule
+                .from
+                .iter()
+                .chain(&rule.to)
+                .find(|id| !column_ids.contains(id.as_str()))
+            {
+                return Err(format!("unknown column \"{id}\""));
+            }
+            if rule.strip.is_empty() {
+                return Err("a label move needs at least one label to strip".to_string());
+            }
+            if rule.from.is_empty() && rule.to.is_empty() && !rule.into_done {
+                return Err(
+                    "a label move needs a from column, a to column or into_done".to_string()
+                );
+            }
         }
         Ok(self)
     }
@@ -763,6 +840,106 @@ mod tests {
         }
     }
 
+    mod label_moves {
+        use super::*;
+
+        #[must_use]
+        fn known<'a>(items: &[&'a str]) -> BTreeSet<&'a str> {
+            items.iter().copied().collect()
+        }
+
+        #[must_use]
+        fn with(rule: LabelMove) -> ColumnRules {
+            ColumnRules {
+                label_moves: vec![rule],
+                ..ColumnRules::default()
+            }
+        }
+
+        #[must_use]
+        fn labels(items: &[&str]) -> Vec<String> {
+            items.iter().map(|item| (*item).to_string()).collect()
+        }
+
+        #[test]
+        fn label_moves_within_should_drop_a_rule_that_loses_all_its_columns() {
+            let rules = ColumnRules {
+                label_moves: vec![
+                    LabelMove {
+                        from: labels(&["gone"]),
+                        strip: labels(&["x"]),
+                        ..LabelMove::default()
+                    },
+                    LabelMove {
+                        from: labels(&["gone", "a"]),
+                        into_done: true,
+                        strip: labels(&["y"]),
+                        ..LabelMove::default()
+                    },
+                    LabelMove {
+                        to: labels(&["gone"]),
+                        into_done: true,
+                        strip: labels(&["z"]),
+                        ..LabelMove::default()
+                    },
+                ],
+                ..ColumnRules::default()
+            };
+            let kept = rules.label_moves_within(&known(&["a"]));
+            assert_eq!(kept.len(), 2);
+            assert_eq!(kept[0].from, labels(&["a"]));
+            assert!(kept[1].to.is_empty() && kept[1].into_done);
+        }
+
+        #[test]
+        fn label_moves_should_validate() {
+            let columns = known(&["a", "b"]);
+            let check = |rule: LabelMove| with(rule).validated(&columns, &known(&[]), &known(&[]));
+            let strip = labels(&["Needs:*", " hold "]);
+            let good = LabelMove {
+                from: labels(&["a"]),
+                strip: strip.clone(),
+                ..LabelMove::default()
+            };
+            let stored = check(good).unwrap();
+            assert_eq!(stored.label_moves[0].strip, labels(&["Needs:*", "hold"]));
+            let unknown = LabelMove {
+                to: labels(&["nope"]),
+                strip: strip.clone(),
+                ..LabelMove::default()
+            };
+            assert!(check(unknown).is_err());
+            let empty = LabelMove {
+                from: labels(&["a"]),
+                ..LabelMove::default()
+            };
+            assert!(check(empty).is_err());
+            let unscoped = LabelMove {
+                strip: strip.clone(),
+                ..LabelMove::default()
+            };
+            assert!(check(unscoped).is_err());
+            let many = ColumnRules {
+                label_moves: vec![
+                    LabelMove {
+                        into_done: true,
+                        strip: strip.clone(),
+                        ..LabelMove::default()
+                    };
+                    MAX_ITEMS + 1
+                ],
+                ..ColumnRules::default()
+            };
+            assert!(many.validated(&columns, &known(&[]), &known(&[])).is_err());
+            let long = LabelMove {
+                into_done: true,
+                strip: vec!["x".repeat(MAX_ITEM_CHARS + 1)],
+                ..LabelMove::default()
+            };
+            assert!(check(long).is_err());
+        }
+    }
+
     mod standard_moves {
         use super::*;
 
@@ -927,6 +1104,12 @@ mod tests {
                     BTreeMap::from([("c1".to_string(), BTreeSet::from(["c2".to_string()]))]),
                 )])),
                 closed_roles: BTreeSet::from(["r1".to_string()]),
+                label_moves: vec![LabelMove {
+                    from: vec!["c1".to_string()],
+                    into_done: true,
+                    strip: vec!["needs:*".to_string()],
+                    ..LabelMove::default()
+                }],
             };
             let bag = serde_json::json!({ CONFIG_KEY: rules.to_config_value() });
             assert_eq!(ColumnRules::from_config(&bag.to_string()), rules);
