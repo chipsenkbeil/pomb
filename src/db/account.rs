@@ -832,8 +832,9 @@ impl AccountDb {
         self.db.avatar_image(&self.account)
     }
 
-    /// Stores `image` as the account's avatar, counted against its stored-bytes quota.
-    pub fn set_avatar_image(&self, image: &[u8]) -> DbResult<()> {
+    /// Stores `image` as the account's avatar, counted against its stored-bytes quota, and returns
+    /// the settings it wrote.
+    pub fn set_avatar_image(&self, image: &[u8]) -> DbResult<Settings> {
         self.db.set_avatar_image(&self.account, image)
     }
 

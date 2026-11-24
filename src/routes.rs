@@ -25703,15 +25703,23 @@ async fn api_settings(
 }
 
 /// Returns `settings` without the favourite boards outside the token's set.
-fn without_hidden_favorites(
-    account: &AccountDb,
-    mut settings: Settings,
-) -> Result<Settings, AppError> {
-    let hidden = account
+fn without_hidden_favorites(account: &AccountDb, settings: Settings) -> Result<Settings, AppError> {
+    let hidden = hidden_favorites(account, &settings)?;
+    Ok(retain_visible_favorites(settings, &hidden))
+}
+
+/// Returns the favourite boards of `settings` outside the token's set.
+fn hidden_favorites(account: &AccountDb, settings: &Settings) -> Result<Vec<String>, AppError> {
+    account
         .boards_outside_set(&settings.favorite_boards)
-        .map_err(AppError::from)?;
+        .map_err(AppError::from)
+}
+
+/// Returns `settings` without the favourite boards in `hidden`.
+#[must_use]
+fn retain_visible_favorites(mut settings: Settings, hidden: &[String]) -> Settings {
     settings.favorite_boards.retain(|id| !hidden.contains(id));
-    Ok(settings)
+    settings
 }
 
 /// Serves the settings as JSON for the timer JavaScript. The body matches `GET /api/settings`, and
@@ -26158,9 +26166,10 @@ async fn upload_avatar(
             "the Content-Type must be {content_type}"
         )));
     }
-    account.set_avatar_image(&body).map_err(AppError::from)?;
-    let settings = account.settings().map_err(AppError::from)?;
-    Ok(Json(without_hidden_favorites(&account, settings)?))
+    let stored = account.settings().map_err(AppError::from)?;
+    let hidden = hidden_favorites(&account, &stored)?;
+    let settings = account.set_avatar_image(&body).map_err(AppError::from)?;
+    Ok(Json(retain_visible_favorites(settings, &hidden)))
 }
 
 // ---- Agent API tokens ----

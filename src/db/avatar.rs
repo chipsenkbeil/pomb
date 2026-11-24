@@ -20,8 +20,8 @@ impl Db {
 
     /// Stores `image` as `account`'s avatar and makes the image what the avatar shows. The bytes
     /// count against the account's stored-bytes quota, and an image the quota has no room for is
-    /// refused.
-    pub fn set_avatar_image(&self, account: &AccountId, image: &[u8]) -> DbResult<()> {
+    /// refused. Returns the settings it wrote.
+    pub fn set_avatar_image(&self, account: &AccountId, image: &[u8]) -> DbResult<Settings> {
         let txn = self.db.begin_write()?;
         txn_refuse_stranded(&txn, account)?;
         let held = txn
@@ -38,7 +38,7 @@ impl Db {
         settings.avatar.image_version = settings.avatar.image_version.saturating_add(1);
         write_one(&txn, ACCOUNT_SETTINGS, account.as_str(), &settings)?;
         txn.commit()?;
-        Ok(())
+        Ok(settings)
     }
 
     /// Edits `account`'s settings with `edit` and stores them with `avatar` as the text avatar in
@@ -83,6 +83,22 @@ fn txn_drop_avatar_image(txn: &WriteTransaction, account: &AccountId) -> DbResul
 mod tests {
     use super::*;
     use crate::models::BreakActivity;
+
+    #[test]
+    fn set_avatar_image_should_return_the_settings_it_wrote() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("avatar.redb").to_str().expect("utf8")).expect("db");
+        let account = db.create_user("admin").expect("admin");
+        let before = db.settings(&account).expect("settings");
+
+        let written = db.set_avatar_image(&account, b"image").expect("image");
+
+        assert_eq!(written.avatar.kind, AvatarKind::Image);
+        assert_eq!(
+            written.avatar.image_version,
+            before.avatar.image_version + 1
+        );
+    }
 
     #[test]
     fn a_text_avatar_should_save_over_a_stored_setting_past_a_cap() {
