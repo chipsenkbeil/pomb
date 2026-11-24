@@ -1920,8 +1920,10 @@
       bulkCards = selectedCards();
       var anyMember = bulkCards.some(function (card) { return !!card.dataset.memberIds; });
       var menu = document.getElementById('bulk-ctx-menu');
-      menu.querySelector('[data-bulk-act="members"]').hidden = anyMember;
-      menu.querySelector('[data-bulk-act="members-menu"]').hidden = !anyMember;
+      const membersSelector = '[data-bulk-act="' + BULK_ACT.MEMBERS + '"]';
+      const membersMenuSelector = '[data-bulk-act="' + BULK_ACT.MEMBERS_MENU + '"]';
+      menu.querySelector(membersSelector).hidden = anyMember;
+      menu.querySelector(membersMenuSelector).hidden = !anyMember;
       placeMenu(menu, x, y);
     }
 
