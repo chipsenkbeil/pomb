@@ -26,7 +26,7 @@
     <div class="tm-tabs" role="tablist" aria-label="Task sections">
       <button type="button" class="tm-tab" role="tab" id="tm-tab-description" data-tm-tab="description" aria-controls="tm-panel-description" aria-selected="true">Description</button>
       {% if task.children_total > 0 || is_epic %}<button type="button" class="tm-tab" role="tab" id="tm-tab-children" data-tm-tab="children" aria-controls="tm-panel-children" aria-selected="false" tabindex="-1">{% if is_epic %}Cards{% else %}Children{% endif %} &middot; {{ task.children_done }}/{{ task.children_total }}</button>{% endif %}
-      {% if is_epic %}<button type="button" class="tm-tab" role="tab" id="tm-tab-subtasks" data-tm-tab="subtasks" aria-controls="tm-panel-subtasks" aria-selected="false" tabindex="-1"{% if task.subtasks.is_empty() %} hidden{% endif %}>Final check &middot; <span id="modal-subtask-tabcount">{{ task.subtasks.len() }}</span></button>{% endif %}
+      {% if is_epic %}<button type="button" class="tm-tab" role="tab" id="tm-tab-subtasks" data-tm-tab="subtasks" aria-controls="tm-panel-subtasks" aria-selected="false" tabindex="-1"{% if task.subtasks.is_empty() %} hidden{% endif %}>Acceptance &middot; <span id="modal-subtask-tabcount">{{ task.subtasks.len() }}</span></button>{% endif %}
       <button type="button" class="tm-tab" role="tab" id="tm-tab-comments" data-tm-tab="comments" aria-controls="tm-panel-comments" aria-selected="false" tabindex="-1">Comments &middot; {{ task.comments.len() }}</button>
       {% if !is_epic %}<button type="button" class="tm-tab" role="tab" id="tm-tab-subtasks" data-tm-tab="subtasks" aria-controls="tm-panel-subtasks" aria-selected="false" tabindex="-1">Subtasks &middot; <span id="modal-subtask-tabcount">{{ task.subtasks.len() }}</span></button>{% endif %}
       <button type="button" class="tm-tab" role="tab" id="tm-tab-relations" data-tm-tab="relations" aria-controls="tm-panel-relations" aria-selected="false" tabindex="-1">Relations &middot; {{ relation_count }}</button>
@@ -126,7 +126,7 @@
 
       <section class="tm-panel tm-subtasks-sect" id="tm-panel-subtasks" role="tabpanel" aria-labelledby="tm-tab-subtasks" hidden>
         <div class="tm-panel-head">
-          <h3 class="tm-section-title tm-subtasks-title">{% if is_epic %}Final check{% else %}Subtasks{% endif %} <span class="tm-sect-count" id="modal-subtask-count">{{ task.subtasks_done }} / {{ task.subtasks.len() }}</span></h3>
+          <h3 class="tm-section-title tm-subtasks-title">{% if is_epic %}Acceptance{% else %}Subtasks{% endif %} <span class="tm-sect-count" id="modal-subtask-count">{{ task.subtasks_done }} / {{ task.subtasks.len() }}</span></h3>
           <button type="button" class="tm-sect-kebab" data-tm-menu="tm-subtasks-menu" aria-label="Subtask section options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="currentColor"/><circle cx="2.5" cy="8" r="2.3" fill="currentColor"/><circle cx="2.5" cy="13.5" r="2.3" fill="currentColor"/></svg></button>
           <div id="tm-subtasks-menu" class="tm-menu" hidden role="menu">
             <button type="button" data-tm-act="add-subtask">Add subtask</button>
@@ -458,7 +458,7 @@
           <button type="button" data-tm-act="add-description"><span class="tm-item-icon" aria-hidden="true">&#128196;</span>Description</button>
           <button type="button" data-tm-act="add-member"><span class="tm-item-icon" aria-hidden="true">&#128100;</span>Member</button>
           <button type="button" data-tm-act="add-label"><span class="tm-item-icon" aria-hidden="true">&#127991;</span>Label</button>
-          <button type="button" data-tm-act="add-subtask"><span class="tm-item-icon" aria-hidden="true">&#9744;</span>{% if is_epic %}Final check item{% else %}Subtask{% endif %}</button>
+          <button type="button" data-tm-act="add-subtask"><span class="tm-item-icon" aria-hidden="true">&#9744;</span>{% if is_epic %}Acceptance item{% else %}Subtask{% endif %}</button>
           <button type="button" data-tm-act="add-duedate"><span class="tm-item-icon" aria-hidden="true">&#128197;</span>Due date</button>
           <button type="button" data-tm-act="add-timeline"><span class="tm-item-icon" aria-hidden="true">&#128198;</span>Timeline</button>
           {% if !is_epic %}

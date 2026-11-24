@@ -19,11 +19,11 @@ const COMPOSITIONS: [&str; 3] = ["oneOf", "anyOf", "allOf"];
 pub const SKILL: &str = include_str!("docs/skill.md");
 
 /// Version of [`SKILL`], carried in its frontmatter and reported as `skill_version`.
-pub const SKILL_VERSION: &str = "43";
+pub const SKILL_VERSION: &str = "44";
 
 /// SHA-256 of [`SKILL`] per version, oldest first.
 #[cfg(test)]
-const SKILL_FINGERPRINTS: [(&str, &str); 43] = [
+const SKILL_FINGERPRINTS: [(&str, &str); 44] = [
     (
         "1",
         "c935bab15837c98040da423a9e4479bee899b60c4a8eb39a8cad0338d4c2e57e",
@@ -195,6 +195,10 @@ const SKILL_FINGERPRINTS: [(&str, &str); 43] = [
     (
         "43",
         "db6bc74c5f207780228d650f299ab3d3d45be38a1e74bc48202e259e000a536b",
+    ),
+    (
+        "44",
+        "2396f7d4f0bee971a0402ff1ee11ac311ff1981ed416cbd726e1c7abf43ee30b",
     ),
 ];
 
@@ -690,6 +694,18 @@ mod tests {
              metadata.version in src/routes/docs/skill.md, then append \"{actual}\" to \
              SKILL_FINGERPRINTS, so installed copies see they are stale.\n\
              Recorded fingerprint for skill version {SKILL_VERSION}: {recorded}"
+        );
+    }
+
+    #[test]
+    fn skill_should_describe_epic_acceptance() {
+        assert!(
+            SKILL.contains("its acceptance conditions across its cards"),
+            "the skill names an epic's acceptance list"
+        );
+        assert!(
+            SKILL.contains("a step goes on a child card"),
+            "the skill sends a step to a child card"
         );
     }
 

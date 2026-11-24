@@ -59,24 +59,24 @@ const check = (name, got, want) => {
 const selectDom = makeDom();
 const selectUi = load(selectDom);
 selectUi.wireModalTabs();
-const finalCheck = selectDom.getElementById('tm-tab-subtasks');
-check('the Final check tab starts hidden', finalCheck.hidden, true);
+const acceptance = selectDom.getElementById('tm-tab-subtasks');
+check('the Acceptance tab starts hidden', acceptance.hidden, true);
 selectUi.selectModalTab('subtasks');
-check('selecting the hidden Final check tab unhides it', finalCheck.hidden, false);
-check('selecting the hidden Final check tab marks it selected', finalCheck.getAttribute('aria-selected'), 'true');
-check('selecting the hidden Final check tab makes it the focusable tab', finalCheck.tabIndex, 0);
-check('selecting the hidden Final check tab shows its panel', selectDom.panels['tm-panel-subtasks'].hidden, false);
-check('selecting the hidden Final check tab deselects the others', selectDom.tabs
-  .filter((t) => t !== finalCheck)
+check('selecting the hidden Acceptance tab unhides it', acceptance.hidden, false);
+check('selecting the hidden Acceptance tab marks it selected', acceptance.getAttribute('aria-selected'), 'true');
+check('selecting the hidden Acceptance tab makes it the focusable tab', acceptance.tabIndex, 0);
+check('selecting the hidden Acceptance tab shows its panel', selectDom.panels['tm-panel-subtasks'].hidden, false);
+check('selecting the hidden Acceptance tab deselects the others', selectDom.tabs
+  .filter((t) => t !== acceptance)
   .every((t) => t.getAttribute('aria-selected') === 'false'), true);
 
 const keyDom = makeDom();
 const keyUi = load(keyDom);
 keyUi.wireModalTabs();
-const keyFinalCheck = keyDom.getElementById('tm-tab-subtasks');
+const keyAcceptance = keyDom.getElementById('tm-tab-subtasks');
 const landings = [
-  ['ArrowRight from Children skips the hidden Final check tab', press(keyDom, 'children', 'ArrowRight'), ['comments']],
-  ['ArrowLeft from Comments skips the hidden Final check tab', press(keyDom, 'comments', 'ArrowLeft'), ['children']],
+  ['ArrowRight from Children skips the hidden Acceptance tab', press(keyDom, 'children', 'ArrowRight'), ['comments']],
+  ['ArrowLeft from Comments skips the hidden Acceptance tab', press(keyDom, 'comments', 'ArrowLeft'), ['children']],
   ['ArrowLeft from Children goes to Description', press(keyDom, 'children', 'ArrowLeft'), ['description']],
   ['ArrowLeft from Description wraps to History', press(keyDom, 'description', 'ArrowLeft'), ['history']],
   ['ArrowRight from History wraps to Description', press(keyDom, 'history', 'ArrowRight'), ['description']],
@@ -84,7 +84,7 @@ const landings = [
   ['Home from Comments lands on Description', press(keyDom, 'comments', 'Home'), ['description']],
 ];
 landings.forEach((c) => check(c[0], c[1], c[2]));
-check('no arrow, Home or End key focuses the hidden Final check tab', landings.some((c) => c[1].includes('subtasks')), false);
-check('the arrow and Home/End keys leave the Final check tab hidden', keyFinalCheck.hidden, true);
+check('no arrow, Home or End key focuses the hidden Acceptance tab', landings.some((c) => c[1].includes('subtasks')), false);
+check('the arrow and Home/End keys leave the Acceptance tab hidden', keyAcceptance.hidden, true);
 
 if (failures) process.exit(1);

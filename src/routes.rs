@@ -2861,7 +2861,7 @@ struct TaskView {
     open_children: usize,
     /// The pomodori the children's sizes add up to.
     children_size: i64,
-    /// The size of an epic's own final-check list, or none while the list is empty.
+    /// The size of an epic's own acceptance list, or none while the list is empty.
     final_check: Option<Size>,
     /// The umbrella's children with their columns, filled in only where the full task is loaded.
     children: Vec<ChildRef>,
@@ -4092,7 +4092,7 @@ impl TaskView {
         }
     }
 
-    /// Returns the pomodori of the epic's final-check list as its card's chip counts them, or
+    /// Returns the pomodori of the epic's acceptance list as its card's chip counts them, or
     /// nothing while the list is empty.
     #[must_use]
     fn chip_count(&self) -> &'static str {
@@ -5670,7 +5670,7 @@ struct ModalTemplate {
     custom_css: String,
     /// The role the signed-in account holds on the task's board.
     role: BoardRole,
-    /// Whether the task is an epic, which the modal tabs as Description, Cards, Final check, Comments, Relations, Files and History.
+    /// Whether the task is an epic, which the modal tabs as Description, Cards, Acceptance, Comments, Relations, Files and History.
     is_epic: bool,
     /// Whether the epic is closed, by someone closing it or by a move into a Done column.
     closed: bool,

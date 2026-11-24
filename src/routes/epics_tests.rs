@@ -809,7 +809,7 @@ async fn an_epics_hidden_panels_should_each_have_a_tab_that_can_open_them() {
 }
 
 #[tokio::test]
-async fn an_epics_final_check_tab_should_hide_while_empty_and_show_its_items() {
+async fn an_epics_acceptance_tab_should_hide_while_empty_and_show_its_items() {
     let (_dir, fx) = fixture();
     let epic = create(
         &fx,
@@ -820,7 +820,7 @@ async fn an_epics_final_check_tab_should_hide_while_empty_and_show_its_items() {
     let tag = |modal: &str| {
         let start = modal
             .find("id=\"tm-tab-subtasks\"")
-            .expect("final check tab");
+            .expect("acceptance tab");
         let rest = &modal[start..];
         rest[..rest.find('>').expect("tag end")].to_string()
     };
@@ -837,14 +837,49 @@ async fn an_epics_final_check_tab_should_hide_while_empty_and_show_its_items() {
     let filled = modal_of(&fx, &epic).await;
     assert!(!tag(&filled).contains(" hidden"), "{filled}");
     assert!(
-        filled.contains("Final check &middot; <span id=\"modal-subtask-tabcount\">1</span>"),
+        filled.contains("Acceptance &middot; <span id=\"modal-subtask-tabcount\">1</span>"),
         "{filled}"
     );
     let panel = section(&filled, "tm-panel-subtasks");
-    assert!(panel.contains(">Final check <span"), "{panel}");
+    assert!(panel.contains(">Acceptance <span"), "{panel}");
     assert!(panel.contains("Ship it"), "{panel}");
     assert!(panel.contains("id=\"modal-subtask-input\""), "{panel}");
     assert!(panel.contains("tm-subtask-check"), "{panel}");
+}
+
+#[tokio::test]
+async fn epic_modal_should_label_acceptance() {
+    let (_dir, fx) = fixture();
+    let epic = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Epic", "kind": "epic"}),
+    )
+    .await;
+    let (status, sub) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{epic}/subtasks"),
+        Some(json!({"name": "Ship it"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sub}");
+    let modal = modal_of(&fx, &epic).await;
+    assert!(modal.contains("Acceptance &middot; <span"), "{modal}");
+    assert!(modal.contains(">Acceptance <span"), "{modal}");
+    assert!(
+        modal.contains("&#9744;</span>Acceptance item</button>"),
+        "{modal}"
+    );
+}
+
+#[tokio::test]
+async fn plain_modal_should_keep_subtasks_label() {
+    let (_dir, fx) = fixture();
+    let task = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
+    let modal = modal_of(&fx, &task).await;
+    assert!(modal.contains(">Subtasks <span"), "{modal}");
+    assert!(modal.contains("&#9744;</span>Subtask</button>"), "{modal}");
+    assert!(!modal.contains("Acceptance"), "{modal}");
 }
 
 #[tokio::test]
@@ -1629,12 +1664,12 @@ async fn an_epic_should_draw_as_a_white_card_with_its_label_toggle_and_done_bar(
     assert!(card.contains("about 3 Pomodori in its cards"), "{card}");
     assert!(
         !card.contains("epic-card-chip"),
-        "no final check, no chip: {card}"
+        "no acceptance items, no chip: {card}"
     );
 }
 
 #[tokio::test]
-async fn an_epic_with_final_check_items_should_show_a_size_chip_in_its_colour() {
+async fn epic_chip_should_read_acceptance() {
     let (_dir, fx) = fixture();
     let epic = create(
         &fx,
@@ -1652,7 +1687,7 @@ async fn an_epic_with_final_check_items_should_show_a_size_chip_in_its_colour() 
     let page = board_page(&fx).await;
     let card = epic_card(&page, &epic);
     assert!(card.contains("epic-card-chip"), "{card}");
-    assert!(card.contains("Final check &middot; 2"), "{card}");
+    assert!(card.contains("Acceptance &middot; 2"), "{card}");
     assert!(card.contains("2 Pomodori"), "{card}");
 }
 
