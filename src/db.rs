@@ -15222,6 +15222,38 @@ mod schema_version_tests {
         );
     }
 
+    #[test]
+    fn revoking_role_tokens_should_count_each_live_token_once() {
+        let (_dir, path) = temp_path();
+        let db = Db::connect(&path).expect("connect");
+        let owner = db.create_user("alice").expect("account");
+        drop_seeded_roles(&db, &owner);
+        let board = db.create_board(&owner, "A").expect("board");
+        let role = db
+            .create_agent_role(owner.as_str(), "planner", BTreeSet::new())
+            .expect("role");
+        let issued = role_token(&db, &owner, &role.id, "one", &[&board], 1);
+        let (mut child, _) = new_api_token_record(&owner, "two", AuthScope::Work, None);
+        child.parent_id = Some(issued.id.clone());
+        child.boards = BoardAccess::Only(BTreeSet::from([board.clone()]));
+        let child = db
+            .create_api_token_as_role(&role.id, child, 1, Utc::now().timestamp())
+            .expect("issue")
+            .expect("role");
+        let (unrelated, _) = new_api_token_record(&owner, "other", AuthScope::Work, None);
+        db.create_api_token(&unrelated).expect("unrelated");
+
+        assert_eq!(
+            db.revoke_role_tokens(owner.as_str(), &role.id, None)
+                .expect("revoke"),
+            Some(2)
+        );
+        let tokens = db.list_account_api_tokens(&owner).expect("tokens");
+        assert!(tokens.iter().all(|record| record.id != issued.id));
+        assert!(tokens.iter().all(|record| record.id != child.id));
+        assert!(tokens.iter().any(|record| record.id == unrelated.id));
+    }
+
     fn drop_seeded_roles(db: &Db, account: &AccountId) {
         for role in db.list_agent_roles(account.as_str()).expect("roles") {
             db.delete_agent_role(account.as_str(), &role.id)

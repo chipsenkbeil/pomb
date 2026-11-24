@@ -9,8 +9,9 @@ use uuid::Uuid;
 use super::{
     AGENT_ROLE_GRANTS, AGENT_ROLES, AGENT_ROLES_BY_ACCOUNT, BOARDS, Bound, Db, DbResult,
     GRANTS_BY_BOARD, GRANTS_BY_ROLE, MAX_AGENT_ROLES_PER_ACCOUNT, OwnedBoard, QuotaExceeded,
-    RoleTokenRefusal, mmap_get, mmap_insert, mmap_remove, read_one, txn_check_child_token,
-    txn_create_token, txn_mmap_get, txn_read_one, txn_remove_token, txn_role_token_ids, write_one,
+    RoleTokenRefusal, mmap_get, mmap_insert, mmap_remove, read_one, txn_account_tokens,
+    txn_check_child_token, txn_create_token, txn_mmap_get, txn_read_one, txn_remove_token_from,
+    txn_role_token_ids, write_one,
 };
 use crate::models::{AgentRoleGrantRow, AgentRoleRow, ApiTokenRecord, BoardRow};
 use crate::permissions::{Permission, STANDARD_ROLES, StandardKey, StandardRole};
@@ -100,9 +101,14 @@ fn txn_revoke_role_tokens(
     role_id: &str,
     board_id: Option<&str>,
 ) -> DbResult<u64> {
+    let ids = txn_role_token_ids(txn, role_id, board_id)?;
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let tokens = txn_account_tokens(txn, account)?;
     let mut removed = 0;
-    for id in txn_role_token_ids(txn, role_id, board_id)? {
-        removed += txn_remove_token(txn, account, &id)?;
+    for id in ids {
+        removed += txn_remove_token_from(txn, account, &tokens, &id)?;
     }
     Ok(removed)
 }
