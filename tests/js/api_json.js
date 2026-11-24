@@ -59,4 +59,24 @@ groupOne.forEach((call) => {
   check(name + ' has no fetch', /\bfetch\(/.test(before), false);
 });
 
+const groupTwo = [
+  "apiJson('/api/settings', 'GET')\n        .then(function (res) { return jsonIfJson(res); })\n        .then(function (s) { if (s) self.settings = s; cb(); });",
+  "apiJson('/api/time/entries/' + encodeURIComponent(entryId), 'GET')",
+  "return apiJson(url, 'GET')\n      .then(function (res) {\n        if (!res.ok) throw new Error('HTTP ' + res.status);",
+  "return apiJson('/api/settings', 'PUT', { spent_bookmarks: list })",
+  "return apiJson(url, method, data).then((res) => {",
+  "return apiJson('/api/boards/' + encodeURIComponent(boardId) + '/fields', 'GET')",
+  "apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET')\n          .then(function (resp) {",
+  "apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {\n        if (!r.ok) throw new Error('HTTP ' + r.status);\n        return r.json();\n      }).then(function (loaded) {",
+  "apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {\n        if (!r.ok) throw new Error('HTTP ' + r.status);\n        return r.json();\n      }).then(function (data) {\n        var state = ReportFilter.open(qs('report-filter'), controls(data, new Date())",
+  "return apiJson(url, method, body).then(function (r) {",
+];
+groupTwo.forEach((call) => {
+  const at = src.indexOf(call);
+  const name = suite + 'api_json_should_move_group_two ' + call.split('\n')[0];
+  check(name + ' uses apiJson', at >= 0, true);
+  const before = src.slice(Math.max(0, at - 40), at + call.indexOf('apiJson'));
+  check(name + ' has no fetch', /\bfetch\(/.test(before), false);
+});
+
 finish();

@@ -8796,7 +8796,7 @@
     ensureSettings: function (cb) {
       var self = this;
       if (this.settings) { cb(); return; }
-      fetch('/api/settings', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      apiJson('/api/settings', 'GET')
         .then(function (res) { return jsonIfJson(res); })
         .then(function (s) { if (s) self.settings = s; cb(); });
     },
@@ -9304,8 +9304,7 @@
     open: function (entryId) {
       var self = this;
       this.entryId = entryId;
-      fetch('/api/time/entries/' + encodeURIComponent(entryId),
-            { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      apiJson('/api/time/entries/' + encodeURIComponent(entryId), 'GET')
         .then(function (res) { return jsonIfJson(res); })
         .then(function (data) {
           if (!data) { toast('Could not load the time entry.'); return; }
@@ -11448,7 +11447,7 @@
   }
 
   function fetchJson(url) {
-    return fetch(url, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+    return apiJson(url, 'GET')
       .then(function (res) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.json();
@@ -12069,22 +12068,14 @@
         } catch (e) { return []; }
       },
       put(list) {
-        return fetch('/api/settings', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({ spent_bookmarks: list }),
-        }).then((res) => {
+        return apiJson('/api/settings', 'PUT', { spent_bookmarks: list }).then((res) => {
           if (!res.ok) throw new Error('HTTP ' + res.status);
           return res.json();
         }).then((settings) => settings.spent_bookmarks || []);
       },
-      send(url, init) {
+      send(url, method, data) {
         if (!this.ready) return Promise.resolve();
-        return fetch(url, Object.assign({
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        }, init)).then((res) => {
+        return apiJson(url, method, data).then((res) => {
           if (!res.ok) throw new Error('HTTP ' + res.status);
           return res.json();
         }).then((saved) => {
@@ -12093,13 +12084,10 @@
         }).catch(() => { toast('Could not save the bookmark.'); });
       },
       add(bookmark) {
-        return this.send('/api/settings/spent-bookmarks', {
-          method: 'POST',
-          body: JSON.stringify(bookmark),
-        });
+        return this.send('/api/settings/spent-bookmarks', 'POST', bookmark);
       },
       remove(name) {
-        return this.send('/api/settings/spent-bookmarks/' + encodeURIComponent(name), { method: 'DELETE' });
+        return this.send('/api/settings/spent-bookmarks/' + encodeURIComponent(name), 'DELETE');
       },
       load() {
         fetchJson('/api/settings').then((settings) => {
@@ -12581,8 +12569,7 @@
     // Table fields are the only custom fields the export carries: one
     // column each in Excel and CSV, an array in JSON, rows in XML.
     function loadTableFields(boardId) {
-      return fetch('/api/boards/' + encodeURIComponent(boardId) + '/fields',
-        { headers: { 'Accept': 'application/json' } })
+      return apiJson('/api/boards/' + encodeURIComponent(boardId) + '/fields', 'GET')
         .then(function (resp) { return resp.ok ? resp.json() : []; })
         .then(function (defs) {
           return defs.filter(function (def) { return def.kind === 'table'; });
@@ -12750,8 +12737,7 @@
     function doExport(boardId, format) {
       setStatus('Preparing export…');
       Promise.all([
-        fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data',
-          { headers: { 'Accept': 'application/json' } })
+        apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET')
           .then(function (resp) {
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             return resp.json();
@@ -12953,9 +12939,7 @@
       ['rb-group', 'rb-period', 'rb-from', 'rb-to', 'rb-user', 'rb-color', 'rb-label'].forEach(function (id) {
         qs(id).addEventListener('change', refresh);
       });
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' },
-      }).then(function (r) {
+      apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (loaded) {
@@ -13326,9 +13310,7 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' },
-      }).then(function (r) {
+      apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (data) {
@@ -13387,12 +13369,7 @@
     }
 
     function send(method, url, body) {
-      var init = { method: method, headers: { 'Accept': 'application/json' }, credentials: 'same-origin' };
-      if (body !== undefined) {
-        init.headers['Content-Type'] = 'application/json';
-        init.body = JSON.stringify(body);
-      }
-      return fetch(url, init).then(function (r) {
+      return apiJson(url, method, body).then(function (r) {
         if (r.ok) return method === 'DELETE' ? null : r.json();
         return r.text().then(function (text) {
           var message = text;

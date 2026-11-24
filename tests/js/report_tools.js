@@ -9,6 +9,7 @@ function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 const { ReportFile } = require('../../static/pure.js');
+const apiJson = eval('(() => {' + src.slice(src.indexOf('  function api(path'), src.indexOf('  // read the response body')) + '\nreturn apiJson; })()');
 var saveBlob = function () {};
 var toast = function () {};
 eval(block('  var ReportTools = (function () {'));

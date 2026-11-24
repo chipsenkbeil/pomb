@@ -54,6 +54,7 @@ const load = (localStorage, saved, status, shared) => {
       json: () => Promise.resolve(init.method === 'PUT' ? { spent_bookmarks: state.server } : state.server),
     });
   };
+  const apiJson = eval('(() => {' + src.slice(src.indexOf('  function api(path'), src.indexOf('  // read the response body')) + '\nreturn apiJson; })()');
   const SpentBookmarks = eval('(function () {' + code + '\n return SpentBookmarks; })()');
   SpentBookmarks.list = saved;
   SpentBookmarks.ready = true;
