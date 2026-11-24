@@ -6632,7 +6632,8 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 .board-settings-page .settings-section.bshell-danger { border-top: 1px solid var(--danger-border-soft); padding-top: 1rem; }
 
 body.dark:has(.settings-page):not(:has(.bshell-report)),
-body.dark .settings-page:not(:has(.bshell-report)) {
+body.dark .settings-page:not(:has(.bshell-report)),
+body.dark .delete-board-page {
   --surface-head: #222222;
   --surface-soft: #333333;
   --surface-white: #2b2b2b;
