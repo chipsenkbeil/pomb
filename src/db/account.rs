@@ -1562,6 +1562,7 @@ impl AccountDb {
         &self,
         template: &OwnedTemplate,
         name: &str,
+        wip: WipCheck,
         actor: Actor<'_>,
     ) -> DbResult<Option<String>> {
         self.db.apply_template_by(
@@ -1569,6 +1570,7 @@ impl AccountDb {
             &template.row().id,
             name,
             self.joining_token(),
+            wip,
             actor,
         )
     }

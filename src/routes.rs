@@ -22171,8 +22171,8 @@ struct CreateBoardInput {
     /// With `copy_tasks`, leaves the copied tasks with no members and no responsible actor.
     #[serde(default)]
     clear_members: bool,
-    /// With `copy_tasks`, true copies the tasks even when a column ends over its WIP limit.
-    /// Absent or false refuses with 409 `wip_limit_reached` and creates no board.
+    /// With `copy_tasks` or a template, true creates the board even when a column ends over its
+    /// WIP limit. Absent or false refuses with 409 `wip_limit_reached` and creates no board.
     #[serde(default)]
     force: bool,
 }
@@ -22191,7 +22191,7 @@ struct CreateBoardInput {
         (status = 400, description = "Invalid input: name blank or over 100 characters, a template together with a board to copy, or `copy_tasks` or `clear_members` without a board to copy"),
         (status = 403, description = "`permission_denied`: `copy_board_id` needs `boards.read` and `copy_tasks` needs `tasks.read`"),
         (status = 404, description = "Template or board to copy not found"),
-        (status = 409, description = "`wip_limit_reached`: the copied tasks would leave a column over its WIP limit and `force` is not true"),
+        (status = 409, description = "`wip_limit_reached`: the copied tasks or the template's tasks would leave a column over its WIP limit and `force` is not true"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -22254,7 +22254,12 @@ async fn create_board(
         (Some(template_id), None) => {
             let template = found(db.template(&template_id), "template not found")?;
             found(
-                db.apply_template(&template, &name, user.actor()),
+                db.apply_template(
+                    &template,
+                    &name,
+                    WipCheck::forcing(input.force),
+                    user.actor(),
+                ),
                 "template not found",
             )?
         }

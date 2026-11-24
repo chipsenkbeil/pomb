@@ -9239,17 +9239,27 @@ impl Db {
         template_id: &str,
         new_board_name: &str,
     ) -> DbResult<Option<String>> {
-        self.apply_template_by(owner, template_id, new_board_name, "", Actor::SYSTEM)
+        self.apply_template_by(
+            owner,
+            template_id,
+            new_board_name,
+            "",
+            WipCheck::Force,
+            Actor::SYSTEM,
+        )
     }
 
     /// [`Db::apply_template`], with the new board joining the set of the API token
-    /// `joining_token`, or of none when the string is empty.
+    /// `joining_token`, or of none when the string is empty. With `WipCheck::Enforce` a
+    /// template whose tasks leave a column over its limit is refused with a [`WipRefused`]
+    /// error and writes nothing.
     pub fn apply_template_by(
         &self,
         owner: &AccountId,
         template_id: &str,
         new_board_name: &str,
         joining_token: &str,
+        wip: WipCheck,
         actor: Actor<'_>,
     ) -> DbResult<Option<String>> {
         let txn = self.db.begin_write()?;
@@ -9267,6 +9277,11 @@ impl Db {
         )?;
         let held = txn_board_task_count(&txn, &board_id)?;
         txn_refuse_board_over_quota(&txn, &board_id, Quota::TasksPerBoard, held)?;
+        if wip == WipCheck::Enforce
+            && let Some(refusal) = txn_board_over_wip(&txn, &board_id)?
+        {
+            return Err(refusal.into());
+        }
         txn.commit()?;
         Ok(Some(board_id))
     }

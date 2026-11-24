@@ -188,6 +188,32 @@ async fn copy_should_be_refused_when_a_column_ends_over_its_limit_unless_forced(
 }
 
 #[tokio::test]
+async fn template_should_be_refused_into_a_full_column_unless_forced() {
+    let fx = Fixture::new();
+    fx.limit(1, 1);
+    fx.task(&fx.columns[1], "one").await;
+    let over = json!({"column_id": fx.columns[1], "name": "two", "force": true});
+    fx.send("POST", "/api/tasks", Some(over)).await;
+    let template = fx
+        .db
+        .save_board_as_template(&fx.admin, &fx.board, "Full", "")
+        .expect("save")
+        .expect("template");
+    let boards = fx.db.list_boards().expect("boards").len();
+
+    let body = json!({"name": "Fresh", "template_id": template});
+    let refused = fx.send("POST", "/api/boards", Some(body)).await;
+    assert_refused(&refused);
+    assert_eq!(fx.db.list_boards().expect("boards").len(), boards);
+
+    let body = json!({"name": "Fresh", "template_id": template, "force": true});
+    let forced = fx.send("POST", "/api/boards", Some(body)).await;
+    assert_eq!(forced.status, StatusCode::OK, "{}", forced.body);
+    let created = forced.body["id"].as_str().expect("id");
+    assert_eq!(fx.db.board_tasks(created).expect("tasks").len(), 2);
+}
+
+#[tokio::test]
 async fn copy_should_count_work_tasks_only_against_a_column_limit() {
     let fx = Fixture::new();
     fx.limit(1, 1);
