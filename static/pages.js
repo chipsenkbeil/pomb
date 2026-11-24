@@ -1370,6 +1370,15 @@
     };
   }
 
+  const TabKeys = {
+    step: (names, current, key) => {
+      const at = names.indexOf(current);
+      const to = key === 'ArrowRight' ? at + 1 : key === 'ArrowLeft' ? at - 1 :
+        key === 'Home' ? 0 : key === 'End' ? names.length - 1 : null;
+      return to === null ? null : names[(to + names.length) % names.length];
+    },
+  };
+
   var TokenTabs = {
     names: ['create', 'debug', 'list'],
     pane: 'api-tokens',
@@ -1384,21 +1393,12 @@
       return hash.replace(/^#/, '').split('/')[0];
     },
     step: function (current, key) {
-      var count = TokenTabs.names.length;
-      var at = TokenTabs.names.indexOf(current);
-      var to = key === 'ArrowRight' ? at + 1 : key === 'ArrowLeft' ? at - 1 :
-        key === 'Home' ? 0 : key === 'End' ? count - 1 : null;
-      return to === null ? null : TokenTabs.names[(to + count) % count];
+      return TabKeys.step(TokenTabs.names, current, key);
     },
   };
 
   const RoleTabs = {
-    step: (ids, current, key) => {
-      const at = ids.indexOf(current);
-      const to = key === 'ArrowRight' ? at + 1 : key === 'ArrowLeft' ? at - 1 :
-        key === 'Home' ? 0 : key === 'End' ? ids.length - 1 : null;
-      return to === null ? null : ids[(to + ids.length) % ids.length];
-    },
+    step: (ids, current, key) => TabKeys.step(ids, current, key),
     show: (tabs, cards, id) => {
       tabs.forEach((tab) => {
         const on = tab.dataset.roleTab === id;

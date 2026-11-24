@@ -1,6 +1,10 @@
 const fs = require('fs');
 const { check, finish } = require('./support/check.js');
 const src = fs.readFileSync(process.argv[2].replace(/app\.js$/, 'pages.js'), 'utf8');
+const keysStart = src.indexOf('const TabKeys = ') + 'const TabKeys = '.length;
+const keysEnd = src.indexOf('\n  };\n', keysStart) + '\n  }'.length;
+if (keysStart < 'const TabKeys = '.length || keysEnd < keysStart) throw new Error('TabKeys not found');
+const TabKeys = eval('(' + src.slice(keysStart, keysEnd) + ')');
 const start = src.indexOf('const RoleTabs = ') + 'const RoleTabs = '.length;
 const end = src.indexOf('\n  };\n', start) + '\n  }'.length;
 if (start < 'const RoleTabs = '.length || end < start) throw new Error('RoleTabs not found');

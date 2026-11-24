@@ -1,5 +1,9 @@
 var fs = require('fs');
 var src = fs.readFileSync('static/pages.js', 'utf8');
+const keysStart = src.indexOf('const TabKeys = ') + 'const TabKeys = '.length;
+const keysEnd = src.indexOf('\n  };\n', keysStart) + '\n  }'.length;
+if (keysStart < 'const TabKeys = '.length || keysEnd < keysStart) throw new Error('TabKeys not found');
+const TabKeys = eval('(' + src.slice(keysStart, keysEnd) + ')');
 var start = src.indexOf('  var TokenTabs = {');
 var end = src.indexOf('\n  };\n', start) + '\n  };\n'.length;
 if (start < 0 || end < start) throw new Error('TokenTabs not found');
