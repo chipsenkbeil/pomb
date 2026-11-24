@@ -696,8 +696,8 @@ mod tests {
         TOKENS_BY_ACCOUNT, mmap_insert, read_in,
     };
     use crate::models::{
-        ActiveTimer, Actor, ApiTokenRecord, AuthScope, BIN_RETENTION_DAYS, BoardAccess, SessionRow,
-        Settings, TimerMode,
+        ActiveTimer, Actor, ApiTokenRecord, AuthScope, BIN_RETENTION_DAYS, BoardAccess, Hours,
+        SessionRow, Settings, TimerMode,
     };
 
     /// An open database with its admin and a member, both with a board.
@@ -973,7 +973,7 @@ mod tests {
                         scope: AuthScope::Read,
                         permissions: AuthScope::Read.permissions(),
                         boards: BoardAccess::All,
-                        child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
+                        child_lifetime_hours: Hours::DEFAULT.get(),
                         preset: None,
                     },
                     None,

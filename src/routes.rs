@@ -27674,7 +27674,7 @@ async fn create_api_token(
         scope,
         permissions,
         boards,
-        child_lifetime_hours: submitted_child_lifetime(input.child_lifetime_hours)?,
+        child_lifetime_hours: submitted_child_lifetime(input.child_lifetime_hours)?.get(),
         preset: grant_preset(scope, role.is_some() || input.permissions.is_some()),
     };
     let (record, raw) = match &role {
@@ -27794,15 +27794,13 @@ async fn create_child_token(
     };
     let hours = checked_token_hours(
         "expires_in_hours",
-        input
-            .expires_in_hours
-            .unwrap_or(ApiTokenRecord::DEFAULT_CHILD_HOURS),
+        input.expires_in_hours.unwrap_or(Hours::DEFAULT.get()),
     )?;
     let grant = TokenGrant {
         scope,
         permissions,
         boards,
-        child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
+        child_lifetime_hours: Hours::DEFAULT.get(),
         preset: grant_preset(scope, role.is_some() || input.permissions.is_some()),
     };
     let parent = ParentToken {
@@ -27845,7 +27843,8 @@ fn child_refusal(refusal: ChildTokenRefusal) -> AppError {
             AppError::forbidden("a token that was itself issued cannot issue tokens")
         }
         ChildTokenRefusal::LifetimeTooLong { allowed_hours } => AppError::bad_request(format!(
-            "the owner allows this token's children {allowed_hours} hours at most"
+            "the owner allows this token's children {} hours at most",
+            allowed_hours.get()
         )),
     }
 }
@@ -28189,24 +28188,22 @@ fn submitted_token_name(name: &str) -> Result<String, AppError> {
 }
 
 /// Reads the child lifetime a new token asks for, which is 1 hour when it asks for none.
-fn submitted_child_lifetime(hours: Option<i64>) -> Result<i64, AppError> {
+fn submitted_child_lifetime(hours: Option<i64>) -> Result<Hours, AppError> {
     checked_token_hours(
         "child_lifetime_hours",
-        hours.unwrap_or(ApiTokenRecord::DEFAULT_CHILD_HOURS),
+        hours.unwrap_or(Hours::DEFAULT.get()),
     )
 }
 
 /// Reads a number of hours from 1 to 8, which `field` names in the refusal.
-fn checked_token_hours(field: &str, hours: i64) -> Result<i64, AppError> {
-    if (ApiTokenRecord::MIN_CHILD_HOURS..=ApiTokenRecord::MAX_CHILD_HOURS).contains(&hours) {
-        Ok(hours)
-    } else {
-        Err(AppError::bad_request(format!(
+fn checked_token_hours(field: &str, hours: i64) -> Result<Hours, AppError> {
+    Hours::new(hours).ok_or_else(|| {
+        AppError::bad_request(format!(
             "{field} must be from {} to {}",
-            ApiTokenRecord::MIN_CHILD_HOURS,
-            ApiTokenRecord::MAX_CHILD_HOURS,
-        )))
-    }
+            Hours::MIN.get(),
+            Hours::MAX.get(),
+        ))
+    })
 }
 
 /// The body of a token edit: an optional new name. A field of any other kind, such as permissions,

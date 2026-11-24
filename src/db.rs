@@ -129,7 +129,7 @@ use crate::models::{
     ApiTokenRecord, AttachmentVersion, AuthScope, BLOCKED_COLUMN_KEY, BLOCKED_KIND, BackupSettings,
     BackupStatus, BinRow, BoardAccess, BoardFeed, BoardRole, BoardRow, BoardTemplateRow, ColorRow,
     ColumnRow, ColumnStage, CommentQuestion, CommentReaction, CoverChange, DeviceAuthRow,
-    DeviceAuthStatus, EntryKind, EscalationTier, EventChange, FieldDefRow, HistoryKind,
+    DeviceAuthStatus, EntryKind, EscalationTier, EventChange, FieldDefRow, HistoryKind, Hours,
     InboundAddressRow, InstanceMode, InstanceSettings, LaneLimit, LinkKind, MAX_BOARD_FEEDS,
     MAX_CUSTOM_COLORS, MAX_NUMBERING_NAME_CHARS, MAX_NUMBERING_NUMBER, MAX_NUMBERING_PREFIX_CHARS,
     MAX_REPORT_BOOKMARKS, MIN_TEXT_CONTRAST, NEEDS_HUMAN_LABEL, NUMBERING_KEY, Numbering, Owner,
@@ -4849,7 +4849,7 @@ fn txn_create_token_with(
 fn txn_check_child_token(
     txn: &WriteTransaction,
     record: &mut ApiTokenRecord,
-    hours: i64,
+    hours: Hours,
     now: i64,
 ) -> DbResult<Result<Vec<ApiTokenRecord>, ChildTokenRefusal>> {
     let Some(parent_id) = record.parent_id.as_deref() else {
@@ -4865,13 +4865,13 @@ fn txn_check_child_token(
     if parent.parent_id.is_some() && record.permissions.contains(&Permission::TokensIssue) {
         return Ok(Err(ChildTokenRefusal::IssuerIsIssued));
     }
-    if hours > parent.child_lifetime_hours {
+    if hours.get() > parent.child_lifetime_hours {
         return Ok(Err(ChildTokenRefusal::LifetimeTooLong {
-            allowed_hours: parent.child_lifetime_hours,
+            allowed_hours: Hours::new(parent.child_lifetime_hours).unwrap_or(Hours::DEFAULT),
         }));
     }
     record.expires_at =
-        Some((now + hours * SECONDS_PER_HOUR).min(parent.expires_at.unwrap_or(i64::MAX)));
+        Some((now + hours.get() * SECONDS_PER_HOUR).min(parent.expires_at.unwrap_or(i64::MAX)));
     let mut tokens = txn_account_tokens(txn, &record.account_id)?;
     txn_remove_expired_issued_tokens(txn, &record.account_id, &mut tokens, now)?;
     if txn_token_name_taken(&tokens, &record.name, None) {
@@ -5417,7 +5417,7 @@ pub enum ChildTokenRefusal {
     /// The child would live longer than the issuing token allows its children.
     LifetimeTooLong {
         /// Most hours a child of the issuing token may live.
-        allowed_hours: i64,
+        allowed_hours: Hours,
     },
 }
 
@@ -7253,7 +7253,7 @@ impl Db {
     pub fn create_child_api_token(
         &self,
         mut record: ApiTokenRecord,
-        hours: i64,
+        hours: Hours,
         now: i64,
     ) -> DbResult<Result<ApiTokenRecord, ChildTokenRefusal>> {
         let txn = self.db.begin_write()?;
@@ -15027,14 +15027,16 @@ mod schema_version_tests {
         hours: i64,
     ) -> ApiTokenRecord {
         let issuer = {
-            let (record, _) =
+            let (mut record, _) =
                 new_api_token_record(account, &format!("lead-{name}"), AuthScope::Provision, None);
+            record.child_lifetime_hours = hours;
             db.create_api_token(&record).expect("issuer");
             record
         };
         let (mut record, _) = new_api_token_record(account, name, AuthScope::Work, None);
         record.parent_id = Some(issuer.id);
         record.boards = BoardAccess::Only(boards.iter().map(|id| (*id).to_string()).collect());
+        let hours = Hours::new(hours).expect("hours");
         db.create_api_token_as_role(role_id, record, hours, Utc::now().timestamp())
             .expect("issue")
             .expect("role")
@@ -15055,7 +15057,7 @@ mod schema_version_tests {
 
         let both = role_token(&db, &account, &role.id, "both", &[&a, &b], 1);
         let only_a = role_token(&db, &account, &role.id, "only-a", &[&a], 1);
-        let expiring = role_token(&db, &account, &role.id, "expiring", &[&b], 0);
+        let expiring = role_token(&db, &account, &role.id, "expiring", &[&b], 1);
         let key = |board: &str, token: &ApiTokenRecord| {
             (format!("{}/{board}", role.id), token.id.clone())
         };
@@ -15079,7 +15081,7 @@ mod schema_version_tests {
             Some(1)
         );
         assert!(role_index(&db).iter().all(|(_, id)| *id != both.id));
-        let both = role_token(&db, &account, &role.id, "both-again", &[&a, &b], 1);
+        let both = role_token(&db, &account, &role.id, "both-again", &[&a, &b], 2);
         assert!(db.delete_api_token(&account, &only_a.id).expect("revoke"));
         db.prune_expired_issued_tokens(expiring.expires_at.expect("expiry") + 1)
             .expect("prune");
@@ -15263,7 +15265,7 @@ mod schema_version_tests {
         child.parent_id = Some(issued.id.clone());
         child.boards = BoardAccess::Only(BTreeSet::from([board.clone()]));
         let child = db
-            .create_api_token_as_role(&role.id, child, 1, Utc::now().timestamp())
+            .create_api_token_as_role(&role.id, child, Hours::DEFAULT, Utc::now().timestamp())
             .expect("issue")
             .expect("role");
         let (unrelated, _) = new_api_token_record(&owner, "other", AuthScope::Work, None);

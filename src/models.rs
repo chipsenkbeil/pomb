@@ -5548,7 +5548,35 @@ pub struct ApiTokenRecord {
 
 /// Returns the lifetime a stored token that predates the field allows its children.
 fn default_child_token_hours() -> i64 {
-    ApiTokenRecord::DEFAULT_CHILD_HOURS
+    Hours::DEFAULT.get()
+}
+
+/// A child token lifetime in whole hours, from 1 to 8.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Hours(i64);
+
+impl Hours {
+    /// Hours a child token lives when the request names none, and the most the children of a new
+    /// token may live until the owner raises it.
+    pub const DEFAULT: Self = Self(1);
+    /// Most hours the owner may let the children of one token live.
+    pub const MAX: Self = Self(8);
+    /// Fewest hours a child token may live.
+    pub const MIN: Self = Self(1);
+
+    /// Returns the lifetime for `hours`, or [`None`] when it is outside 1 to 8.
+    #[must_use]
+    pub fn new(hours: i64) -> Option<Self> {
+        (Self::MIN.0..=Self::MAX.0)
+            .contains(&hours)
+            .then_some(Self(hours))
+    }
+
+    /// Returns the number of hours.
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
 }
 
 /// The boards a token may reach.
@@ -5753,14 +5781,6 @@ impl AuthScope {
 }
 
 impl ApiTokenRecord {
-    /// Hours a child token lives when the request names none, and the most the children of a new
-    /// token may live until the owner raises it.
-    pub const DEFAULT_CHILD_HOURS: i64 = 1;
-    /// Most hours the owner may let the children of one token live.
-    pub const MAX_CHILD_HOURS: i64 = 8;
-    /// Fewest hours a child token may live.
-    pub const MIN_CHILD_HOURS: i64 = 1;
-
     /// True when the token is past its expiry (None = never expires).
     pub fn is_expired(&self, now: i64) -> bool {
         self.expires_at.map(|exp| now >= exp).unwrap_or(false)
@@ -5797,6 +5817,26 @@ mod palette_tests {
 
         let custom = stale_row("teal").with_palette_hexes();
         assert_eq!(custom.border_hex, "#000002");
+    }
+}
+
+#[cfg(test)]
+mod hours_tests {
+    use super::*;
+
+    #[test]
+    fn hours_should_hold_only_one_to_eight() {
+        // Everything outside 1 to 8 is refused
+        for hours in [i64::MIN, -1, 0, 9, 400, i64::MAX] {
+            assert_eq!(Hours::new(hours), None, "{hours}");
+        }
+
+        // Every hour from 1 to 8 is held, and the constants match
+        for hours in 1..=8 {
+            assert_eq!(Hours::new(hours).map(Hours::get), Some(hours));
+        }
+        assert_eq!(Hours::DEFAULT.get(), 1);
+        assert_eq!(Hours::MAX.get(), 8);
     }
 }
 

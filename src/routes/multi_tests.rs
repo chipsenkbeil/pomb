@@ -24,7 +24,7 @@ use crate::db::{
     ModeSwitch, NewTimeEntry,
 };
 use crate::models::{
-    AccountId, AccountStatus, AuthScope, BoardAccess, BoardRole, DiskLimits, EntryKind,
+    AccountId, AccountStatus, AuthScope, BoardAccess, BoardRole, DiskLimits, EntryKind, Hours,
     InstanceMode, InstanceSettings, InviteRow, ParentToken, PruneSettings, Quotas, RateLimits,
     SECONDS_PER_DAY, Settings,
 };
@@ -2047,7 +2047,7 @@ fn member_child(fx: &Pair, bob: &AccountId) -> String {
         name: parent.name,
     };
     let (_, raw) = account
-        .create_child_api_token(&parent, "child", grant, 1)
+        .create_child_api_token(&parent, "child", grant, Hours::DEFAULT)
         .expect("child")
         .expect("child stored");
     raw

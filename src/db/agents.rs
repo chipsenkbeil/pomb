@@ -13,7 +13,7 @@ use super::{
     txn_check_child_token, txn_create_token, txn_mmap_get, txn_read_one, txn_remove_token_from,
     txn_role_token_ids, write_one,
 };
-use crate::models::{AgentRoleGrantRow, AgentRoleRow, ApiTokenRecord, BoardRow};
+use crate::models::{AgentRoleGrantRow, AgentRoleRow, ApiTokenRecord, BoardRow, Hours};
 use crate::permissions::{Permission, STANDARD_ROLES, StandardKey, StandardRole};
 
 /// Refusal of an agent role whose name another role of the account already holds.
@@ -277,7 +277,7 @@ impl Db {
         &self,
         role_id: &str,
         mut record: ApiTokenRecord,
-        hours: i64,
+        hours: Hours,
         now: i64,
     ) -> DbResult<Result<ApiTokenRecord, RoleTokenRefusal>> {
         let txn = self.db.begin_write()?;

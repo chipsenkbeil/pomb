@@ -19,7 +19,7 @@ use crate::db::{
 use crate::limit::Limits;
 use crate::models::{
     AccountId, ActiveTimer, Actor, ActorKind, AgentRoleRow, AuthScope, BoardAccess, BoardRole,
-    DeviceAuthRow, DeviceAuthStatus, FieldDefRow, FieldKind, FieldOwner, HistoryKind,
+    DeviceAuthRow, DeviceAuthStatus, FieldDefRow, FieldKind, FieldOwner, HistoryKind, Hours,
     SECONDS_PER_DAY, SECONDS_PER_HOUR, TimeEntryRow, TimerMode,
 };
 use crate::permissions::{Permission, Preset};
@@ -14722,7 +14722,7 @@ async fn the_upkeep_should_delete_expired_issued_tokens_and_keep_hand_made_ones(
     let past = now - 2 * SECONDS_PER_HOUR;
     let stored = fx
         .db
-        .create_child_api_token(child, 1, past)
+        .create_child_api_token(child, Hours::DEFAULT, past)
         .expect("create");
     assert!(stored.is_ok());
     let before = token_count(&fx);
@@ -14832,7 +14832,7 @@ async fn a_child_should_not_be_stored_once_its_parent_is_gone() {
     let now = chrono::Utc::now().timestamp();
     let refusal = fx
         .db
-        .create_child_api_token(record, 1, now)
+        .create_child_api_token(record, Hours::DEFAULT, now)
         .expect("create");
     assert_eq!(refusal.map(|_| ()), Err(ChildTokenRefusal::ParentGone));
     assert_eq!(token_count(&fx), before);
@@ -14850,7 +14850,7 @@ async fn a_child_should_not_be_stored_under_an_expired_parent() {
     let before = token_count(&fx);
     let refusal = fx
         .db
-        .create_child_api_token(record, 1, now)
+        .create_child_api_token(record, Hours::DEFAULT, now)
         .expect("create");
     assert_eq!(refusal.map(|_| ()), Err(ChildTokenRefusal::ParentGone));
     assert_eq!(token_count(&fx), before);
@@ -15178,7 +15178,7 @@ async fn an_expired_child_should_free_its_name_and_leave_the_child_list() {
     let past = now - 2 * SECONDS_PER_HOUR;
     assert!(
         fx.db
-            .create_child_api_token(record, 1, past)
+            .create_child_api_token(record, Hours::DEFAULT, past)
             .expect("create")
             .is_ok()
     );
@@ -15204,7 +15204,7 @@ async fn a_live_child_name_should_stay_taken_after_the_expiry_sweep() {
         record.parent_name = Some("lead".to_string());
         assert!(
             fx.db
-                .create_child_api_token(record, 1, created)
+                .create_child_api_token(record, Hours::DEFAULT, created)
                 .expect("create")
                 .is_ok()
         );
@@ -15238,7 +15238,7 @@ async fn revoking_a_parent_should_delete_its_children_in_one_pass() {
         record.parent_name = Some(parent_name.to_string());
         assert!(
             fx.db
-                .create_child_api_token(record, 1, now)
+                .create_child_api_token(record, Hours::DEFAULT, now)
                 .expect("create")
                 .is_ok()
         );

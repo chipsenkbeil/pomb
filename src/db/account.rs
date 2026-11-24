@@ -36,7 +36,7 @@ use crate::auth::{
 use crate::models::{
     AccountId, AccountStatus, ActiveTimer, Actor, AgentRoleRow, ApiTokenRecord, Avatar, BinRow,
     BoardAccess, BoardRole, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, CommentQuestion,
-    CoverChange, DeviceAuthRow, EscalationTier, EventKind, FieldDefRow, InboundAddressRow,
+    CoverChange, DeviceAuthRow, EscalationTier, EventKind, FieldDefRow, Hours, InboundAddressRow,
     LimitGroup, LinkKind, Numbering, OwnerHolder, ParentToken, PasskeyRow, PruneNotice,
     QuestionAnswer, RecoveryCodeRow, ReportBookmark, SeatSlot, Settings, SwimlaneRow,
     TaskAttachment, TaskBrief, TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow,
@@ -2860,7 +2860,7 @@ impl AccountDb {
         parent: &ParentToken,
         name: &str,
         grant: TokenGrant,
-        hours: i64,
+        hours: Hours,
     ) -> DbResult<Result<(ApiTokenRecord, String), ChildTokenRefusal>> {
         let (record, raw) = self.child_record(parent, name, grant);
         let now = Utc::now().timestamp();
@@ -2890,7 +2890,7 @@ impl AccountDb {
         parent: &ParentToken,
         name: &str,
         grant: TokenGrant,
-        hours: i64,
+        hours: Hours,
     ) -> DbResult<Result<(ApiTokenRecord, String), RoleTokenRefusal>> {
         let (record, raw) = self.child_record(parent, name, grant);
         let now = Utc::now().timestamp();

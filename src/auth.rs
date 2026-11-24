@@ -30,7 +30,7 @@ use crate::db::PublicDb;
 use crate::limit::{CredentialKey, Quota, Refusal, TrustProxy, rate_limited_response};
 use crate::models::{
     API_TOKEN_ACTOR, AccountId, AccountRole, AccountStatus, Actor, ActorKind, ApiTokenRecord,
-    AuthScope, BoardAccess, BoardRole, InstanceMode, ParentToken, RecoveryCodeRow, UserRow,
+    AuthScope, BoardAccess, BoardRole, Hours, InstanceMode, ParentToken, RecoveryCodeRow, UserRow,
 };
 use crate::passkey::RelyingParty;
 use crate::permissions::{Permission, Preset};
@@ -623,7 +623,7 @@ pub fn new_api_token_record(
         account_id: account_id.as_str().to_string(),
         parent_id: None,
         parent_name: None,
-        child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
+        child_lifetime_hours: Hours::DEFAULT.get(),
         role_id: None,
         role_name: None,
         label: None,
@@ -2279,7 +2279,7 @@ mod tests {
             account_id: String::new(),
             parent_id: None,
             parent_name: None,
-            child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
+            child_lifetime_hours: Hours::DEFAULT.get(),
             role_id: None,
             role_name: None,
             label: None,
@@ -2874,7 +2874,7 @@ mod tests {
             account_id: String::new(),
             parent_id: None,
             parent_name: None,
-            child_lifetime_hours: ApiTokenRecord::DEFAULT_CHILD_HOURS,
+            child_lifetime_hours: Hours::DEFAULT.get(),
             role_id: None,
             role_name: None,
             label: None,

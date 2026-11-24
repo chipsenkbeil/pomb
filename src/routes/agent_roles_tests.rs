@@ -13,7 +13,7 @@ use crate::db::{
     stamp_schema_version,
 };
 use crate::models::{
-    AccountId, AgentRoleRow, ApiTokenRecord, AuthScope, BoardAccess, BoardRole, HistoryKind,
+    AccountId, AgentRoleRow, ApiTokenRecord, AuthScope, BoardAccess, BoardRole, HistoryKind, Hours,
 };
 use crate::permissions::{Permission, Preset, STANDARD_ROLES};
 
@@ -456,7 +456,7 @@ fn issue_as_at(fx: &Fixture, role: &Value, name: &str, now: i64) -> (ApiTokenRec
     let role_id = role["id"].as_str().expect("role id");
     let stored = fx
         .db
-        .create_api_token_as_role(role_id, record, 1, now)
+        .create_api_token_as_role(role_id, record, Hours::DEFAULT, now)
         .expect("issue")
         .expect("role");
     (stored, raw)
@@ -520,14 +520,19 @@ async fn token_should_carry_its_role_snapshot() {
     let now = chrono::Utc::now().timestamp();
     let refused = fx
         .db
-        .create_api_token_as_role("missing", child_as(&fx, "other"), 1, now)
+        .create_api_token_as_role("missing", child_as(&fx, "other"), Hours::DEFAULT, now)
         .expect("refuse");
     assert_eq!(refused.map(|_| ()), Err(RoleTokenRefusal::UnknownRole));
     let (mut foreign_record, _) = new_api_token_record(&fx.bob, "bobs", AuthScope::Work, None);
     foreign_record.parent_id = Some("any".to_string());
     let foreign = fx
         .db
-        .create_api_token_as_role(role["id"].as_str().expect("id"), foreign_record, 1, now)
+        .create_api_token_as_role(
+            role["id"].as_str().expect("id"),
+            foreign_record,
+            Hours::DEFAULT,
+            now,
+        )
         .expect("refuse");
     assert_eq!(foreign.map(|_| ()), Err(RoleTokenRefusal::UnknownRole));
 }
@@ -622,7 +627,7 @@ async fn role_counter_should_not_advance_when_the_token_store_fails() {
         .create_api_token_as_role(
             role["id"].as_str().expect("id"),
             child_as(&fx, "Agent-First"),
-            1,
+            Hours::DEFAULT,
             now,
         )
         .expect("refuse");
@@ -1483,7 +1488,7 @@ async fn role_child_should_pass_the_child_checks_in_one_write() {
     orphan.parent_id = Some("gone".to_string());
     let refused = fx
         .db
-        .create_api_token_as_role(role_id, orphan, 1, now)
+        .create_api_token_as_role(role_id, orphan, Hours::DEFAULT, now)
         .expect("refuse");
     assert_eq!(
         refused.map(|_| ()),
@@ -1492,19 +1497,26 @@ async fn role_child_should_pass_the_child_checks_in_one_write() {
 
     let refused = fx
         .db
-        .create_api_token_as_role(role_id, child_as(&fx, "long"), 2, now)
+        .create_api_token_as_role(
+            role_id,
+            child_as(&fx, "long"),
+            Hours::new(2).expect("hours"),
+            now,
+        )
         .expect("refuse");
     assert_eq!(
         refused.map(|_| ()),
         Err(RoleTokenRefusal::Child(
-            ChildTokenRefusal::LifetimeTooLong { allowed_hours: 1 }
+            ChildTokenRefusal::LifetimeTooLong {
+                allowed_hours: Hours::DEFAULT
+            }
         ))
     );
 
     let (parentless, _) = new_api_token_record(&fx.alice, "parentless", AuthScope::Work, None);
     assert!(
         fx.db
-            .create_api_token_as_role(role_id, parentless, 1, now)
+            .create_api_token_as_role(role_id, parentless, Hours::DEFAULT, now)
             .is_err()
     );
     assert_eq!((issued(), token_total(&fx)), (0, before));
@@ -1513,7 +1525,7 @@ async fn role_child_should_pass_the_child_checks_in_one_write() {
     assert_eq!(first.expires_at.map(|at| at - now), Some(3600));
     let refused = fx
         .db
-        .create_api_token_as_role(role_id, child_as(&fx, "FIRST"), 1, now)
+        .create_api_token_as_role(role_id, child_as(&fx, "FIRST"), Hours::DEFAULT, now)
         .expect("refuse");
     assert_eq!(
         refused.map(|_| ()),
@@ -1525,7 +1537,7 @@ async fn role_child_should_pass_the_child_checks_in_one_write() {
     grandchild.permissions.insert(Permission::TokensIssue);
     let refused = fx
         .db
-        .create_api_token_as_role(role_id, grandchild, 1, now)
+        .create_api_token_as_role(role_id, grandchild, Hours::DEFAULT, now)
         .expect("refuse");
     assert_eq!(
         refused.map(|_| ()),
@@ -1719,7 +1731,7 @@ fn issue_on(fx: &Fixture, role: &Value, name: &str, boards: &[&str]) -> ApiToken
     let role_id = role["id"].as_str().expect("role id");
     let now = chrono::Utc::now().timestamp();
     fx.db
-        .create_api_token_as_role(role_id, record, 1, now)
+        .create_api_token_as_role(role_id, record, Hours::DEFAULT, now)
         .expect("issue")
         .expect("role")
 }
@@ -2461,7 +2473,7 @@ fn issue_holding(fx: &Fixture, role: &Value, name: &str) -> (ApiTokenRecord, Str
     let now = chrono::Utc::now().timestamp();
     let stored = fx
         .db
-        .create_api_token_as_role(role_id, record, 1, now)
+        .create_api_token_as_role(role_id, record, Hours::DEFAULT, now)
         .expect("issue")
         .expect("role");
     (stored, raw)
@@ -3534,7 +3546,7 @@ async fn roles_page_should_list_live_tokens_with_issuer_chain() {
         .create_api_token_as_role(
             role["id"].as_str().expect("id"),
             record,
-            1,
+            Hours::DEFAULT,
             chrono::Utc::now().timestamp(),
         )
         .expect("issue")
