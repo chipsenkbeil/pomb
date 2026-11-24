@@ -17,9 +17,7 @@ const accountPrefs = prelude.accountPrefs(1);
 eval(fn('  function daysIntoWeek(d) {'));
 eval(fn('  function clockText(d) {'));
 eval(src.slice(src.indexOf('  var ReportChart = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ReportChart = (function () {')) + '\n  })();'.length));
-eval(src.slice(src.indexOf('  var ColumnHistory = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ColumnHistory = (function () {')) + '\n  })();'.length));
-eval(src.slice(src.indexOf('  var ReportRange = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ReportRange = (function () {')) + '\n  })();'.length));
-eval(src.slice(src.indexOf('  var ReportValue = (function () {'), src.indexOf('\n  })();', src.indexOf('  var ReportValue = (function () {')) + '\n  })();'.length));
+const { ColumnHistory, ReportRange, ReportValue } = require('../../static/pure.js');
 eval(src.slice(start, end));
 
 function at(offset, h) {

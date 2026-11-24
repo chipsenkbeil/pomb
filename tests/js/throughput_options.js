@@ -15,12 +15,9 @@ function escapeHtml(s) {
 const accountPrefs = prelude.accountPrefs(1);
 eval(fn('  function daysIntoWeek(d) {'));
 eval(fn('  function clockText(d) {'));
-const { isoDate } = require('../../static/pure.js');
+const { isoDate, ColumnHistory, ReportRange, ReportValue } = require('../../static/pure.js');
 eval(block('  var ReportChart = (function () {'));
 eval(block('  var ReportBreakdown = (function () {'));
-eval(block('  var ColumnHistory = (function () {'));
-eval(block('  var ReportRange = (function () {'));
-eval(block('  var ReportValue = (function () {'));
 eval(block('  var ReportFilter = (function () {'));
 eval(block('  var ThroughputPage = (function () {'));
 

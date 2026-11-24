@@ -143,6 +143,155 @@ function boardEventPlan(events, cardColumns) {
   return { refresh: refresh, reload: reload };
 }
 
+  var ReportRange = (function () {
+    var DAY_MS = 86400000;
+    var MAX_YEARS = 3;
+    var MAX_DAYS = 365 * MAX_YEARS;
+
+    function roundTenth(n) { return Math.round(n * 10) / 10; }
+
+    function dayEnds(start, end) {
+      var ends = [];
+      var d = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 23, 59, 59, 999);
+      var last = new Date(end.getFullYear(), end.getMonth(), end.getDate(), 23, 59, 59, 999);
+      while (d.getTime() <= last.getTime()) {
+        ends.push(d);
+        d = new Date(d);
+        d.setDate(d.getDate() + 1);
+      }
+      return ends;
+    }
+
+    return {
+      DAY_MS: DAY_MS, MAX_YEARS: MAX_YEARS, MAX_DAYS: MAX_DAYS,
+      roundTenth: roundTenth, dayEnds: dayEnds,
+    };
+  })();
+
+  var ReportValue = (function () {
+    return {
+      count: {
+        text: 'Task count',
+        axis: 'Task count',
+        unit: 'tasks',
+        valueOf: function () { return 1; },
+      },
+      estimate: {
+        text: 'Time estimate',
+        axis: 'Time estimate (hours)',
+        unit: 'hours',
+        valueOf: function (t) {
+          var hours = Number(t.estimate_hours);
+          return hours > 0 ? hours : 0;
+        },
+      },
+      points: {
+        text: 'Points',
+        axis: 'Points',
+        unit: 'points',
+        valueOf: function (t) {
+          var points = Number(t.points);
+          return points > 0 ? points : 0;
+        },
+      },
+    };
+  })();
+
+  var ColumnHistory = (function () {
+    function parseMoveDetail(detail) {
+      // "Moved from {from} to {to}" — split on the last " to " so column
+      // names containing " to " parse deterministically.
+      var body = detail.slice('Moved from '.length);
+      var i = body.lastIndexOf(' to ');
+      if (i === -1) return null;
+      return { from: body.slice(0, i), to: body.slice(i + 4) };
+    }
+
+    // The column name a history event recorded the task arriving in, or
+    // null for other events.
+    function recordedDestination(e) {
+      if (e.kind === 'created' && e.detail.indexOf('Task created in ') === 0) {
+        return e.detail.slice('Task created in '.length);
+      }
+      if (e.kind === 'moved' && e.detail.indexOf('Moved from ') === 0) {
+        var m = parseMoveDetail(e.detail);
+        return m ? m.to : null;
+      }
+      return null;
+    }
+
+    // bands are columns keyed by id. An event that carries a
+    // column id joins that column's band even after the column is deleted,
+    // and a deleted column's band takes the newest name recorded for its
+    // id. Name-only history maps by current name, then former name, then a
+    // deleted column's recorded names, else gets a band of its own.
+    function columnLookup(data) {
+      var label = {};
+      var current = {};
+      var byName = {};
+      (data.columns || []).forEach(function (c) {
+        label[c.id] = c.name;
+        current[c.id] = true;
+        byName[c.name] = c.id;
+      });
+      (data.columns || []).forEach(function (c) {
+        (c.former_names || []).forEach(function (old) {
+          if (byName[old] === undefined) byName[old] = c.id;
+        });
+      });
+      var newest = {};
+      (data.tasks || []).forEach(function (t) {
+        (t.history || []).forEach(function (e) {
+          var id = e.column_id;
+          var name = recordedDestination(e);
+          var at = Date.parse(e.created_at);
+          if (!id || current[id] || name == null || isNaN(at)) return;
+          if (!newest[id] || at >= newest[id].at) newest[id] = { at: at, name: name };
+          if (byName[name] === undefined) byName[name] = id;
+        });
+      });
+      Object.keys(newest).forEach(function (id) { label[id] = newest[id].name; });
+      return { label: label, current: current, byName: byName };
+    }
+
+    // The band key of the column an event put the task in, or null.
+    function eventKey(e, cols) {
+      var name = recordedDestination(e);
+      if (name == null) return null;
+      if (e.column_id && cols.label[e.column_id] !== undefined) return e.column_id;
+      if (cols.byName[name] !== undefined) return cols.byName[name];
+      var key = 'name:' + name;
+      cols.label[key] = name;
+      return key;
+    }
+
+    // Per-task column timeline: [{at: ms, col: band key}] sorted ascending.
+    // "created" events carry the initial column; "moved" events carry the
+    // destination. Tasks with no usable events fall back to their current
+    // column for the whole window.
+    function timelineFor(task, cols) {
+      var tl = [];
+      (task.history || []).forEach(function (e) {
+        var d = new Date(e.created_at);
+        if (isNaN(d.getTime())) return;
+        var key = eventKey(e, cols);
+        if (key) tl.push({ at: d.getTime(), col: key });
+      });
+      tl.sort(function (a, b) { return a.at - b.at; });
+      var home = cols.current[task.column_id] ? task.column_id : null;
+      if (tl.length === 0) {
+        var c = new Date(task.created_at);
+        if (!isNaN(c.getTime()) && home) tl.push({ at: c.getTime(), col: home });
+      }
+      // the timeline ends in the task's current column, whatever
+      // name its last event recorded.
+      if (home && tl.length > 0) tl[tl.length - 1].col = home;
+      return tl;
+    }
+
+    return { lookup: columnLookup, eventKey: eventKey, timelineFor: timelineFor, recordedDestination: recordedDestination };
+  })();
+
 if (typeof module !== 'undefined') {
-  module.exports = { LocalTime: LocalTime, isoDate: isoDate, previewCell: previewCell, CARD_KIND: CARD_KIND, CARD_SUBMENU: CARD_SUBMENU, CARD_ACT: CARD_ACT, BULK_ACT: BULK_ACT, BULK_SUB: BULK_SUB, boardEventPlan: boardEventPlan };
+  module.exports = { LocalTime: LocalTime, isoDate: isoDate, ReportRange: ReportRange, ReportValue: ReportValue, ColumnHistory: ColumnHistory, previewCell: previewCell, CARD_KIND: CARD_KIND, CARD_SUBMENU: CARD_SUBMENU, CARD_ACT: CARD_ACT, BULK_ACT: BULK_ACT, BULK_SUB: BULK_SUB, boardEventPlan: boardEventPlan };
 }
