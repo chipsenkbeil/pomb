@@ -4210,6 +4210,11 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   color: var(--divider-soft);
 }
 
+.dlg:not(.bf-dlg-wide, .dlg-timer-settings, .lane-edit-dlg) {
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+}
+
 /* ---------- light dialogs ----------
    KF-328: this block MUST stay after the `.dlg` base above — at equal
    specificity the later rule wins, and the base previously overrode the
@@ -4364,6 +4369,19 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   justify-content: flex-end;
   gap: 0.6rem;
   margin-top: 0.5rem;
+}
+
+.dlg .dlg-actions {
+  position: sticky;
+  bottom: -1.25rem;
+  background: var(--text-slate);
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--white-12);
+}
+
+.dlg-light .dlg-actions {
+  background: var(--surface-white);
+  border-top-color: var(--divider);
 }
 
 #token-created-dialog .token-value code {
@@ -6375,7 +6393,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   font-size: 15px;
   line-height: 22.5px;
 }
-.kf-modalbox .dlg-actions { gap: 15px; margin-top: 0; }
+.kf-modalbox .dlg-actions { gap: 15px; margin-top: 0; position: static; padding-top: 0; border-top: 0; background: none; }
 .kf-modalbox .btn {
   min-width: 75px;
   height: 30px;

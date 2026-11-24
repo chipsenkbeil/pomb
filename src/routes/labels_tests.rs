@@ -372,6 +372,28 @@ fn a_selected_highlighted_card_should_keep_its_stripe_with_and_without_hover() {
     }
 }
 
+#[test]
+fn a_tall_dialog_should_scroll_its_body() {
+    let css = include_str!("../../static/style.css");
+    let rest = &css[css
+        .find("\n.dlg:not(.bf-dlg-wide, .dlg-timer-settings, .lane-edit-dlg) {")
+        .expect("rule")..];
+    let rule = &rest[..rest.find('}').expect("end")];
+    assert!(rule.contains("max-height: calc(100vh - 2rem)"), "{rule}");
+    assert!(rule.contains("overflow-y: auto"), "{rule}");
+}
+
+#[test]
+fn the_dialog_actions_should_stick_to_the_bottom_edge() {
+    let css = include_str!("../../static/style.css");
+    let rest = &css[css.find("\n.dlg .dlg-actions {").expect("rule")..];
+    let rule = &rest[..rest.find('}').expect("end")];
+    assert!(rule.contains("position: sticky"), "{rule}");
+    assert!(rule.contains("bottom: -1.25rem"), "{rule}");
+    assert!(rule.contains("background: var(--text-slate)"), "{rule}");
+    assert!(rule.contains("border-top"), "{rule}");
+}
+
 const TEXT_GLYPHS: [&str; 6] = ["☰", "⋮", "&#9776;", "&#8942;", "&vellip;", "&#x22ee;"];
 
 #[tokio::test]
