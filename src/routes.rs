@@ -1956,15 +1956,25 @@ async fn no_cache_static(req: Request, next: Next) -> Response {
 
 // ---- Errors ----
 
+/// The body an [`AppError`] sends.
+#[derive(Debug, PartialEq, Eq)]
+enum ResponseKind {
+    Plain,
+    PermissionDenied(Permission),
+    BoardDenied {
+        board_id: String,
+        permission: Permission,
+    },
+    /// The limiter refusal to answer with 429 and `Retry-After` in place of the generic body.
+    RateLimited(Refusal),
+}
+
 /// Simple error type that renders as an HTTP response.
 pub struct AppError {
     status: StatusCode,
     code: ErrorCode,
     message: String,
-    denied: Option<Permission>,
-    denied_board: Option<String>,
-    /// The limiter refusal to answer with 429 and `Retry-After` in place of the generic body.
-    rate_limit: Option<Refusal>,
+    kind: ResponseKind,
 }
 
 impl AppError {
@@ -1974,9 +1984,7 @@ impl AppError {
             status: StatusCode::FORBIDDEN,
             code: ErrorCode::PermissionDenied,
             message: api_error::permission_message(permission),
-            denied: Some(permission),
-            denied_board: None,
-            rate_limit: None,
+            kind: ResponseKind::PermissionDenied(permission),
         }
     }
 
@@ -1993,9 +2001,7 @@ impl AppError {
             status,
             code: ErrorCode::for_status(status),
             message: message.into(),
-            denied: None,
-            denied_board: None,
-            rate_limit: None,
+            kind: ResponseKind::Plain,
         }
     }
 
@@ -2020,16 +2026,19 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        if let Some(refusal) = self.rate_limit {
-            return rate_limited_response(refusal);
-        }
-        match (self.denied, self.denied_board) {
-            (Some(permission), Some(board_id)) => api_error::board_denied(BoardDenied {
+        match self.kind {
+            ResponseKind::RateLimited(refusal) => rate_limited_response(refusal),
+            ResponseKind::BoardDenied {
+                board_id,
+                permission,
+            } => api_error::board_denied(BoardDenied {
                 board_id,
                 permission,
             }),
-            (Some(permission), None) => api_error::permission_denied_with(permission, self.message),
-            (None, _) => coded_response(self.status, self.code, self.message),
+            ResponseKind::PermissionDenied(permission) => {
+                api_error::permission_denied_with(permission, self.message)
+            }
+            ResponseKind::Plain => coded_response(self.status, self.code, self.message),
         }
     }
 }
@@ -2049,7 +2058,7 @@ impl From<TooLong> for AppError {
 impl From<Refusal> for AppError {
     fn from(refusal: Refusal) -> Self {
         Self {
-            rate_limit: Some(refusal),
+            kind: ResponseKind::RateLimited(refusal),
             ..Self::with_status(StatusCode::TOO_MANY_REQUESTS, "")
         }
     }
@@ -2058,7 +2067,10 @@ impl From<Refusal> for AppError {
 impl From<BoardDenied> for AppError {
     fn from(refusal: BoardDenied) -> Self {
         Self {
-            denied_board: Some(refusal.board_id),
+            kind: ResponseKind::BoardDenied {
+                board_id: refusal.board_id,
+                permission: refusal.permission,
+            },
             ..Self::permission_denied(refusal.permission)
         }
     }
@@ -31351,7 +31363,7 @@ mod wrapped_marker_tests {
             assert_eq!(wrapped.status, bare.status);
             assert_eq!(wrapped.code, bare.code);
             assert_eq!(wrapped.message, bare.message);
-            assert_eq!(wrapped.denied_board, bare.denied_board);
+            assert_eq!(wrapped.kind, bare.kind);
         }
     }
 }
