@@ -60,7 +60,7 @@ serde_urlencoded = "0.7"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["fs"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "fs"] }
 ureq = { version = "3", default-features = false, features = ["json", "rustls-no-provider", "rustls-webpki-roots"] }
 utoipa = "5"
 uuid = { version = "1", features = ["v4"] }

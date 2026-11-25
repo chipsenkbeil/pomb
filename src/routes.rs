@@ -43,6 +43,8 @@ use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use utoipa::openapi::path::Operation;
 use utoipa::openapi::security::{
     ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme,
@@ -676,6 +678,16 @@ pub fn router(state: AppState) -> Router {
         ))
         .layer(middleware::from_fn(time_limit))
         .layer(middleware::from_fn(api_error::json_errors))
+        .layer(middleware::from_fn(mark_uncompressed))
+        .layer(
+            CompressionLayer::new().compress_when(
+                DefaultPredicate::new()
+                    .and(NotForContentType::const_new("font/"))
+                    .and(NotForContentType::const_new("application/gzip"))
+                    .and(NotForContentType::const_new("application/zip"))
+                    .and(Compressible),
+            ),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             crate::egress::count_egress,
@@ -689,6 +701,46 @@ pub fn router(state: AppState) -> Router {
 
 /// Largest request body every route but the attachment upload takes.
 const MAX_BODY_BYTES: usize = 256 * 1024;
+
+/// Marks a response that gzip must leave alone.
+#[derive(Copy, Clone)]
+struct SkipCompression;
+
+/// Compresses every response not marked [`SkipCompression`].
+#[derive(Copy, Clone)]
+struct Compressible;
+
+impl Predicate for Compressible {
+    fn should_compress<B>(&self, response: &axum::http::Response<B>) -> bool
+    where
+        B: http_body::Body,
+    {
+        response.extensions().get::<SkipCompression>().is_none()
+    }
+}
+
+/// Returns whether a request reads an attachment's file, which is already in its own format, or
+/// waits for board events.
+#[must_use]
+fn skips_compression(method: &Method, path: &str) -> bool {
+    let segments: Vec<&str> = path.split('/').collect();
+    auth::is_event_wait(method, path)
+        || (*method == Method::GET
+            && matches!(
+                segments.as_slice(),
+                ["", "api", "tasks", _, "attachments", _, ..]
+            ))
+}
+
+/// Marks the response of a request that [`skips_compression`] names.
+async fn mark_uncompressed(req: Request, next: Next) -> Response {
+    let skip = skips_compression(req.method(), req.uri().path());
+    let mut response = next.run(req).await;
+    if skip {
+        response.extensions_mut().insert(SkipCompression);
+    }
+    response
+}
 
 /// Seconds a request may take, except the slow ones.
 const REQUEST_TIMEOUT_SECS: u64 = 30;
@@ -32326,6 +32378,84 @@ mod tests {
         let sha = value["build_sha"].as_str().expect("build_sha string");
         assert!(!sha.is_empty(), "build_sha present");
         assert_eq!(value["skill_version"], SKILL_VERSION.to_string());
+    }
+
+    #[tokio::test]
+    async fn response_is_gzipped_when_accepted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::Db::connect(
+            dir.path()
+                .join("gzip-test.redb")
+                .to_str()
+                .expect("utf8 path"),
+        )
+        .expect("connect");
+        let user = db.create_user("admin").expect("user");
+        let session = db.create_session(&user, "").expect("session");
+        let board = db.create_board(&user, "Gzip").expect("board");
+        let column = db.create_column(&board, "Todo", None).expect("column");
+        for n in 0..20 {
+            db.create_task(&column, None, &format!("Task number {n}"), 1, None)
+                .expect("task");
+        }
+        let app = super::router(crate::AppState::new(db, None, passkey_mode()));
+        let uri = format!("/api/boards/{board}/export-data");
+        let fetch = |encoding: Option<&'static str>| {
+            let app = app.clone();
+            let uri = uri.clone();
+            let cookie = format!("session={session}");
+            async move {
+                let mut request = axum::http::Request::builder()
+                    .uri(uri)
+                    .header("cookie", cookie);
+                if let Some(encoding) = encoding {
+                    request = request.header("accept-encoding", encoding);
+                }
+                let response = app
+                    .oneshot(request.body(axum::body::Body::empty()).expect("request"))
+                    .await
+                    .expect("oneshot");
+                assert_eq!(response.status(), axum::http::StatusCode::OK);
+                let encoded = response.headers().get("content-encoding").cloned();
+                let body = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
+                    .await
+                    .expect("body");
+                (encoded, body)
+            }
+        };
+
+        let (plain_encoding, plain) = fetch(None).await;
+        assert!(plain_encoding.is_none());
+        let (gzip_encoding, gzipped) = fetch(Some("gzip")).await;
+        assert_eq!(gzip_encoding.expect("content-encoding"), "gzip");
+        assert!(gzipped.len() < plain.len());
+        let mut decoded = Vec::new();
+        std::io::Read::read_to_end(
+            &mut flate2::read::GzDecoder::new(&gzipped[..]),
+            &mut decoded,
+        )
+        .expect("valid gzip");
+        assert_eq!(decoded, plain.as_ref());
+    }
+
+    #[test]
+    fn skips_compression_should_match_attachment_reads_and_event_waits() {
+        assert!(super::skips_compression(
+            &Method::GET,
+            "/api/tasks/t1/attachments/a1/file"
+        ));
+        assert!(super::skips_compression(
+            &Method::GET,
+            "/api/boards/b1/events/wait"
+        ));
+        assert!(!super::skips_compression(
+            &Method::GET,
+            "/api/tasks/t1/attachments"
+        ));
+        assert!(!super::skips_compression(
+            &Method::POST,
+            "/api/tasks/t1/attachments/link"
+        ));
     }
 
     #[tokio::test]
