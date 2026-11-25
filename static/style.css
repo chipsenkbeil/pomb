@@ -825,6 +825,10 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   background: var(--finder-btn-ink);
   color: var(--on-color);
 }
+#filter-btn.active {
+  background: var(--finder-btn-ink);
+  color: var(--on-color);
+}
 #filter-btn.filtering {
   background: var(--epics-accent);
   color: var(--on-color);
