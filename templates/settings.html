@@ -176,6 +176,7 @@
     </form>
     <div id="token-inspect-result" class="token-inspect-result" hidden>
       <p><strong id="token-inspect-name"></strong> <span id="token-inspect-expiry"></span></p>
+      <p id="token-inspect-last-client"></p>
       <p id="token-inspect-boards"></p>
       <ul id="token-inspect-permissions" class="token-inspect-permissions"></ul>
     </div>
@@ -189,7 +190,7 @@
       <p class="settings-hint">No API tokens yet.</p>
       {% else %}
       <div class="bshell-scroll token-scroll"><table class="bshell-table token-table" id="token-table">
-        <thead><tr><th data-sort-col="name" aria-sort="none"><button type="button" class="token-sort">Name</button></th><th data-sort-col="token" aria-sort="none"><button type="button" class="token-sort">Token</button></th><th data-sort-col="scope" aria-sort="none"><button type="button" class="token-sort">Scope</button></th><th data-sort-col="created" aria-sort="none"><button type="button" class="token-sort">Created</button></th><th data-sort-col="last_used" aria-sort="none"><button type="button" class="token-sort">Last used</button></th><th data-sort-col="expires" aria-sort="none"><button type="button" class="token-sort">Expires</button></th><th></th></tr></thead>
+        <thead><tr><th data-sort-col="name" aria-sort="none"><button type="button" class="token-sort">Name</button></th><th data-sort-col="token" aria-sort="none"><button type="button" class="token-sort">Token</button></th><th data-sort-col="scope" aria-sort="none"><button type="button" class="token-sort">Scope</button></th><th data-sort-col="created" aria-sort="none"><button type="button" class="token-sort">Created</button></th><th data-sort-col="last_used" aria-sort="none"><button type="button" class="token-sort">Last used</button></th><th data-sort-col="last_client" aria-sort="none"><button type="button" class="token-sort">Last client</button></th><th data-sort-col="expires" aria-sort="none"><button type="button" class="token-sort">Expires</button></th><th></th></tr></thead>
         <tbody>
           {% for token in tokens %}
           <tr{% if token.child %} class="token-child"{% endif %}>
@@ -198,6 +199,7 @@
             <td>{{ token.scopes }}</td>
             <td data-sort="{{ token.created_sort }}">{{ token.created }}</td>
             <td data-sort="{{ token.last_used_sort }}">{{ token.last_used }}</td>
+            <td>{{ token.last_client }}</td>
             <td data-sort="{{ token.expires_sort }}">{{ token.expires }}</td>
             <td><button type="button" class="kf-btn token-revoke" data-id="{{ token.id }}" data-name="{{ token.name }}">Revoke</button>{% if token.children > 0 %} <button type="button" class="kf-btn token-revoke-children" data-id="{{ token.id }}" data-name="{{ token.name }}">Revoke all children</button>{% endif %}</td>
           </tr>

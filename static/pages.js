@@ -1424,7 +1424,7 @@
   };
 
   var TokenSort = {
-    columns: ['name', 'token', 'scope', 'created', 'last_used', 'expires'],
+    columns: ['name', 'token', 'scope', 'created', 'last_used', 'last_client', 'expires'],
     numeric: ['created', 'last_used', 'expires'],
     toggle: function (state, column) {
       return { column: column, direction: state && state.column === column && state.direction === 'ascending' ? 'descending' : 'ascending' };
@@ -1448,6 +1448,31 @@
         if (numeric && (x === '' || y === '')) return TokenSort.compare(column, x, y) || a.index - b.index;
         return sign * TokenSort.compare(column, x, y) || a.index - b.index;
       }).map(function (entry) { return entry.row; });
+    },
+  };
+
+  const TokenInspect = {
+    lastClient: (data) => {
+      const parts = [data.last_used_network, data.last_used_agent].filter(Boolean);
+      if (parts.length) return parts.join(' - ');
+      return data.last_used_at ? 'unknown' : 'never';
+    },
+    fill: (doc, data) => {
+      doc.getElementById('token-inspect-name').textContent = data.name;
+      doc.getElementById('token-inspect-expiry').textContent = data.expires_at
+        ? 'expires ' + new Date(data.expires_at * 1000).toISOString().slice(0, 10)
+        : 'never expires';
+      doc.getElementById('token-inspect-last-client').textContent = 'Last client: ' + TokenInspect.lastClient(data);
+      doc.getElementById('token-inspect-boards').textContent = data.boards === TokenForm.boardsAll
+        ? 'Boards: all'
+        : 'Boards: ' + data.boards.map((board) => board.name).join(', ');
+      const list = doc.getElementById('token-inspect-permissions');
+      list.textContent = '';
+      data.permissions.forEach((name) => {
+        const item = doc.createElement('li');
+        item.textContent = name;
+        list.appendChild(item);
+      });
     },
   };
 
@@ -1748,20 +1773,7 @@
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (data) {
-        document.getElementById('token-inspect-name').textContent = data.name;
-        document.getElementById('token-inspect-expiry').textContent = data.expires_at
-          ? 'expires ' + new Date(data.expires_at * 1000).toISOString().slice(0, 10)
-          : 'never expires';
-        document.getElementById('token-inspect-boards').textContent = data.boards === TokenForm.boardsAll
-          ? 'Boards: all'
-          : 'Boards: ' + data.boards.map(function (board) { return board.name; }).join(', ');
-        var list = document.getElementById('token-inspect-permissions');
-        list.textContent = '';
-        data.permissions.forEach(function (name) {
-          var item = document.createElement('li');
-          item.textContent = name;
-          list.appendChild(item);
-        });
+        TokenInspect.fill(document, data);
         inspectResult.hidden = false;
         input.value = '';
       }).catch(function (ex) {

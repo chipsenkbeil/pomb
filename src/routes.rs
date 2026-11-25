@@ -25446,6 +25446,9 @@ struct ApiTokenListItem {
     scopes: String,
     created: String,
     last_used: String,
+    /// The network and user agent of the last use, "never" for an unused token and "unknown" for
+    /// one used before Pomb recorded them.
+    last_client: String,
     expires: String,
     /// Unix seconds of creation, for sorting.
     created_sort: i64,
@@ -25513,11 +25516,32 @@ impl From<&ApiTokenRecord> for ApiTokenListItem {
                 .last_used_at
                 .map(fmt_ts)
                 .unwrap_or_else(|| "never".to_string()),
+            last_client: last_client_text(token),
             expires: token
                 .expires_at
                 .map(fmt_ts)
                 .unwrap_or_else(|| "never".to_string()),
         }
+    }
+}
+
+/// Returns the last client of `token` as the settings list shows it.
+#[must_use]
+fn last_client_text(token: &ApiTokenRecord) -> String {
+    let parts: Vec<&str> = [
+        token.last_used_network.as_deref(),
+        token.last_used_agent.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !parts.is_empty() {
+        return parts.join(" - ");
+    }
+    if token.last_used_at.is_some() {
+        "unknown".to_string()
+    } else {
+        "never".to_string()
     }
 }
 

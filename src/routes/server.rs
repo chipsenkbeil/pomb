@@ -10,7 +10,7 @@ use tower::ServiceExt;
 use utoipa::OpenApi;
 
 use super::docs::{SKILL, operations, render_api_reference};
-use super::test_support::held_disk;
+use super::test_support::{held_disk, none_mode};
 use super::{ApiDoc, router};
 use crate::AppState;
 use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
@@ -429,6 +429,30 @@ async fn token_use_should_record_network_and_agent() {
     let used = stored();
     assert_eq!(used.last_used_network.as_deref(), Some("2001:db8:1::"));
     assert_eq!(used.last_used_agent, Some("a".repeat(200)));
+}
+
+#[tokio::test]
+async fn settings_token_list_should_show_last_client() {
+    let (_dir, db) = open_db();
+    let (unused, _) = new_api_token_record(&admin(&db), "never-used", AuthScope::Read, None);
+    db.create_api_token(&unused).expect("token");
+    let (mut used, _) = new_api_token_record(&admin(&db), "seen", AuthScope::Read, None);
+    used.last_used_at = Some(1_767_225_600);
+    used.last_used_network = Some("203.0.113.7".to_string());
+    used.last_used_agent = Some("curl/8.4.0".to_string());
+    db.create_api_token(&used).expect("token");
+    let app = router(AppState::new(db.clone(), None, none_mode(None)).with_disk(held_disk(&db)));
+
+    let (status, page) = send(&app, "GET", "/settings", "127.0.0.1", None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let html = page.as_str().expect("html");
+    assert!(html.contains("Last client</button>"), "column header");
+    assert!(
+        html.contains("<td>203.0.113.7 - curl/8.4.0</td>"),
+        "the used token's client"
+    );
+    assert!(html.contains("<td>never</td>"), "the unused token");
 }
 
 struct ManualClock {

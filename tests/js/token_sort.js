@@ -45,6 +45,6 @@ check('a third click goes back',
   TokenSort.toggle({ column: 'name', direction: 'descending' }, 'name'), { column: 'name', direction: 'ascending' });
 check('another column starts ascending',
   TokenSort.toggle({ column: 'name', direction: 'descending' }, 'scope'), { column: 'scope', direction: 'ascending' });
-check('the columns match the table', TokenSort.columns, ['name', 'token', 'scope', 'created', 'last_used', 'expires']);
+check('the columns match the table', TokenSort.columns, ['name', 'token', 'scope', 'created', 'last_used', 'last_client', 'expires']);
 
 if (failures) process.exit(1);
