@@ -881,6 +881,19 @@ async fn settings_page_should_list_each_webhook_with_its_column_events_and_state
 }
 
 #[tokio::test]
+async fn settings_page_should_label_the_events_column_and_status_cells() {
+    let fx = Browser::new(None);
+    let hook = fx.webhook("labelled", Some(&fx.column), true);
+    let page = fx.get(&fx.page("")).await;
+    assert_eq!(page.status, StatusCode::OK);
+    let html = html_of(&page);
+    assert!(html.contains(&format!("data-webhook-id=\"{}\"", hook.id)));
+    assert!(html.contains("<td class=\"wh-events\" data-label=\"Events\">"));
+    assert!(html.contains("<td class=\"wh-column\" data-label=\"Column\">"));
+    assert!(html.contains("<td class=\"wh-state\" data-label=\"Status\">"));
+}
+
+#[tokio::test]
 async fn settings_page_should_show_the_docs_button_and_the_token_list_above_the_webhooks() {
     let fx = Browser::new(None);
     let page = fx.get(&fx.page("")).await;

@@ -399,9 +399,9 @@
             <tr class="webhook-row" data-webhook-id="{{ w.id }}" data-name="{{ w.name }}" data-enabled="{{ w.enabled }}">
               <td class="wh-name">{{ w.name }}</td>
               <td class="wh-url"><code title="{{ w.url }}">{{ w.url }}</code></td>
-              <td class="wh-events">{{ w.events }}</td>
-              <td class="wh-column">{{ w.column }}</td>
-              <td class="wh-state">{% if w.enabled %}Enabled{% else %}Disabled{% endif %}</td>
+              <td class="wh-events" data-label="Events">{{ w.events }}</td>
+              <td class="wh-column" data-label="Column">{{ w.column }}</td>
+              <td class="wh-state" data-label="Status">{% if w.enabled %}Enabled{% else %}Disabled{% endif %}</td>
               <td class="color-cell-actions">
                 <button type="button" class="kf-btn wh-secret">Show secret</button>
                 <a href="/b/{{ board_id }}/settings/api-webhooks/{{ w.id }}" class="kf-btn wh-edit">Edit</a>

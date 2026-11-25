@@ -9550,6 +9550,7 @@ body.dark .tic-page .tic-row:hover, body.dark .tic-page .tic-row:focus { backgro
 .webhook-table thead { display: none; }
 .webhook-table .webhook-row { padding: 8px 0; border-top: 1px solid var(--kf-rule-soft); }
 .webhook-table .webhook-row td { border-top: 0; padding: 2px 8px; width: auto; overflow-wrap: anywhere; }
+.webhook-table .webhook-row td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-weight: 600; }
 .webhook-table .wh-url code { white-space: normal; overflow-wrap: anywhere; max-height: 4.5em; }
 .webhook-table .color-cell-actions { white-space: normal; padding-top: 6px; }
 .webhook-table .color-cell-actions .kf-btn { margin: 0 4px 4px 0; }
