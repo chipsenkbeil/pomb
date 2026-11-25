@@ -2710,6 +2710,19 @@ impl LinkKind {
         matches!(self, Self::BlockedBy)
     }
 
+    /// Returns the words a task shows for a link of this kind, such as `Depends on` for
+    /// `blocked_by` and `Umbrella of` for `child`.
+    #[must_use]
+    pub const fn phrase(self) -> &'static str {
+        match self {
+            Self::BlockedBy => "Depends on",
+            Self::Blocks => "Required by",
+            Self::Related => "Relates to",
+            Self::Parent => "Part of",
+            Self::Child => "Umbrella of",
+        }
+    }
+
     /// Returns the wire name.
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -6254,5 +6267,27 @@ mod link_kind_relation_tests {
         ];
         let blocks: Vec<bool> = kinds.iter().map(|kind| kind.blocks_holder()).collect();
         assert_eq!(blocks, [true, false, false, false, false]);
+    }
+
+    #[test]
+    fn link_kind_should_name_its_phrase() {
+        let phrases = [
+            LinkKind::BlockedBy,
+            LinkKind::Blocks,
+            LinkKind::Related,
+            LinkKind::Parent,
+            LinkKind::Child,
+        ]
+        .map(LinkKind::phrase);
+        assert_eq!(
+            phrases,
+            [
+                "Depends on",
+                "Required by",
+                "Relates to",
+                "Part of",
+                "Umbrella of"
+            ]
+        );
     }
 }

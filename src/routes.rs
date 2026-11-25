@@ -5826,9 +5826,9 @@ struct RelationRow {
 /// The relation types in the order the Relations section lists them, as the stored kind and its
 /// label.
 const RELATION_KINDS: &[(LinkKind, &str)] = &[
-    (LinkKind::BlockedBy, "Depends on"),
-    (LinkKind::Blocks, "Required by"),
-    (LinkKind::Related, "Relates to"),
+    (LinkKind::BlockedBy, LinkKind::BlockedBy.phrase()),
+    (LinkKind::Blocks, LinkKind::Blocks.phrase()),
+    (LinkKind::Related, LinkKind::Related.phrase()),
 ];
 
 /// History kinds the History sub-view hides until "Show all events" is ticked, and the export
@@ -11779,17 +11779,6 @@ fn link_refusal(refusal: LinkRefusal) -> AppError {
     }
 }
 
-/// Returns the words a task shows for a relation of `kind`.
-fn link_phrase(kind: LinkKind) -> &'static str {
-    match kind {
-        LinkKind::Related => "Relates to",
-        LinkKind::BlockedBy => "Depends on",
-        LinkKind::Blocks => "Required by",
-        LinkKind::Parent => "Part of",
-        LinkKind::Child => "Umbrella of",
-    }
-}
-
 /// Returns the relations of each of `tasks` before a change that removes `remove` and adds `add`,
 /// and after it.
 fn relation_previews(
@@ -11845,7 +11834,7 @@ fn show_relations(
                 .unwrap_or_default();
             names.insert(target_id.clone(), name);
         }
-        parts.push(format!("{} {}", link_phrase(*kind), names[target_id]));
+        parts.push(format!("{} {}", kind.phrase(), names[target_id]));
     }
     Ok((!parts.is_empty()).then(|| parts.join(", ")))
 }
