@@ -6,9 +6,8 @@
 <header class="topbar">
 {% include "_topbar_left.html" %}
   <div class="topbar-right">
-    <!-- KF-178: the dark topbar keeps only Boards / brand / user controls —
-         board actions live in the gray board-header row (KF-173's placement
-         premise is superseded). -->
+    <!-- The dark topbar keeps only Boards / brand / user controls —
+         board actions live in the gray board-header row. -->
 {% include "_topbar_account.html" %}
   </div>
 </header>
@@ -16,9 +15,9 @@
 {% include "_storage_banner.html" %}
 {% include "_prune_banner.html" %}
 
-<!-- KF-178: gray board-header row (KanbanFlow parity) — board name + member
+<!-- Gray board-header row (KanbanFlow parity) — board name + member
      avatar + Invite (+) + Filter + Edit layout (pencil) + Menu.
-     KF-239: the timer lives here as a clock icon left of the Filter funnel;
+     The timer lives here as a clock icon left of the Filter funnel;
      while timing it becomes a dark chip (golden board/02, timer/22, 28). -->
 <div class="board-header-row">
   <h1 class="board-bar-title">{{ board_name }}</h1>
@@ -38,7 +37,7 @@
     <span id="timer-pill-time" aria-hidden="true">--:--</span>
     <span class="timer-pill-chevron" aria-hidden="true"></span>
   </button>
-  <!-- KF-309: solid funnel glyph (KanbanFlow parity) — was a thin outline. -->
+  <!-- Solid funnel glyph (KanbanFlow parity), not a thin outline. -->
   <button type="button" id="filter-btn" class="board-bar-btn" title="Filter" aria-label="Filter" aria-haspopup="dialog">
     <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
   </button>
@@ -46,9 +45,9 @@
     <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false"><path d="M8 1l7 3.6L8 8.2 1 4.6z"/><path d="M1 7.3l1.6-.8L8 9.3l5.4-2.8L15 7.3 8 11z"/><path d="M1 10.1l1.6-.8L8 12.1l5.4-2.8 1.6.8L8 13.8z"/></svg>
   </button>
   <a href="#" id="filter-reset" class="filter-reset-link" hidden>Reset filter</a>
-  <!-- KF-309: solid pencil glyph (KanbanFlow parity) — was a thin &#9998; text glyph. Outer silhouette subpath only: renders fully solid under the nonzero fill rule. -->
+  <!-- Solid pencil glyph (KanbanFlow parity), not a thin &#9998; text glyph. Outer silhouette subpath only: renders fully solid under the nonzero fill rule. -->
 {% if role.is_owner() %}  <button type="button" id="edit-layout-btn" class="board-bar-btn" title="Edit board layout" aria-label="Edit board layout"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10z"/></svg></button>{% endif %}
-  <!-- KF-204: "Menu" text label next to hamburger (KanbanFlow parity). -->
+  <!-- "Menu" text label next to hamburger (KanbanFlow parity). -->
   <button type="button" id="board-menu-btn" class="board-bar-btn" aria-haspopup="menu" aria-expanded="false" title="Menu" aria-label="Menu"><svg class="menu-bars" aria-hidden="true" width="19" height="13" viewBox="0 0 19 13" fill="none"><rect x="0" y="0" width="19" height="2" fill="#494949"/><rect x="0" y="5.5" width="19" height="2" fill="#494949"/><rect x="0" y="11" width="19" height="2" fill="#494949"/></svg><span class="menu-label">Menu</span></button>
 </div>
 
@@ -61,9 +60,9 @@
   <div class="filter-body" id="epics-body"></div>
 </aside>
 
-<!-- Board Filter panel (KF-134 / KF-096): right-side panel -->
+<!-- Board Filter panel: right-side panel -->
 <aside id="filter-panel" class="filter-panel" hidden role="dialog" aria-label="Filter board">
-  <!-- KF-215: KanbanFlow's board-menu header: back arrow, centred
+  <!-- KanbanFlow's board-menu header: back arrow, centred
        title, close. -->
   <div class="filter-panel-head">
     <button type="button" class="filter-panel-back" id="filter-back" aria-label="Close filter">&larr;</button>
@@ -74,12 +73,12 @@
     <a href="#" id="filter-reset-panel" class="filter-reset-link filter-reset-panel" hidden>Reset filter</a>
     <section class="filter-section" aria-label="Filter by user">
       <h4>User</h4>
-      <!-- KF-175: dropdown (KanbanFlow parity) — was radio buttons -->
+      <!-- Dropdown (KanbanFlow parity), not radio buttons -->
       <select id="f-user" class="filter-select" data-me="{{ chrome.username }}">
         <option value="all" selected>Show all</option>
         <option value="timer">Timer users</option>
         <option value="unassigned">Unassigned</option>
-        <!-- KF-370: one option per user; cards carry data-member-ids. -->
+        <!-- One option per user; cards carry data-member-ids. -->
         {% for member in members %}
         <option value="user:{{ member.id }}">{{ member.display_name }}</option>
         {% endfor %}
@@ -96,10 +95,10 @@
     </section>
     <section class="filter-section" aria-label="Filter by color">
       <h4>Color</h4>
-      <!-- KF-175: dropdown (KanbanFlow parity) — was radio buttons -->
+      <!-- Dropdown (KanbanFlow parity), not radio buttons -->
       <select id="f-color" class="filter-select">
         <option value="all" selected>Show all</option>
-        <!-- KF-217: the board's enabled palette (same source as the task
+        <!-- The board's enabled palette (same source as the task
              color picker), honoring board-configured renames; the fixed
              standard name is the fallback when a color has no custom label.
              Option values are the standard color values, which is what
@@ -111,7 +110,7 @@
     </section>
     <section class="filter-section" aria-label="Filter by date">
       <h4>Date</h4>
-      <!-- KF-175: dropdown (KanbanFlow parity) — was radio buttons -->
+      <!-- Dropdown (KanbanFlow parity), not radio buttons -->
       <select id="f-date" class="filter-select">
         <option value="all" selected>Show all</option>
         <option value="none">No due date</option>
@@ -149,8 +148,8 @@
         <option value="and" selected>Match all chosen labels</option>
         <option value="or">Match any chosen label</option>
       </select>
-      <!-- KF-215: KanbanFlow's "Add labels..." field with a list button;
-           the list holds the KF-165 checkboxes, populated by
+      <!-- KanbanFlow's "Add labels..." field with a list button;
+           the list holds the label checkboxes, populated by
            BoardChrome.loadFilterLabels from GET /api/boards/:id/labels. -->
       <div class="filter-labels-field">
         <input type="text" id="filter-labels-input" placeholder="Add labels..." autocomplete="off">
@@ -169,7 +168,7 @@
     <label class="filter-remember">Remember filter
       <input type="checkbox" id="filter-remember" class="filter-switch" role="switch"></label>
   </div>
-  <!-- KF-215: KanbanFlow's collapsible Bookmarks footer; bookmarks are
+  <!-- KanbanFlow's collapsible Bookmarks footer; bookmarks are
        saved in this browser, per board. -->
   <div class="filter-bookmarks">
     <div id="filter-bookmarks-body" class="filter-bookmarks-body" hidden>
@@ -186,7 +185,7 @@
   </div>
 </aside>
 
-<!-- KF-366/KF-001: KanbanFlow's Pomodoro panel (10-05 capture): 260 px
+<!-- KanbanFlow's Pomodoro panel (10-05 capture): 260 px
      #3E3E3E panel, clock row, task row with its link, TODAY log, and a
      #2E2E2E footer band of four icon tabs. TimerUI.renderPopup fills the
      body and the TODAY section. -->
@@ -208,12 +207,12 @@
     <button type="button" id="timer-settings-link" class="timer-foot-btn" data-call="TimerSettings.open" title="Settings"><svg class="timer-foot-ico" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path fill="currentColor" fill-rule="evenodd" d="M6 0h2l.4 1.9 1.3.6 1.7-1 1.4 1.4-1 1.7.6 1.3L14 6v2l-1.9.4-.6 1.3 1 1.7-1.4 1.4-1.7-1-1.3.6L8 14H6l-.4-1.9-1.3-.6-1.7 1-1.4-1.4 1-1.7-.6-1.3L0 8V6l1.9-.4.6-1.3-1-1.7L2.9 1.2l1.7 1 1.3-.6zM7 4.6a2.4 2.4 0 1 0 0 4.8 2.4 2.4 0 0 0 0-4.8z"/></svg><span>Settings</span></button>
   </div>
 </div>
-<!-- KF-001: "Select task" mode — a centered pill in the board header; the
+<!-- "Select task" mode — a centered pill in the board header; the
      next card click selects that card for the timer. -->
 <div id="timer-select-pill" class="timer-select-pill" hidden>Select task <button type="button" class="timer-select-cancel" data-call="TimerUI.endSelect" aria-label="Cancel">&times;</button></div>
 
-<!-- KF-282: right-click context menu for the timer area (KanbanFlow
-     parity, GM-109): Comment / Label / Edit / Delete act on the
+<!-- Right-click context menu for the timer area (KanbanFlow
+     parity): Comment / Label / Edit / Delete act on the
      currently-timed task; the items are disabled while no task is timed. -->
 <div id="timer-ctx-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Timer menu">
   <button type="button" data-timer-ctx="comment" role="menuitem">Comment</button>
@@ -222,7 +221,7 @@
   <button type="button" data-timer-ctx="delete" role="menuitem">Delete</button>
 </div>
 
-<!-- Timer log modal (KF-286): wide white centered modal over the dimmed board.
+<!-- Timer log modal: wide white centered modal over the dimmed board.
      Opened from the timer popup's Log action; the popup stays open behind it. -->
 <div id="timer-log-overlay" class="timer-log-overlay" hidden>
   <div class="timer-log-modal" role="dialog" aria-label="Timer log">
@@ -276,8 +275,8 @@
     </div>
   </div>
 
-  <!-- Nested "Custom (absolute)" range dialog (KF-290): two month calendars + Done,
-       per KanbanFlow GM-121. Sits above the timer log modal. -->
+  <!-- Nested "Custom (absolute)" range dialog: two month calendars + Done,
+       per KanbanFlow. Sits above the timer log modal. -->
   <div id="log-custom-dialog-overlay" class="log-custom-dialog-overlay" hidden>
     <div class="log-custom-dialog" role="dialog" aria-modal="true" aria-label="Custom (absolute)">
       <div class="log-custom-dialog-head">
@@ -448,7 +447,7 @@
 <div class="board-layout">
 
 <main class="board-wrap" data-board-id="{{ board_id }}" data-role="{{ role.as_str() }}" data-account="{{ chrome.username }}" data-new-tasks-at-top="{% if new_tasks_at_top %}1{% else %}0{% endif %}" data-default-members="{{ default_member_ids }}">
-  <!-- KF-457: only the board region scrolls; the legend below stays put. -->
+  <!-- Only the board region scrolls; the legend below stays put. -->
   <div class="board-scroll">
   <div class="board-table-wrap">
   <table class="board-table{% if layout.lane_label_column && layout.lane_names_folded %} board-table--names-folded{% endif %}" aria-label="{{ board_name }} board" style="--expanded-columns: {{ self.expanded_column_count() }}; --collapsed-columns: {{ self.collapsed_column_count() }}">
@@ -489,7 +488,7 @@
             data-column-config="{{ col.config_json }}"
             {% if col.collapsed %}tabindex="0" role="button" aria-expanded="false" title="{% if col.overdue_count > 0 %}Overdue tasks: {{ col.overdue_count }} / Total tasks: {{ col.count }}{% else %}Task count: {{ col.count }}{% endif %} / Click to expand"{% endif %}>
           {% if col.collapsed %}
-          <!-- KF-223: collapsed strip header (KanbanFlow parity): only the
+          <!-- Collapsed strip header (KanbanFlow parity): only the
                count (darkred over the WIP limit), plus the #ff8080 line at
                the header bottom when the column is over its WIP limit or has
                overdue tasks. The name runs down the strip's body cells. -->
@@ -501,9 +500,9 @@
             {% if let Some(lim) = col.wip_limit %}
             <span class="columnHeader-count"{% if col.over_limit %} title="*LIMIT EXCEEDED*"{% endif %}>{{ col.limit_label }}</span>
             {% endif %}
-            <!-- KF-316: an expanded header shows no count cell for Column
+            <!-- An expanded header shows no count cell for Column
                  sum None; only a WIP column carries the inline "n / m".
-                 KF-371: Task count or Estimated hours ends the row, just
+                 Task count or Estimated hours ends the row, just
                  left of the "+", so a long name ellipsizes before it. -->
             {% if col.wip_limit.is_none() %}{% if let Some(sum) = col.sum_label %}
             <span class="columnHeader-countBadge" data-column-sum="{{ col.sum_kind }}">{{ sum }}</span>
@@ -515,9 +514,8 @@
           </div>
           {% endif %}
 {% if role.writes() %}          <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>{% endif %}
-          <!-- KF-230: the vestigial hidden kebab button (KF-038) is removed; the
-               column menu opens on right-click only. -->
-          <!-- KF-362: overdue tasks draw the line too; their count sits in
+          <!-- The column menu opens on right-click only; there is no kebab button. -->
+          <!-- Overdue tasks draw the line too; their count sits in
                the strip at the top of the column body. -->
           {% if col.over_limit || col.overdue_count > 0 %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
           {% endif %}
@@ -580,13 +578,13 @@
   </div><!-- /.board-table-wrap -->
   </div><!-- /.board-scroll -->
 
-  <!-- KF-222: color legend footer (KanbanFlow parity). The board Menu's
+  <!-- Color legend footer (KanbanFlow parity). The board Menu's
        "Color legend" toggle persists `legend_visible` per board; KanbanFlow
        shows no footer by default. When ON, one labeled segment per ENABLED
        board color in palette order, labeled with the color's custom name
        (falling back to the standard name) — never hardcoded pomodoro
        segments. When OFF, the footer is rendered hidden. -->
-  <!-- KF-249/KF-457: color legend footer, KanbanFlow's 23px segment row
+  <!-- Color legend footer, KanbanFlow's 23px segment row
        (1px per-segment top edge in the segment's edge color + 22px fills in
        the color's background color, labels #222 12px centered), equal
        full-width segments flush to the viewport bottom. The board frame
@@ -594,7 +592,7 @@
        footer is rendered hidden. -->
   <footer class="color-legend" aria-label="Task color legend"{% if !legend_visible %} hidden{% endif %}>
     <div class="color-legend-segments">
-    {# KF-354: one segment per board color, in its card face with its card
+    {# One segment per board color, in its card face with its card
        border along the top. #}
     {% for color in colors %}
       <span class="color-legend-segment" role="button" data-color-id="{{ color.id }}" data-color-value="{{ color.value }}" style="background-color: {{ color.bg }}; border-top-color: {{ color.border }}" title="{{ color.description }}">{{ color.display_label() }}</span>
@@ -608,7 +606,7 @@
 </main>
 </div><!-- /.board-layout -->
 
-<!-- KF-032: layout-edit view — "Layout: <board>" with Add column / Add
+<!-- Layout-edit view — "Layout: <board>" with Add column / Add
      swimlane actions; the timer pill is hidden while this view is open. -->
 <section id="layout-view" class="layout-view" hidden aria-label="Edit board layout">
   <div class="layout-view-head">
@@ -619,12 +617,12 @@
     <button type="button" class="btn btn-primary" id="layout-add-column">+ Add column</button>
     <button type="button" class="btn" id="layout-add-swimlane">+ Add swimlane</button>
     {% if bands.len() > 1 %}<button type="button" class="btn" id="layout-merge-swimlanes">Merge all swimlanes</button>{% endif %}
-    <!-- KF-367: KanbanFlow's board menu has no template item, so saving the
+    <!-- KanbanFlow's board menu has no template item, so saving the
          board as a template lives with the layout tools. -->
     <button type="button" class="btn" id="save-template-btn">Save board as template</button>
   </div>
   <p class="layout-view-hint">Drag a row to reorder, or use a column&#8217;s menu.</p>
-  <!-- KF-180: the arrange area lists the existing columns and swimlanes with
+  <!-- The arrange area lists the existing columns and swimlanes with
        drag-reorder (SortableJS, wired in editLayout/initLayoutSortables). -->
   <div class="layout-arrange">
     <section class="layout-arrange-group" aria-label="Columns">
@@ -638,8 +636,7 @@
         </li>
         {% endfor %}
       </ul>
-      <!-- KF-246: green "Add column" button at the right end of the column
-           list, per GM-043 ("green Add column button at right"). -->
+      <!-- Green "Add column" button at the right end of the column list. -->
       <div class="layout-list-add">
         <button type="button" class="btn btn-success" id="layout-add-column-end">+ Add column</button>
       </div>
@@ -662,7 +659,7 @@
 
 <!-- Add-task form template: cloned into the first swimlane row's cell when the
      column header "+" is clicked. Color radios come from the board's enabled colors. -->
-<!-- KF-302: KanbanFlow's add-task dialog, opened by a column's "+":
+<!-- KanbanFlow's add-task dialog, opened by a column's "+":
      centred, tinted with the chosen colour (set by JS from #board-colors). -->
 <div id="add-task-overlay" class="addTask-overlay" hidden>
   <form id="add-task-dialog" class="addTaskDialog" role="dialog" aria-label="Add task" novalidate>
@@ -721,7 +718,7 @@
   </form>
 </div>
 
-<!-- Column header menu (KanbanFlow parity, KF-223/KF-230/KF-405): Edit /
+<!-- Column header menu (KanbanFlow parity): Edit /
      Collapse / Show details; columns are deleted in the layout view. -->
 <div id="layout-column-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Layout column menu">
   <button type="button" data-layout-col-act="edit">Edit</button>
@@ -753,9 +750,9 @@
 {% if role.writes() %}  <button type="button" class="menu-danger" data-lane-act="delete">Delete</button>{% endif %}
 </div>
 
-<!-- Card context menu (KF-050): white popup; per-item icons (KF-329);
-     Move/Color open nested submenus; Start timer is a direct action (KF-329);
-     Delete renders in ink black like KanbanFlow (KF-329). -->
+<!-- Card context menu: white popup; per-item icons;
+     Move/Color open nested submenus; Start timer is a direct action;
+     Delete renders in ink black like KanbanFlow. -->
 <div id="card-ctx-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Task menu">
 {% if role.writes() %}  <button type="button" data-card-act="timer"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.6V8l2.6 1.6"/></svg></span>Start timer</button>{% endif %}
 {% if role.writes() %}  <button type="button" data-card-act="move" aria-haspopup="menu"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5v13M1.5 8h13"/><path d="M5.8 3.7L8 1.5l2.2 2.2M5.8 12.3L8 14.5l2.2-2.2M3.7 5.8L1.5 8l2.2 2.2M12.3 5.8l2.2 2.2-2.2 2.2"/></svg></span>Move <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>{% endif %}
@@ -924,7 +921,7 @@
     <div class="dlg-row">
       <label class="dlg-field">
         <span>Task sorting</span>
-        <!-- KF-371: KanbanFlow's sorting options (columns/03 golden); all
+        <!-- KanbanFlow's sorting options (golden columns/03); all
              are available in Pomb. -->
         <select id="ec-sorting">
           <option value="none">None</option>
@@ -944,7 +941,7 @@
       <label class="check-label check-label-stacked"><input type="checkbox" id="ec-blocked">
         <span><strong>Blocked column</strong><span class="check-sub">Cards with a posted question move here</span></span>
       </label>
-      <!-- KF-045: Column sum is a dropdown (KanbanFlow parity), not a checkbox. -->
+      <!-- Column sum is a dropdown (KanbanFlow parity), not a checkbox. -->
       <label class="dlg-field"><span>Column sum</span>
         <select id="ec-column-sum">
           <option value="none">None</option>
@@ -1013,7 +1010,7 @@
     </fieldset>
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dialog>Cancel</button>
-      <!-- KF-046: green "Update column" (KanbanFlow parity). -->
+      <!-- Green "Update column" (KanbanFlow parity). -->
       <button type="button" class="btn btn-success" id="ec-save">Update column</button>
     </div>
   </div>
@@ -1219,7 +1216,7 @@
 {% include "_task_dialogs.html" %}
 {% include "_finder.html" %}
 
-<!-- KF-379: KanbanFlow's help dialog (account/09 golden), opened by the
+<!-- KanbanFlow's help dialog (golden account/09), opened by the
      top-bar "?" and Menu > Help & feedback: Quick help (search + topics),
      Ask a question, Give feedback. -->
 <div id="help-dialog" class="dlg-overlay" hidden>
@@ -1301,13 +1298,13 @@
   <a class="menu-pop-link" href="/timer/statistics">Pomodoro statistics</a>
 </div>
 
-<!-- Board menu (KF-135 / KF-099 / KF-163): Filter, Reports, Board layout, Settings, Members,
+<!-- Board menu: Filter, Reports, Board layout, Settings, Members,
      Recycle bin, Dark mode, Color legend, Save board as template, Large task names, Help & feedback.
-     KF-353: KanbanFlow parity — every item carries a leading icon; the three
+     KanbanFlow parity — every item carries a leading icon; the three
      toggle items (Dark mode, Color legend, Large task names) are
      menuitemcheckboxes with iOS-style toggle switches showing live on/off
      state, matching KanbanFlow's menu screenshot (2026-10-12). -->
-<!-- KF-367: KanbanFlow's board menu is a full-height 250px panel on the
+<!-- KanbanFlow's board menu is a full-height 250px panel on the
      right: a "Menu" title band, five separated groups. -->
 <div id="board-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Board menu">
   <div class="board-menu-head"><span class="board-menu-title">Menu</span><button type="button" class="board-menu-close" id="board-menu-close" aria-label="Close menu"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2"/></svg></button></div>
@@ -1325,7 +1322,7 @@
 {% if role.writes() %}  <button type="button" data-bm="recycle" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.3a1 1 0 0 0 1 .7h4.6a1 1 0 0 0 1-.7L12 4"/><path d="M6.5 7v4M9.5 7v4"/></svg></span>Recycle bin</button>{% endif %}
   <div class="menu-sep" role="separator" aria-hidden="true"></div>
   <button type="button" data-bm="dark" role="menuitemcheckbox" aria-checked="false"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" focusable="false"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 2.4a5.6 5.6 0 0 1 0 11.2z" fill="currentColor"/></svg></span>Dark mode<span class="menu-switch" aria-hidden="true"><span class="menu-switch-knob"></span></span></button>
-  <!-- KF-183: Color legend is a per-board toggle (menuitemcheckbox),
+  <!-- Color legend is a per-board toggle (menuitemcheckbox),
        not a scroll-to action. KanbanFlow shows no legend by default. -->
   <button type="button" data-bm="legend" role="menuitemcheckbox" aria-checked="{% if legend_visible %}true{% else %}false{% endif %}"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" focusable="false"><circle cx="8" cy="8" r="5.9"/><circle cx="6" cy="6.6" r="1.05" fill="currentColor" stroke="none"/><circle cx="10" cy="6.6" r="1.05" fill="currentColor" stroke="none"/><circle cx="8" cy="10.2" r="1.05" fill="currentColor" stroke="none"/></svg></span>Color legend<span class="menu-switch" aria-hidden="true"><span class="menu-switch-knob"></span></span></button>
   <button type="button" data-bm="large-names" role="menuitemcheckbox" aria-checked="false"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M1.5 4.5h6M4.5 4.5v6"/><path d="M11.5 2.5v11M9.8 4.3l1.7-1.8 1.7 1.8M9.8 11.7l1.7 1.8 1.7-1.8"/></svg></span>Large task names<span class="menu-switch" aria-hidden="true"><span class="menu-switch-knob"></span></span></button>
@@ -1497,7 +1494,6 @@
 
 <div id="modal-root"></div>
 
-<!-- KF-075: Add break activity dialog -->
 <div id="activity-dialog" class="dlg-overlay" hidden>
   <div class="dlg" role="dialog" aria-label="Add break activity">
     <div class="dlg-title">Add break activity

@@ -18,7 +18,7 @@
 {% endblock %}
 {% block shell_body %}
       {% if tab == "general" %}
-      {# KF-554: KanbanFlow's General tab: Board name and Board owner as
+      {# KanbanFlow's General tab: Board name and Board owner as
          bold labels over plain text, then an Actions section. The owner is
          the signed-in admin (single-admin model), so it has no Edit link. #}
       <section class="settings-section kf-general" data-board-id="{{ board_id }}">
@@ -146,7 +146,7 @@
       </section>
       {% endif %}
       {% else if tab == "colors" %}
-      {# KF-356: KanbanFlow's Colors tab (KF-331 reference): info box, a
+      {# KanbanFlow's Colors tab: info box, a
          heading row with its action buttons, and Color / Name / Actions
          tables with drag handles and bordered Edit / Disable buttons. #}
       <section class="settings-section kf-colors">
@@ -171,12 +171,12 @@
             {% for c in colors %}
             {% if c.enabled %}
             <tr class="color-admin-row" data-color-id="{{ c.id }}" data-sort-order="{{ c.sort_order }}">
-              {# KF-082: drag handles on each enabled-color row. #}
+              {# Drag handles on each enabled-color row. #}
               <td class="color-cell-drag"><span class="color-drag" title="Drag to reorder" aria-label="Drag to reorder"><svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2" r="1.7"/><circle cx="7.5" cy="2" r="1.7"/><circle cx="2.5" cy="7" r="1.7"/><circle cx="7.5" cy="7" r="1.7"/><circle cx="2.5" cy="12" r="1.7"/><circle cx="7.5" cy="12" r="1.7"/></svg></span></td>
               <td class="color-cell-swatch"><span class="color-swatch-named" style="background-color: {{ c.bg }}; border-color: {{ c.border }};" title="{{ c.value }}">{{ c.standard_name }}</span></td>
               <td class="color-cell-label">{{ c.label }}{% if c.is_default %} (<em>Default</em>){% endif %}</td>
               <td class="color-cell-actions">
-                {# KF-084: Edit button opens rename dialog; a standard color's hex is fixed. #}
+                {# Edit button opens rename dialog; a standard color's hex is fixed. #}
                 <button type="button" class="kf-btn bc-edit" data-color-id="{{ c.id }}" data-label="{{ c.label }}" data-description="{{ c.description }}"{% if c.is_custom() %} data-hex="{{ c.bg }}"{% endif %}>Edit</button><button type="button" class="kf-btn bc-disable" data-color-id="{{ c.id }}">Disable</button>
               </td>
             </tr>
@@ -242,7 +242,7 @@
             {% endif %}
             <span id="numbering-error" class="form-error" hidden></span>
           </dd>
-          <!-- KF-404: KanbanFlow's "Due date time", the time a date-only
+          <!-- KanbanFlow's "Due date time", the time a date-only
                due date gets. -->
           <dt>Due date time</dt>
           <dd><span id="due-time-label">{{ due_time_label }}</span> <button type="button" class="kf-btn kf-btn-link" id="due-time-edit">Edit</button></dd>
@@ -864,7 +864,7 @@
 <div hidden data-page="board-settings-fields"></div>
 {% endif %}
 {% if tab == "colors" %}
-{# KF-084: Edit dialog for rename (≤50 chars) + description; a standard color's hex is fixed. #}
+{# Edit dialog for rename (≤50 chars) + description; a standard color's hex is fixed. #}
 <div id="bc-edit-overlay" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Edit color">
     <div class="dlg-title">Edit color
@@ -906,7 +906,6 @@
     </div>
   </div>
 </div>
-{# KF-083 dialogs #}
 <div id="bc-default-overlay" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Set default color">
     <div class="dlg-title">Set default color
@@ -935,7 +934,7 @@
     </div>
     <p class="settings-hint">Replace this board's palette with a copy of another board's.
       Tasks keep their colors by matching the standard color value.</p>
-    {# KF-395: copy errors show inside the dialog, not behind its overlay. #}
+    {# Copy errors show inside the dialog, not behind its overlay. #}
     <div id="bc-copy-error" class="login-error" role="alert" hidden></div>
     {% if copy_boards.is_empty() %}
     <p class="settings-hint">There are no other boards to copy from.</p>
@@ -960,7 +959,7 @@
 <div hidden data-page="board-settings-copy"></div>
 {% endif %}
 {% if tab == "task" %}
-{# KF-403: KanbanFlow's "Change position of new tasks" dialog. #}
+{# KanbanFlow's "Change position of new tasks" dialog. #}
 <div id="ntp-overlay" class="dlg-overlay dlg-overlay--popover" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Change position of new tasks">
     <div class="dlg-title">Change position of new tasks

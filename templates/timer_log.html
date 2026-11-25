@@ -14,7 +14,7 @@
       </span>
     </span>
   </div>
-  <!-- KF-292: KanbanFlow-style filter row — Board / Period / Entry-type dropdowns,
+  <!-- KanbanFlow-style filter row — Board / Period / Entry-type dropdowns,
        always visible (replaces the old single "Filter" button + pane). -->
   <div class="settings-form field-row">
     <label>
@@ -72,7 +72,7 @@
   <div id="spent-list" class="spent-list">
     <p class="settings-hint">Loading&hellip;</p>
   </div>
-  <!-- KF-393: filter bookmarks, saved in this browser; a bookmark puts
+  <!-- Filter bookmarks, saved in this browser; a bookmark puts
        back the Board, Period, Entry type, Color and Group by filters. -->
   <div class="spent-bookmarks settings-form">
     <button type="button" id="spent-bookmarks-toggle" class="spent-bookmarks-head" aria-expanded="false">Bookmarks (<span id="spent-bookmarks-count">0</span>)</button>
@@ -86,11 +86,11 @@
   </div>
 {% endblock %}
 {% block shell_scripts %}
-<!-- KF-295: "Print" sheet (GM-169) — titled "Print", shows the report's task
+<!-- "Print" sheet — titled "Print", shows the report's task
      table, with Filter and Print buttons top-left. The sheet's Print button
      invokes the browser print with print CSS scoped to the sheet; the Filter
      button closes the sheet back to the report (Pomb's filters are the
-     always-visible row on the report page, KF-292). -->
+     always-visible row on the report page). -->
 <div id="spent-print-overlay" class="spent-print-overlay" hidden>
   <div class="spent-print-sheet" role="dialog" aria-modal="true" aria-label="Print">
     <header class="spent-print-head">

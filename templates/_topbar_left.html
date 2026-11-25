@@ -1,9 +1,9 @@
-{# KF-357: left half of the global dark top bar (Boards dropdown and logo),
+{# Left half of the global dark top bar (Boards dropdown and logo),
    shared by the board and its settings pages. Needs `chrome` and `board_id`. #}
   <div class="topbar-left">
-    <!-- KF-174: single Boards button (KanbanFlow parity) — was KF-023 board tabs -->
-    <!-- KF-172: Boards button toggles the dropdown menu -->
-    <!-- KF-233: CSS-drawn hamburger (KanbanFlow parity, GM-001); no leading
+    <!-- Single Boards button (KanbanFlow parity) in place of board tabs -->
+    <!-- Boards button toggles the dropdown menu -->
+    <!-- CSS-drawn hamburger (KanbanFlow parity); no leading
          space — the 10px gap is exact. -->
     <div class="boards-dropdown-container">
       <button type="button" class="boards-btn" id="boards-dropdown-btn"><span class="boards-glyph" aria-hidden="true"></span><span class="boards-label">Boards</span></button>
@@ -23,5 +23,5 @@
       </div>
     </div>
   </div>
-  <!-- KF-022: brand mark centered in the dark top bar (KanbanFlow parity) -->
+  <!-- Brand mark centered in the dark top bar (KanbanFlow parity) -->
   <a class="brand-logo" href="/" aria-label="Pomb home"><img class="brand-logo-mark" src="/static/favicon.svg" alt="" width="20" height="20"><span class="brand-logo-name">Pomb</span></a>

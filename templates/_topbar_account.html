@@ -1,8 +1,8 @@
-{# KF-357: notifications, help and account controls of the global top bar.
+{# Notifications, help and account controls of the global top bar.
    Needs `chrome`. #}
     <button type="button" class="topbar-search" id="topbar-search" data-finder-open aria-label="Search cards" aria-keyshortcuts="/ Control+K Meta+K"><svg class="topbar-search-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.7"/><path d="M10 10l4.5 4.5"/></svg><span class="topbar-search-label">Search cards</span><kbd class="topbar-search-key">/</kbd></button>
-    <!-- KF-235: bell icon — pixel-exact 17x17 reconstruction of the GM-007
-         golden glyph (solid white dome rows 0-12, dark mouth slit rows
+    <!-- Bell icon — pixel-exact 17x17 reconstruction of KanbanFlow's
+         glyph (solid white dome rows 0-12, dark mouth slit rows
          13-14, white rim bar row 15, clapper row 16). Replaces the yellow
          emoji glyph. Sized to a true 17x17px box. -->
     <button type="button" class="topbar-icon-btn" id="notifications-btn" title="Notifications" aria-label="Notifications" aria-haspopup="dialog" aria-expanded="false">
@@ -20,11 +20,10 @@
       <div class="notifications-empty">No notifications</div>
       <button type="button" class="notifications-more" hidden>Show older</button>
     </div>
-    <!-- KF-031: help "?" icon (KanbanFlow parity) -->
+    <!-- Help "?" icon (KanbanFlow parity) -->
     <button type="button" class="topbar-icon-btn" id="help-btn" title="Help" aria-label="Help">?</button>
-    <!-- KF-195: account control opens a menu with sign-out (POST /logout).
-         KF-033 had removed the logout UI; the battery filed its absence as a
-         parity gap (KanbanFlow has an account menu with sign-out). -->
+    <!-- Account control opens a menu with sign-out (POST /logout), as
+         KanbanFlow's account menu does. -->
     <div class="account-wrap">
       <button type="button" class="user-avatar" id="account-btn" data-time-format="{{ chrome.time_format.as_str() }}" data-week-start="{{ chrome.week_start.as_str() }}" data-calendar-repeats="{{ chrome.calendar_show_repeats }}" title="{{ chrome.display_name }}" aria-label="Signed in as {{ chrome.display_name }}" aria-haspopup="menu" aria-expanded="false" style="{{ chrome.avatar.style }}">{% if let Some(url) = chrome.avatar.image %}<img src="{{ url }}" alt="">{% else %}{{ chrome.avatar.text }}{% endif %}</button>
       <div id="account-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Account">

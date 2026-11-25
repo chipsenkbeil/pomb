@@ -2,7 +2,7 @@
 {% block title %}Delete board — Pomb{% endblock %}
 {% block body_attrs %}{% if chrome.dark %} class="dark"{% endif %}{% endblock %}
 {% block content %}
-{# KF-357: KanbanFlow's global top bar sits above the settings pages. #}
+{# KanbanFlow's global top bar sits above the settings pages. #}
 <header class="topbar">
 {% include "_topbar_left.html" %}
   <div class="topbar-right">
@@ -11,7 +11,7 @@
 </header>
 {% include "_finder.html" %}
 
-{# KF-368: KanbanFlow's delete-board page — a 600px settings box with a
+{# KanbanFlow's delete-board page — a 600px settings box with a
    centred title band, a red alert, Cancel on the left and Delete board /
    Archive board on the right, over the settings page background. #}
 <div class="page board-settings-page delete-board-page">
@@ -33,7 +33,7 @@
   </div>
 </div>
 {% include "_site_footer.html" %}
-<!-- KF-304: styled confirm for the delete; app.js wires the page
+<!-- Styled confirm for the delete; app.js wires the page
      (initBoardDeletePage) and the shared [data-close-dialog] Cancel. -->
 <div id="confirm-dialog" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Confirm">

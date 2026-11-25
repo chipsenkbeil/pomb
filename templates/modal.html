@@ -448,7 +448,7 @@
     </div><!-- /task-modal -->
     <!-- KanbanFlow parity: vertical action toolbar OUTSIDE the modal's
          right edge, against the dimmed board — circle + label pill rows,
-         top→bottom: Add, Move, Timer, Reports, More, Delete (KF-252). -->
+         top→bottom: Add, Move, Timer, Reports, More, Delete. -->
     <div class="task-modal-iconbar" role="toolbar" aria-label="Task actions">
       {% if role.writes() %}<div class="tm-action">
         <button type="button" class="tm-icon-btn" data-tm-menu="tm-add-menu" aria-haspopup="menu" aria-label="Add">
@@ -477,7 +477,7 @@
       </div>
       <div class="tm-action">
         <button type="button" class="tm-icon-btn" data-tm-act="move" aria-label="Move">
-          <!-- KF-320: SVG arrow with a 2px shaft (GM-076 parity) — the U+2794
+          <!-- SVG arrow with a 2px shaft (KanbanFlow parity) — the U+2794
                text glyph rendered a 4px shaft. Filled head, #666, ~21px wide. -->
           <span class="tm-icon" aria-hidden="true"><svg width="21" height="19" viewBox="0 0 21 19" aria-hidden="true" focusable="false"><line x1="1.5" y1="9.5" x2="13.3" y2="9.5" stroke="#666" stroke-width="2" stroke-linecap="round"/><polygon points="12.3,1.5 20.3,9.5 12.3,17.5" fill="#666"/></svg></span><span class="tm-icon-label">Move</span>
         </button>
@@ -500,7 +500,7 @@
           <span class="tm-icon" aria-hidden="true"><svg width="22" height="20" viewBox="0 0 22 20" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11,0.5 21,5.2 11,8.5 1,5.2"/><path d="M1.5 9.5 L11 13.5 L20.5 9.5"/><path d="M1.5 14.5 L11 18.5 L20.5 14.5"/></g></svg></span><span class="tm-icon-label">Reports</span>
         </button>
         <div id="tm-reports-menu" class="tm-menu tm-menu-edge" hidden role="menu">
-          <!-- KF-275: GM-089 verbatim order — Time log, Print, History, Time in column. -->
+          <!-- KanbanFlow's verbatim order — Time log, Print, History, Time in column. -->
           <button type="button" data-tm-act="time-log">Time log</button>
           <button type="button" data-tm-act="print">Print</button>
           <button type="button" data-tm-act="history">History</button>

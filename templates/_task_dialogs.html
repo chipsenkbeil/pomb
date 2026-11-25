@@ -17,7 +17,7 @@
   </div>
 </div>
 
-<!-- Column details popup ("Show details", KanbanFlow parity, KF-223):
+<!-- Column details popup ("Show details", KanbanFlow parity):
      377px box with a grey title band "Column: {name}" + Close (X) and a
      centred "Task count: {n}" body. -->
 <div id="column-details-popup" class="details-popup" hidden role="dialog" aria-label="Column details">
@@ -46,7 +46,7 @@
   </div>
 </div>
 
-<!-- KF-047: styled delete-confirmation dialog (replaces window.confirm). -->
+<!-- Styled delete-confirmation dialog (replaces window.confirm). -->
 <div id="confirm-dialog" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Confirm">
     <div class="dlg-title" id="confirm-title">Confirm</div>
@@ -75,7 +75,7 @@
   </div>
 </div>
 
-<!-- KF-253: description editor dialog (opened by clicking the static
+<!-- Description editor dialog (opened by clicking the static
      description block in the task modal, or via Add → Description). -->
 <div id="description-dialog" class="dlg-overlay dlg-overlay-top" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Edit description" style="max-width: 520px;">
@@ -91,7 +91,7 @@
 </div>
 
 <!-- Move task dialog (task modal → Move, V; card menu → Move advanced as a
-     popover at the card, KF-334). -->
+     popover at the card). -->
 <div id="move-task-dialog" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Move task">
     <div class="dlg-title"><span id="mt-title">Move task</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
@@ -226,11 +226,11 @@
   </div>
 </div>
 
-<!-- Labels dialog (task modal → Add → Label, KanbanFlow parity KF-061):
+<!-- Labels dialog (task modal → Add → Label, KanbanFlow parity):
      current labels with × removal, an add input, and "Add labels..."
      suggestions drawn from the board's existing labels. -->
 <div id="labels-dialog" class="dlg-overlay" hidden>
-  <!-- KF-328: KanbanFlow's Labels dropdown has no Cancel/Save (GM-080) —
+  <!-- KanbanFlow's Labels dropdown has no Cancel/Save —
        changes apply immediately; the × closes. -->
   <div class="dlg dlg-light labels-dlg" role="dialog" aria-label="Labels">
     <div class="dlg-title"><span>Labels</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
@@ -253,12 +253,12 @@
   </div>
 </div>
 
-<!-- Due date dialog (task modal → Add → Due date, KanbanFlow parity
-     KF-270): title "Add due date", Date/Time fields, inline calendar grid,
+<!-- Due date dialog (task modal → Add → Due date, KanbanFlow parity):
+     title "Add due date", Date/Time fields, inline calendar grid,
      runtime column list with selection, Repeat field, green Add button. -->
 <div id="duedate-dialog" class="dlg-overlay" data-default-time="{{ due_time }}" hidden>
   <div class="dlg dlg-light duedate-dlg" role="dialog" aria-labelledby="dd-title">
-    <!-- KF-259: "Add due date" with Add, or "Edit due date" with Delete
+    <!-- "Add due date" with Add, or "Edit due date" with Delete
          and Update, closed with the x (KanbanFlow has no Cancel). -->
     <div class="dlg-title"><span id="dd-title">Add due date</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
     <div class="dlg-row">
@@ -266,8 +266,8 @@
       <label class="dlg-field"><span>Time</span><input type="time" id="dd-time" step="60"></label>
     </div>
     <div id="dd-cal-inline" class="dd-cal-inline" aria-label="Calendar"></div>
-    <!-- KF-328: KanbanFlow's due-date dialog uses a Target column dropdown
-         and a Repeat checkbox (GM-081), not a radio list + text input. -->
+    <!-- KanbanFlow's due-date dialog uses a Target column dropdown
+         and a Repeat checkbox, not a radio list + text input. -->
     <label class="dlg-field">
       <span>Target column</span>
       <select id="dd-column"></select>
@@ -277,15 +277,15 @@
       <span>Repeat (e.g. every week)</span>
     </label>
     <div class="dlg-actions">
-      <!-- KF-401: red Delete, shown only when the task has a due date. -->
+      <!-- Red Delete, shown only when the task has a due date. -->
       <button type="button" class="btn btn-danger" id="dd-delete" hidden>Delete</button>
       <button type="button" class="btn btn-success" id="dd-add">Add</button>
     </div>
   </div>
 </div>
 
-<!-- KF-417: KanbanFlow's alert box (message + OK), stacked above the due
-     date dialog; KF-437: dimmed and sized like KanbanFlow's, and Escape
+<!-- KanbanFlow's alert box (message + OK), stacked above the due
+     date dialog; dimmed and sized like KanbanFlow's, and Escape
      closes it before the due date dialog (.dlg-overlay-top). -->
 <div id="alert-dialog" class="dlg-overlay dlg-overlay-top kf-modalbox-overlay" hidden>
   <div class="dlg dlg-light kf-modalbox" role="alertdialog" aria-describedby="alert-message">
@@ -296,7 +296,7 @@
   </div>
 </div>
 
-<!-- KF-432: KanbanFlow asks before saving a due date in the past (golden
+<!-- KanbanFlow asks before saving a due date in the past (golden
      modal/26); Cancel keeps the due date dialog open. -->
 <div id="past-due-dialog" class="dlg-overlay dlg-overlay-top kf-modalbox-overlay" hidden>
   <div class="dlg dlg-light kf-modalbox" role="alertdialog" aria-describedby="past-due-message">
