@@ -332,6 +332,8 @@ struct TaskColumn {
 struct TaskLabels {
     id: String,
     #[serde(default)]
+    kind: TaskKind,
+    #[serde(default)]
     labels: Vec<String>,
 }
 
@@ -12279,6 +12281,9 @@ impl Db {
     pub fn board_labels(&self, board_id: &str) -> DbResult<Vec<String>> {
         let mut labels: BTreeSet<String> = self.board_label_counts(board_id)?.into_keys().collect();
         self.visit_board_tasks(board_id, |task: TaskLabels| {
+            if !task.kind.is_work() {
+                return Ok(());
+            }
             for entry in self.list_entries(&task.id)? {
                 labels.extend(entry.labels);
             }
@@ -12292,6 +12297,9 @@ impl Db {
     pub fn board_label_counts(&self, board_id: &str) -> DbResult<BTreeMap<String, usize>> {
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
         self.visit_board_tasks(board_id, |task: TaskLabels| {
+            if !task.kind.is_work() {
+                return Ok(());
+            }
             for label in task.labels {
                 *counts.entry(label).or_default() += 1;
             }

@@ -219,6 +219,30 @@ async fn the_labels_tab_should_list_each_label_with_its_card_count() {
     assert!(html.contains("id=\"bl-show-all\" checked"), "{html}");
 }
 
+#[tokio::test]
+async fn the_labels_tab_should_not_count_an_epics_labels() {
+    let fx = Fixture::new();
+    fx.task_with(&["plain"]).await;
+    let body = json!({
+        "column_id": fx.column, "name": "Epic", "kind": "epic", "labels": ["epic-only"],
+    });
+    let (status, text) = fx
+        .call(Who::Session, "POST", "/api/tasks", Some(body))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    let uri = format!("/b/{}/settings/labels", fx.board);
+    let (status, html) = fx.call(Who::Session, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("data-label=\"plain\" data-cards=\"1\""),
+        "{html}"
+    );
+    assert!(!html.contains("epic-only"), "{html}");
+    let uri = format!("/api/boards/{}/labels", fx.board);
+    let (_, text) = fx.call(Who::Session, "GET", &uri, None).await;
+    assert_eq!(parse(&text), json!(["plain"]));
+}
+
 impl Fixture {
     async fn board_html(&self) -> String {
         let uri = format!("/b/{}", self.board);
