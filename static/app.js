@@ -14156,9 +14156,7 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' },
-      }).then(function (r) {
+      apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (data) {
@@ -14406,9 +14404,7 @@
       });
       var host = qs('cycle-lead-chart');
       if (host) ReportChart.attachDots(host, '.chart-task-dot', openModal);
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' },
-      }).then(function (r) {
+      apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (data) {
@@ -14735,9 +14731,7 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' },
-      }).then(function (r) {
+      apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (data) {
@@ -14864,9 +14858,7 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' },
-      }).then(function (r) {
+      apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (data) {
@@ -15118,9 +15110,7 @@
       });
     };
 
-    const load = () => fetch(`/api/boards/${encodeURIComponent(boardId)}/export-data`, {
-      headers: { Accept: 'application/json' },
-    }).then((response) => {
+    const load = () => apiJson(`/api/boards/${encodeURIComponent(boardId)}/export-data`, 'GET').then((response) => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.json();
     }).then((data) => {
@@ -15440,10 +15430,8 @@
       qs('history-export-csv').href = exportHref('csv');
       setStatus('Loading...');
       var token = ++loadToken;
-      return fetch('/api/boards/' + encodeURIComponent(boardId) + '/history' +
-        (appliedQuery ? '?' + appliedQuery : ''), {
-        headers: { 'Accept': 'application/json' },
-      }).then(function (r) {
+      return apiJson('/api/boards/' + encodeURIComponent(boardId) + '/history' +
+        (appliedQuery ? '?' + appliedQuery : ''), 'GET').then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (page) {
@@ -15840,9 +15828,7 @@
 
     function open(boardId) {
       wire();
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' },
-      }).then(function (r) {
+      apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (board) {
@@ -16269,11 +16255,7 @@
         if (!text) { feedStatus('Give the feed a label first.'); label.focus(); return; }
         feedStatus('Generating…');
         var board = currentBoard;
-        fetch(feedsBase(), {
-          method: 'POST',
-          headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label: text }),
-        }).then(function (r) {
+        apiJson(feedsBase(), 'POST', { label: text }).then(function (r) {
           if (r.ok) return r.json();
           return r.json().catch(function () { return {}; }).then(function (b) { throw new Error(b.message || 'HTTP ' + r.status); });
         }).then(function (feed) {
@@ -16305,10 +16287,7 @@
         } else if (e.target.closest('[data-feed-delete]')) {
           if (!window.confirm('Delete the feed "' + feed.label + '"? Its URL will stop working.')) return;
           var board = currentBoard;
-          fetch(feedsBase() + '/' + encodeURIComponent(id), {
-            method: 'DELETE',
-            headers: { 'Accept': 'application/json' },
-          }).then(function (r) {
+          apiJson(feedsBase() + '/' + encodeURIComponent(id), 'DELETE').then(function (r) {
             if (!r.ok) throw new Error('HTTP ' + r.status);
             if (board !== currentBoard) return;
             feeds = feeds.filter(function (f) { return f.id !== id; });
@@ -17022,9 +17001,7 @@
         getFilters: function () { return {}; }, applyFilters: function () {},
         rows: function () { return lastForecast ? forecastRows(lastForecast) : []; },
       });
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' },
-      }).then(function (r) {
+      apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (data) {

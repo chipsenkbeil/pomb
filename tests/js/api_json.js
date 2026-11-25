@@ -79,4 +79,24 @@ groupTwo.forEach((call) => {
   check(name + ' has no fetch', /\bfetch\(/.test(before), false);
 });
 
+const groupThree = [
+  "apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {\n        if (!r.ok) throw new Error('HTTP ' + r.status);\n        return r.json();\n      }).then(function (data) {\n        var state = ReportFilter.open(",
+  "apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {\n        if (!r.ok) throw new Error('HTTP ' + r.status);\n        return r.json();\n      }).then(function (data) {\n        var times = computeTimes(",
+  "apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {\n        if (!r.ok) throw new Error('HTTP ' + r.status);\n        return r.json();\n      }).then(function (data) {\n        var legend = ",
+  "apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {\n        if (!r.ok) throw new Error('HTTP ' + r.status);\n        return r.json();\n      }).then(function (data) {\n        render(classify(",
+  "const load = () => apiJson(`/api/boards/${encodeURIComponent(boardId)}/export-data`, 'GET')",
+  "return apiJson('/api/boards/' + encodeURIComponent(boardId) + '/history' +\n        (appliedQuery ? '?' + appliedQuery : ''), 'GET')",
+  "apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {\n        if (!r.ok) throw new Error('HTTP ' + r.status);\n        return r.json();\n      }).then(function (board) {",
+  "apiJson(feedsBase(), 'POST', { label: text })",
+  "apiJson(feedsBase() + '/' + encodeURIComponent(id), 'DELETE')",
+  "apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {\n        if (!r.ok) throw new Error('HTTP ' + r.status);\n        return r.json();\n      }).then(function (data) {\n        lastData = data;\n        var sel = qs('mc-target-column');",
+];
+groupThree.forEach((call) => {
+  const at = src.indexOf(call);
+  const name = suite + 'api_json_should_move_group_three ' + call.split('\n')[0];
+  check(name + ' uses apiJson', at >= 0, true);
+  const before = src.slice(Math.max(0, at - 40), at + call.indexOf('apiJson'));
+  check(name + ' has no fetch', /\bfetch\(/.test(before), false);
+});
+
 finish();
