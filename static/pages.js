@@ -568,17 +568,9 @@
     withRequired: function (catalog, held) {
       return held.concat(TokenForm.required(catalog).filter(function (name) { return held.indexOf(name) < 0; }));
     },
-    standardRoles: [
-      ['planner', 'Shapes cards: create, edit, outcomes, links'],
-      ['implementer', 'Claims and moves cards, logs time'],
-      ['reviewer', 'Claims and moves cards'],
-      ['verifier', 'Ticks outcomes'],
-      ['release', 'Claims and moves cards'],
-      ['lead', 'Plans and runs the board, issues child tokens'],
-    ],
+    standardNames: ['planner', 'implementer', 'reviewer', 'verifier', 'release', 'lead'],
     roleNote: function (role) {
-      var known = TokenForm.standardRoles.filter(function (entry) { return entry[0] === role.name; })[0];
-      return known ? known[1] : role.permissions.length + ' permissions';
+      return role.description || role.permissions.length + ' permissions';
     },
     loadRoles: function (load) {
       return load().then(
@@ -587,7 +579,7 @@
       );
     },
     roleOrder: function (roles) {
-      var names = TokenForm.standardRoles.map(function (entry) { return entry[0]; });
+      const names = TokenForm.standardNames;
       var standard = roles.filter(function (role) { return names.indexOf(role.name) >= 0; })
         .sort(function (a, b) { return names.indexOf(a.name) - names.indexOf(b.name); });
       var custom = roles.filter(function (role) { return names.indexOf(role.name) < 0; })

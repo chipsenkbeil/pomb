@@ -238,6 +238,8 @@ pub struct StandardRole {
     pub key: StandardKey,
     /// The name a role created from this entry starts with.
     pub name: &'static str,
+    /// The one-line text the token picker shows for the role.
+    pub description: &'static str,
     /// The permissions the role holds beyond [`STANDARD_BASE`].
     pub extra: &'static [Permission],
 }
@@ -265,6 +267,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
     StandardRole {
         key: StandardKey::Planner,
         name: "planner",
+        description: "Shapes cards: create, edit, outcomes, links",
         extra: &[
             Permission::TasksCreate,
             Permission::TasksEdit,
@@ -277,6 +280,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
     StandardRole {
         key: StandardKey::Implementer,
         name: "implementer",
+        description: "Claims and moves cards, logs time",
         extra: &[
             Permission::TasksClaim,
             Permission::TasksMove,
@@ -287,6 +291,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
     StandardRole {
         key: StandardKey::Reviewer,
         name: "reviewer",
+        description: "Claims and moves cards",
         extra: &[
             Permission::TasksClaim,
             Permission::TasksMove,
@@ -296,6 +301,7 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
     StandardRole {
         key: StandardKey::Verifier,
         name: "verifier",
+        description: "Ticks outcomes",
         extra: &[
             Permission::TasksClaim,
             Permission::TasksMove,
@@ -306,11 +312,13 @@ pub const STANDARD_ROLES: &[StandardRole] = &[
     StandardRole {
         key: StandardKey::Release,
         name: "release",
+        description: "Claims and moves cards",
         extra: &[Permission::TasksClaim, Permission::TasksMove],
     },
     StandardRole {
         key: StandardKey::Lead,
         name: "lead",
+        description: "Plans and runs the board, issues child tokens",
         extra: &[
             Permission::TasksCreate,
             Permission::TasksEdit,

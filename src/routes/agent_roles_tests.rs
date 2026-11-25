@@ -796,6 +796,51 @@ async fn standard_roles_should_reuse_a_renamed_standard_role() {
 }
 
 #[tokio::test]
+async fn agent_role_should_carry_standard_description() {
+    // Seed the standard roles, add a custom one and rename the reviewer
+    let fx = Fixture::new();
+    let seeded = fx
+        .bearer(
+            ALICE,
+            "POST",
+            STANDARD_ROLES_URI,
+            Some(json!({"boards": []})),
+        )
+        .await;
+    assert_eq!(seeded.status, StatusCode::OK, "{}", seeded.body);
+    fx.create(ALICE, "custom").await;
+    let id = seeded.body["roles"][2]["id"].as_str().expect("id");
+    let uri = format!("/api/v1/agent-roles/{id}");
+    let renamed = fx
+        .browse(ALICE, "PATCH", &uri, Some(json!({"name": "checker"})))
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+
+    // Check each standard role lists its description, the renamed one included
+    let listed = fx.bearer(ALICE, "GET", "/api/v1/agent-roles", None).await;
+    let roles = listed.body.as_array().expect("list");
+    for standard in STANDARD_ROLES {
+        let key = if standard.name == "reviewer" {
+            "checker"
+        } else {
+            standard.name
+        };
+        let role = roles
+            .iter()
+            .find(|role| role["name"] == key)
+            .expect("standard role");
+        assert_eq!(role["description"], json!(standard.description), "{key}");
+    }
+
+    // Check the custom role has no description
+    let custom = roles
+        .iter()
+        .find(|role| role["name"] == "custom")
+        .expect("custom role");
+    assert!(custom["description"].is_null());
+}
+
+#[tokio::test]
 async fn standard_roles_should_grant_every_listed_board() {
     let fx = Fixture::new();
     let second = fx.db.create_board(&fx.alice, "Second").expect("board");

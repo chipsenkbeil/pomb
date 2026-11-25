@@ -28598,6 +28598,9 @@ struct AgentRoleView {
     name: String,
     /// The permission wire names of the template, from `GET /api/v1/auth/permissions`.
     permissions: Vec<String>,
+    /// The one-line text the token picker shows, set for a standard role even after a rename and
+    /// null for a custom role. It comes from the server's table and is never stored.
+    description: Option<String>,
     /// The ids of the boards the role is granted on. A token lists only the boards it holds.
     boards: Vec<String>,
     /// Unix seconds.
@@ -28609,7 +28612,12 @@ struct AgentRoleView {
 impl AgentRoleView {
     /// Describes `role` with the boards of it that `account` reaches.
     fn new(account: &AccountDb, role: AgentRoleRow) -> Result<Self, AppError> {
+        let description = STANDARD_ROLES
+            .iter()
+            .find(|standard| role.standard == Some(standard.key))
+            .map(|standard| standard.description.to_string());
         Ok(Self {
+            description,
             boards: account.agent_role_boards(&role)?,
             permissions: role
                 .permissions

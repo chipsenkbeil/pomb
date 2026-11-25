@@ -101,11 +101,11 @@ check('standard roles list in their fixed order, then custom ones alphabetically
     { id: '7', name: 'implementer', permissions: [] }, { id: '8', name: 'reviewer', permissions: [] },
   ]).map(function (role) { return role.name; }),
   ['planner', 'implementer', 'reviewer', 'verifier', 'release', 'lead', 'alpha', 'zed']);
-check('a standard role has its one-line note and a custom role its count',
-  [TokenForm.roleNote({ name: 'verifier', permissions: ['a', 'b'] }),
-    TokenForm.roleNote({ name: 'lead', permissions: ['a'] }),
-    TokenForm.roleNote({ name: 'solo', permissions: ['a', 'b'] })],
-  ['Ticks outcomes', 'Plans and runs the board, issues child tokens', '2 permissions']);
+check('a role shows the server_description it carries and else its permission count',
+  [TokenForm.roleNote({ name: 'verifier', description: 'Ticks outcomes', permissions: ['a', 'b'] }),
+    TokenForm.roleNote({ name: 'checker', description: 'Ticks outcomes', permissions: ['a'] }),
+    TokenForm.roleNote({ name: 'solo', description: null, permissions: ['a', 'b'] })],
+  ['Ticks outcomes', 'Ticks outcomes', '2 permissions']);
 
 var noRead = [{ id: 'n1', name: 'verifier', permissions: ['tasks.read'] }];
 check('a role without the required permission matches rows that hold it',
