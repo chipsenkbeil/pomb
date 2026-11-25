@@ -11249,153 +11249,9 @@ async fn bulk_tasks(
         BulkTasksAction::UnassignMembers => run_bulk_unassign_members(&run)?,
         BulkTasksAction::Subtasks => run_bulk_subtasks(&run)?,
         BulkTasksAction::DueDates => run_bulk_due_dates(&run)?,
-        BulkTasksAction::Relations => {
-            let remove = link_pairs(input.remove_links)?;
-            let add = link_pairs(input.add_links)?;
-            if remove.is_empty() && add.is_empty() {
-                return Err(AppError::bad_request(
-                    "relations needs add_links or remove_links",
-                ));
-            }
-            if add.iter().any(|(_, target)| distinct.contains(target)) {
-                return Err(AppError::bad_request(
-                    "a relation target is one of the tasks",
-                ));
-            }
-            for (kind, target_id) in &add {
-                let target = found(db.task(target_id), "task or target not found")?;
-                ensure_lane_open(db, target.row())?;
-                if !kind.is_relation() {
-                    ensure_unlocked(db, &user, target.board_id(), target.row())?;
-                }
-            }
-            for (kind, target_id) in &remove {
-                ensure_task_id_lane_open(db, target_id)?;
-                if !kind.is_relation() {
-                    ensure_task_id_unlocked(db, &user, target_id)?;
-                }
-            }
-            let edit = LinkEdit {
-                remove: &remove,
-                add: &add,
-                token_id: user.token_id.as_deref(),
-                owner: token_owner(&user, Permission::LinksDelete),
-            };
-            let previews = if dry_run {
-                relation_previews(db, &tasks, &remove, &add)?
-            } else {
-                Vec::new()
-            };
-            match db
-                .change_links_logged(&tasks, &edit, commit, actor)
-                .map_err(AppError::from)?
-            {
-                ChangeOutcome::Changed => {}
-                ChangeOutcome::NotFound => return Err(AppError::not_found("task not found")),
-                ChangeOutcome::Refused(refusal) => return Err(link_refusal(refusal)),
-            }
-            previews
-        }
-        BulkTasksAction::Delete => {
-            for task in &tasks {
-                let links = db.list_task_links(&task.row().id).map_err(AppError::from)?;
-                for link in links.unwrap_or_default() {
-                    ensure_task_id_unlocked(db, &user, &link.target_id)?;
-                }
-            }
-            let previews = if dry_run {
-                delete_previews(db, &tasks)?
-            } else {
-                Vec::new()
-            };
-            if !db
-                .delete_tasks_logged(&tasks, commit, actor)
-                .map_err(AppError::from)?
-            {
-                return Err(AppError::not_found("task not found"));
-            }
-            if !dry_run {
-                for task in &tasks {
-                    if let Err(error) = db.notify_task_deleted(task, actor) {
-                        eprintln!("pomb: could not record the task deletion notification: {error}");
-                    }
-                }
-            }
-            previews
-        }
-        BulkTasksAction::Move => {
-            let column_id = input
-                .column_id
-                .as_deref()
-                .ok_or_else(|| AppError::bad_request("move needs column_id"))?;
-            let column = db
-                .column(column_id)
-                .map_err(AppError::from)?
-                .ok_or_else(|| AppError::bad_request("unknown column"))?;
-            let swimlane_id = input
-                .swimlane_id
-                .filter(|lane| !lane.is_empty())
-                .map(|lane| lane_on_board(db, &lane, &column.row().board_id))
-                .transpose()?;
-            for task in &tasks {
-                let from = db.column(&task.row().column_id).map_err(AppError::from)?;
-                ensure_epic_close_allowed(
-                    &user,
-                    task.row(),
-                    from.as_ref().map(|c| c.row()),
-                    column.row(),
-                )?;
-            }
-            for task in &tasks {
-                if task.row().column_id != column.row().id {
-                    if let Some(from) = db.column(&task.row().column_id).map_err(AppError::from)? {
-                        ensure_role_move_allowed(db, &user, from.row(), column.row())?;
-                    }
-                    ensure_entry_allowed(db, column.row(), task.board_id(), task.row())?;
-                }
-            }
-            let position = if ColumnSettings::from_column(column.row()).archiving {
-                f64::from(u32::MAX)
-            } else {
-                match input.position {
-                    Some(position) => position,
-                    None => placement_index(new_task_placement(db, &column.row().board_id)?),
-                }
-            };
-            let previews = if dry_run {
-                move_previews(db, &board, &tasks, column.row())?
-            } else {
-                Vec::new()
-            };
-            match db
-                .move_tasks_logged(
-                    &tasks,
-                    &column,
-                    swimlane_id.as_deref(),
-                    position,
-                    BulkMove {
-                        commit,
-                        wip: WipCheck::forcing(input.force),
-                    },
-                    actor,
-                )
-                .map_err(AppError::from)?
-            {
-                MoveOutcome::Moved => {}
-                MoveOutcome::NotFound => return Err(AppError::not_found("task not found")),
-                MoveOutcome::OpenChildren { count } => return Err(epic_has_open_children(count)),
-                MoveOutcome::WipLimit { held, limit } => {
-                    return Err(column_wip_limit(held, limit));
-                }
-                MoveOutcome::GroupLimit { count, limit } => {
-                    return Err(WipRefused::Group { count, limit }.into());
-                }
-                MoveOutcome::StaleFence => {
-                    return Err(AppError::conflict("the tasks could not be moved"));
-                }
-            }
-            previews
-        }
+        BulkTasksAction::Relations => run_bulk_relations(&run)?,
+        BulkTasksAction::Delete => run_bulk_delete(&run)?,
+        BulkTasksAction::Move => run_bulk_move(&run)?,
     };
     Ok(Json(BulkTasksResult {
         count: tasks.len(),
@@ -11623,6 +11479,166 @@ fn run_bulk_due_dates(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppErro
     Ok(changed)
 }
 
+/// Removes and adds the relations the request names on every task.
+fn run_bulk_relations(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> {
+    let db = run.account;
+    let remove = link_pairs(run.input.remove_links.as_deref())?;
+    let add = link_pairs(run.input.add_links.as_deref())?;
+    if remove.is_empty() && add.is_empty() {
+        return Err(AppError::bad_request(
+            "relations needs add_links or remove_links",
+        ));
+    }
+    let distinct: HashSet<&String> = run.input.task_ids.iter().collect();
+    if add.iter().any(|(_, target)| distinct.contains(target)) {
+        return Err(AppError::bad_request(
+            "a relation target is one of the tasks",
+        ));
+    }
+    for (kind, target_id) in &add {
+        let target = found(db.task(target_id), "task or target not found")?;
+        ensure_lane_open(db, target.row())?;
+        if !kind.is_relation() {
+            ensure_unlocked(db, run.user, target.board_id(), target.row())?;
+        }
+    }
+    for (kind, target_id) in &remove {
+        ensure_task_id_lane_open(db, target_id)?;
+        if !kind.is_relation() {
+            ensure_task_id_unlocked(db, run.user, target_id)?;
+        }
+    }
+    let edit = LinkEdit {
+        remove: &remove,
+        add: &add,
+        token_id: run.user.token_id.as_deref(),
+        owner: token_owner(run.user, Permission::LinksDelete),
+    };
+    let previews = if run.dry_run {
+        relation_previews(db, run.tasks, &remove, &add)?
+    } else {
+        Vec::new()
+    };
+    match db
+        .change_links_logged(run.tasks, &edit, run.commit, run.actor)
+        .map_err(AppError::from)?
+    {
+        ChangeOutcome::Changed => {}
+        ChangeOutcome::NotFound => return Err(AppError::not_found("task not found")),
+        ChangeOutcome::Refused(refusal) => return Err(link_refusal(refusal)),
+    }
+    Ok(previews)
+}
+
+/// Deletes every task, after checking that no task it links to is locked.
+fn run_bulk_delete(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> {
+    let db = run.account;
+    for task in run.tasks {
+        let links = db.list_task_links(&task.row().id).map_err(AppError::from)?;
+        for link in links.unwrap_or_default() {
+            ensure_task_id_unlocked(db, run.user, &link.target_id)?;
+        }
+    }
+    let previews = if run.dry_run {
+        delete_previews(db, run.tasks)?
+    } else {
+        Vec::new()
+    };
+    if !db
+        .delete_tasks_logged(run.tasks, run.commit, run.actor)
+        .map_err(AppError::from)?
+    {
+        return Err(AppError::not_found("task not found"));
+    }
+    if !run.dry_run {
+        for task in run.tasks {
+            if let Err(error) = db.notify_task_deleted(task, run.actor) {
+                eprintln!("pomb: could not record the task deletion notification: {error}");
+            }
+        }
+    }
+    Ok(previews)
+}
+
+/// Moves every task into the column `column_id` names, after the column, role and WIP checks.
+fn run_bulk_move(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> {
+    let db = run.account;
+    let column_id = run
+        .input
+        .column_id
+        .as_deref()
+        .ok_or_else(|| AppError::bad_request("move needs column_id"))?;
+    let column = db
+        .column(column_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::bad_request("unknown column"))?;
+    let swimlane_id = run
+        .input
+        .swimlane_id
+        .as_deref()
+        .filter(|lane| !lane.is_empty())
+        .map(|lane| lane_on_board(db, lane, &column.row().board_id))
+        .transpose()?;
+    for task in run.tasks {
+        let from = db.column(&task.row().column_id).map_err(AppError::from)?;
+        ensure_epic_close_allowed(
+            run.user,
+            task.row(),
+            from.as_ref().map(|c| c.row()),
+            column.row(),
+        )?;
+    }
+    for task in run.tasks {
+        if task.row().column_id != column.row().id {
+            if let Some(from) = db.column(&task.row().column_id).map_err(AppError::from)? {
+                ensure_role_move_allowed(db, run.user, from.row(), column.row())?;
+            }
+            ensure_entry_allowed(db, column.row(), task.board_id(), task.row())?;
+        }
+    }
+    let position = if ColumnSettings::from_column(column.row()).archiving {
+        f64::from(u32::MAX)
+    } else {
+        match run.input.position {
+            Some(position) => position,
+            None => placement_index(new_task_placement(db, &column.row().board_id)?),
+        }
+    };
+    let previews = if run.dry_run {
+        move_previews(db, run.board, run.tasks, column.row())?
+    } else {
+        Vec::new()
+    };
+    match db
+        .move_tasks_logged(
+            run.tasks,
+            &column,
+            swimlane_id.as_deref(),
+            position,
+            BulkMove {
+                commit: run.commit,
+                wip: WipCheck::forcing(run.input.force),
+            },
+            run.actor,
+        )
+        .map_err(AppError::from)?
+    {
+        MoveOutcome::Moved => {}
+        MoveOutcome::NotFound => return Err(AppError::not_found("task not found")),
+        MoveOutcome::OpenChildren { count } => return Err(epic_has_open_children(count)),
+        MoveOutcome::WipLimit { held, limit } => {
+            return Err(column_wip_limit(held, limit));
+        }
+        MoveOutcome::GroupLimit { count, limit } => {
+            return Err(WipRefused::Group { count, limit }.into());
+        }
+        MoveOutcome::StaleFence => {
+            return Err(AppError::conflict("the tasks could not be moved"));
+        }
+    }
+    Ok(previews)
+}
+
 /// Renders the value a bulk action changes on one task, from the context of the write.
 type BulkShow = fn(&TaskRow, &TaskContext, &[UserRow]) -> Option<String>;
 
@@ -11729,13 +11745,13 @@ impl BulkDueChange {
 }
 
 /// Parses the relations of a bulk request into the kind a task shows and the other task.
-fn link_pairs(links: Option<Vec<BulkLink>>) -> Result<Vec<(LinkKind, String)>, AppError> {
+fn link_pairs(links: Option<&[BulkLink]>) -> Result<Vec<(LinkKind, String)>, AppError> {
     links
         .unwrap_or_default()
-        .into_iter()
+        .iter()
         .map(|link| {
             LinkKind::parse(&link.kind)
-                .map(|kind| (kind, link.target_id))
+                .map(|kind| (kind, link.target_id.clone()))
                 .ok_or_else(|| AppError::bad_request("unknown link kind"))
         })
         .collect()
