@@ -2211,11 +2211,28 @@
       byId('numbering-wizard-cancel').addEventListener('click', function () { close('numbering-wizard'); });
       back.addEventListener('click', function () { showStep(false); });
       next.addEventListener('click', function () {
-        if (!onName) { showStep(true); byId('numbering-wizard-name').focus(); return; }
+        if (!onName) {
+          const startText = start.value.trim();
+          let problem = null;
+          if (!/^[A-Za-z0-9]{1,10}$/.test(prefix.value.trim())) {
+            problem = 'the numbering prefix must be 1 to 10 letters or digits';
+          } else if (startText !== '' && !(/^[0-9]+$/.test(startText) && parseInt(startText, 10) >= 1)) {
+            problem = 'the start value must be a whole number from 1';
+          }
+          if (problem) {
+            wizardError.textContent = problem;
+            wizardError.hidden = false;
+            return;
+          }
+          showStep(true);
+          byId('numbering-wizard-name').focus();
+          return;
+        }
+        const startValue = start.value.trim();
         putNumbering({
           name: byId('numbering-wizard-name').value,
-          prefix: prefix.value,
-          start: parseInt(start.value, 10) || 1,
+          prefix: prefix.value.trim(),
+          start: startValue === '' ? 1 : parseInt(startValue, 10),
         }, wizardError);
       });
     }
