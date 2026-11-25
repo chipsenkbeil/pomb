@@ -15,7 +15,7 @@ use std::fmt;
 use std::net::IpAddr;
 
 use axum::extract::{MatchedPath, Request, State};
-use axum::http::header::{AUTHORIZATION, COOKIE, HOST, SET_COOKIE};
+use axum::http::header::{AUTHORIZATION, COOKIE, HOST, SET_COOKIE, USER_AGENT};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use crate::AppState;
 use crate::api_error::{ErrorCode, coded_response, permission_denied};
 use crate::db::PublicDb;
-use crate::limit::{CredentialKey, Quota, Refusal, TrustProxy, rate_limited_response};
+use crate::limit::{ClientIp, CredentialKey, Quota, Refusal, TrustProxy, rate_limited_response};
 use crate::models::{
     API_TOKEN_ACTOR, AccountId, AccountRole, AccountStatus, Actor, ActorKind, ApiTokenRecord,
     AuthScope, BoardAccess, BoardRole, Hours, InstanceMode, ParentToken, RecoveryCodeRow, UserRow,
@@ -349,6 +349,9 @@ pub enum CredentialKind {
 /// Prefix identifying Pomb API tokens.
 pub const API_TOKEN_PREFIX: &str = "pomb_";
 
+/// The most characters of a request's `User-Agent` a token row keeps.
+const MAX_USER_AGENT_CHARS: usize = 200;
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -619,6 +622,8 @@ pub fn new_api_token_record(
         boards: BoardAccess::All,
         created_at: chrono::Utc::now().timestamp(),
         last_used_at: None,
+        last_used_network: None,
+        last_used_agent: None,
         expires_at,
         account_id: account_id.as_str().to_string(),
         parent_id: None,
@@ -2016,7 +2021,16 @@ pub async fn auth_middleware(
                 if let Some(record) = &maybe_record
                     && state.token_touch.claim_write(&record.id, now)
                 {
-                    let _ = db.touch_api_token(&record.id, now);
+                    let network = ClientIp::of(&state, req.extensions(), req.headers())
+                        .network()
+                        .to_string();
+                    let agent = req.headers().get(USER_AGENT).map(|value| {
+                        String::from_utf8_lossy(value.as_bytes())
+                            .chars()
+                            .take(MAX_USER_AGENT_CHARS)
+                            .collect()
+                    });
+                    let _ = db.touch_api_token(&record.id, now, Some(network), agent);
                 }
                 let scope = match &maybe_record {
                     Some(record) => record.scope,
@@ -2280,6 +2294,8 @@ mod tests {
             boards: BoardAccess::All,
             created_at: 0,
             last_used_at: None,
+            last_used_network: None,
+            last_used_agent: None,
             expires_at: None,
             account_id: String::new(),
             parent_id: None,
@@ -2880,6 +2896,8 @@ mod tests {
             boards: BoardAccess::All,
             created_at: 0,
             last_used_at: None,
+            last_used_network: None,
+            last_used_agent: None,
             expires_at: None,
             account_id: String::new(),
             parent_id: None,

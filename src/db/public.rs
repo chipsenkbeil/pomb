@@ -227,9 +227,15 @@ impl PublicDb {
         self.db.touch_account(account, now);
     }
 
-    /// Stores `now` as the last use of token `id`.
-    pub fn touch_api_token(&self, id: &str, now: i64) -> DbResult<()> {
-        self.db.touch_api_token(id, now)
+    /// Stores `now`, `network` and `agent` as the last use of token `id`.
+    pub fn touch_api_token(
+        &self,
+        id: &str,
+        now: i64,
+        network: Option<String>,
+        agent: Option<String>,
+    ) -> DbResult<()> {
+        self.db.touch_api_token(id, now, network, agent)
     }
 
     /// Stores a new device-pairing request, first deleting requests past their retention.

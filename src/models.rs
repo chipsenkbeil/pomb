@@ -5522,6 +5522,12 @@ pub struct ApiTokenRecord {
     pub boards: BoardAccess,
     pub created_at: i64,
     pub last_used_at: Option<i64>,
+    /// The network of the client that last used the token: its IPv4 address or IPv6 /48.
+    #[serde(default)]
+    pub last_used_network: Option<String>,
+    /// The `User-Agent` of the request that last used the token, cut to 200 characters.
+    #[serde(default)]
+    pub last_used_agent: Option<String>,
     /// Unix timestamp, or None for no expiry.
     pub expires_at: Option<i64>,
     /// The account the token acts for.

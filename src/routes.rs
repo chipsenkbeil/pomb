@@ -26509,6 +26509,12 @@ struct ApiTokenView {
     scopes: Vec<String>,
     created_at: i64,
     last_used_at: Option<i64>,
+    /// The network of the client that last used the token, its IPv4 address or IPv6 /48, null for
+    /// a token not used since Pomb began recording it.
+    last_used_network: Option<String>,
+    /// The `User-Agent` of the request that last used the token, cut to 200 characters, null for
+    /// a token not used since Pomb began recording it.
+    last_used_agent: Option<String>,
     expires_at: Option<i64>,
     /// The id of the token that issued this one, absent for a token made in the browser.
     parent_id: Option<String>,
@@ -26533,6 +26539,8 @@ impl From<&ApiTokenRecord> for ApiTokenView {
             scopes: vec![record.scope.as_str().to_string()],
             created_at: record.created_at,
             last_used_at: record.last_used_at,
+            last_used_network: record.last_used_network.clone(),
+            last_used_agent: record.last_used_agent.clone(),
             expires_at: record.expires_at,
             parent_id: record.parent_id.clone(),
             parent_name: record.parent_name.clone(),

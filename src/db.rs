@@ -1181,7 +1181,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 101;
+pub const SCHEMA_VERSION: u64 = 102;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1289,6 +1289,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "eaac544be40a5d410f1632174778e53117f2d14e4dca989f74f8c03c2a3725b1",
     "ad607eecc9bfd4378aa3275b34fecafbd70ca520cc3bad5c32b3ad930b9006d6",
     "33f036c3ff0c265822716200837fcc5a5b7be51ce19a93b65e7917944c7b02c7",
+    "0dac7123577b4c73909eb74869e163d9295e65bf2a9605edab08ba5e998f6567",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -7455,9 +7456,17 @@ impl Db {
         Ok(Some(record))
     }
 
-    pub fn touch_api_token(&self, id: &str, now: i64) -> DbResult<()> {
+    pub fn touch_api_token(
+        &self,
+        id: &str,
+        now: i64,
+        network: Option<String>,
+        agent: Option<String>,
+    ) -> DbResult<()> {
         let _ = mutate(&self.db, API_TOKENS, id, |record: &mut ApiTokenRecord| {
             record.last_used_at = Some(now);
+            record.last_used_network = network;
+            record.last_used_agent = agent;
         });
         Ok(())
     }

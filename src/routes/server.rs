@@ -389,11 +389,46 @@ async fn bearer_gets_should_write_last_used_at_at_most_once_a_minute() {
     let first = stored().expect("first request writes last_used_at");
     assert!(first > SENTINEL);
 
-    db.touch_api_token(&record.id, SENTINEL).expect("reset");
+    db.touch_api_token(&record.id, SENTINEL, None, None)
+        .expect("reset");
     for _ in 0..99 {
         assert_eq!(get().await, StatusCode::OK);
     }
     assert_eq!(stored(), Some(SENTINEL), "no further token-table write");
+}
+
+#[tokio::test]
+async fn token_use_should_record_network_and_agent() {
+    let (_dir, db) = open_db();
+    let (record, raw) = new_api_token_record(&admin(&db), "reader", AuthScope::Read, None);
+    db.create_api_token(&record).expect("token");
+    let app = router(AppState::new(db.clone(), None, passkey_mode()).with_disk(held_disk(&db)));
+    let stored = || {
+        db.list_api_tokens()
+            .expect("tokens")
+            .into_iter()
+            .find(|token| token.id == record.id)
+            .expect("token row")
+    };
+    let unused = stored();
+    assert_eq!(unused.last_used_network, None);
+    assert_eq!(unused.last_used_agent, None);
+
+    let agent = "a".repeat(300);
+    let mut request = axum::http::Request::builder()
+        .uri("/api/v1/auth/whoami")
+        .header("authorization", format!("Bearer {raw}"))
+        .header("user-agent", agent.as_str())
+        .body(axum::body::Body::empty())
+        .expect("request");
+    let addr = SocketAddr::new("2001:db8:1:2::9".parse().expect("peer ip"), 40000);
+    request.extensions_mut().insert(ConnectInfo(addr));
+    let status = app.oneshot(request).await.expect("oneshot").status();
+    assert_eq!(status, StatusCode::OK);
+
+    let used = stored();
+    assert_eq!(used.last_used_network.as_deref(), Some("2001:db8:1::"));
+    assert_eq!(used.last_used_agent, Some("a".repeat(200)));
 }
 
 struct ManualClock {

@@ -603,7 +603,7 @@ pub struct ClientIp(pub IpAddr);
 
 impl ClientIp {
     /// Returns the client address of a request with `extensions` and `headers`.
-    fn of(state: &AppState, extensions: &Extensions, headers: &HeaderMap) -> Self {
+    pub(crate) fn of(state: &AppState, extensions: &Extensions, headers: &HeaderMap) -> Self {
         let peer = extensions
             .get::<ConnectInfo<SocketAddr>>()
             .map(|ConnectInfo(addr)| addr.ip());
