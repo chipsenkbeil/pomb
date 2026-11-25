@@ -715,7 +715,7 @@ fn openapi_should_document_the_page_shape_on_both_task_lists() {
 
 #[test]
 fn openapi_should_keep_optional_params_and_the_json_task_responses() {
-    let json = super::ApiDoc::openapi().to_json().expect("spec serializes");
+    let json = ApiDoc::openapi().to_json().expect("spec serializes");
     let spec: Value = serde_json::from_str(&json).expect("valid json");
     let list = &spec["paths"]["/api/boards/{id}/tasks"]["get"]["parameters"];
     for param in list.as_array().expect("parameters") {
@@ -753,7 +753,7 @@ fn openapi_should_keep_optional_params_and_the_json_task_responses() {
 
 #[test]
 fn openapi_should_list_agentctl_paths_and_schemas() {
-    let json = super::ApiDoc::openapi().to_json().expect("spec serializes");
+    let json = ApiDoc::openapi().to_json().expect("spec serializes");
     let spec: Value = serde_json::from_str(&json).expect("valid json");
     for path in [
         "/api/boards/{id}/tasks",
@@ -3944,7 +3944,7 @@ async fn the_column_delete_moves_should_send_a_valid_position() {
 
 #[test]
 fn task_row_schema_text_should_have_no_rustdoc_links() {
-    let spec = super::ApiDoc::openapi().to_json().expect("json");
+    let spec = ApiDoc::openapi().to_json().expect("json");
     assert!(
         !spec.contains("[`"),
         "OpenAPI descriptions carry no rustdoc link syntax"
@@ -4086,7 +4086,7 @@ async fn attachment_docs_and_schema_should_match_the_served_download_route() {
     assert_eq!((status, bytes.as_str()), (StatusCode::OK, "hello"));
 
     let spec: Value =
-        serde_json::from_str(&super::ApiDoc::openapi().to_json().expect("json")).expect("spec");
+        serde_json::from_str(&ApiDoc::openapi().to_json().expect("json")).expect("spec");
     let attachment = &spec["components"]["schemas"]["TaskAttachment"]["properties"];
     assert!(attachment.get("download_url").is_none());
     assert!(
@@ -4816,7 +4816,7 @@ async fn fields_null_should_be_a_400_on_create_and_patch() {
     );
 
     let spec: Value =
-        serde_json::from_str(&super::ApiDoc::openapi().to_json().expect("json")).expect("spec");
+        serde_json::from_str(&ApiDoc::openapi().to_json().expect("json")).expect("spec");
     for schema in ["UpdateTaskInput", "CreateTaskInput"] {
         let fields = &spec["components"]["schemas"][schema]["properties"]["fields"];
         assert_eq!(
