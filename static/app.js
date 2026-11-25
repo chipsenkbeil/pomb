@@ -18031,6 +18031,7 @@
           self.epics = list;
           self.epicsLoaded = true;
           self.fillEpicSelect();
+          if (self.epicFilter) self.applyFilter();
           if (!self.epicsNewOpen) self.renderEpics();
         })
         .catch(function () { toast('Could not load epics.'); });
@@ -18551,7 +18552,18 @@
     },
     isEpicChild(card, epic) {
       const tag = card.querySelector('.card-epic-tag');
-      return !!tag && tag.dataset.epicId === epic;
+      if (!tag) return false;
+      let id = tag.dataset.epicId;
+      if (!this.epics.length) return id === epic;
+      const seen = new Set();
+      while (id && !seen.has(id)) {
+        if (id === epic) return true;
+        seen.add(id);
+        const parent = this.epics.find((e) => e.id === id);
+        if (!parent) return false;
+        id = parent.parent_id;
+      }
+      return false;
     },
     syncEpicFunnels: function () {
       var chosen = this.epicFilter;

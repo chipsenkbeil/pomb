@@ -212,4 +212,35 @@ page = load(session, local);
 page.chrome.restoreFilter();
 check('reset is saved', page.chrome.epicFilter, '');
 
-finish();
+page = load(store(), store());
+page.cards.push(card('5', 'e4'), card('6', 'e5'), card('7', 'ghost'));
+page.chrome.epics.push({ id: 'e4', name: 'Four', closed: false, parent_id: 'e1' });
+page.chrome.epics.push({ id: 'e5', name: 'Five', closed: false, parent_id: 'e6' });
+page.chrome.epics.push({ id: 'e6', name: 'Six', closed: false, parent_id: 'e5' });
+page.chrome.filterOnEpic('e1');
+check('nested_epic: a parent filter shows the cards of its nested epics', shown(page), [1, 0, 0, 1, 1, 0, 0]);
+check('nested_epic: a parent filter highlights the nested cards', marks(page), [true, false, false, true, true, false, false]);
+check('nested_epic: a parent_id cycle and a missing epic never match the parent', shown(page).slice(5), [0, 0]);
+page.chrome.filterOnEpic('e4');
+check('nested_epic: a nested epic filter hides the cards of its parent', shown(page), [0, 0, 0, 0, 1, 0, 0]);
+page.chrome.epics = [];
+page.chrome.filterOnEpic('e1');
+check('nested_epic: with no epic list the filter matches exactly', shown(page), [1, 0, 0, 1, 0, 0, 0]);
+
+page = load(store(), store());
+page.cards.push(card('5', 'e4'));
+page.chrome.epics = [];
+page.chrome.setEpicFilter('e1');
+page.chrome.applyFilter();
+global.apiJson = function () {
+  return Promise.resolve({ ok: true, json: function () {
+    return Promise.resolve([
+      { id: 'e1', name: 'One', closed: false, parent_id: null },
+      { id: 'e4', name: 'Four', closed: false, parent_id: 'e1' },
+    ]);
+  } });
+};
+page.chrome.loadEpics().then(function () {
+  check('nested_epic: the epic list arriving after the filter shows the nested cards', shown(page), [1, 0, 0, 1, 1]);
+  finish();
+});
