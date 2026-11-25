@@ -32745,7 +32745,16 @@ mod tests {
             &mut decoded,
         )
         .expect("valid gzip");
-        assert_eq!(decoded, plain.as_ref());
+        let mut decoded_json: serde_json::Value = serde_json::from_slice(&decoded).expect("json");
+        let mut plain_json: serde_json::Value = serde_json::from_slice(&plain).expect("json");
+        for body in [&mut decoded_json, &mut plain_json] {
+            let clock = body.as_object_mut().expect("object").remove("generated_at");
+            assert!(
+                clock.is_some_and(|clock| clock.is_string()),
+                "export carries generated_at"
+            );
+        }
+        assert_eq!(decoded_json, plain_json);
     }
 
     #[test]
