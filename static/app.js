@@ -12827,7 +12827,7 @@
       if (mode === 'total') return [{ key: 'total', label: 'Total', dot: null }];
       if (mode === 'color') {
         var c = ctx.colorById[t.color_id];
-        return [{ key: t.color_id || '', label: c ? (c.label || c.value) : 'No color', dot: c ? c.value : null }];
+        return [{ key: t.color_id || '', label: c ? (c.label || c.value) : 'No color', dot: c ? (/^custom\d+$/.test(c.value) ? c.background_hex : c.value) : null }];
       }
       if (mode === 'label') {
         var labels = t.labels || [];

@@ -19421,6 +19421,8 @@ struct ExportColorRef {
     id: String,
     value: String,
     label: String,
+    /// The colour's background hex, which reports paint a custom colour's dot from.
+    background_hex: String,
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
@@ -19468,6 +19470,7 @@ fn build_board_export_data(
                 id: c.id.clone(),
                 value: c.value.clone(),
                 label: c.label.clone(),
+                background_hex: c.background_hex.clone(),
             })
             .collect(),
         users: users
@@ -33948,6 +33951,37 @@ mod tests {
         ] {
             assert!(v.get(key).is_some(), "missing key {key}");
         }
+    }
+
+    /// The export data carries the background hex of a custom colour to paint its dot in reports.
+    #[test]
+    fn build_board_export_data_should_carry_the_hex_of_a_custom_color() {
+        let board = BoardRow {
+            id: "b1".into(),
+            name: "Work".into(),
+            position: 0,
+            owner_id: "u1".into(),
+            config_json: "{}".into(),
+            report_bookmarks: Vec::new(),
+            seats: Vec::new(),
+            limit_groups: Vec::new(),
+        };
+        let colors = vec![ColorRow {
+            id: "k1".into(),
+            board_id: "b1".into(),
+            value: "custom1".into(),
+            label: "Teal".into(),
+            description: String::new(),
+            background_hex: "#14b8a6".into(),
+            border_hex: "#0f766e".into(),
+            light_hex: "#ccfbf1".into(),
+            enabled: true,
+            is_default: false,
+            sort_order: 0,
+        }];
+        let data = build_board_export_data(&board, &[], &[], &colors, &[], &[], vec![]);
+        assert_eq!(data.colors[0].value, "custom1");
+        assert_eq!(data.colors[0].background_hex, "#14b8a6");
     }
 
     /// The feed bearer token is unguessable (256 bits, base64url) and unique per generation.

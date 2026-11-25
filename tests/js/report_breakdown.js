@@ -56,6 +56,17 @@ var est = ReportBreakdown.build(data, { group: 'color', range: ReportBreakdown.p
 check('estimate table sums hours', est.rows.map(function (r) { return r.sums; }), [[1.5, 2], [4.5, 0]]);
 check('estimate export, human readable', TimeEstimatePage.exportRows(est, false), [['Color', 'To do', 'Done'], ['Urgent', '1h 30m', '2h 00m'], ['No color', '4h 30m', '0h 00m']]);
 check('estimate export, total seconds', TimeEstimatePage.exportRows(est, true), [['Color', 'To do', 'Done'], ['Urgent', 5400, 7200], ['No color', 16200, 0]]);
+const dotData = {
+  columns: [{ id: 'todo', name: 'To do' }],
+  colors: [{ id: 'teal', value: 'custom1', label: 'Teal', background_hex: '#14b8a6' }, { id: 'yel', value: 'yellow', label: 'Yellow', background_hex: '#ffffe0' }],
+  tasks: [
+    { id: 'a', column_id: 'todo', color_id: 'teal', labels: [], member_ids: [], responsible: null, estimate_hours: 1 },
+    { id: 'b', column_id: 'todo', color_id: 'yel', labels: [], member_ids: [], responsible: null, estimate_hours: 1 },
+  ],
+};
+const dotHtml = ReportBreakdown.tableHtml(ReportBreakdown.build(dotData, { group: 'color', range: null, user: '', color: '', label: '' },
+  (t) => t.estimate_hours), (n) => n);
+check('report_dot_should_paint_a_custom_colour_from_its_hex', [dotHtml.indexOf('background:#14b8a6') > 0, dotHtml.indexOf('background:yellow') > 0], [true, true]);
 check('estimate prints six hours as 6h 00m', TimeEstimatePage.fmtEstimate(6), '6h 00m');
 
 var multi = ReportBreakdown.build({ columns: data.columns, tasks: [data.tasks[0]] },
