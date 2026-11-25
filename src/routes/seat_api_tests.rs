@@ -456,6 +456,47 @@ async fn seat_drop_without_seats_manage_gets_403() {
 }
 
 #[tokio::test]
+async fn lead_preset_should_not_replace_board_seats() {
+    let mut fx = Fixture::new();
+    let (record, raw) = new_api_token_record(&fx.account, "lead", AuthScope::Provision, None);
+    fx.db.create_api_token(&record).expect("token");
+    fx.tokens[NO_MANAGE] = raw;
+    let task = fx.task().await;
+    let uri = format!("/api/tasks/{task}/seats");
+    let added = fx
+        .browse(
+            "POST",
+            &uri,
+            json!({"name": "security", "role": "reviewer"}),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.body);
+
+    let board = format!("/api/boards/{}/seats", fx.board);
+    let keep = json!({"seats": [
+        {"name": "code", "role": "reviewer"},
+        {"name": "verify", "role": "verifier"},
+        {"name": "extra", "role": "reviewer"},
+    ]});
+    let refused = fx.bearer(NO_MANAGE, "PUT", &board, keep).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(
+        refused.body["permission"],
+        Permission::BoardsConfigure.name()
+    );
+
+    let dropped = fx
+        .bearer(
+            NO_MANAGE,
+            "DELETE",
+            &format!("{uri}?name=security"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(dropped.status, StatusCode::OK, "{}", dropped.body);
+}
+
+#[tokio::test]
 async fn seats_should_let_a_reviewer_role_token_take_a_seat_and_record_a_verdict() {
     let fx = Fixture::new();
     let task = fx.task().await;

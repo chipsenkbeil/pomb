@@ -22996,8 +22996,9 @@ async fn get_board_seats(
 /// Replaces the seats the board offers.
 ///
 /// Tasks that exist keep the seats they hold, and tasks
-/// created later start with the new ones. A list that leaves out a seat the board has removes it,
-/// which needs `seats.manage`.
+/// created later start with the new ones. The route needs `boards.configure`, so a lead token,
+/// which lacks it, is refused. A list that leaves out a seat the board has removes it, which needs
+/// `seats.manage` as well.
 #[utoipa::path(
     put,
     path = "/api/boards/{id}/seats",
@@ -23008,7 +23009,7 @@ async fn get_board_seats(
     responses(
         (status = 200, description = "The seats as stored", body = BoardSeatsView),
         (status = 400, description = "A role that is not a standard role, a blank or repeated name, a name over 50 characters or holding a slash, or more than 20 seats"),
-        (status = 403, description = "`permission_denied`: removing a seat needs `seats.manage`"),
+        (status = 403, description = "`permission_denied`: the route needs `boards.configure`, which a lead token lacks, and removing a seat needs `seats.manage` as well"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
