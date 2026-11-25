@@ -12359,7 +12359,7 @@ impl Db {
     /// `completed_at`, and landing in a column that is not done clears it. The moved task is
     /// inserted at the client-sent index with its siblings renumbered densely around it, and the
     /// old cell is renumbered when it differs. Every read and write happens in one write
-    /// transaction.
+    /// transaction. A refused move is an error naming the outcome.
     pub fn move_task(
         &self,
         id: &str,
@@ -12369,8 +12369,9 @@ impl Db {
     ) -> DbResult<()> {
         let guards = MoveGuards::default();
         match self.move_task_logged(id, column_id, swimlane_id, position, guards, Actor::SYSTEM)? {
+            MoveOutcome::Moved => Ok(()),
             MoveOutcome::NotFound => Err(format!("task not found: {id}").into()),
-            _ => Ok(()),
+            outcome => Err(format!("move refused: {outcome:?}").into()),
         }
     }
 
@@ -13591,6 +13592,38 @@ mod open_children_tests {
             MoveOutcome::OpenChildren { count } => assert_eq!(count, open_count),
             _ => panic!("the move guard should refuse the epic"),
         }
+    }
+
+    #[test]
+    fn move_task_should_report_a_refused_move() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let board = db
+            .create_board(&AccountId::ownerless(), "Board")
+            .expect("board");
+        let todo = db.create_column(&board, "Todo", None).expect("column");
+        let done = db.create_column(&board, "Done", None).expect("column");
+        db.set_column_done(&done, true).expect("done flag");
+        let epic = db.create_task(&todo, None, "Epic", 1, None).expect("epic");
+        db.apply_task_change(&epic, Actor::SYSTEM, |row| {
+            row.kind = TaskKind::Epic;
+            ((), true)
+        })
+        .expect("epic kind");
+        let open = db.create_task(&todo, None, "Open", 1, None).expect("task");
+        let outcome = db
+            .add_task_link(&open, LinkKind::Parent, &epic, None, Actor::SYSTEM)
+            .expect("link");
+        assert!(matches!(outcome, LinkAddOutcome::Added(_)));
+
+        let err = db
+            .move_task(&epic, &done, None, 1.0)
+            .expect_err("refused move");
+
+        assert!(err.to_string().contains("OpenChildren"));
+        let kept = db.task(&epic).expect("read").expect("epic kept");
+        assert_eq!(kept.column_id, todo);
     }
 }
 
