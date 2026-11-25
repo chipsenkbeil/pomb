@@ -11226,153 +11226,29 @@ async fn bulk_tasks(
     }
 
     let actor = user.actor();
-    let dry_run = input.dry_run;
-    let commit = if dry_run {
+    let commit = if input.dry_run {
         Commit::Discard
     } else {
         Commit::Write
     };
+    let run = BulkRun {
+        account: db,
+        board: &board,
+        user: &user,
+        tasks: &tasks,
+        input: &input,
+        actor,
+        commit,
+        dry_run: input.dry_run,
+    };
+    let dry_run = run.dry_run;
     let previews = match input.action {
-        BulkTasksAction::Color => {
-            let color_id = input
-                .color_id
-                .as_deref()
-                .ok_or_else(|| AppError::bad_request("color needs color_id"))?;
-            let color = db
-                .color(color_id)
-                .map_err(AppError::from)?
-                .filter(|color| color.row().board_id == board.row().id)
-                .ok_or_else(|| AppError::bad_request("unknown color"))?;
-            let show: BulkShow =
-                |task, context, _| color_value(task.color_id.as_deref(), &context.colors);
-            bulk_change(db, &tasks, commit, actor, show, None, |task, _| {
-                task.color_id = Some(color.row().id.clone());
-                task.size = color_value_to_size(&color.row().value);
-                Ok(())
-            })?
-        }
-        BulkTasksAction::Labels => {
-            let add = clean_labels(&input.add_labels.unwrap_or_default());
-            let remove = clean_labels(&input.remove_labels.unwrap_or_default());
-            if add.is_empty() && remove.is_empty() {
-                return Err(AppError::bad_request(
-                    "labels needs add_labels or remove_labels",
-                ));
-            }
-            let show: BulkShow = |task, _, _| event_value(&task.labels.join(", "));
-            bulk_change(db, &tasks, commit, actor, show, None, |task, _| {
-                task.labels = patched_labels(&task.labels, None, Some(&add), Some(&remove));
-                Ok(())
-            })?
-        }
-        BulkTasksAction::Members => {
-            let add = input.add_member_ids.unwrap_or_default();
-            let remove = input.remove_member_ids.unwrap_or_default();
-            if add.is_empty() && remove.is_empty() {
-                return Err(AppError::bad_request(
-                    "members needs add_member_ids or remove_member_ids",
-                ));
-            }
-            if add
-                .iter()
-                .chain(&remove)
-                .any(|member| member != db.account_id().as_str())
-            {
-                return Err(AppError::bad_request("unknown member"));
-            }
-            bulk_change(db, &tasks, commit, actor, show_members, None, |task, _| {
-                task.set_members(merged_members(&task.member_ids, &add, &remove));
-                Ok(())
-            })?
-        }
-        BulkTasksAction::UnassignMembers => {
-            bulk_change(db, &tasks, commit, actor, show_members, None, |task, _| {
-                task.set_members(Vec::new());
-                Ok(())
-            })?
-        }
-        BulkTasksAction::Subtasks => {
-            let names: Vec<String> = input
-                .add_subtasks
-                .unwrap_or_default()
-                .iter()
-                .map(|name| name.trim().to_string())
-                .filter(|name| !name.is_empty())
-                .collect();
-            if names.is_empty() {
-                return Err(AppError::bad_request("subtasks needs add_subtasks"));
-            }
-            for name in &names {
-                TextCap::SUBTASK_NAME.check(name)?;
-            }
-            let mut rules = HashMap::new();
-            for task in &tasks {
-                let column_id = &task.row().column_id;
-                if !rules.contains_key(column_id) {
-                    let rule = entry_rule_of(db, task.board_id(), column_id)?;
-                    rules.insert(column_id.clone(), rule);
-                }
-            }
-            let token_id = user.token_id.clone();
-            bulk_change(db, &tasks, commit, actor, show_subtasks, None, |task, _| {
-                let before = task.clone();
-                for name in &names {
-                    task.subtasks.push(Subtask {
-                        id: Uuid::new_v4().to_string(),
-                        name: name.clone(),
-                        done: false,
-                        due_at: None,
-                        token_id: token_id.clone(),
-                        member_ids: Vec::new(),
-                    });
-                    let detail = format!("Added subtask \"{name}\"");
-                    push_event(task, HistoryKind::SubtaskAdded, detail, actor);
-                }
-                if let Some(Some((column_name, rule))) = rules.get(&task.column_id) {
-                    if rule.outcomes_locked && !user.has(Permission::OutcomesEditLocked) {
-                        return Err(outcomes_locked_error(column_name));
-                    }
-                    ensure_not_worse(column_name, rule, &before, task)?;
-                }
-                Ok(())
-            })?
-        }
-        BulkTasksAction::DueDates => {
-            let change = BulkDueChange::read(db, &board, &input)?;
-            let (changing, skipped): (Vec<OwnedTask>, Vec<OwnedTask>) = tasks
-                .iter()
-                .cloned()
-                .partition(|task| change.applies(task.row()));
-            let mut changed = bulk_change(
-                db,
-                &changing,
-                commit,
-                actor,
-                show_due,
-                change.target_name.as_deref(),
-                |task, _| {
-                    change.apply(task);
-                    Ok(())
-                },
-            )?;
-            for task in &skipped {
-                let held = show_due(task.row(), &TaskContext::default(), &[]);
-                changed.push(BulkTaskPreview {
-                    id: task.row().id.clone(),
-                    name: task.row().name.clone(),
-                    before: held.clone(),
-                    after: held,
-                });
-            }
-            let order: HashMap<&String, usize> = input
-                .task_ids
-                .iter()
-                .enumerate()
-                .map(|(index, id)| (id, index))
-                .collect();
-            changed.sort_by_key(|preview| order.get(&preview.id).copied());
-            changed
-        }
+        BulkTasksAction::Color => run_bulk_color(&run)?,
+        BulkTasksAction::Labels => run_bulk_labels(&run)?,
+        BulkTasksAction::Members => run_bulk_members(&run)?,
+        BulkTasksAction::UnassignMembers => run_bulk_unassign_members(&run)?,
+        BulkTasksAction::Subtasks => run_bulk_subtasks(&run)?,
+        BulkTasksAction::DueDates => run_bulk_due_dates(&run)?,
         BulkTasksAction::Relations => {
             let remove = link_pairs(input.remove_links)?;
             let add = link_pairs(input.add_links)?;
@@ -11525,6 +11401,226 @@ async fn bulk_tasks(
         count: tasks.len(),
         tasks: if dry_run { previews } else { Vec::new() },
     }))
+}
+
+/// What the arms of [`bulk_tasks`] read once the request passed its common checks.
+struct BulkRun<'a> {
+    /// The account's data.
+    account: &'a AccountDb,
+    /// The board in the path.
+    board: &'a OwnedBoard,
+    /// The user making the request.
+    user: &'a AuthUser,
+    /// The tasks the request names, in the order of `task_ids`, all checked.
+    tasks: &'a [OwnedTask],
+    /// The parsed request body.
+    input: &'a BulkTasksInput,
+    /// Who the history events name.
+    actor: Actor<'a>,
+    /// Whether the write commits.
+    commit: Commit,
+    /// Whether the request only checks.
+    dry_run: bool,
+}
+
+/// Sets the color slot `color_id` names on every task.
+fn run_bulk_color(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> {
+    let db = run.account;
+    let color_id = run
+        .input
+        .color_id
+        .as_deref()
+        .ok_or_else(|| AppError::bad_request("color needs color_id"))?;
+    let color = db
+        .color(color_id)
+        .map_err(AppError::from)?
+        .filter(|color| color.row().board_id == run.board.row().id)
+        .ok_or_else(|| AppError::bad_request("unknown color"))?;
+    let show: BulkShow = |task, context, _| color_value(task.color_id.as_deref(), &context.colors);
+    bulk_change(
+        db,
+        run.tasks,
+        run.commit,
+        run.actor,
+        show,
+        None,
+        |task, _| {
+            task.color_id = Some(color.row().id.clone());
+            task.size = color_value_to_size(&color.row().value);
+            Ok(())
+        },
+    )
+}
+
+/// Adds and removes the labels the request names on every task.
+fn run_bulk_labels(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> {
+    let add = clean_labels(run.input.add_labels.as_deref().unwrap_or_default());
+    let remove = clean_labels(run.input.remove_labels.as_deref().unwrap_or_default());
+    if add.is_empty() && remove.is_empty() {
+        return Err(AppError::bad_request(
+            "labels needs add_labels or remove_labels",
+        ));
+    }
+    let show: BulkShow = |task, _, _| event_value(&task.labels.join(", "));
+    bulk_change(
+        run.account,
+        run.tasks,
+        run.commit,
+        run.actor,
+        show,
+        None,
+        |task, _| {
+            task.labels = patched_labels(&task.labels, None, Some(&add), Some(&remove));
+            Ok(())
+        },
+    )
+}
+
+/// Adds and removes the members the request names on every task.
+fn run_bulk_members(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> {
+    let add = run.input.add_member_ids.as_deref().unwrap_or_default();
+    let remove = run.input.remove_member_ids.as_deref().unwrap_or_default();
+    if add.is_empty() && remove.is_empty() {
+        return Err(AppError::bad_request(
+            "members needs add_member_ids or remove_member_ids",
+        ));
+    }
+    if add
+        .iter()
+        .chain(remove)
+        .any(|member| member != run.account.account_id().as_str())
+    {
+        return Err(AppError::bad_request("unknown member"));
+    }
+    bulk_change(
+        run.account,
+        run.tasks,
+        run.commit,
+        run.actor,
+        show_members,
+        None,
+        |task, _| {
+            task.set_members(merged_members(&task.member_ids, add, remove));
+            Ok(())
+        },
+    )
+}
+
+/// Clears the members of every task.
+fn run_bulk_unassign_members(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> {
+    bulk_change(
+        run.account,
+        run.tasks,
+        run.commit,
+        run.actor,
+        show_members,
+        None,
+        |task, _| {
+            task.set_members(Vec::new());
+            Ok(())
+        },
+    )
+}
+
+/// Appends the subtasks the request names to every task, under the entry rule of its column.
+fn run_bulk_subtasks(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> {
+    let db = run.account;
+    let actor = run.actor;
+    let names: Vec<String> = run
+        .input
+        .add_subtasks
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect();
+    if names.is_empty() {
+        return Err(AppError::bad_request("subtasks needs add_subtasks"));
+    }
+    for name in &names {
+        TextCap::SUBTASK_NAME.check(name)?;
+    }
+    let mut rules = HashMap::new();
+    for task in run.tasks {
+        let column_id = &task.row().column_id;
+        if !rules.contains_key(column_id) {
+            let rule = entry_rule_of(db, task.board_id(), column_id)?;
+            rules.insert(column_id.clone(), rule);
+        }
+    }
+    let token_id = run.user.token_id.clone();
+    bulk_change(
+        db,
+        run.tasks,
+        run.commit,
+        actor,
+        show_subtasks,
+        None,
+        |task, _| {
+            let before = task.clone();
+            for name in &names {
+                task.subtasks.push(Subtask {
+                    id: Uuid::new_v4().to_string(),
+                    name: name.clone(),
+                    done: false,
+                    due_at: None,
+                    token_id: token_id.clone(),
+                    member_ids: Vec::new(),
+                });
+                let detail = format!("Added subtask \"{name}\"");
+                push_event(task, HistoryKind::SubtaskAdded, detail, actor);
+            }
+            if let Some(Some((column_name, rule))) = rules.get(&task.column_id) {
+                if rule.outcomes_locked && !run.user.has(Permission::OutcomesEditLocked) {
+                    return Err(outcomes_locked_error(column_name));
+                }
+                ensure_not_worse(column_name, rule, &before, task)?;
+            }
+            Ok(())
+        },
+    )
+}
+
+/// Adds, changes or deletes the due date of every task the request touches, and lists the tasks
+/// it skips with the date they hold.
+fn run_bulk_due_dates(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> {
+    let change = BulkDueChange::read(run.account, run.board, run.input)?;
+    let (changing, skipped): (Vec<OwnedTask>, Vec<OwnedTask>) = run
+        .tasks
+        .iter()
+        .cloned()
+        .partition(|task| change.applies(task.row()));
+    let mut changed = bulk_change(
+        run.account,
+        &changing,
+        run.commit,
+        run.actor,
+        show_due,
+        change.target_name.as_deref(),
+        |task, _| {
+            change.apply(task);
+            Ok(())
+        },
+    )?;
+    for task in &skipped {
+        let held = show_due(task.row(), &TaskContext::default(), &[]);
+        changed.push(BulkTaskPreview {
+            id: task.row().id.clone(),
+            name: task.row().name.clone(),
+            before: held.clone(),
+            after: held,
+        });
+    }
+    let order: HashMap<&String, usize> = run
+        .input
+        .task_ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (id, index))
+        .collect();
+    changed.sort_by_key(|preview| order.get(&preview.id).copied());
+    Ok(changed)
 }
 
 /// Renders the value a bulk action changes on one task, from the context of the write.
