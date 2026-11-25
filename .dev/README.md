@@ -2,23 +2,23 @@
 
 ## Using dev
 
-`dev <verb>` runs the verb `.dev/<verb>.lua` or `.dev/<verb>.sh` at the repo
-root, or a built-in of the same name. Run `dev` for the curated help and
-`dev help <verb>` for one verb.
+`dev <command>` runs the script `.dev/<command>.lua` or `.dev/<command>.sh` at
+the repo root, or a built-in of the same name. Run `dev` for the curated help
+and `dev help <command>` for one command.
 
 `dev help -a` lists every command, hidden ones included, and marks a script
 that replaces a built-in with `(override)`. `dev help --topics` lists the
 topics and `dev help <topic>` prints one. The project's own topics are the
 `.md` files in `.dev/topics/`.
 
-`-h` after a verb prints its description, usage and flags. `--help` after a
-verb prints the long form.
+`-h` after a command prints its description, usage and flags. `--help` after a
+command prints the long form.
 
-Global flags work before a `--` on every verb:
+Global flags work before a `--` on every command:
 
 - `-v` or `--verbose`: print each command before it runs
 - `-vv`: also trace every line of dev and of each bash script it runs
-- `--remote`: run the verb's job from `.ci/jobs.lua` on ci
+- `--remote`: run the command's job from `.ci/jobs.lua` on ci
 - `--local`: run here, whatever `[remote] default` says
 - `--detach`: with `--remote`, start the job and return
 - `--priority`: with `--remote`, start the job ahead of normal ci jobs
@@ -34,12 +34,12 @@ after the first `--` reaches the script untouched.
 
 ## The dev modules
 
-A Lua verb loads each module below with `require` by its dotted name. The
+A Lua command loads each module below with `require` by its dotted name. The
 doc comments of the module hold every function.
 
 ### dev.command
 
-The helpers a verb needs: `usage_error(ctx, msg)` exits 2, `no_args(ctx)`
+The helpers a command needs: `usage_error(ctx, msg)` exits 2, `no_args(ctx)`
 refuses any positional argument, `note(msg)` writes to standard error,
 `die(msg)` exits 1, `show(ctx, argv)` prints `+ <argv>` at `-v`, and
 `need(binary, install)` exits 1 when `binary` is not on `PATH`.
@@ -132,8 +132,7 @@ print(mode or "unset")
 ### dev.project
 
 `root()` finds the project root, `detect_type(root)` names the project's
-language from the files in its root, `dotfiles_root()` finds the dotfiles
-clone that holds dev, and `share` is dev's own share directory.
+language from the files in its root, and `share` is dev's own share directory.
 
 ```lua
 local project = require("dev.project")
@@ -161,30 +160,11 @@ for _, name in ipairs(vcs.branches(ctx.root, backend)) do
 end
 ```
 
-### dev.templates
+## Adding a command, a subcommand or a flag in Lua
 
-The lint set directory and its manifest. `set_for(kind)` names the set for a
-project type, `dir(kind)` returns its directory, and `manifest(dir, kind)`
-lists the files the set copies into a project.
+### A command
 
-```lua
-local project = require("dev.project")
-local templates = require("dev.templates")
-
-local kind = project.detect_type(ctx.root)
-local dir = kind and templates.dir(kind)
-if dir then
-    for _, entry in ipairs(templates.manifest(dir, kind)) do
-        print(entry.dest)
-    end
-end
-```
-
-## Adding a verb, a subcommand or a flag in Lua
-
-### A verb
-
-`.dev/VERB.lua` is a verb. A `.lua` file needs no exec bit and wins over a
+`.dev/NAME.lua` is a command. A `.lua` file needs no exec bit and wins over a
 `.sh` file of the same name. dev loads the file and calls the chunk with one
 argument, the context, which `local ctx = ...` reads.
 
@@ -205,7 +185,7 @@ The chunk returns the exit code as an integer, and nothing means 0. A Lua
 error ends the run with `dev <name>: <message>` and exit 1.
 
 The first header line that is not a `group:`, `hidden`, `local`, `positional`
-or `flags:` line is the description in `dev help`. This verb runs as
+or `flags:` line is the description in `dev help`. This command runs as
 `dev greet NAME=you`.
 
 ```lua
@@ -223,16 +203,16 @@ return 0
 
 ### A subcommand
 
-`.dev/NOUN/SUB.lua` runs as `dev NOUN SUB`. A directory of scripts is a noun,
-and the first line of `.dev/NOUN/DESCRIPTION` describes it.
+`.dev/CMD/SUB.lua` runs as `dev CMD SUB`. A directory of scripts is a command
+with subcommands, and the first line of `.dev/CMD/DESCRIPTION` describes it.
 
-A noun with no subcommand, or an unknown one, exits 2 and lists the
-subcommands. Saved as `.dev/cache/show.lua`, this verb runs as
+Such a command with no subcommand, or an unknown one, exits 2 and lists the
+subcommands. Saved as `.dev/cache/show.lua`, this subcommand runs as
 `dev cache show` and prints `cache show`.
 
 ```lua
 --[[
-Print the noun's state.
+Print the command's state.
 ]]
 local dev_command = require("dev.command")
 
@@ -269,10 +249,10 @@ print(loud and "HELLO" or "hello")
 
 ### Group and hidden lines
 
-`group: <name>` sets the heading `dev help` lists the verb under, and a verb
-with none lands in a group named after the project directory. `hidden` keeps
-the verb out of `dev help` and `dev help -a` still lists it. Scripts named
-`__*.sh` or `__*.lua` never appear in any listing.
+`group: <name>` sets the heading `dev help` lists the command under, and a
+command with none lands in a group named after the project directory. `hidden`
+keeps the command out of `dev help` and `dev help -a` still lists it. Scripts
+named `__*.sh` or `__*.lua` never appear in any listing.
 
 ```lua
 --[[
@@ -289,9 +269,9 @@ print("lint")
 
 ### Your own modules
 
-`.dev/lua/` is on `package.path` while a Lua verb runs, so
+`.dev/lua/` is on `package.path` while a Lua command runs, so
 `.dev/lua/myproj/checks.lua` loads with `require("myproj.checks")`. dev never
-lists `lua` or `topics` as a noun.
+lists `lua` or `topics` as a command.
 
 ## Commands in this repo
 

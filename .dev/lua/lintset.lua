@@ -16,8 +16,10 @@ local M = {}
 
 local PROSE_RUN = 3
 local FAIL_RUN = 7
+local STANZA_MIN = 3
 local CHECK_SPACING = "comment spacing"
 local CHECK_RUNS = "comment runs"
+local CHECK_STANZAS = "stanza headers"
 ---@enum lintset.Kind
 local Kind = {
     NONE = "none",
@@ -288,6 +290,109 @@ function M.runs(text, marker)
     end
     flush()
     return found
+end
+
+local function indent_of(line)
+    return #line:match("^[ \t]*")
+end
+
+local function opens_function(body)
+    if body:find("%f[%w_]end%)*,?%s*$") then
+        return false
+    end
+    return body:find("^function[ (]") ~= nil
+        or body:find("^local function[ (]") ~= nil
+        or body:find("function%b()%s*$") ~= nil
+end
+
+local function closes_block(body)
+    return body:find("^end%f[^%w_]") ~= nil
+end
+
+local function continues_block(body)
+    return closes_block(body)
+        or body:find("^else%f[^%w_]") ~= nil
+        or body:find("^until%f[^%w_]") ~= nil
+        or body:find("^[%)%}%]]") ~= nil
+end
+
+---Collect the stanzas of one function body, each as the line number of its first line.
+---@param lines string[] the file's lines
+---@param first integer the first body line
+---@param last integer the last body line
+---@return integer[] starts the first line of each stanza
+local function stanza_starts(lines, first, last)
+    local base
+    for number = first, last do
+        if lines[number]:find("%S") then
+            base = indent_of(lines[number])
+            break
+        end
+    end
+    local starts_at = {}
+    local after_blank = true
+    for number = first, last do
+        local line = lines[number]
+        if not line:find("%S") then
+            after_blank = true
+        else
+            local body = line:gsub("^%s+", "")
+            if after_blank and indent_of(line) == base and not continues_block(body) then
+                starts_at[#starts_at + 1] = number
+            end
+            after_blank = false
+        end
+    end
+    return starts_at
+end
+
+---Find the stanzas that open with no comment inside functions of three or more stanzas.
+---
+---A stanza is a run of lines with no blank line, taken at the indent of the function body. A
+---blank line that sits before deeper code stays inside its statement. A function runs from
+---its opening line to the `end` at the same indent. A stanza passes when its first line is a
+---`--` comment.
+---@param text string the file's text
+---@return integer[] numbers the first line of each unheaded stanza, in line order
+function M.unheaded(text)
+    local lines = lines_of(text)
+    local found = {}
+    for number, line in ipairs(lines) do
+        local body = line:gsub("^%s+", "")
+        if opens_function(body) then
+            local indent = indent_of(line)
+            local last
+            for after = number + 1, #lines do
+                local candidate = lines[after]
+                if
+                    candidate:find("%S")
+                    and indent_of(candidate) == indent
+                    and closes_block(candidate:gsub("^%s+", ""))
+                then
+                    last = after - 1
+                    break
+                end
+            end
+            if last then
+                local starts_at = stanza_starts(lines, number + 1, last)
+                if #starts_at >= STANZA_MIN then
+                    for _, start in ipairs(starts_at) do
+                        if not starts(lines[start]:gsub("^%s+", ""), Marker.DASH) then
+                            found[#found + 1] = start
+                        end
+                    end
+                end
+            end
+        end
+    end
+    table.sort(found)
+    local unique = {}
+    for _, start in ipairs(found) do
+        if unique[#unique] ~= start then
+            unique[#unique + 1] = start
+        end
+    end
+    return unique
 end
 
 local function one_liner(body)
@@ -714,6 +819,21 @@ function Lint:comment_runs(file, marker)
         else
             dev_command.note(message)
         end
+    end
+end
+
+---Fail on each stanza with no `--` comment first, in a function of three or more stanzas.
+---@param file string the path relative to the root
+function Lint:stanza_headers(file)
+    local text = read_or_fail(self, CHECK_STANZAS, file)
+    if not text then
+        return
+    end
+    for _, number in ipairs(M.unheaded(text)) do
+        self:fail(
+            CHECK_STANZAS,
+            file .. ":" .. number .. ": stanza with no intent comment above it, add one"
+        )
     end
 end
 
