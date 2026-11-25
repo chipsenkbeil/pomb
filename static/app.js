@@ -17360,9 +17360,7 @@
       initialized = true;
       qs('tic-filters').addEventListener('submit', function (e) { e.preventDefault(); });
       attachRows(qs('tic-table'), openModal);
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
-        headers: { 'Accept': 'application/json' },
-      }).then(function (r) {
+      apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (data) {
@@ -18022,9 +18020,7 @@
       var board = boardId();
       if (!board) return Promise.resolve();
       var seq = ++this.epicsSeq;
-      return fetch('/api/boards/' + encodeURIComponent(board) + '/epics', {
-        headers: { 'Accept': 'application/json' },
-      })
+      return apiJson('/api/boards/' + encodeURIComponent(board) + '/epics', 'GET')
         .then(function (res) {
           return res.ok ? res.json() : toastRefusal(res, 'Could not load epics.');
         })
@@ -19477,9 +19473,7 @@
       note.textContent = 'Loading\u2026';
       table.hidden = true;
       dlg.hidden = false;
-      fetch('/api/boards/' + encodeURIComponent(id) + '/bin', {
-        headers: { 'Accept': 'application/json' }, credentials: 'same-origin',
-      }).then(function (res) {
+      apiJson('/api/boards/' + encodeURIComponent(id) + '/bin', 'GET').then(function (res) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.json();
       }).then(function (bin) {
@@ -19885,7 +19879,7 @@
     markRead: function (ids) {
       var self = this;
       return Promise.all(ids.map(function (id) {
-        return fetch('/api/notifications/' + id + '/read', { method: 'POST', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        return apiJson('/api/notifications/' + id + '/read', 'POST')
           .then(function (res) { return jsonIfJson(res); });
       })).then(function (results) {
         var counts = results.filter(Boolean).map(function (r) { return r.unread; });
@@ -19897,7 +19891,7 @@
       var self = this;
       var generation = this.generation;
       var url = '/api/notifications?limit=' + this.PAGE + (before ? '&before=' + before : '');
-      return fetch(url, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      return apiJson(url, 'GET')
         .then(function (res) { return jsonIfJson(res); })
         .then(function (page) {
           if (!page || generation !== self.generation) return;
@@ -19916,7 +19910,7 @@
 
     markAll: function (list) {
       var self = this;
-      return fetch('/api/notifications/read', { method: 'POST', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      return apiJson('/api/notifications/read', 'POST')
         .then(function (res) { return jsonIfJson(res); })
         .then(function (done) {
           if (!done) return;
@@ -19928,7 +19922,7 @@
     },
 
     dismiss(id, row, list, empty) {
-      return fetch('/api/notifications/' + id, { method: 'DELETE', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      return apiJson('/api/notifications/' + id, 'DELETE')
         .then((res) => jsonIfJson(res))
         .then((done) => {
           if (!done) return;
@@ -19939,7 +19933,7 @@
     },
 
     clearAll(list, empty, more) {
-      return fetch('/api/notifications', { method: 'DELETE', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      return apiJson('/api/notifications', 'DELETE')
         .then((res) => jsonIfJson(res))
         .then((done) => {
           if (!done) return;
@@ -20038,7 +20032,7 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && !panel.hidden) closePanel();
     });
-    fetch('/api/notifications?limit=1', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+    apiJson('/api/notifications?limit=1', 'GET')
       .then(function (res) { return jsonIfJson(res); })
       .then(function (page) { if (page) Notifications.setUnread(page.unread); });
   }
@@ -20749,10 +20743,7 @@
         }
         query.q = (this.chip ? 'board:' + this.chip.id + ' ' : '') + 'is:open';
       }
-      fetch('/api/search?limit=' + this.SEARCH_LIMIT_HITS + '&q=' + encodeURIComponent(query.q), {
-        headers: { 'Accept': 'application/json' },
-        credentials: 'same-origin',
-      })
+      apiJson('/api/search?limit=' + this.SEARCH_LIMIT_HITS + '&q=' + encodeURIComponent(query.q), 'GET')
         .then(function (res) {
           if (res.ok) return res.json();
           return res.json().catch(function () { return {}; }).then(function (body) {
@@ -21031,10 +21022,7 @@
       if (!hit) return;
       if (!this.showingRecent) { this.go(hit, highlight); return; }
       var self = this;
-      fetch('/api/tasks/' + encodeURIComponent(hit.task_id), {
-        headers: { 'Accept': 'application/json' },
-        credentials: 'same-origin',
-      }).then(function (res) {
+      apiJson('/api/tasks/' + encodeURIComponent(hit.task_id), 'GET').then(function (res) {
         if (self.GONE_STATUSES.indexOf(res.status) === -1) { self.go(hit, highlight); return; }
         self.forget(hit.task_id);
         toast('That card no longer exists, so it was removed from the recent list.');

@@ -74,6 +74,7 @@ function load(role) {
     state.fetches.push({ url: url, d: d });
     return d.promise;
   };
+  var apiJson = eval('(() => {' + src.slice(src.indexOf('  function api(path'), src.indexOf('  // read the response body')) + '\nreturn apiJson; })()');
   var api = function (path, method) {
     var d = deferred();
     state.posts.push({ path: path, method: method, d: d });

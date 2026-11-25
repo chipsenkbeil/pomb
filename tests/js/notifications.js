@@ -10,6 +10,7 @@ var TimerUI = { syncBell: function () { synced++; } };
 var replies = {};
 function jsonIfJson(res) { return res; }
 function fetch(url) { return Promise.resolve(replies[url]); }
+const apiJson = eval('(() => {' + src.slice(src.indexOf('  function api(path'), src.indexOf('  // read the response body')) + '\nreturn apiJson; })()');
 var Notifications = eval('(' + src.slice(start, end).trim().replace(/^var Notifications = /, '').replace(/;\s*$/, '') + ')');
 
 const { check, finish } = require('./support/check.js');

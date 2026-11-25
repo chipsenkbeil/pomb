@@ -99,4 +99,25 @@ groupThree.forEach((call) => {
   check(name + ' has no fetch', /\bfetch\(/.test(before), false);
 });
 
+const groupFour = [
+  "apiJson('/api/boards/' + encodeURIComponent(boardId) + '/export-data', 'GET').then(function (r) {\n        if (!r.ok) throw new Error('HTTP ' + r.status);\n        return r.json();\n      }).then(function (data) {\n        fill(qs('tic-columns')",
+  "return apiJson('/api/boards/' + encodeURIComponent(board) + '/epics', 'GET')",
+  "apiJson('/api/boards/' + encodeURIComponent(id) + '/bin', 'GET')",
+  "return apiJson('/api/notifications/' + id + '/read', 'POST')",
+  "return apiJson(url, 'GET')",
+  "return apiJson('/api/notifications/read', 'POST')",
+  "return apiJson('/api/notifications/' + id, 'DELETE')",
+  "return apiJson('/api/notifications', 'DELETE')",
+  "apiJson('/api/notifications?limit=1', 'GET')",
+  "apiJson('/api/search?limit=' + this.SEARCH_LIMIT_HITS + '&q=' + encodeURIComponent(query.q), 'GET')",
+  "apiJson('/api/tasks/' + encodeURIComponent(hit.task_id), 'GET')",
+];
+groupFour.forEach((call) => {
+  const at = src.indexOf(call);
+  const name = suite + 'api_json_should_move_group_four ' + call.split('\n')[0];
+  check(name + ' uses apiJson', at >= 0, true);
+  const before = src.slice(Math.max(0, at - 40), at + call.indexOf('apiJson'));
+  check(name + ' has no fetch', /\bfetch\(/.test(before), false);
+});
+
 finish();
