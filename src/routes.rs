@@ -5785,9 +5785,6 @@ const MINOR_HISTORY_KINDS: &[HistoryKind] = &[
     HistoryKind::ClaimExpired,
 ];
 
-/// What the From and To of an event read when it has no such value.
-const NO_VALUE: &str = "(none)";
-
 /// One history event shaped for the History sub-view (KanbanFlow parity). Newest first.
 #[derive(Clone, Debug)]
 struct HistoryEventView {
@@ -5803,10 +5800,10 @@ struct HistoryEventView {
     minor: bool,
     /// Whether the event changed a value, so the view offers its From and To.
     changed: bool,
-    /// The value the event replaced, or "(none)".
-    from: String,
-    /// The value the event set, or "(none)".
-    to: String,
+    /// The value the event replaced, when it had one.
+    from: Option<String>,
+    /// The value the event set, when it had one.
+    to: Option<String>,
 }
 
 impl HistoryEventView {
@@ -5825,8 +5822,8 @@ impl HistoryEventView {
             created_display: LocalTime::of(Shape::DateTime, &event.created_at),
             minor: MINOR_HISTORY_KINDS.contains(&event.kind),
             changed: event.from.is_some() || event.to.is_some(),
-            from: event.from.clone().unwrap_or_else(|| NO_VALUE.to_string()),
-            to: event.to.clone().unwrap_or_else(|| NO_VALUE.to_string()),
+            from: event.from.clone(),
+            to: event.to.clone(),
         }
     }
 }
@@ -37767,6 +37764,29 @@ mod tests {
         assert!(!major.contains("Due date done"), "{major}");
         let (_, everything) = history_export_response(&fx, &id, "?all=1").await;
         assert!(everything.contains("\"Due date done\""), "{everything}");
+    }
+
+    #[test]
+    fn history_event_view_should_keep_a_missing_value_as_none() {
+        let event = TaskEvent {
+            id: "set".to_string(),
+            kind: HistoryKind::Created,
+            detail: String::new(),
+            actor: "admin".to_string(),
+            created_at: "2026-11-18T14:34:56.789012+02:00".to_string(),
+            column_id: None,
+            token_name: None,
+            from: None,
+            to: Some("a, b".to_string()),
+            parent_token: None,
+            role_id: None,
+            role_name: None,
+            label: None,
+            paid_by: None,
+        };
+        let view = super::HistoryEventView::new(&event);
+        assert_eq!(view.from, None);
+        assert_eq!(view.to.as_deref(), Some("a, b"));
     }
 
     #[test]

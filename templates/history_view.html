@@ -28,7 +28,7 @@
         <summary>Compare values</summary>
         <table class="tm-history-table">
           <thead><tr><th>From</th><th>To</th></tr></thead>
-          <tbody><tr><td>{{ e.from }}</td><td>{{ e.to }}</td></tr></tbody>
+          <tbody><tr><td>{{ e.from.as_deref().unwrap_or("(none)") }}</td><td>{{ e.to.as_deref().unwrap_or("(none)") }}</td></tr></tbody>
         </table>
       </details>
       {% endif %}
