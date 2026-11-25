@@ -1851,6 +1851,9 @@ pub struct TaskHead {
     /// Whether someone closed the epic.
     #[serde(default)]
     pub closed: bool,
+    /// The labels attached to the task.
+    #[serde(default)]
+    pub labels: Vec<String>,
 }
 
 /// What the timer and its reports show of the task a time entry is logged on.

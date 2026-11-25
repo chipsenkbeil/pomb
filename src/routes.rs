@@ -21047,6 +21047,17 @@ struct EpicProgress {
     children_done: usize,
     /// True when the epic sits in a done column, is not closed and has a child that is not done.
     open_work: bool,
+    /// The board's highlighted labels the epic carries, in the board's order, each with its color.
+    flags: Vec<EpicFlag>,
+}
+
+/// One highlighted label an epic carries.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct EpicFlag {
+    /// The label.
+    label: String,
+    /// The `#rrggbb` color the board highlights the label in.
+    color: String,
 }
 
 /// Lists the epics on a board with their progress: open epics by name, then closed ones by name.
@@ -21070,7 +21081,8 @@ async fn list_board_epics(
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<EpicProgress>>, AppError> {
-    found(account.board(&id), "Board not found")?;
+    let board = found(account.board(&id), "Board not found")?;
+    let label_settings = LabelSettings::from_config(&board.row().config_json);
     let mut reads = account.link_reads().map_err(AppError::from)?;
     let heads = reads
         .board_tasks::<TaskHead>(&id)
@@ -21096,6 +21108,15 @@ async fn list_board_epics(
             .unwrap_or_default();
         let column_done = column.is_some_and(|column| column.row().is_done);
         let children_done = children.iter().filter(|child| child.done).count();
+        let flags = label_settings
+            .highlights
+            .iter()
+            .filter(|highlight| head.labels.contains(&highlight.label))
+            .map(|highlight| EpicFlag {
+                label: highlight.label.clone(),
+                color: highlight.color.clone(),
+            })
+            .collect();
         epics.push(EpicProgress {
             id: head.id,
             name: head.name,
@@ -21106,6 +21127,7 @@ async fn list_board_epics(
             children_total: children.len(),
             children_done,
             open_work: !head.closed && column_done && children_done < children.len(),
+            flags,
         });
     }
     epics.sort_by(|a, b| {
@@ -31341,6 +31363,7 @@ them, which the Backups section of the settings page calls after a confirmation.
             BoardListItem,
             ColumnListItem,
             EpicProgress,
+            EpicFlag,
             VersionInfo,
             TemplateListItem,
             ColorView,

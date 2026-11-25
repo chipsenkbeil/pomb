@@ -18111,6 +18111,22 @@
         head.appendChild(fold);
       }
       head.appendChild(self.epicNameButton(epic));
+      const flags = epic.flags || [];
+      if (flags.length > 0) {
+        row.classList.add('epic-row-hl');
+        row.style.setProperty('--hl-stripe', flags[0].color);
+      }
+      flags.forEach((flag) => {
+        const icon = document.createElement('span');
+        icon.className = 'epic-flag';
+        icon.title = flag.label;
+        icon.setAttribute('role', 'img');
+        icon.setAttribute('aria-label', flag.label);
+        icon.dataset.flagLabel = flag.label;
+        icon.style.color = flag.color;
+        icon.innerHTML = '<svg width="13" height="13" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 1v10M2 1h7l-2 2.5L9 6H2" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+        head.appendChild(icon);
+      });
       head.appendChild(self.locateButton(epic));
       var funnel = document.createElement('button');
       funnel.type = 'button';

@@ -10117,6 +10117,8 @@ body.dark .tm-mention-pop button:hover, body.dark .tm-mention-pop button[aria-se
   color: var(--text-dim);
 }
 .epic-row.is-lit { background: var(--epic-lit-bg); }
+.epic-row-hl { box-shadow: inset 4px 0 0 var(--hl-stripe); }
+.epic-flag { flex: none; display: inline-flex; }
 .epic-funnel.is-lit {
   background: var(--epics-accent);
   color: var(--surface-white);

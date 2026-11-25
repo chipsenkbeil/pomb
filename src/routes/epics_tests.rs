@@ -1718,6 +1718,40 @@ async fn an_epic_with_a_highlighted_label_should_show_its_stripe_flag_and_column
     );
 }
 
+#[tokio::test]
+async fn epic_list_should_carry_highlighted_labels() {
+    let (_dir, fx) = fixture();
+    let (status, text) = call(
+        &fx,
+        "PUT",
+        &format!("/api/boards/{}/label-settings", fx.board_id),
+        Some(json!({"highlights": [
+            {"label": "hot", "color": "#b8461f"},
+            {"label": "cold", "color": "#2d6cc0"},
+        ]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let flagged = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Flagged", "kind": "epic", "labels": ["cold", "plain", "hot"]}),
+    )
+    .await;
+    let bare = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Bare", "kind": "epic", "labels": ["plain"]}),
+    )
+    .await;
+    assert_eq!(
+        epic_entry(&fx, &flagged).await["flags"],
+        json!([
+            {"label": "hot", "color": "#b8461f"},
+            {"label": "cold", "color": "#2d6cc0"},
+        ])
+    );
+    assert_eq!(epic_entry(&fx, &bare).await["flags"], json!([]));
+}
+
 async fn mark_done_column(fx: &Fixture, column: &str) {
     let (status, done) = call(
         fx,
