@@ -11,23 +11,46 @@ use crate::models::{AccountId, Quota, TimeEntryRow};
 /// Most time entries one account may start on one UTC day, the admin's included.
 pub const MAX_ENTRIES_PER_DAY: usize = 500;
 
-/// Returns the key of [`ENTRIES_BY_DAY`] that `account`'s entries started on `day` sit under.
+/// Most time entries one account's API tokens may start on one UTC day, apart from the
+/// [`MAX_ENTRIES_PER_DAY`] its people may.
+pub const MAX_AGENT_ENTRIES_PER_DAY: usize = 5000;
+
+/// The day bucket of [`ENTRIES_BY_DAY`] an entry is filed in.
+#[derive(Copy, Clone)]
+enum DayBucket {
+    /// Entries not written by a named API token.
+    People,
+    /// Entries written by an API token.
+    Agent,
+}
+
+/// Returns the key of [`ENTRIES_BY_DAY`] that `account`'s entries in `bucket` started on `day` sit
+/// under.
 #[must_use]
-fn day_key(account: &str, day: &str) -> String {
-    format!("{account}|{day}")
+fn day_key(account: &str, day: &str, bucket: DayBucket) -> String {
+    match bucket {
+        DayBucket::People => format!("{account}|{day}"),
+        DayBucket::Agent => format!("{account}|{day}|agent"),
+    }
 }
 
 /// Returns the key of [`ENTRIES_BY_DAY`] `entry` sits under, absent when its start does not
 /// parse.
 #[must_use]
 fn entry_day_key(entry: &TimeEntryRow) -> Option<String> {
-    day_in(&entry.started_at, &Utc).map(|day| day_key(&entry.account_id, &day))
+    let bucket = if entry.token_name.is_some() {
+        DayBucket::Agent
+    } else {
+        DayBucket::People
+    };
+    day_in(&entry.started_at, &Utc).map(|day| day_key(&entry.account_id, &day, bucket))
 }
 
 /// Refuses, with [`QuotaExceeded`], storing `entry` over `before`, the entry it replaces, when a
 /// new entry takes its account past the time entry quota, or when a new or moved entry takes its
-/// day past [`MAX_ENTRIES_PER_DAY`], inside that write's transaction. A write under
-/// [`OverQuota::Allow`] is never refused.
+/// day bucket past [`MAX_ENTRIES_PER_DAY`], or [`MAX_AGENT_ENTRIES_PER_DAY`] for an entry written
+/// by a token, inside that write's transaction. A write under [`OverQuota::Allow`] is never
+/// refused.
 pub(crate) fn txn_refuse_entry(
     txn: &WriteTransaction,
     entry: &TimeEntryRow,
@@ -59,10 +82,15 @@ pub(crate) fn txn_refuse_entry(
         .open_multimap_table(ENTRIES_BY_DAY)?
         .get(key.as_str())?
         .len();
-    if held as usize >= MAX_ENTRIES_PER_DAY {
+    let (bound, limit) = if entry.token_name.is_some() {
+        (Bound::AgentEntriesPerDay, MAX_AGENT_ENTRIES_PER_DAY)
+    } else {
+        (Bound::EntriesPerDay, MAX_ENTRIES_PER_DAY)
+    };
+    if held as usize >= limit {
         return Err(Box::new(QuotaExceeded {
-            bound: Bound::EntriesPerDay,
-            limit: MAX_ENTRIES_PER_DAY as u64,
+            bound,
+            limit: limit as u64,
         }));
     }
     Ok(())
@@ -153,12 +181,15 @@ impl Db {
         let txn = self.read()?;
         let mut out = Vec::new();
         for utc_day in utc_days.into_iter().flatten() {
-            let key = day_key(account.as_str(), &utc_day.format("%Y-%m-%d").to_string());
-            for id in index_in(&txn, ENTRIES_BY_DAY, &key)? {
-                let entry = read_in::<TimeEntryRow>(&txn, TIME_ENTRIES, &id)?;
-                out.extend(entry.filter(|entry| {
-                    day_in(&entry.started_at, zone).as_deref() == Some(wanted.as_str())
-                }));
+            let utc_day = utc_day.format("%Y-%m-%d").to_string();
+            for bucket in [DayBucket::People, DayBucket::Agent] {
+                let key = day_key(account.as_str(), &utc_day, bucket);
+                for id in index_in(&txn, ENTRIES_BY_DAY, &key)? {
+                    let entry = read_in::<TimeEntryRow>(&txn, TIME_ENTRIES, &id)?;
+                    out.extend(entry.filter(|entry| {
+                        day_in(&entry.started_at, zone).as_deref() == Some(wanted.as_str())
+                    }));
+                }
             }
         }
 
@@ -222,6 +253,17 @@ mod tests {
 
     /// Logs a task-less manual entry for `account` started at `started_at`.
     fn log(db: &Db, account: &AccountId, started_at: &str) -> DbResult<Option<String>> {
+        log_by(db, account, started_at, None)
+    }
+
+    /// Logs a task-less manual entry for `account` started at `started_at`, written by the API
+    /// token `token_name` when it is set.
+    fn log_by(
+        db: &Db,
+        account: &AccountId,
+        started_at: &str,
+        token_name: Option<&str>,
+    ) -> DbResult<Option<String>> {
         db.create_entry_full(
             account,
             NewTimeEntry {
@@ -237,7 +279,7 @@ mod tests {
                 created_by: "",
                 activity_id: None,
                 role: None,
-                token_name: None,
+                token_name,
                 role_id: None,
                 role_name: None,
             },
@@ -350,6 +392,119 @@ mod tests {
                 .map(|refusal| refusal.bound),
             Some(Bound::EntriesPerDay)
         );
+    }
+
+    /// Fills the day bucket `key` of the day index with `count` placeholder ids.
+    fn fill_day(db: &Db, key: &str, count: usize) {
+        let txn = db.db.begin_write().expect("write");
+        {
+            let mut index = txn.open_multimap_table(ENTRIES_BY_DAY).expect("index");
+            for n in 0..count {
+                index
+                    .insert(key, format!("filler-{n}").as_str())
+                    .expect("fill");
+            }
+        }
+        txn.commit().expect("commit");
+    }
+
+    #[test]
+    fn agent_entries_should_leave_the_day_cap_to_people() {
+        let fx = fixture();
+        let day = "2020-01-02T10:00:00Z";
+        let agent_day = day_key(fx.admin.as_str(), "2020-01-02", DayBucket::Agent);
+        fill_day(&fx.db, &agent_day, 600);
+        for _ in 0..MAX_ENTRIES_PER_DAY {
+            log(&fx.db, &fx.admin, day).expect("a person under the cap");
+        }
+        assert_eq!(
+            refused_bound(log(&fx.db, &fx.admin, day)),
+            Bound::EntriesPerDay
+        );
+        let token = log_by(&fx.db, &fx.admin, day, Some("agent")).expect("a token has its own day");
+        assert!(token.is_some());
+    }
+
+    #[test]
+    fn agent_day_cap_should_refuse_past_its_own_limit() {
+        let fx = fixture();
+        let day = "2020-01-02T10:00:00Z";
+        fill_day(
+            &fx.db,
+            &day_key(fx.admin.as_str(), "2020-01-02", DayBucket::Agent),
+            MAX_AGENT_ENTRIES_PER_DAY,
+        );
+        let refusal = log_by(&fx.db, &fx.admin, day, Some("agent")).expect_err("a full day");
+        let refusal = refusal.downcast_ref::<QuotaExceeded>().expect("quota");
+        assert_eq!(refusal.bound, Bound::AgentEntriesPerDay);
+        assert_eq!(refusal.limit, MAX_AGENT_ENTRIES_PER_DAY as u64);
+        let moved = log_by(&fx.db, &fx.admin, "2020-01-03T10:00:00Z", Some("agent"))
+            .expect("another day")
+            .expect("id");
+        let refused = fx.db.update_entry(&moved, "", edit(day), Actor::SYSTEM);
+        let refusal = refused.expect_err("a full agent day");
+        assert_eq!(
+            refusal
+                .downcast_ref::<QuotaExceeded>()
+                .map(|refusal| refusal.bound),
+            Some(Bound::AgentEntriesPerDay)
+        );
+        log(&fx.db, &fx.admin, day).expect("people keep their own day");
+    }
+
+    #[test]
+    fn entry_day_index_should_split_agent_entries_on_upgrade() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("upgrade.redb");
+        let path = path.to_str().expect("utf8");
+        let now = Utc::now().to_rfc3339();
+        let member = {
+            let db = Db::connect(path).expect("db");
+            db.create_user("admin").expect("admin");
+            let member = db.create_user("bob").expect("member");
+            log(&db, &member, &now).expect("person");
+            log_by(&db, &member, &now, Some("agent")).expect("token");
+            log_by(&db, &member, "2020-01-02T10:00:00Z", Some("agent")).expect("token");
+            let entries = db.account_entries(&member).expect("all");
+            let txn = db.db.begin_write().expect("write");
+            txn.delete_multimap_table(ENTRIES_BY_DAY).expect("drop");
+            {
+                let mut index = txn.open_multimap_table(ENTRIES_BY_DAY).expect("index");
+                for entry in &entries {
+                    let day = day_in(&entry.started_at, &Utc).expect("day");
+                    index
+                        .insert(
+                            day_key(member.as_str(), &day, DayBucket::People).as_str(),
+                            entry.id.as_str(),
+                        )
+                        .expect("old key");
+                }
+            }
+            txn.open_table(META)
+                .expect("meta")
+                .insert(SCHEMA_VERSION_KEY, 102)
+                .expect("stamp");
+            txn.commit().expect("commit");
+            member
+        };
+        let db = Db::connect(path).expect("upgrade from version 102");
+        assert_eq!(db.account_entries(&member).expect("all").len(), 3);
+        assert_eq!(db.entries_today(&member, &Local).expect("today").len(), 2);
+        let txn = db.read().expect("read");
+        let today = day_in(&now, &Utc).expect("day");
+        let agents = index_in(
+            &txn,
+            ENTRIES_BY_DAY,
+            &day_key(member.as_str(), &today, DayBucket::Agent),
+        )
+        .expect("index");
+        let people = index_in(
+            &txn,
+            ENTRIES_BY_DAY,
+            &day_key(member.as_str(), &today, DayBucket::People),
+        )
+        .expect("index");
+        assert_eq!((agents.len(), people.len()), (1, 1));
     }
 
     #[test]

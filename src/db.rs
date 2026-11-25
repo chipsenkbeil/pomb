@@ -1173,7 +1173,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 102;
+pub const SCHEMA_VERSION: u64 = 103;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1281,6 +1281,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "eaac544be40a5d410f1632174778e53117f2d14e4dca989f74f8c03c2a3725b1",
     "ad607eecc9bfd4378aa3275b34fecafbd70ca520cc3bad5c32b3ad930b9006d6",
     "33f036c3ff0c265822716200837fcc5a5b7be51ce19a93b65e7917944c7b02c7",
+    "0dac7123577b4c73909eb74869e163d9295e65bf2a9605edab08ba5e998f6567",
     "0dac7123577b4c73909eb74869e163d9295e65bf2a9605edab08ba5e998f6567",
 ];
 
@@ -1507,6 +1508,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     }
     if from.is_none_or(|version| version < 99) {
         grant_lead_role_links_delete(txn)?;
+    }
+    if from.is_none_or(|version| version < 103) {
+        txn_reindex_entries(txn)?;
     }
     Ok(())
 }
@@ -5254,8 +5258,12 @@ pub enum Bound {
     FieldDefRowBytes,
     /// The bytes one saved template's stored row may take, [`MAX_TEMPLATE_ROW_BYTES`].
     TemplateRowBytes,
-    /// The time entries one account may start on one UTC day, [`entries::MAX_ENTRIES_PER_DAY`].
+    /// The time entries one account's people may start on one UTC day,
+    /// [`entries::MAX_ENTRIES_PER_DAY`].
     EntriesPerDay,
+    /// The time entries one account's API tokens may start on one UTC day,
+    /// [`entries::MAX_AGENT_ENTRIES_PER_DAY`].
+    AgentEntriesPerDay,
     /// The passkeys one account may hold, [`MAX_PASSKEYS_PER_ACCOUNT`].
     Passkeys,
     /// The webhooks one board may hold, [`MAX_WEBHOOKS_PER_BOARD`].
@@ -5289,7 +5297,8 @@ impl Bound {
             Self::TaskRowBytes => "bytes in one task",
             Self::FieldDefRowBytes => "bytes in one field definition",
             Self::TemplateRowBytes => "bytes in one saved template",
-            Self::EntriesPerDay => "time entries started per day",
+            Self::EntriesPerDay => "time entries started per day, apart from those of API tokens",
+            Self::AgentEntriesPerDay => "time entries started per day by API tokens",
             Self::Passkeys => "passkeys per account",
             Self::WebhooksPerBoard => "webhooks per board",
             Self::InboundPerBoard => "inbound addresses per board",

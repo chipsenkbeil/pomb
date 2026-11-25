@@ -17382,7 +17382,7 @@ fn logged_start(text: Option<&str>, now: DateTime<Utc>) -> Result<String, AppErr
         (status = 200, description = "The task's time entries, newest first", body = Vec<TimeEntryItem>),
         (status = 400, description = "Neither or both of minutes and seconds, minutes outside 1 to 1440, seconds outside 1 to 86400, a started_at that is not RFC3339 or lies in the future, or a role over 64 characters"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`lane_archived`: the task sits in an archived swimlane. `quota_exceeded`: the account holds its most time entries or stored bytes, or 500 entries that started this UTC day"),
+        (status = 409, description = "`lane_archived`: the task sits in an archived swimlane. `quota_exceeded`: the account holds its most time entries or stored bytes, or 500 entries (5000 for a token) that started this UTC day"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -18526,7 +18526,7 @@ struct ManualTimeInput {
         (status = 200, description = "Created entry id and minutes", body = IdMinutesResult),
         (status = 400, description = "Invalid date/time range or time in the future"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`lane_archived`: the task sits in an archived swimlane. `quota_exceeded`: the account holds its most time entries or stored bytes, or 500 entries that started that UTC day"),
+        (status = 409, description = "`lane_archived`: the task sits in an archived swimlane. `quota_exceeded`: the account holds its most time entries or stored bytes, or 500 entries (5000 for a token) that started that UTC day"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -18632,7 +18632,7 @@ struct UpdateTimeEntryInput {
         (status = 200, description = "Updated entry id and minutes", body = IdMinutesResult),
         (status = 400, description = "Invalid date/time range, or no task_id for an entry that has a task"),
         (status = 404, description = "Entry or task not found"),
-        (status = 409, description = "`quota_exceeded`: the account holds its most stored bytes, or 500 entries that started on the new UTC day"),
+        (status = 409, description = "`quota_exceeded`: the account holds its most stored bytes, or 500 entries (5000 for a token) that started on the new UTC day"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -29505,7 +29505,7 @@ struct TimerStartInput {
         (status = 200, description = "Timer status after starting", body = TimerStatusView),
         (status = 400, description = "Unknown timer mode, or an epic task, which holds no work, so a timer cannot run on it and the running timer keeps running"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`lane_archived`: the task sits in an archived swimlane. `quota_exceeded`: a running session to replace could not be recorded, since the account is more than 1 MiB past its stored-bytes quota, holds its most time entries, or holds 500 entries that started that UTC day, so it keeps running"),
+        (status = 409, description = "`lane_archived`: the task sits in an archived swimlane. `quota_exceeded`: a running session to replace could not be recorded, since the account is more than 1 MiB past its stored-bytes quota, holds its most time entries, or holds 500 entries (5000 for a token) that started that UTC day, so it keeps running"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -29616,7 +29616,7 @@ struct TimerStopInput {
         (status = 200, description = "Stop result with logged minutes", body = TimerStopResult),
         (status = 400, description = "A reason over 1024 bytes, so the timer keeps running"),
         (status = 404, description = "No active timer, and neither started_at nor session_id given"),
-        (status = 409, description = "`quota_exceeded`: the account is more than 1 MiB past its stored-bytes quota, holds its most time entries, or holds 500 entries that started this UTC day, so the session is not recorded and the timer keeps running"),
+        (status = 409, description = "`quota_exceeded`: the account is more than 1 MiB past its stored-bytes quota, holds its most time entries, or holds 500 entries (5000 for a token) that started this UTC day, so the session is not recorded and the timer keeps running"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
