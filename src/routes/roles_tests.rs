@@ -717,6 +717,30 @@ async fn board_page_should_offer_a_viewer_no_write_entry_in_the_card_menu() {
 }
 
 #[tokio::test]
+async fn board_page_should_offer_a_viewer_no_entry_in_the_swimlane_and_selection_menus() {
+    let fx = Fixture::new();
+    let page = fx.send(VIEWER, "GET", &fx.fill("/b/{board}"), None).await;
+    let html = page.body.as_str().expect("html");
+    assert!(menu_actions(html, "swimlane-menu", "data-lane-act").is_empty());
+    assert!(menu_actions(html, "bulk-ctx-menu", "data-bulk-act").is_empty());
+}
+
+#[tokio::test]
+async fn board_page_should_keep_a_member_the_swimlane_and_selection_menu_entries() {
+    let fx = Fixture::new();
+    let page = fx.send(MEMBER, "GET", &fx.fill("/b/{board}"), None).await;
+    let html = page.body.as_str().expect("html");
+    assert_eq!(
+        menu_actions(html, "swimlane-menu", "data-lane-act"),
+        ["edit", "fold", "up", "down", "above", "below", "delete"]
+    );
+    assert_eq!(
+        menu_actions(html, "bulk-ctx-menu", "data-bulk-act"),
+        ["move", "color", "members", "members-menu", "delete"]
+    );
+}
+
+#[tokio::test]
 async fn board_page_should_keep_a_member_the_card_write_entries_but_not_the_column_edit() {
     let fx = Fixture::new();
     let page = fx.send(MEMBER, "GET", &fx.fill("/b/{board}"), None).await;

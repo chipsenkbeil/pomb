@@ -1540,6 +1540,7 @@
     if (at < 0) return;
     laneMenuSwimlaneId = id;
     var menu = document.getElementById('swimlane-menu');
+    if (!menu.querySelector('[data-lane-act]')) return;
     var inBoard = mode === 'board';
     function show(act, visible) { menu.querySelector('[data-lane-act="' + act + '"]').hidden = !visible; }
     show('edit', true);
@@ -1917,9 +1918,10 @@
     }
 
     function openBulkMenu(x, y) {
+      const menu = document.getElementById('bulk-ctx-menu');
+      if (!menu.querySelector('[data-bulk-act]')) return;
       bulkCards = selectedCards();
       var anyMember = bulkCards.some(function (card) { return !!card.dataset.memberIds; });
-      var menu = document.getElementById('bulk-ctx-menu');
       const membersSelector = '[data-bulk-act="' + BULK_ACT.MEMBERS + '"]';
       const membersMenuSelector = '[data-bulk-act="' + BULK_ACT.MEMBERS_MENU + '"]';
       menu.querySelector(membersSelector).hidden = anyMember;

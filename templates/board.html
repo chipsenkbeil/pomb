@@ -743,14 +743,14 @@
 {% if role.is_owner() %}<div id="archived-lanes" hidden>{% for lane in archived_lanes %}<span data-lane-id="{{ lane.id }}" data-lane-name="{{ lane.name }}" data-task-count="{{ lane.task_count }}"></span>{% endfor %}</div>{% endif %}
 <div id="board-column-options" hidden>{% for col in columns %}<span data-column-id="{{ col.id }}" data-column-name="{{ col.name }}"></span>{% endfor %}</div>
 <div id="swimlane-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Swimlane menu">
-  <button type="button" data-lane-act="edit">Edit</button>
-  <button type="button" data-lane-act="fold">Collapse</button>
-  <button type="button" data-lane-act="up">Move up</button>
-  <button type="button" data-lane-act="down">Move down</button>
-  <button type="button" data-lane-act="above">Add above</button>
-  <button type="button" data-lane-act="below">Add below</button>
+{% if role.writes() %}  <button type="button" data-lane-act="edit">Edit</button>{% endif %}
+{% if role.writes() %}  <button type="button" data-lane-act="fold">Collapse</button>{% endif %}
+{% if role.writes() %}  <button type="button" data-lane-act="up">Move up</button>{% endif %}
+{% if role.writes() %}  <button type="button" data-lane-act="down">Move down</button>{% endif %}
+{% if role.writes() %}  <button type="button" data-lane-act="above">Add above</button>{% endif %}
+{% if role.writes() %}  <button type="button" data-lane-act="below">Add below</button>{% endif %}
 {% if role.is_owner() %}  <button type="button" data-lane-act="archive">Archive</button>{% endif %}
-  <button type="button" class="menu-danger" data-lane-act="delete">Delete</button>
+{% if role.writes() %}  <button type="button" class="menu-danger" data-lane-act="delete">Delete</button>{% endif %}
 </div>
 
 <!-- Card context menu (KF-050): white popup; per-item icons (KF-329);
@@ -771,11 +771,11 @@
 </div>
 <div id="card-ctx-submenu" class="menu-pop menu-floating" hidden role="menu" aria-label="Task submenu"></div>
 <div id="bulk-ctx-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Selection menu">
-  <button type="button" data-bulk-act="move"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h4.5V7M13.5 2.5L7.5 8.5"/><path d="M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/></svg></span>Move advanced</button>
-  <button type="button" data-bulk-act="color" aria-haspopup="menu"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 6.5h12M8 3v10"/></svg></span>Color <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
-  <button type="button" data-bulk-act="members"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="5.8" cy="5.8" r="2.6"/><path d="M1.2 13.2c0-2.6 2.1-4.2 4.6-4.2s4.6 1.6 4.6 4.2"/><circle cx="11.4" cy="6.6" r="2.1"/><path d="M11.2 9.2c2 .4 3.6 1.8 3.6 4"/></svg></span>Assign members</button>
-  <button type="button" data-bulk-act="members-menu" aria-haspopup="menu" hidden><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="5.8" cy="5.8" r="2.6"/><path d="M1.2 13.2c0-2.6 2.1-4.2 4.6-4.2s4.6 1.6 4.6 4.2"/><circle cx="11.4" cy="6.6" r="2.1"/><path d="M11.2 9.2c2 .4 3.6 1.8 3.6 4"/></svg></span>Members <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
-  <button type="button" data-bulk-act="delete"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.3a1 1 0 0 0 1 .7h4.6a1 1 0 0 0 1-.7L12 4"/><path d="M6.5 7v4M9.5 7v4"/></svg></span>Delete</button>
+{% if role.writes() %}  <button type="button" data-bulk-act="move"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h4.5V7M13.5 2.5L7.5 8.5"/><path d="M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/></svg></span>Move advanced</button>{% endif %}
+{% if role.writes() %}  <button type="button" data-bulk-act="color" aria-haspopup="menu"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 6.5h12M8 3v10"/></svg></span>Color <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>{% endif %}
+{% if role.writes() %}  <button type="button" data-bulk-act="members"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="5.8" cy="5.8" r="2.6"/><path d="M1.2 13.2c0-2.6 2.1-4.2 4.6-4.2s4.6 1.6 4.6 4.2"/><circle cx="11.4" cy="6.6" r="2.1"/><path d="M11.2 9.2c2 .4 3.6 1.8 3.6 4"/></svg></span>Assign members</button>{% endif %}
+{% if role.writes() %}  <button type="button" data-bulk-act="members-menu" aria-haspopup="menu" hidden><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="5.8" cy="5.8" r="2.6"/><path d="M1.2 13.2c0-2.6 2.1-4.2 4.6-4.2s4.6 1.6 4.6 4.2"/><circle cx="11.4" cy="6.6" r="2.1"/><path d="M11.2 9.2c2 .4 3.6 1.8 3.6 4"/></svg></span>Members <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>{% endif %}
+{% if role.writes() %}  <button type="button" data-bulk-act="delete"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.3a1 1 0 0 0 1 .7h4.6a1 1 0 0 0 1-.7L12 4"/><path d="M6.5 7v4M9.5 7v4"/></svg></span>Delete</button>{% endif %}
 </div>
 
 <!-- Add column dialog: Name + Position combobox -->

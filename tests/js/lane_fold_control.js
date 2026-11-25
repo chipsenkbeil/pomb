@@ -13,7 +13,9 @@ const foldItem = { hidden: false, textContent: 'Collapse' };
 const items = {};
 const menu = {
   querySelector: (sel) => {
-    const act = /"(.*)"/.exec(sel)[1];
+    const named = /"(.*)"/.exec(sel);
+    if (!named) return foldItem;
+    const act = named[1];
     if (act === 'fold') return foldItem;
     items[act] = items[act] || { hidden: false };
     return items[act];
