@@ -726,6 +726,16 @@ async fn tips_should_hide_when_the_account_turns_them_off() {
 }
 
 #[tokio::test]
+async fn help_search_should_come_before_the_tips() {
+    let fx = Fixture::new();
+    let uri = format!("/b/{}", fx.board);
+    let page = fx.page(&uri).await;
+    let search = page.find(r#"id="help-search""#).expect("search");
+    let tips = page.find(r#"id="help-tips""#).expect("tips");
+    assert!(search < tips, "{page}");
+}
+
+#[tokio::test]
 async fn tips_should_hide_for_every_account_when_the_admin_disables_them() {
     let fx = Fixture::new();
     let uri = format!("/b/{}", fx.board);

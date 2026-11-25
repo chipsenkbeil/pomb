@@ -1232,6 +1232,7 @@
     </div>
     <div class="help-body">
       <section data-help-panel="quick">
+        <input type="search" id="help-search" class="help-search" placeholder="Search" autocomplete="off">
         {% if chrome.hint_shown("members") || chrome.hint_shown("timer") %}
         <div class="help-tips" id="help-tips">
           <h3 class="help-group">Tips</h3>
@@ -1243,7 +1244,6 @@
           {% endif %}
         </div>
         {% endif %}
-        <input type="search" id="help-search" class="help-search" placeholder="Search" autocomplete="off">
         <h3 class="help-group">Tasks</h3>
         <details class="help-subject"><summary>Add task</summary><p>Click the green + in a column header, type the name and press Enter.</p></details>
         <details class="help-subject"><summary>Delete task</summary><p>Open the task and click Delete, or right-click the card and choose Delete.</p></details>
