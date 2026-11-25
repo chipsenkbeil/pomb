@@ -3242,6 +3242,7 @@ history_kinds! {
     AttachmentAdded, "attachment_added";
     AttachmentRenamed, "attachment_renamed";
     AttachmentEdited, "attachment_edited";
+    AttachmentReplaced, "attachment_replaced";
     CoverSet, "cover_set";
     CoverRemoved, "cover_removed";
     AttachmentDeleted, "attachment_deleted";
@@ -3306,6 +3307,7 @@ impl HistoryKind {
             Self::AttachmentAdded => "Attachment added",
             Self::AttachmentRenamed => "Attachment renamed",
             Self::AttachmentEdited => "Attachment edited",
+            Self::AttachmentReplaced => "Attachment replaced",
             Self::CoverSet => "Cover image set",
             Self::CoverRemoved => "Cover image removed",
             Self::AttachmentDeleted => "Attachment deleted",

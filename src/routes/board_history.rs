@@ -30,6 +30,7 @@ const RELATION_KINDS: &[HistoryKind] = &[HistoryKind::LinkAdded, HistoryKind::Li
 const ATTACHMENT_KINDS: &[HistoryKind] = &[
     HistoryKind::AttachmentAdded,
     HistoryKind::AttachmentRenamed,
+    HistoryKind::AttachmentReplaced,
     HistoryKind::AttachmentDeleted,
 ];
 

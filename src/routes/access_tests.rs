@@ -885,6 +885,9 @@ pub(crate) fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Pay
         (&Method::PUT, "/api/tasks/:id/attachments/:attachment_id/document") => {
             json!({"text": "hi"})
         }
+        (&Method::PUT, "/api/tasks/:id/attachments/:attachment_id/file") => {
+            json!({"data": "aGk="})
+        }
         (&Method::POST, "/api/tasks/:id/attachments/link") => {
             json!({"name": "b", "url": "https://example.com"})
         }

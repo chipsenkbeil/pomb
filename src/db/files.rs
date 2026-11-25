@@ -231,6 +231,13 @@ impl AttachmentFiles {
         Ok(placed?)
     }
 
+    /// Moves the finished `upload` over the file of attachment `id`, so its old bytes are gone
+    /// once this returns.
+    pub(crate) fn replace_with_incoming(&self, id: &str, upload: &Incoming) -> DbResult<()> {
+        let target = self.path_of(id)?;
+        Ok(self.settle(&upload.part, &target)?)
+    }
+
     /// Opens attachment `id` for reading and returns it with its length, or [`None`] when no file
     /// holds it.
     pub(crate) fn open_file(&self, id: &str) -> DbResult<Option<(File, u64)>> {

@@ -2329,6 +2329,21 @@ impl AccountDb {
             .add_attachment_file(&task.row().id, name, mime, upload, uploaded_by)
     }
 
+    /// Replaces the file of one of a task's file attachments with a received file, keeping its id
+    /// and name and dropping the old bytes. Returns [`None`] when the task holds no such file
+    /// attachment.
+    pub fn replace_attachment_file(
+        &self,
+        task: &OwnedTask,
+        attachment_id: &str,
+        mime: &str,
+        upload: &Incoming,
+        actor: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
+        self.db
+            .replace_attachment_file(&task.row().id, attachment_id, mime, upload, actor)
+    }
+
     /// Refuses an upload of `bytes` called `name` to `task` that repeats the name of one of its
     /// attachments, or would leave the task past its attachment count or its owner past the
     /// stored-bytes quota.

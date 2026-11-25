@@ -1,4 +1,4 @@
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
@@ -7,8 +7,10 @@ use tower::ServiceExt;
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::held_disk;
+use crate::auth::new_api_token_record;
 use crate::db::{AccountSlot, Db};
-use crate::models::{AccountId, HistoryKind, TaskAttachment};
+use crate::models::{AccountId, AuthScope, HistoryKind, TaskAttachment};
+use crate::permissions::Permission;
 use crate::{AppState, BODY_LIMIT_BYTES};
 
 struct Fixture {
@@ -1037,4 +1039,261 @@ async fn comment_should_link_its_commit_hash_to_the_board_template() {
         "{modal}"
     );
     assert!(!modal.contains("commit/abc1234"), "{modal}");
+}
+
+impl Fixture {
+    async fn send(
+        &self,
+        method: &str,
+        uri: &str,
+        auth: (&str, &str),
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, String) {
+        let request = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(auth.0, auth.1)
+            .header("accept", "application/json")
+            .header("content-type", content_type)
+            .body(axum::body::Body::from(body))
+            .expect("request");
+        let response = self.app.clone().oneshot(request).await.expect("oneshot");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT_BYTES)
+            .await
+            .expect("body");
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+async fn upload_file(fx: &Fixture, name: &str, mime: &str, bytes: &[u8]) -> Value {
+    let body = json!({"name": name, "mime": mime, "data": STANDARD.encode(bytes)});
+    let (status, file) = fx.json("POST", &fx.attachments(), Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{file}");
+    file
+}
+
+#[tokio::test]
+async fn replace_attachment_file_should_keep_id_and_name() {
+    let fx = fixture().await;
+    let file = upload_file(&fx, "shot.png", "image/png", b"original capture").await;
+    let uri = document_uri(&fx, &file, "file");
+
+    let body = json!({"data": STANDARD.encode(b"redacted")});
+    let (status, replaced) = fx.json("PUT", &uri, Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{replaced}");
+    assert_eq!(replaced["id"], file["id"]);
+    assert_eq!(replaced["name"], "shot.png");
+    assert_eq!(replaced["mime"], "image/png");
+    assert_eq!(replaced["size"], 8);
+    assert_ne!(replaced["sha256"], file["sha256"]);
+    let (_, served) = fx.call("GET", &uri, None).await;
+    assert_eq!(served, "redacted");
+
+    let (status, raw) = fx
+        .send(
+            "PUT",
+            &format!("{uri}?mime=text/plain"),
+            ("cookie", &fx.cookie),
+            "application/octet-stream",
+            b"raw swap".to_vec(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let raw: Value = serde_json::from_str(&raw).expect("json");
+    assert_eq!((&raw["id"], &raw["name"]), (&file["id"], &file["name"]));
+    assert_eq!(raw["mime"], "text/plain");
+    let (_, served) = fx.call("GET", &uri, None).await;
+    assert_eq!(served, "raw swap");
+
+    let (_, listed) = fx.json("GET", &fx.attachments(), None).await;
+    assert_eq!(listed.as_array().map(Vec::len), Some(1));
+    let row = fx.db.task(&fx.task).expect("read").expect("task");
+    let replaced_events: Vec<&str> = row
+        .history
+        .iter()
+        .filter(|event| event.kind == HistoryKind::AttachmentReplaced)
+        .map(|event| event.detail.as_str())
+        .collect();
+    assert_eq!(
+        replaced_events,
+        ["Replaced \"shot.png\"", "Replaced \"shot.png\""]
+    );
+}
+
+#[tokio::test]
+async fn replace_attachment_file_should_drop_old_bytes() {
+    let fx = fixture().await;
+    let old = vec![b'S'; 4096];
+    let file = upload_file(&fx, "capture.bin", "application/octet-stream", &old).await;
+    let uri = document_uri(&fx, &file, "file");
+    let stored = |fx: &Fixture| {
+        fx.db
+            .stored_bytes_by_account()
+            .expect("usage")
+            .values()
+            .sum::<u64>()
+    };
+    let before = stored(&fx);
+    assert_eq!(stored_files(&fx), 1);
+
+    let body = json!({"data": STANDARD.encode(b"clean")});
+    let (status, replaced) = fx.json("PUT", &uri, Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{replaced}");
+
+    assert_eq!(stored_files(&fx), 1);
+    for entry in std::fs::read_dir(fx.db.attachments_dir()).expect("dir") {
+        let bytes = std::fs::read(entry.expect("entry").path()).expect("read");
+        assert_eq!(bytes, b"clean");
+    }
+    let row = fx.db.task(&fx.task).expect("read").expect("task");
+    assert!(row.attachments[0].versions.is_empty());
+    assert_eq!(row.attachments[0].size, 5);
+    assert!(stored(&fx) + 3500 < before, "{before} then {}", stored(&fx));
+}
+
+#[tokio::test]
+async fn replace_attachment_file_should_refuse_links_and_documents() {
+    let fx = fixture().await;
+    let body = json!({"name": "Spec", "url": "https://example.com/spec"});
+    let (_, link) = fx
+        .json("POST", &format!("{}/link", fx.attachments()), Some(body))
+        .await;
+    let document = new_document(&fx, "notes", "keep me").await;
+    let swap = json!({"data": STANDARD.encode(b"x")});
+    for target in [&link, &document] {
+        let uri = document_uri(&fx, target, "file");
+        let (status, body) = fx.json("PUT", &uri, Some(swap.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    let (_, text) = fx
+        .call("GET", &document_uri(&fx, &document, "file"), None)
+        .await;
+    assert_eq!(text, "keep me");
+    let (_, address) = fx
+        .call("GET", &document_uri(&fx, &link, "file"), None)
+        .await;
+    assert_eq!(address, "https://example.com/spec");
+
+    let missing = format!("{}/nope/file", fx.attachments());
+    let (status, _) = fx.json("PUT", &missing, Some(swap)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn replace_attachment_file_should_need_attachments_replace() {
+    let fx = fixture().await;
+    let file = upload_file(&fx, "a.txt", "text/plain", b"old").await;
+    let uri = document_uri(&fx, &file, "file");
+    let token = |name: &str, scope: AuthScope, extra: Option<Permission>| {
+        let (mut record, raw) = new_api_token_record(&fx.account, name, scope, None);
+        record.permissions.extend(extra);
+        fx.db.create_api_token(&record).expect("token");
+        format!("Bearer {raw}")
+    };
+    let body = json!({"data": STANDARD.encode(b"new")})
+        .to_string()
+        .into_bytes();
+
+    for scope in [AuthScope::Read, AuthScope::Work, AuthScope::Provision] {
+        assert!(!scope.preset().contains(Permission::AttachmentsReplace));
+        let holder = token(scope.as_str(), scope, None);
+        let (status, text) = fx
+            .send(
+                "PUT",
+                &uri,
+                ("authorization", &holder),
+                "application/json",
+                body.clone(),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        let error: Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(error["code"], "permission_denied", "{text}");
+        assert_eq!(error["permission"], "attachments.replace", "{text}");
+    }
+    let (_, served) = fx.call("GET", &uri, None).await;
+    assert_eq!(served, "old");
+    assert!(
+        AuthScope::Admin
+            .preset()
+            .contains(Permission::AttachmentsReplace)
+    );
+
+    let worker = token(
+        "worker",
+        AuthScope::Work,
+        Some(Permission::AttachmentsReplace),
+    );
+    let (status, text) = fx
+        .send(
+            "PUT",
+            &uri,
+            ("authorization", &worker),
+            "application/json",
+            body,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (_, served) = fx.call("GET", &uri, None).await;
+    assert_eq!(served, "new");
+}
+
+#[tokio::test]
+async fn replace_attachment_file_should_clear_a_cover_the_new_file_cannot_be() {
+    let fx = fixture().await;
+    let image = upload_file(&fx, "shot.png", "image/png", b"png").await;
+    let cover = document_uri(&fx, &image, "cover");
+    let (status, _) = fx.json("PUT", &cover, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let uri = document_uri(&fx, &image, "file");
+
+    let (status, same) = fx
+        .json(
+            "PUT",
+            &uri,
+            Some(json!({"data": STANDARD.encode(b"png2"), "mime": " "})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{same}");
+    assert_eq!(same["mime"], "image/png");
+    let row = fx.db.task(&fx.task).expect("read").expect("task");
+    assert_eq!(row.cover_id.as_deref(), image["id"].as_str());
+
+    let swap = json!({"data": STANDARD.encode(b"pdf"), "mime": "application/pdf"});
+    let (status, replaced) = fx.json("PUT", &uri, Some(swap)).await;
+    assert_eq!(status, StatusCode::OK, "{replaced}");
+    let row = fx.db.task(&fx.task).expect("read").expect("task");
+    assert_eq!(row.cover_id, None);
+    assert!(
+        row.history
+            .iter()
+            .any(|event| event.kind == HistoryKind::CoverRemoved)
+    );
+}
+
+#[tokio::test]
+async fn replace_attachment_file_should_refuse_bytes_another_attachment_holds() {
+    let fx = fixture().await;
+    upload_file(&fx, "one.txt", "text/plain", b"same").await;
+    let two = upload_file(&fx, "two.txt", "text/plain", b"other").await;
+    let uri = document_uri(&fx, &two, "file");
+    let (status, body) = fx
+        .json("PUT", &uri, Some(json!({"data": STANDARD.encode(b"same")})))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (_, served) = fx.call("GET", &uri, None).await;
+    assert_eq!(served, "other");
+}
+
+#[test]
+fn replace_attachment_file_should_get_the_slow_request_timeout() {
+    let uri = "/api/tasks/t/attachments/a/file";
+    assert!(super::is_slow(&Method::PUT, uri));
+    assert!(!super::is_slow(&Method::GET, uri));
+    assert!(!super::is_slow(
+        &Method::PUT,
+        "/api/tasks/t/attachments/a/cover"
+    ));
 }

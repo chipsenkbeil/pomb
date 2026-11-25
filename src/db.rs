@@ -1181,7 +1181,7 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 100;
+pub const SCHEMA_VERSION: u64 = 101;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1288,6 +1288,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "eaac544be40a5d410f1632174778e53117f2d14e4dca989f74f8c03c2a3725b1",
     "eaac544be40a5d410f1632174778e53117f2d14e4dca989f74f8c03c2a3725b1",
     "ad607eecc9bfd4378aa3275b34fecafbd70ca520cc3bad5c32b3ad930b9006d6",
+    "33f036c3ff0c265822716200837fcc5a5b7be51ce19a93b65e7917944c7b02c7",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -11408,6 +11409,79 @@ impl Db {
         let gone: Vec<String> = dropped.into_iter().map(|version| version.id).collect();
         self.files.remove(&gone);
         Ok(Some(saved))
+    }
+
+    /// Replaces the file of a task's file attachment with a received `upload` of type `mime`,
+    /// keeping its id and name and dropping the old bytes in the same write, with no version
+    /// kept. Returns [`None`] and writes nothing when the task holds no such file attachment: a
+    /// link and a text document are not replaced here.
+    pub fn replace_attachment_file(
+        &self,
+        task_id: &str,
+        attachment_id: &str,
+        mime: &str,
+        upload: &Incoming,
+        actor: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
+        TextCap::ATTACHMENT_MIME.check(mime)?;
+        let _held = self.files.hold(upload.id());
+        let txn = self.db.begin_write()?;
+        let owner = task_owner_in(&txn, task_id)?;
+        let board = task_board_in(&txn, task_id)?;
+        let Some(mut task) = read_in::<TaskRow>(&txn, TASKS, task_id)? else {
+            return Ok(None);
+        };
+        let held = serde_json::to_vec(&task)?.len() as u64;
+        let Some(index) = task
+            .attachments
+            .iter()
+            .position(|a| a.id == attachment_id && a.url.is_none() && !a.is_document())
+        else {
+            return Ok(None);
+        };
+        let size = upload.size();
+        let sha256 = upload.sha256();
+        let freed = task.attachments[index].stored_bytes();
+        let others: Vec<TaskAttachment> = task
+            .attachments
+            .iter()
+            .filter(|a| a.id != attachment_id)
+            .cloned()
+            .collect();
+        if let Some(duplicate) = DuplicateAttachment::among(&others, "", Some(&sha256)) {
+            return Err(Box::new(duplicate));
+        }
+        if let Some(board) = &board {
+            txn_refuse_board_over_bytes(&txn, board, size.saturating_sub(freed))?;
+        }
+        if let Some(owner) = &owner {
+            txn_refuse_over_bytes(&txn, owner, size, freed)?;
+        }
+        let attachment = &mut task.attachments[index];
+        attachment.mime = mime.to_string();
+        attachment.size = size;
+        attachment.sha256 = Some(sha256);
+        let replaced = attachment.clone();
+        let detail = format!("Replaced \"{}\"", replaced.name);
+        push_event(&mut task, HistoryKind::AttachmentReplaced, detail, actor);
+        if task.cover_id.as_deref() == Some(attachment_id) && !replaced.is_image() {
+            task.cover_id = None;
+            let detail = format!("Removed \"{}\" as the cover image", replaced.name);
+            push_event(&mut task, HistoryKind::CoverRemoved, detail, actor);
+        }
+        task.updated_at = Some(Utc::now().to_rfc3339());
+        let bytes = serde_json::to_vec(&task)?.len() as u64;
+        refuse_row_past(Bound::TaskRowBytes, MAX_TASK_ROW_BYTES, bytes, held)?;
+        {
+            let mut table = txn.open_table(TASKS)?;
+            txn_store_task(&txn, &mut table, &task, OverQuota::Allow, actor)?;
+        }
+        if let Some(owner) = &owner {
+            txn_count_usage(&txn, owner, size, freed)?;
+        }
+        self.files.replace_with_incoming(attachment_id, upload)?;
+        txn.commit()?;
+        Ok(Some(replaced))
     }
 
     /// Refuses, with [`QuotaExceeded`], an upload of `bytes` to task `task_id` that would leave

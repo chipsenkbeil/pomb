@@ -1554,6 +1554,12 @@ const ROLE_TABLE: &[(Method, &str, BoardRole, [u16; 3])] = &[
     ),
     (
         Method::PUT,
+        "/api/tasks/:id/attachments/:attachment_id/file",
+        BoardRole::Member,
+        [400, 400, 403],
+    ),
+    (
+        Method::PUT,
         "/api/tasks/:id/attachments/:attachment_id/cover",
         BoardRole::Member,
         [400, 400, 403],

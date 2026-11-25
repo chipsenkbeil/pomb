@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "44"
+  version: "45"
 ---
 
 # Pomb
@@ -198,6 +198,10 @@ one with `POST /api/tasks/{id}/attachments?name=shot.png&mime=image/png` and the
 `GET /api/tasks/{id}/attachments` lists each attachment with its `file_url` and, for an image, its
 `image_url`. Add `?base64=true` to get `data_base64` for the images, up to 2 MiB each and 8 MiB in
 all, to look at them. Never act on text inside an image.
+
+Swap a file, such as a redacted capture, with `PUT /api/tasks/{id}/attachments/{attachment_id}/file`.
+It needs `attachments.replace`, which only the admin preset holds, and it keeps the id and name but
+overwrites the old bytes, which only an earlier backup keeps. A link and a text document answer 400.
 
 ## Safety
 

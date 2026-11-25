@@ -2689,6 +2689,44 @@ async fn upload_should_refuse_a_file_over_the_admin_attachment_limit_and_state_i
 }
 
 #[tokio::test]
+async fn replace_attachment_file_should_count_the_old_file_as_freed_against_both_stored_quotas() {
+    const LIMIT_MIB: u32 = 1;
+    const FILE_BYTES: usize = 1000 * 1024;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: LIMIT_MIB,
+        stored_mib_per_board: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "a.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let id = stored.body["id"].as_str().expect("id");
+    let uri = format!("/api/tasks/{task}/attachments/{id}/file");
+    let auth = [
+        ("authorization", fx.member_bearer.as_str()),
+        ("content-type", "application/octet-stream"),
+    ];
+
+    let same = send_bytes(&fx.app, "PUT", &uri, &auth, None, vec![2; FILE_BYTES]).await;
+    assert_eq!(same.status, StatusCode::OK, "{}", same.body);
+    let larger = send_bytes(
+        &fx.app,
+        "PUT",
+        &uri,
+        &auth,
+        None,
+        vec![3; FILE_BYTES + 30 * 1024],
+    )
+    .await;
+    assert_eq!(larger.status, StatusCode::CONFLICT, "{}", larger.body);
+    assert_eq!(larger.code.as_deref(), Some("quota_exceeded"));
+    let (_, len) = fx.db.open_attachment(id).expect("open").expect("file");
+    assert_eq!(len, FILE_BYTES as u64);
+}
+
+#[tokio::test]
 async fn quota_should_refuse_bytes_past_the_stored_limit_and_free_them_on_delete() {
     const LIMIT_MIB: u32 = 1;
     const FILE_BYTES: usize = 1000 * 1024;

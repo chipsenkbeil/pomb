@@ -140,6 +140,7 @@ catalog! {
     CommentsDelete, "comments.delete", "comments", Admin, "Delete any comment, whoever wrote it.";
     AttachmentsRead, "attachments.read", "attachments", Read, "Download attachments.";
     AttachmentsWrite, "attachments.write", "attachments", Work, "Upload and rename attachments.";
+    AttachmentsReplace, "attachments.replace", "attachments", Admin, "Replace an attachment's file, dropping the old bytes.";
     AttachmentsDelete, "attachments.delete", "attachments", Admin, "Delete an attachment.";
     TimeRead, "time.read", "time", Read, "Read time entries and the timer status.";
     TimeWrite, "time.write", "time", Work, "Add a manual entry, log time on a task, and start, stop or retarget the timer.";
@@ -342,7 +343,7 @@ mod tests {
 
     use super::*;
 
-    const NAMES: [&str; 60] = [
+    const NAMES: [&str; 61] = [
         "boards.read",
         "boards.create",
         "boards.configure",
@@ -389,6 +390,7 @@ mod tests {
         "comments.delete",
         "attachments.read",
         "attachments.write",
+        "attachments.replace",
         "attachments.delete",
         "time.read",
         "time.write",

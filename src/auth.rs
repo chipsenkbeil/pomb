@@ -1110,6 +1110,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     ),
     (
         Method::PUT,
+        "/api/tasks/:id/attachments/:attachment_id/file",
+        Permission::AttachmentsReplace,
+    ),
+    (
+        Method::PUT,
         "/api/tasks/:id/attachments/:attachment_id/cover",
         Permission::AttachmentsWrite,
     ),
@@ -2463,6 +2468,11 @@ mod tests {
             Method::PUT,
             "/api/tasks/:id/attachments/:attachment_id/document",
             AuthScope::Work,
+        ),
+        (
+            Method::PUT,
+            "/api/tasks/:id/attachments/:attachment_id/file",
+            AuthScope::Admin,
         ),
         (
             Method::PUT,

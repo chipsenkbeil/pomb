@@ -73,19 +73,20 @@ use crate::db::{
     ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnMove, ColumnWatch, CommentWrite,
     Commit, CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment,
     EntryEdit, EpicCloseOutcome, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome,
-    FirstPasskeyOutcome, GrabRequest, InboundColumnMissing, InstanceDb, LargestUse, LinkAddOutcome,
-    LinkDeleteOutcome, LinkEdit, LinkReads, LinkRefusal, MAX_AGENT_ROLES_PER_ACCOUNT,
-    MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MemberSet, MoveGuards, MoveOutcome,
-    NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry,
-    NewWebhook, NumberingExhausted, OwnedBoard, OwnedColumn, OwnedTask, OwnerChange, OwnerOutcome,
-    PaletteStrandsColor, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome,
-    QuestionGuard, QuestionMove, QuestionWrite, QuotaExceeded, RecoverOutcome, RegisterOutcome,
-    RestoreOutcome, Revoked, RoleDenied, RoleTokenRefusal, RootAdminDb, SessionEndOutcome,
-    SessionListing, SessionRefused, SessionToken, SettingsDb, SwimlaneDeleteOutcome,
-    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TaskContext, TemplateDeleteOutcome,
-    TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart, UmbrellaRef, WebhookColumnMissing,
-    WebhookPatch, WipCheck, WipHeld, WipRefused, carry_fields, clean_labels, labels_event,
-    local_day, merge_metadata, push_change_event, push_column_event, push_event, round_estimate,
+    FirstPasskeyOutcome, GrabRequest, InboundColumnMissing, Incoming, InstanceDb, LargestUse,
+    LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkReads, LinkRefusal,
+    MAX_AGENT_ROLES_PER_ACCOUNT, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MemberSet,
+    MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment,
+    NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedColumn,
+    OwnedTask, OwnerChange, OwnerOutcome, PaletteStrandsColor, PasskeyAddOutcome,
+    PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuestionGuard, QuestionMove, QuestionWrite,
+    QuotaExceeded, RecoverOutcome, RegisterOutcome, RestoreOutcome, Revoked, RoleDenied,
+    RoleTokenRefusal, RootAdminDb, SessionEndOutcome, SessionListing, SessionRefused, SessionToken,
+    SettingsDb, SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome,
+    TaskContext, TemplateDeleteOutcome, TokenEdit, TokenNameTaken, UmbrellaChange, UmbrellaPart,
+    UmbrellaRef, WebhookColumnMissing, WebhookPatch, WipCheck, WipHeld, WipRefused, carry_fields,
+    clean_labels, labels_event, local_day, merge_metadata, push_change_event, push_column_event,
+    push_event, round_estimate,
 };
 use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::labels::{self, LabelSettings};
@@ -260,7 +261,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/tasks/:id/attachments/:attachment_id/file",
-            get(download_attachment),
+            put(replace_attachment_file)
+                .layer(middleware::from_fn_with_state(state.clone(), queue_upload))
+                .get(download_attachment),
         )
         .route(
             "/api/tasks/:id/attachments/:attachment_id/image",
@@ -777,7 +780,12 @@ const TRANSPORT_POLICY: &str = "max-age=31536000";
 fn is_slow(method: &Method, path: &str) -> bool {
     let segments: Vec<&str> = path.split('/').collect();
     let upload = matches!(segments.as_slice(), ["", "api", "tasks", _, "attachments"]);
-    *method == Method::POST && (upload || path == "/api/v1/backups" || path == "/api/boards/import")
+    let replace = matches!(
+        segments.as_slice(),
+        ["", "api", "tasks", _, "attachments", _, "file"]
+    );
+    let post = upload || path == "/api/v1/backups" || path == "/api/boards/import";
+    (*method == Method::PUT && replace) || (*method == Method::POST && post)
 }
 
 /// Answers 408 `request_timeout` to a request that runs longer than its timeout.
@@ -806,11 +814,12 @@ async fn time_limit(req: Request, next: Next) -> Response {
 async fn queue_upload(
     State(state): State<AppState>,
     account: AccountDb,
-    Path(id): Path<String>,
+    Path(params): Path<HashMap<String, String>>,
     req: Request,
     next: Next,
 ) -> Response {
-    match account.task_head(&id) {
+    let id = params.get("id").map_or("", String::as_str);
+    match account.task_head(id) {
         Ok(Some(_)) => {}
         Ok(None) => return AppError::not_found("task not found").into_response(),
         Err(error) => return AppError::from(error).into_response(),
@@ -1181,6 +1190,12 @@ const ROUTE_ACCESS: &[(Method, &str, Rc, Wr)] = {
         (
             Method::DELETE,
             "/api/tasks/:id/attachments/:attachment_id/cover",
+            Rc::Task,
+            Wr::Grows,
+        ),
+        (
+            Method::PUT,
+            "/api/tasks/:id/attachments/:attachment_id/file",
             Rc::Task,
             Wr::Grows,
         ),
@@ -15669,7 +15684,7 @@ async fn store_raw_upload(
     user: &AuthUser,
     query: UploadAttachmentQuery,
     headers: &HeaderMap,
-    mut body: Body,
+    body: Body,
     limit: u64,
 ) -> Result<TaskAttachment, AppError> {
     let name = query
@@ -15684,6 +15699,19 @@ async fn store_raw_upload(
         return Err(attachment_over_limit(limit, ""));
     }
     account.check_attachment_room(task, &name, declared.unwrap_or(0))?;
+    let upload = receive_raw_file(account, body, limit).await?;
+    account
+        .add_attachment_file(task, &name, &mime, &upload, user.actor())?
+        .ok_or_else(|| AppError::not_found("task not found"))
+}
+
+/// Receives a body that is the file itself into a file beside the database, writing each chunk to
+/// disk as it arrives.
+async fn receive_raw_file(
+    account: &AccountDb,
+    mut body: Body,
+    limit: u64,
+) -> Result<Incoming, AppError> {
     let mut upload = account.receive_attachment()?;
     while let Some(frame) = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
         let frame = frame.map_err(|_| AppError::bad_request("the upload was interrupted"))?;
@@ -15696,9 +15724,7 @@ async fn store_raw_upload(
         upload.push(&chunk).await.map_err(upload_store_failure)?;
     }
     upload.finish().await.map_err(upload_store_failure)?;
-    account
-        .add_attachment_file(task, &name, &mime, &upload, user.actor())?
-        .ok_or_else(|| AppError::not_found("task not found"))
+    Ok(upload)
 }
 
 /// Stores an upload whose body is JSON with the file base64-encoded, which is held whole in memory
@@ -15711,6 +15737,20 @@ async fn store_json_upload(
     body: Body,
     limit: u64,
 ) -> Result<TaskAttachment, AppError> {
+    let input: UploadAttachmentInput = parse_json_upload(headers, body).await?;
+    let (name, mime) = upload_identity(&input.name, input.mime.as_deref())?;
+    let bytes = decode_json_file(&input.data, limit)?;
+    account
+        .add_attachment(task, &name, &mime, &bytes, user.actor())
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))
+}
+
+/// Reads the JSON body of an upload, refusing one over [`JSON_UPLOAD_BODY_LIMIT`] with 413.
+async fn parse_json_upload<T: DeserializeOwned>(
+    headers: &HeaderMap,
+    body: Body,
+) -> Result<T, AppError> {
     let body = axum::body::to_bytes(body, JSON_UPLOAD_BODY_LIMIT)
         .await
         .map_err(|_| {
@@ -15724,10 +15764,14 @@ async fn store_json_upload(
                 ),
             )
         })?;
-    let input: UploadAttachmentInput = parse_body(headers, body).await?;
-    let (name, mime) = upload_identity(&input.name, input.mime.as_deref())?;
+    parse_body(headers, body).await
+}
+
+/// Decodes the base64 `data` of a JSON upload, refusing a file over the JSON limit, which is
+/// `limit` when that is lower.
+fn decode_json_file(data: &str, limit: u64) -> Result<Vec<u8>, AppError> {
     let bytes = base64::engine::general_purpose::STANDARD
-        .decode(input.data.trim())
+        .decode(data.trim())
         .map_err(|_| AppError::bad_request("invalid base64 data"))?;
     let json_limit = AccountDb::MAX_JSON_ATTACHMENT_BYTES.min(limit);
     if bytes.len() as u64 > json_limit {
@@ -15741,10 +15785,122 @@ async fn store_json_upload(
         };
         return Err(attachment_over_limit(json_limit, &advice));
     }
-    account
-        .add_attachment(task, &name, &mime, &bytes, user.actor())
+    Ok(bytes)
+}
+
+/// Request body to replace the file of an attachment.
+#[derive(Deserialize, ToSchema)]
+struct ReplaceAttachmentInput {
+    /// MIME type of the new file. Defaults to the attachment's current type.
+    mime: Option<String>,
+    /// Base64-encoded file bytes.
+    data: String,
+}
+
+/// Query of a file replacement whose body is the file itself, sent as `application/octet-stream`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct ReplaceAttachmentQuery {
+    /// MIME type of the new file. Defaults to the attachment's current type. Ignored with a JSON
+    /// body.
+    mime: Option<String>,
+}
+
+/// Replaces the file of an attachment, keeping its id and name, and returns its metadata. Use it
+/// to swap in a redacted copy of a capture. It needs `attachments.replace`, which only the admin
+/// preset holds, so the owner adds it to a token that must redact. The old bytes are overwritten
+/// in the same write: no earlier version is kept and nothing goes to the recycle bin, so the
+/// original is gone once the reply arrives, though a backup taken earlier still holds it. The
+/// `attachment_replaced` event in the task's history names the attachment and who replaced it.
+///
+/// Send the new file as `application/octet-stream`, up to the same size as an upload (50 MiB, lower
+/// when the admin sets it lower), or as JSON `{"mime", "data"}` with the bytes base64-encoded, up
+/// to 5 MiB. The new file is held to the same limits as an upload: the account and the board keep
+/// their stored-bytes quotas, counting the old file as freed. A file with the same bytes as
+/// another attachment of the task is a duplicate. The replace shares the upload slots, so it can
+/// answer 503 `busy` the same way.
+///
+/// A link holds an address and a text document has its own versioned save, so both are refused
+/// with 400. A cover image replaced by a file that is not an image stops being the cover.
+#[utoipa::path(
+    put,
+    path = "/api/tasks/{id}/attachments/{attachment_id}/file",
+    operation_id = "replace_attachment_file",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("attachment_id" = String, Path, description = "Attachment id of the file to replace"),
+        ReplaceAttachmentQuery,
+    ),
+    request_body(content(
+        (ReplaceAttachmentInput = "application/json"),
+        ([u8] = "application/octet-stream"),
+    )),
+    responses(
+        (status = 200, description = "The attachment's metadata with the new size and type", body = TaskAttachment),
+        (status = 400, description = "The attachment is a link or a text document, the MIME type is invalid, or the file is over its size limit (50 MiB raw, 5 MiB as JSON)"),
+        (status = 403, description = "`permission_denied`: the token lacks `attachments.replace`, which only the admin preset holds"),
+        (status = 404, description = "Task or attachment not found"),
+        (status = 409, description = "`quota_exceeded`: the account or the board would hold more than its most stored bytes. `duplicate_attachment`: another attachment of the task holds these bytes"),
+        (status = 413, description = "The JSON body is over its limit. Send a larger file as `application/octet-stream`"),
+        (status = 503, description = "`busy`: 8 uploads are running, or 4 to this account's tasks, and this one waited more than 10 seconds for its turn"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn replace_attachment_file(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path((id, attachment_id)): Path<(String, String)>,
+    Query(query): Query<ReplaceAttachmentQuery>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Json<TaskAttachment>, AppError> {
+    let task = writable_task(&account, &user, &id, "task or attachment not found")?;
+    let held = task
+        .row()
+        .attachments
+        .iter()
+        .find(|a| a.id == attachment_id)
+        .ok_or_else(|| AppError::not_found("task or attachment not found"))?;
+    if held.url.is_some() {
+        return Err(AppError::bad_request(
+            "the attachment is a link, which holds an address and no file",
+        ));
+    }
+    if held.is_document() {
+        return Err(AppError::bad_request(
+            "the attachment is a text document, which is saved with its own route",
+        ));
+    }
+    let limit = state.max_attachment_bytes();
+    let (upload, mime) = if is_raw_upload(&headers) {
+        let declared = headers
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        if declared.is_some_and(|length| length > limit) {
+            return Err(attachment_over_limit(limit, ""));
+        }
+        let asked = query.mime.as_deref().filter(|mime| !mime.trim().is_empty());
+        let (_, mime) = upload_identity(&held.name, asked.or(Some(&held.mime)))?;
+        (receive_raw_file(&account, body, limit).await?, mime)
+    } else {
+        let input: ReplaceAttachmentInput = parse_json_upload(&headers, body).await?;
+        let asked = input.mime.as_deref().filter(|mime| !mime.trim().is_empty());
+        let (_, mime) = upload_identity(&held.name, asked.or(Some(&held.mime)))?;
+        let bytes = decode_json_file(&input.data, limit)?;
+        let mut upload = account.receive_attachment()?;
+        upload.push(&bytes).await.map_err(upload_store_failure)?;
+        upload.finish().await.map_err(upload_store_failure)?;
+        (upload, mime)
+    };
+    let mut replaced = account
+        .replace_attachment_file(&task, &attachment_id, &mime, &upload, user.actor())
         .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))
+        .ok_or_else(|| AppError::not_found("task or attachment not found"))?;
+    show_account_handle(&mut replaced, &user.handle);
+    Ok(Json(replaced))
 }
 
 /// Most bytes of one image that `base64=true` returns.
@@ -30819,6 +30975,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         list_document_versions,
         read_document_version,
         download_attachment,
+        replace_attachment_file,
         show_attachment_image,
         list_attachments,
         rename_attachment,
@@ -31060,6 +31217,7 @@ them, which the Backups section of the settings page calls after a confirmation.
             AnswerInput,
             EditCommentInput,
             UploadAttachmentInput,
+            ReplaceAttachmentInput,
             UploadReply,
             UploadResults,
             UploadResult,
