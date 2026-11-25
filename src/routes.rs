@@ -11747,7 +11747,7 @@ fn not_epic() -> AppError {
         .with_code(ErrorCode::NotEpic)
 }
 
-/// Returns the error for a relation change [`Db::change_links_logged`] refused.
+/// Returns the error for a refused link change.
 fn link_refusal(refusal: LinkRefusal) -> AppError {
     match refusal {
         LinkRefusal::Cycle => AppError::bad_request("link would create a cycle"),
@@ -12740,17 +12740,7 @@ async fn create_task_link(
             Ok(Json(link))
         }
         LinkAddOutcome::NotFound => Err(AppError::not_found("Task or target not found")),
-        LinkAddOutcome::Cycle => Err(AppError::bad_request("link would create a cycle")),
-        LinkAddOutcome::Duplicate => Err(AppError::bad_request(
-            "the tasks are already related; delete that relation first",
-        )),
-        LinkAddOutcome::HasParent => {
-            Err(AppError::bad_request("the child already has an umbrella"))
-        }
-        LinkAddOutcome::ParentCycle => Err(AppError::bad_request(
-            "the link would put the umbrella under its own child",
-        )),
-        LinkAddOutcome::NotEpic => Err(not_epic()),
+        LinkAddOutcome::Refused(refusal) => Err(link_refusal(refusal)),
     }
 }
 

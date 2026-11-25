@@ -458,16 +458,8 @@ pub enum LinkAddOutcome {
     /// from the requesting task.
     Added(TaskLink),
     NotFound,
-    /// Refused: the `blocked_by` chain would loop back to the task.
-    Cycle,
-    /// Refused: the two tasks already have a relation of another type.
-    Duplicate,
-    /// Refused: the child already has an umbrella.
-    HasParent,
-    /// Refused: the umbrella sits under the child, so the link would close a parent cycle.
-    ParentCycle,
-    /// Refused: the umbrella is not an epic.
-    NotEpic,
+    /// The link was refused for the given reason.
+    Refused(LinkRefusal),
 }
 
 /// The link changes [`Db::change_links_logged`] makes on each task.
@@ -483,7 +475,7 @@ pub struct LinkEdit<'a> {
     pub owner: Option<&'a str>,
 }
 
-/// Why [`Db::change_links_logged`] refused a change.
+/// Why a link change was refused.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LinkRefusal {
     /// The `blocked_by` chain would loop back to the task.
@@ -10506,22 +10498,22 @@ impl Db {
             if stored_kind.is_relation()
                 && (relates(&holder, stored_target) || relates(&other, holder_id))
             {
-                return Ok(LinkAddOutcome::Duplicate);
+                return Ok(LinkAddOutcome::Refused(LinkRefusal::Duplicate));
             }
             if stored_kind.blocks_holder() && blocked_by_reaches(&tbl, stored_target, holder_id)? {
-                return Ok(LinkAddOutcome::Cycle);
+                return Ok(LinkAddOutcome::Refused(LinkRefusal::Cycle));
             }
             if stored_kind == LinkKind::Parent {
                 let has_parent =
                     |task: &TaskRow| task.links.iter().any(|link| link.kind == LinkKind::Parent);
                 if has_parent(&holder) {
-                    return Ok(LinkAddOutcome::HasParent);
+                    return Ok(LinkAddOutcome::Refused(LinkRefusal::HasParent));
                 }
                 if parent_chain_reaches(&tbl, stored_target, holder_id)? {
-                    return Ok(LinkAddOutcome::ParentCycle);
+                    return Ok(LinkAddOutcome::Refused(LinkRefusal::ParentCycle));
                 }
                 if other.kind != TaskKind::Epic {
-                    return Ok(LinkAddOutcome::NotEpic);
+                    return Ok(LinkAddOutcome::Refused(LinkRefusal::NotEpic));
                 }
             }
             let now = Utc::now().to_rfc3339();
@@ -10709,20 +10701,8 @@ impl Db {
                 match Self::add_link_in(&txn, id, *kind, target_id, edit.token_id, actor)? {
                     LinkAddOutcome::Added(_) => {}
                     LinkAddOutcome::NotFound => return Ok(ChangeOutcome::NotFound),
-                    LinkAddOutcome::Cycle => {
-                        return Ok(ChangeOutcome::Refused(LinkRefusal::Cycle));
-                    }
-                    LinkAddOutcome::Duplicate => {
-                        return Ok(ChangeOutcome::Refused(LinkRefusal::Duplicate));
-                    }
-                    LinkAddOutcome::HasParent => {
-                        return Ok(ChangeOutcome::Refused(LinkRefusal::HasParent));
-                    }
-                    LinkAddOutcome::ParentCycle => {
-                        return Ok(ChangeOutcome::Refused(LinkRefusal::ParentCycle));
-                    }
-                    LinkAddOutcome::NotEpic => {
-                        return Ok(ChangeOutcome::Refused(LinkRefusal::NotEpic));
+                    LinkAddOutcome::Refused(refusal) => {
+                        return Ok(ChangeOutcome::Refused(refusal));
                     }
                 }
             }
