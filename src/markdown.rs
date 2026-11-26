@@ -190,13 +190,10 @@ fn render_with(source: &str, boxes: Boxes, scope: Option<Scope<'_>>) -> String {
                 inert = inert.saturating_sub(1);
                 event
             }
-            Event::Text(text) if inert == 0 => match template {
-                Some(template) => {
-                    push_hash_links(&text, template, &mut events);
-                    continue;
-                }
-                None => Event::Text(text),
-            },
+            Event::Text(text) if inert == 0 && scope.is_some() => {
+                push_word_links(&text, template, &mut events);
+                continue;
+            }
             other => other,
         });
     }
@@ -208,9 +205,10 @@ fn render_with(source: &str, boxes: Boxes, scope: Option<Scope<'_>>) -> String {
     put_boxes(&shown, &token, boxes)
 }
 
-/// Pushes `text` onto `events`, with each commit hash in it turned into a link to `template` with
-/// `{hash}` replaced by the hash.
-fn push_hash_links(text: &str, template: &str, events: &mut Vec<Event<'_>>) {
+/// Pushes `text` onto `events`, with each card id in it turned into a link to its card and, when
+/// `template` is given, each commit hash into a link to `template` with `{hash}` replaced by the
+/// hash.
+fn push_word_links(text: &str, template: Option<&str>, events: &mut Vec<Event<'_>>) {
     let mut last = 0;
     let mut word_start = None;
     for (at, c) in text.char_indices().chain([(text.len(), ' ')]) {
@@ -220,15 +218,19 @@ fn push_hash_links(text: &str, template: &str, events: &mut Vec<Event<'_>>) {
             (Some(start), false) => {
                 word_start = None;
                 let word = &text[start..at];
-                if !is_commit_hash(word) {
+                let dest = if is_card_id(word) {
+                    format!("/t/{word}")
+                } else if let Some(template) = template.filter(|_| is_commit_hash(word)) {
+                    template.replace("{hash}", word)
+                } else {
                     continue;
-                }
+                };
                 if start > last {
                     events.push(Event::Text(text[last..start].to_string().into()));
                 }
                 events.push(Event::Start(Tag::Link {
                     link_type: LinkType::Inline,
-                    dest_url: template.replace("{hash}", word).into(),
+                    dest_url: dest.into(),
                     title: "".into(),
                     id: "".into(),
                 }));
@@ -242,6 +244,16 @@ fn push_hash_links(text: &str, template: &str, events: &mut Vec<Event<'_>>) {
     if last < text.len() {
         events.push(Event::Text(text[last..].to_string().into()));
     }
+}
+
+/// Returns whether `word` is 8 lowercase hex digits with at least one decimal digit and one letter,
+/// so a number such as `20261119` or a word such as `deadbeef` is never taken for a card id.
+#[must_use]
+fn is_card_id(word: &str) -> bool {
+    word.len() == 8
+        && word.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && word.bytes().any(|b| b.is_ascii_digit())
+        && word.bytes().any(|b| b.is_ascii_lowercase())
 }
 
 /// Returns whether `word` is 7 to 40 hex digits with at least one decimal digit, so a word such as
@@ -639,6 +651,16 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn render_in_should_link_a_card_id() {
+        let source = "Landed d80dd74b, 20261119, deadbeef, `d80dd74b` and [d80dd74b](https://e.com) in xd80dd74b";
+        let out = render_commits(source, None);
+        assert!(out.contains(r#"<a href="/t/d80dd74b""#), "{out}");
+        assert_eq!(out.matches("<a ").count(), 2, "{out}");
+        assert!(out.contains("20261119, deadbeef,"), "{out}");
+        assert!(!render(source).contains("/t/"));
     }
 
     #[test]
