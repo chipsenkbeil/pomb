@@ -2,7 +2,7 @@
 hidden
 positional
 Run one dev gate on ci and fail unless ci tested the worktree.
-Usage: dev __gate <worktree> <verb> <log>. Exactly one new ci run must appear under the worktree's name, and it must have passed from a clean local source: local, or local@SHA where SHA is a prefix of the worktree's HEAD.
+Usage: dev __gate <worktree> <verb> <log>. Exactly one new ci run must appear whose source is local@ plus the first 12 characters of the worktree's HEAD and, when DEV_AGENT is set, whose creator is that agent, and it must have passed.
 ]]
 local devos = require("dev.os")
 local fs = require("dev.fs")
@@ -17,13 +17,12 @@ local function fail(...)
     return 1
 end
 
-local function runs(wt)
+local function runs(wt, source, agent)
     local out = devos.capture({ "ci", "-C", wt, "--json", "ps", "-a", "-n", "2000" })
     local doc = json.decode(out) or {}
-    local prefix = fs.basename(wt) .. "-"
     local rows = {}
     for _, row in ipairs(doc.runs or {}) do
-        if type(row.repo) == "string" and row.repo:sub(1, #prefix) == prefix then
+        if row.source == source and (not agent or row.created_by == agent) then
             rows[#rows + 1] = row
         end
     end
@@ -35,8 +34,18 @@ if not (wt and verb and log) or wt == "" or verb == "" or log == "" then
     return fail("usage: __gate.sh <worktree> <verb> <log>")
 end
 
+local head = vcs.head(wt)
+if not head then
+    return fail("Could not read the HEAD commit of ", wt, ", so no ci run can be matched to it.")
+end
+local source = "local@" .. head:sub(1, 12)
+local agent = os.getenv("DEV_AGENT")
+if agent == "" then
+    agent = nil
+end
+
 local known = {}
-for _, row in ipairs(runs(wt)) do
+for _, row in ipairs(runs(wt, source, agent)) do
     known[row.run] = true
 end
 fs.remove(log)
@@ -46,7 +55,7 @@ if status ~= 0 then
 end
 
 local fresh = {}
-for _, row in ipairs(runs(wt)) do
+for _, row in ipairs(runs(wt, source, agent)) do
     if not known[row.run] then
         fresh[#fresh + 1] = row
     end
@@ -57,8 +66,8 @@ if #fresh ~= 1 then
         verb,
         " --remote left ",
         #fresh,
-        " new ci runs under ",
-        wt,
+        " new ci runs from ",
+        source,
         ", where 1 was expected, so it did not test this worktree."
     )
 end
@@ -76,45 +85,6 @@ if row.status ~= "passed" then
         row.source,
         ", and only a passed run counts."
     )
-end
-local sha = row.source:match("^local@(.+)$")
-if row.source ~= "local" and not sha then
-    return fail(
-        "The ci run ",
-        row.run,
-        " of ",
-        row.repo,
-        " is from ",
-        row.source,
-        ", and only a clean local source counts."
-    )
-end
-if sha then
-    local head = vcs.head(wt)
-    if not head then
-        return fail(
-            "Could not read the HEAD commit of ",
-            wt,
-            ", so the source ",
-            row.source,
-            " cannot be checked."
-        )
-    end
-    if head:sub(1, #sha) ~= sha then
-        return fail(
-            "The ci run ",
-            row.run,
-            " of ",
-            row.repo,
-            " tested ",
-            row.source,
-            ", which is not the HEAD ",
-            head,
-            " of ",
-            wt,
-            ", so it did not test this worktree."
-        )
-    end
 end
 io.stdout:write(row.run, " ", row.repo, " ", row.source, "\n")
 return 0

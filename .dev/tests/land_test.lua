@@ -42,7 +42,7 @@ fi
 status=passed
 code=0
 if [ -e '@dir@/fail-'"$1" ]; then status=failed; code=1; fi
-printf '{"run":"r%s","repo":"%s-0123456789abcdef","source":"local","status":"%s"}\n' "$(wc -l <'@dir@/runs.jsonl' | tr -d ' ')" "$(basename "$PWD")" "$status" >>'@dir@/runs.jsonl'
+printf '{"run":"r%s","repo":"%s-0123456789abcdef","source":"local@%s","created_by":"%s","status":"%s"}\n' "$(wc -l <'@dir@/runs.jsonl' | tr -d ' ')" "$(basename "$PWD")" "$(git rev-parse HEAD | cut -c1-12)" "$DEV_AGENT" "$status" >>'@dir@/runs.jsonl'
 exit $code
 ]]
 

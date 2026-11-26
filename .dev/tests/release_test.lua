@@ -35,7 +35,7 @@ echo "$1" >>'@dir@/gates.log'
 [ "$1" != "$FAIL_GATE" ] || exit 1
 [ "$1" != "$DRAIN_GATE" ] || [ "$(grep -c "^$1\$" '@dir@/gates.log')" -gt "${DRAIN_TIMES:-1}" ] || { echo 'dev: the hub is draining and takes no new work'; exit 1; }
 touch '@dir@/runs.jsonl'
-printf '{"run":"run-%s","repo":"%s-0123","source":"local","kind":"run","status":"passed"}\n' "$1" "$(basename "$PWD")" >>'@dir@/runs.jsonl'
+printf '{"run":"run-%s","repo":"%s-0123","source":"local@%s","kind":"run","created_by":"%s","status":"passed"}\n' "$1" "$(basename "$PWD")" "$(git rev-parse HEAD | cut -c1-12)" "$DEV_AGENT" >>'@dir@/runs.jsonl'
 echo 'Summary [1s] 1 tests run: 1 passed'
 ]]
 
