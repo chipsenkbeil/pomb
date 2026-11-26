@@ -11187,14 +11187,18 @@ struct BulkTasksResult {
     path = "/api/boards/{id}/tasks/bulk",
     operation_id = "bulk_tasks",
     tag = "Tasks",
-    params(("id" = String, Path, description = "Board id")),
+    params(
+        ("id" = String, Path, description = "Board id"),
+        ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim (see Claims), checked against every named task"),
+        ("If-Owner-Fence" = Option<u64>, Header, description = "Fence of the caller's owner lease (see Claims), checked against every named task"),
+    ),
     request_body = BulkTasksInput,
     responses(
         (status = 200, description = "Every task changed, or would change under `dry_run`", body = BulkTasksResult),
         (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks, a link the tasks cannot hold or a `parent` or `child` link whose umbrella is not an epic (`not_epic`)"),
         (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task carries a locking label, or a task it links to carries one and the link is not `blocked_by` or `related`, and the token lacks `tasks.edit_locked`. `role_move_forbidden`: a `move` by a token issued as a role that the board's column rules do not let move one of the tasks out of its column into the target. `permission_denied` also covers a `move` of an epic across a Done column boundary without `epics.manage`, which refuses the whole batch"),
         (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
-        (status = 409, description = "`lane_archived`: a task, or a task a relation touches, sits in an archived swimlane, or a `move` names one, which refuses the whole batch. `epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column. `wip_limit_reached`: a `move` would put a task past the target column's or limit group's WIP limit and `force` is not true, and no task moves"),
+        (status = 409, description = "`lane_archived`: a task, or a task a relation touches, sits in an archived swimlane, or a `move` names one, which refuses the whole batch. `stale_fence`: a named task has a live claim or owner lease holding another fence, which refuses the whole batch before any write. `epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column. `wip_limit_reached`: a `move` would put a task past the target column's or limit group's WIP limit and `force` is not true, and no task moves"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -11235,6 +11239,7 @@ async fn bulk_tasks(
     if distinct.len() != input.task_ids.len() {
         return Err(AppError::bad_request("task_ids repeats an id"));
     }
+    let fence = write_fence_header(&headers)?;
     let mut tasks = Vec::with_capacity(input.task_ids.len());
     for task_id in &input.task_ids {
         let task = found(db.task(task_id), "task not found")?;
@@ -11242,6 +11247,9 @@ async fn bulk_tasks(
             return Err(AppError::bad_request("a task is not on this board"));
         }
         ensure_unlocked(db, &user, task.board_id(), task.row())?;
+        if !task.row().fence_allows(fence) {
+            return Err(stale_fence());
+        }
         tasks.push(task);
     }
 

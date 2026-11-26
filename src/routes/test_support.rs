@@ -312,6 +312,10 @@ impl Fixture {
         (board, ids)
     }
 
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+
     pub(crate) async fn send(&self, method: &str, uri: &str, body: Option<Value>) -> Reply {
         let bearer = format!("Bearer {}", self.token);
         call(&self.app, method, uri, &[("authorization", &bearer)], body).await

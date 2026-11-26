@@ -1529,3 +1529,63 @@ async fn a_bulk_epic_move_should_refuse_a_child_left_out() {
     assert_eq!(fx.row(&epic).column_id, columns[0]);
     assert_eq!(fx.row(&child).column_id, columns[0]);
 }
+
+async fn claim_fence(fx: &Fixture, task: &str) -> u64 {
+    let uri = format!("/api/tasks/{task}/claim");
+    let body = json!({"claimant": "me", "ttl_seconds": 600});
+    let reply = fx.send("POST", &uri, Some(body)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    reply.body["fence"].as_u64().expect("fence")
+}
+
+async fn fenced_bulk(fx: &Fixture, board: &str, fence: u64, body: Value) -> Reply {
+    let uri = format!("/api/boards/{board}/tasks/bulk");
+    let fence = fence.to_string();
+    let headers = [
+        ("authorization", format!("Bearer {}", fx.token())),
+        ("if-claim-fence", fence),
+    ];
+    let headers: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    call(&fx.app, "POST", &uri, &headers, Some(body)).await
+}
+
+#[tokio::test]
+async fn bulk_move_should_refuse_a_stale_claim_fence() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    let fence = claim_fence(&fx, &b).await;
+
+    let body = json!({"task_ids": [a, b], "action": "move", "column_id": columns[1]});
+    let reply = fenced_bulk(&fx, &board, fence + 1, body).await;
+
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
+    assert_eq!(reply.body["code"], "stale_fence", "{}", reply.body);
+    assert_eq!(fx.cell(&board, &columns[0]), ["a", "b"]);
+    assert!(fx.cell(&board, &columns[1]).is_empty());
+}
+
+#[tokio::test]
+async fn bulk_move_should_accept_the_live_claim_fence() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    fx.db.set_column_wip(&columns[1], Some(1)).expect("limit");
+    fx.task(&columns[1], "d").await;
+    let a = fx.task(&columns[0], "a").await;
+    let fence = claim_fence(&fx, &a).await;
+
+    let body = json!({
+        "task_ids": [a],
+        "action": "move",
+        "column_id": columns[1],
+        "force": true,
+    });
+    let reply = fenced_bulk(&fx, &board, fence, body).await;
+
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(fx.cell(&board, &columns[1]), ["d", "a"]);
+}
