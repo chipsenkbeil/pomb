@@ -5,12 +5,7 @@ var end = src.indexOf('\n  };\n', start) + '\n  };\n'.length;
 if (start < 0 || end < start) throw new Error('TokenSort not found');
 eval(src.slice(start, end));
 
-var failures = 0;
-function check(name, got, want) {
-  var ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got)));
-}
+const { check, finish } = require('./support/check.js');
 
 function row(id, name, token, scope, created, lastUsed, expires) {
   return { id: id, name: name, token: token, scope: scope, created: created, last_used: lastUsed, expires: expires };
@@ -47,4 +42,4 @@ check('another column starts ascending',
   TokenSort.toggle({ column: 'name', direction: 'descending' }, 'scope'), { column: 'scope', direction: 'ascending' });
 check('the columns match the table', TokenSort.columns, ['name', 'token', 'scope', 'created', 'last_used', 'last_client', 'expires']);
 
-if (failures) process.exit(1);
+finish();

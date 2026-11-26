@@ -9,12 +9,7 @@ if (start < 0 || stop < start) throw new Error('token row helpers not found');
 eval(src.slice(formStart, formEnd));
 eval(src.slice(start, stop));
 
-let failures = 0;
-function check(name, got, want) {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got) + ' want ' + JSON.stringify(want)));
-}
+const { check, finish } = require('./support/check.js');
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 const reply = (status, body) => Promise.resolve({
@@ -163,7 +158,7 @@ function reset() {
   check('show_failure_writes_error: the overlay stays closed',
     elements['tk-show-overlay'].hidden, true);
 
-  process.exit(failures ? 1 : 0);
+  finish();
 })().catch((error) => {
   console.error(error);
   process.exit(1);

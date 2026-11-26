@@ -25,12 +25,7 @@ var catalog = [
 var areas = TokenForm.areas(catalog);
 function area(name) { return areas.filter(function (a) { return a.name === name; })[0]; }
 
-var failures = 0;
-function check(name, got, want) {
-  var ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got)));
-}
+const { check, finish } = require('./support/check.js');
 
 check('areas keep catalog order',
   areas.map(function (a) { return a.name + ':' + a.items.length; }),
@@ -237,4 +232,4 @@ check('the remove board message names several tokens as they',
   TokenForm.removeBoardMessage('lead', 'Beta', 2),
   'Remove "Beta" from "lead"? 2 live tokens of this role reach Beta, and they will stop working on every board, along with the tokens they issued. Issue new ones afterwards.');
 
-if (failures) process.exit(1);
+finish();

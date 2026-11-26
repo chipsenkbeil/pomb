@@ -9,12 +9,7 @@ var end = src.indexOf('\n  };\n', start) + '\n  };\n'.length;
 if (start < 0 || end < start) throw new Error('TokenTabs not found');
 eval(src.slice(start, end));
 
-var failures = 0;
-function check(name, got, want) {
-  var ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got)));
-}
+const { check, finish } = require('./support/check.js');
 
 check('the bare section hash opens Create', TokenTabs.fromHash('#api-tokens'), 'create');
 check('the list hash opens List and revoke', TokenTabs.fromHash('#api-tokens/list'), 'list');
@@ -38,4 +33,4 @@ check('Home and End jump to the ends',
   [TokenTabs.step('debug', 'Home'), TokenTabs.step('debug', 'End')], ['create', 'list']);
 check('other keys do nothing', TokenTabs.step('create', 'Enter'), null);
 
-if (failures) process.exit(1);
+finish();

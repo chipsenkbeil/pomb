@@ -8,12 +8,7 @@ const slice = (from, to) => {
 const helpers = slice('  const WIP_LIMIT_CODE', '  const refuseMove');
 const where = slice('    const fillSelect = ', '    // mode: ');
 
-let failures = 0;
-const check = (name, got, want) => {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got)));
-};
+const { check, finish } = require('./support/check.js');
 
 const cssEscape = (s) => String(s);
 const putCardBack = () => {};
@@ -133,5 +128,5 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
   check('picking another column and swimlane moves the form there and keeps the draft',
     [form.elements.column_id.value, form.elements.swimlane_id.value, form.elements.name.value, form.elements.description.value],
     ['c2', 'l2', 'Draft', 'Notes']);
-  process.exit(failures ? 1 : 0);
+  finish();
 })();

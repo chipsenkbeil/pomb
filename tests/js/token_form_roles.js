@@ -5,12 +5,7 @@ const end = src.indexOf('\n  };\n', start) + '\n  };\n'.length;
 if (start < 0 || end < start) throw new Error('TokenForm not found');
 eval(src.slice(start, end));
 
-let failures = 0;
-function check(name, got, want) {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got)));
-}
+const { check, finish } = require('./support/check.js');
 
 const roles = [
   { name: 'scribe', permissions: ['tasks.read'] },
@@ -31,5 +26,5 @@ Promise.all([
   check('act_as_menu_lists_roles: the menu lists every role, standard first',
     TokenForm.roleOrder(outcomes[1].roles).map((role) => role.name),
     ['planner', 'lead', 'scribe']);
-  if (failures) process.exit(1);
+  finish();
 });
