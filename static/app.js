@@ -15439,7 +15439,9 @@
       }).then(function (page) {
         if (token === loadToken) render(page);
       }).catch(function (err) {
-        if (token === loadToken) setStatus('Could not load board history: ' + err.message);
+        if (token !== loadToken) return;
+        qs('history-feed').innerHTML = '';
+        setStatus('Could not load board history: ' + err.message);
       });
     }
 

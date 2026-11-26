@@ -5,6 +5,30 @@ if (from < 0 || to < 0) throw new Error('BoardHistoryPage not found');
 var BoardHistoryPage;
 function escapeHtml(s) { return String(s); }
 var document = {};
+var elements = {};
+var handlers = {};
+var fetches = [];
+var fetchReplies = [];
+var ReportTools = { send: () => Promise.resolve({ bookmarks: [] }), endpoint: () => '/bookmarks' };
+var LocalTime = { clockOf: () => '10:00' };
+var window = { localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, navigator: {} };
+function toast() {}
+function apiJson(path) {
+  fetches.push(path);
+  return Promise.resolve(fetchReplies.shift());
+}
+document.getElementById = (id) => {
+  if (!elements[id]) {
+    elements[id] = {
+      value: '', textContent: '', innerHTML: '', hidden: false, href: '', checked: false,
+      addEventListener: (type, fn) => { handlers[id] = fn; },
+      setAttribute() {},
+      focus() {},
+    };
+  }
+  return elements[id];
+};
+document.querySelectorAll = () => [];
 eval(src.slice(from, to));
 
 const { check, finish } = require('./support/check.js');
@@ -195,6 +219,22 @@ testCase(async () => {
   await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast, () => [], undefined);
   check('history_bookmark_import_should_run_without_navigator_locks posts the entry', sent, ['A']);
   check('history_bookmark_import_should_run_without_navigator_locks clears the key', storage.getItem(HISTORY_KEY), null);
+});
+
+testCase(async () => {
+  const rows = [{ kind: 'change', task: 'T', user: 'ann', time: '2026-10-28T10:00:00Z', event: 'moved' }];
+  const reply = (status, body) => ({ ok: status < 400, status, json: () => Promise.resolve(body) });
+  fetchReplies.push(reply(200, { rows, users: [] }), reply(400, {}), reply(200, { rows, users: [] }));
+  BoardHistoryPage.init('b1');
+  await tick();
+  await tick();
+  const name = 'history_feed_should_empty_when_a_reload_fails';
+  check(name + ' fills the feed on the first load', elements['history-feed'].innerHTML !== '', true);
+  await handlers['history-reload']();
+  check(name + ' empties the feed after the failure', elements['history-feed'].innerHTML, '');
+  check(name + ' shows the failure', elements['history-status'].textContent.indexOf('Could not load'), 0);
+  await handlers['history-reload']();
+  check(name + ' fills the feed again after a later success', elements['history-feed'].innerHTML !== '', true);
 });
 
 cases.reduce((chain, fn) => chain.then(fn), Promise.resolve()).then(() => {
