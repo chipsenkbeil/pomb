@@ -80,6 +80,8 @@ use self::agents::{txn_remove_grants_of_board, txn_seed_standard_roles};
 use self::bin::txn_remove_board_bin;
 pub use self::bin::{PurgeOutcome, RestoreOutcome};
 pub use self::dispatch::Delivery;
+#[cfg(test)]
+pub use self::entries::MAX_ENTRIES_PER_DAY;
 use self::entries::txn_reindex_entries;
 use self::events::txn_remove_events;
 pub use self::events::{EventRead, MAX_EVENTS_PER_BOARD};

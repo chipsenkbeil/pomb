@@ -10327,6 +10327,27 @@ async fn update_task(
     } else {
         ChildLinks::Keep
     };
+
+    // An epic holds no work, so a timer still running on the card stops and logs its session
+    // first, and a refused stop leaves the card a task
+    if input.kind == Some(TaskKind::Epic) && owned.row().kind != TaskKind::Epic {
+        let _gate = db.lock_timer();
+        if let Some(timer) = db.active_timer().map_err(AppError::from)?
+            && timer.task_id.as_deref() == Some(id.as_str())
+        {
+            log_timer_session(
+                db,
+                &timer,
+                TimerSession {
+                    claimed_completed: false,
+                    reason: Some("Card became an epic"),
+                    activity_id: None,
+                    created_by: &user.handle,
+                    actor: user.actor(),
+                },
+            )?;
+        }
+    }
     let applied = db
         .apply_task_change_in_board(&owned, children, actor, |task, context| {
             // A failed check returns before the row is stored
@@ -10565,26 +10586,6 @@ async fn update_task(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     applied?;
-
-    // An epic holds no work, so a timer still running on the card stops and logs its session
-    if input.kind == Some(TaskKind::Epic) {
-        let _gate = db.lock_timer();
-        if let Some(timer) = db.active_timer().map_err(AppError::from)?
-            && timer.task_id.as_deref() == Some(id.as_str())
-        {
-            log_timer_session(
-                db,
-                &timer,
-                TimerSession {
-                    claimed_completed: false,
-                    reason: Some("Card became an epic"),
-                    activity_id: None,
-                    created_by: &user.handle,
-                    actor: user.actor(),
-                },
-            )?;
-        }
-    }
 
     if wants_json(&headers, &user) {
         let task = found(db.task(&id), "task not found")?;

@@ -6,8 +6,8 @@ use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{TEST_BODY_4_MIB_BYTES, held_disk, make_plain, move_to};
 use super::{EPIC_TEMPLATE, router};
 use crate::AppState;
-use crate::db::Db;
-use crate::models::{AccountId, ActiveTimer, HistoryKind, TimerMode};
+use crate::db::{Db, MAX_ENTRIES_PER_DAY, NewTimeEntry};
+use crate::models::{AccountId, ActiveTimer, EntryKind, HistoryKind, TimerMode};
 
 struct Fixture {
     db: Db,
@@ -2234,6 +2234,87 @@ async fn a_running_timer_should_stop_and_keep_its_entry_when_its_card_becomes_an
     let entries = fx.db.list_entries(&card).expect("entries");
     assert_eq!(entries.len(), 1, "the session is recorded");
     assert!(entries[0].minutes >= 10, "{}", entries[0].minutes);
+}
+
+#[tokio::test]
+async fn a_refused_timer_stop_should_leave_the_card_a_task_with_its_timer_running() {
+    let (_dir, fx) = fixture();
+
+    // Create a card and start a stopwatch on it
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let (status, started) = call(
+        &fx,
+        "POST",
+        "/api/timer/start",
+        Some(json!({"task_id": card, "mode": "stopwatch"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+
+    // Backdate the session to a fixed past day and fill that day for the account
+    let day_start = 1_577_959_200;
+    let timer = ActiveTimer {
+        task_id: Some(card.clone()),
+        mode: TimerMode::Stopwatch,
+        started_at: day_start,
+        duration_secs: None,
+    };
+    fx.db
+        .account(&fx.user_id)
+        .set_active_timer(&timer)
+        .expect("timer");
+    for _ in 0..MAX_ENTRIES_PER_DAY {
+        fx.db
+            .create_entry_full(
+                &fx.user_id,
+                NewTimeEntry {
+                    task_id: None,
+                    started_at: "2020-01-02T10:00:00+00:00",
+                    minutes: 1,
+                    seconds: 60,
+                    note: "",
+                    kind: EntryKind::Manual,
+                    interrupted: false,
+                    interrupt_reason: None,
+                    labels: &[],
+                    created_by: "",
+                    activity_id: None,
+                    role: None,
+                    token_name: None,
+                    role_id: None,
+                    role_name: None,
+                },
+            )
+            .expect("under the cap");
+    }
+
+    // Make the card an epic, which the full day refuses
+    let (status, refused) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{card}"),
+        Some(json!({"kind": "epic"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert!(
+        refused
+            .as_str()
+            .is_some_and(|message| message.contains("time entries started per day")),
+        "{refused}"
+    );
+
+    // The card is still a task and its timer is unchanged
+    let (_, shown) = call(&fx, "GET", &format!("/api/tasks/{card}"), None).await;
+    assert_eq!(shown["kind"], "task", "{shown}");
+    let running = fx
+        .db
+        .account(&fx.user_id)
+        .active_timer()
+        .expect("timer")
+        .expect("still running");
+    assert_eq!(running.task_id.as_deref(), Some(card.as_str()));
+    assert_eq!(running.started_at, day_start);
 }
 
 #[tokio::test]
