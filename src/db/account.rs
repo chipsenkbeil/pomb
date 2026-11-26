@@ -1208,9 +1208,25 @@ impl AccountDb {
     pub fn board_tasks(&self, board_id: &str) -> DbResult<Vec<TaskRow>> {
         let mut tasks = self.on_own_board(board_id, || self.db.board_tasks(board_id))?;
         for task in &mut tasks {
-            task.total_minutes = self.db.task_minutes_of(&self.account, &task.id)?;
+            task.total_minutes = self.minutes_on(board_id, &task.id)?;
         }
         Ok(tasks)
+    }
+
+    /// Returns the minutes logged on task `task_id` of board `board_id`: every entry for the
+    /// board's owner and only the account's own for anyone else.
+    fn minutes_on(&self, board_id: &str, task_id: &str) -> DbResult<i64> {
+        if self.holds_owner_on(board_id)? {
+            self.db.task_total_minutes(task_id)
+        } else {
+            self.db.task_minutes_of(&self.account, task_id)
+        }
+    }
+
+    /// Returns whether the account holds [`BoardRole::Owner`] on board `board_id`.
+    fn holds_owner_on(&self, board_id: &str) -> DbResult<bool> {
+        let held = role_in(&self.db.read()?, &self.account, board_id)?;
+        Ok(held == Some(BoardRole::Owner))
     }
 
     /// Returns the ids of the tasks on board `board_id` in the order of
@@ -1238,7 +1254,7 @@ impl AccountDb {
         mut visit: impl FnMut(TaskCard) -> DbResult<()>,
     ) -> DbResult<()> {
         self.visit_board_tasks(board_id, |mut card: TaskCard| {
-            card.total_minutes = self.db.task_minutes_of(&self.account, &card.id)?;
+            card.total_minutes = self.minutes_on(board_id, &card.id)?;
             visit(card)
         })
     }
@@ -1249,8 +1265,9 @@ impl AccountDb {
         let Some(task) = self.task(id)? else {
             return Ok(None);
         };
+        let board_id = task.board_id.clone();
         let mut row = task.into_row();
-        row.total_minutes = self.db.task_minutes_of(&self.account, id)?;
+        row.total_minutes = self.minutes_on(&board_id, id)?;
         if self.restricted() {
             let mut reads = self.link_reads()?;
             let mut links = Vec::new();
@@ -1658,7 +1675,7 @@ impl AccountDb {
         let Some(mut task) = self.task(id)? else {
             return Ok(None);
         };
-        task.row.total_minutes = self.db.task_minutes_of(&self.account, id)?;
+        task.row.total_minutes = self.minutes_on(&task.board_id, id)?;
         Ok(Some(task))
     }
 
@@ -2648,14 +2665,16 @@ impl AccountDb {
         Ok(reachable)
     }
 
-    /// Returns the time entries the account logged on a task, newest first; empty for a task on a
-    /// board the account holds no role on.
+    /// Returns the time entries on a task, newest first: every entry for the board's owner and the
+    /// account's own for anyone else; empty for a task on a board the account holds no role on.
     pub fn list_entries(&self, task_id: &str) -> DbResult<Vec<TimeEntryRow>> {
-        if self.task(task_id)?.is_none() {
+        let Some(task) = self.task(task_id)? else {
             return Ok(Vec::new());
-        }
+        };
         let mut entries = self.db.list_entries(task_id)?;
-        entries.retain(|entry| entry.account_id == self.account.as_str());
+        if !self.holds_owner_on(&task.board_id)? {
+            entries.retain(|entry| entry.account_id == self.account.as_str());
+        }
         Ok(entries)
     }
 

@@ -338,16 +338,19 @@ async fn a_member_should_see_only_the_time_it_logged_itself() {
         assert!(logged.status.is_success(), "{}", logged.body);
     }
     let minutes_of = |account: &AccountId| {
-        fx.db
+        let mut minutes = fx
+            .db
             .account(account)
             .needing(BoardRole::Viewer)
             .list_entries(&fx.task)
             .expect("entries")
             .iter()
             .map(|entry| entry.minutes)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        minutes.sort_unstable();
+        minutes
     };
-    assert_eq!(minutes_of(&fx.alice), [7]);
+    assert_eq!(minutes_of(&fx.alice), [5, 7]);
     assert_eq!(minutes_of(&fx.bob), [5]);
     let total = |account: &AccountId| {
         fx.db
@@ -358,7 +361,7 @@ async fn a_member_should_see_only_the_time_it_logged_itself() {
             .expect("reachable")
             .total_minutes
     };
-    assert_eq!((total(&fx.alice), total(&fx.bob)), (7, 5));
+    assert_eq!((total(&fx.alice), total(&fx.bob)), (12, 5));
 }
 
 #[test]

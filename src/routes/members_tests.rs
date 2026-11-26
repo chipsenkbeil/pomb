@@ -9,7 +9,7 @@ use super::test_support::{Reply, call, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{AccountAction, Db};
-use crate::models::{AccountId, AuthScope, BoardAccess};
+use crate::models::{AccountId, AuthScope, BoardAccess, BoardRole};
 
 /// An instance with an owner who has a board, and two other accounts, each with an API token.
 struct Fixture {
@@ -335,4 +335,124 @@ async fn report_bookmarks_should_show_a_shared_one_to_members_and_neither_to_a_s
         !leaked.contains("Team") && !leaked.contains("Mine"),
         "{leaked}"
     );
+}
+
+impl Fixture {
+    fn task_with_time_from_both(&self) -> String {
+        let column = self
+            .db
+            .create_column(&self.board, "Todo", None)
+            .expect("column");
+        self.db
+            .create_task(&column, None, "Card", 1, None)
+            .expect("task")
+    }
+
+    async fn log(&self, token: &str, task: &str, minutes: i64) {
+        let uri = format!("/api/tasks/{task}/time");
+        let logged = self
+            .send(token, "POST", &uri, Some(json!({"minutes": minutes})))
+            .await;
+        assert!(logged.status.is_success(), "{}", logged.body);
+    }
+
+    async fn listed_minutes(&self, token: &str, task: &str) -> Vec<i64> {
+        let uri = format!("/api/tasks/{task}/time");
+        let listed = self.send(token, "GET", &uri, None).await;
+        assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+        let mut minutes: Vec<i64> = listed
+            .body
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|entry| entry["minutes"].as_i64().expect("minutes"))
+            .collect();
+        minutes.sort_unstable();
+        minutes
+    }
+
+    fn visited_total(&self, account: &AccountId) -> i64 {
+        let mut total = 0;
+        self.db
+            .account(account)
+            .needing(BoardRole::Viewer)
+            .visit_board_cards(&self.board, |card| {
+                total += card.total_minutes;
+                Ok(())
+            })
+            .expect("cards");
+        total
+    }
+
+    fn modal_total(&self, account: &AccountId, task: &str) -> i64 {
+        self.db
+            .account(account)
+            .needing(BoardRole::Viewer)
+            .task_with_minutes(task)
+            .expect("task")
+            .expect("reachable")
+            .row()
+            .total_minutes
+    }
+
+    fn total_for(&self, account: &AccountId, task: &str) -> i64 {
+        self.db
+            .account(account)
+            .needing(BoardRole::Viewer)
+            .board_task(task)
+            .expect("task")
+            .expect("reachable")
+            .total_minutes
+    }
+}
+
+#[tokio::test]
+async fn owner_should_see_every_members_time_on_a_shared_board() {
+    let fx = Fixture::new();
+    assert_eq!(fx.add("bob", "member").await.status, StatusCode::OK);
+    let task = fx.task_with_time_from_both();
+    fx.log(&fx.owner, &task, 7).await;
+    fx.log(&fx.friend, &task, 5).await;
+
+    assert_eq!(fx.listed_minutes(&fx.owner, &task).await, [5, 7]);
+    assert_eq!(fx.total_for(&fx.owner_id, &task), 12);
+    let cards = fx
+        .db
+        .account(&fx.owner_id)
+        .needing(BoardRole::Viewer)
+        .board_tasks(&fx.board)
+        .expect("tasks");
+    assert_eq!(cards.iter().map(|card| card.total_minutes).sum::<i64>(), 12);
+    assert_eq!(fx.visited_total(&fx.owner_id), 12);
+    assert_eq!(fx.modal_total(&fx.owner_id, &task), 12);
+}
+
+#[tokio::test]
+async fn member_should_still_see_only_own_time() {
+    let fx = Fixture::new();
+    assert_eq!(fx.add("bob", "member").await.status, StatusCode::OK);
+    let task = fx.task_with_time_from_both();
+    fx.log(&fx.owner, &task, 7).await;
+    fx.log(&fx.friend, &task, 5).await;
+
+    assert_eq!(fx.listed_minutes(&fx.friend, &task).await, [5]);
+    assert_eq!(fx.total_for(&fx.friend_id, &task), 5);
+    let cards = fx
+        .db
+        .account(&fx.friend_id)
+        .needing(BoardRole::Viewer)
+        .board_tasks(&fx.board)
+        .expect("tasks");
+    assert_eq!(cards.iter().map(|card| card.total_minutes).sum::<i64>(), 5);
+    assert_eq!(fx.visited_total(&fx.friend_id), 5);
+    assert_eq!(fx.modal_total(&fx.friend_id, &task), 5);
+    let stranger = fx
+        .send(
+            &fx.stranger,
+            "GET",
+            &format!("/api/tasks/{task}/time"),
+            None,
+        )
+        .await;
+    assert_eq!(stranger.status, StatusCode::NOT_FOUND, "{}", stranger.body);
 }
