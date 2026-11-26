@@ -106,14 +106,7 @@ function load() {
   return state;
 }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) {
-    failures++;
-    console.log('FAIL ' + name + ': got ' + g + ', want ' + w);
-  }
-}
+const { check, finish } = require('./support/check.js');
 
 function flush() {
   return new Promise(function (resolve) { setImmediate(resolve); });
@@ -248,5 +241,5 @@ var TEMPLATE = '## Problem\n\n## Goal\n\n## Approach\n\n## Out of scope';
   var letter = input.key('a');
   check('a letter key does not reach the document', [letter.stopped, letter.prevented], [true, false]);
 
-  if (failures) process.exit(1);
+  finish();
 })();

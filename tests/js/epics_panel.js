@@ -88,14 +88,7 @@ function load(role) {
   return state;
 }
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) {
-    failures++;
-    console.log('FAIL ' + name + ': got ' + g + ', want ' + w);
-  }
-}
+const { check, finish } = require('./support/check.js');
 
 function render(list, role) {
   var page = load(role);
@@ -242,6 +235,5 @@ function tick() { return new Promise(function (r) { setTimeout(r, 0); }); }
     }
   }
 
-  if (failures) process.exit(1);
-  console.log('epics panel ok');
+  finish();
 })();

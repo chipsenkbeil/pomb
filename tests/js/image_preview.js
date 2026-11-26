@@ -39,12 +39,7 @@ const document = {
 };
 eval(src.slice(start, end) + '\nglobalThis.openImagePreview = openImagePreview;\nglobalThis.imagePreviewTrigger = imagePreviewTrigger;');
 
-let failures = 0;
-const check = (name, got, want) => {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got) + ' want ' + JSON.stringify(want)));
-};
+const { check, finish } = require('./support/check.js');
 
 const link = makeNode('a');
 link.setAttribute('data-image-preview', '/f/1');
@@ -151,4 +146,4 @@ check('comment_image_should_open_preview: no alt falls back to the file name', b
 const before = body.children.length;
 check('linked_comment_image_should_follow_link: a linked image opens nothing', imagePreviewTrigger(commentImage('/files/shot.png', 'x', true)), false);
 check('linked_comment_image_should_follow_link: nothing is mounted', body.children.length, before);
-process.exit(failures ? 1 : 0);
+finish();

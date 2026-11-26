@@ -49,12 +49,7 @@ const press = (dom, name, key) => {
   return dom.focused.slice();
 };
 
-let failures = 0;
-const check = (name, got, want) => {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got)));
-};
+const { check, finish } = require('./support/check.js');
 
 const selectDom = makeDom();
 const selectUi = load(selectDom);
@@ -87,4 +82,4 @@ landings.forEach((c) => check(c[0], c[1], c[2]));
 check('no arrow, Home or End key focuses the hidden Acceptance tab', landings.some((c) => c[1].includes('subtasks')), false);
 check('the arrow and Home/End keys leave the Acceptance tab hidden', keyAcceptance.hidden, true);
 
-if (failures) process.exit(1);
+finish();

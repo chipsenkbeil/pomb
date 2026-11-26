@@ -1,10 +1,7 @@
 const { LocalTime } = require('../../static/pure.js');
 LocalTime.use({ hour12: true });
 
-var failures = 0;
-function check(name, got, want) {
-  if (got !== want) { failures++; console.log('FAIL ' + name + ': got ' + JSON.stringify(got) + ' want ' + JSON.stringify(want)); }
-}
+const { check, finish } = require('./support/check.js');
 
 var chicago = 'America/Chicago';
 var due = Date.parse('2026-10-01T20:30:00Z');
@@ -53,5 +50,4 @@ LocalTime.apply(titled);
 check('apply sets an attribute', /^[A-Z][a-z]{2} \d\d, 2026 /.test(titled.attrs.title), true);
 check('apply keeps the text for an attribute', titled.textContent, 'Today 8:30 PM UTC');
 
-if (failures) process.exit(1);
-console.log('ok');
+finish();
