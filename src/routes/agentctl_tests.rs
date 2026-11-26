@@ -14,7 +14,7 @@ use super::test_support::{
 use super::{ApiDoc, DeviceApproveForm, device_grant, router};
 use crate::auth::new_api_token_record;
 use crate::db::{
-    BootstrapToken, ChildTokenRefusal, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT, NewComment,
+    BootstrapToken, ChildTokenRefusal, Db, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT, NewComment,
 };
 use crate::limit::Limits;
 use crate::models::{
@@ -27,7 +27,7 @@ use crate::{AppState, BODY_LIMIT_BYTES, markdown};
 
 struct Fixture {
     app: axum::Router,
-    db: crate::db::Db,
+    db: Db,
     user_id: AccountId,
     cookie: String,
     read_token: String,
@@ -41,7 +41,7 @@ struct Fixture {
 fn fixture() -> (tempfile::TempDir, Fixture) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("agentctl.redb");
-    let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+    let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
     let user_id = db.create_user("admin").expect("create user");
     drop_seeded_roles(&db, &user_id);
     let session = db.create_session(&user_id, "").expect("session");
@@ -3786,7 +3786,7 @@ async fn device_pairing_should_limit_pending_requests_wrong_codes_and_clean_up()
     };
     fx.db.create_device_auth(&stale, now).expect("insert");
     assert_eq!(poll_device(&fx, "stale").await.0, StatusCode::GONE);
-    for _ in 0..crate::db::Db::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK {
+    for _ in 0..Db::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK {
         paired(&fx, json!(["read"])).await;
     }
     assert_eq!(
