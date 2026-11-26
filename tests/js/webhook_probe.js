@@ -9,12 +9,12 @@ const { check, finish } = require('./support/check.js');
 check('a status shows as the HTTP code', webhookProbeText({ status: 204, error: null }), 'Answered with HTTP 204');
 check('an error shows as the server worded it', webhookProbeText({ status: null, error: 'timed out' }), 'timed out');
 check('a refusal shows as the server worded it',
-  webhookProbeText({ status: null, error: 'refused: not a public address' }), 'refused: not a public address');
-check('a literal private url shows inline as non-public for the DNS check',
+  webhookProbeText({ status: null, error: 'could not connect' }), 'could not connect');
+check('a literal private url shows inline like an unresolvable host for the DNS check',
   webhookProbeFailure('test-dns', 'url must name a public host, not a loopback, private or link-local address'),
-  'Resolves to a non-public address');
-check('a literal private url shows inline as refused for the test request',
+  'Does not resolve to a public address');
+check('a literal private url shows inline like an unresolvable host for the test request',
   webhookProbeFailure('test-request', 'url must name a public host, not a loopback, private or link-local address'),
-  'refused: not a public address');
+  'could not connect');
 check('another failure keeps the server wording', webhookProbeFailure('test-dns', 'url is not valid'), 'url is not valid');
 finish();

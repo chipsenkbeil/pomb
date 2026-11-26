@@ -2832,6 +2832,8 @@ pub enum AccountSlot {
     /// An open wait for board events by one API token, counted under the token's id where the
     /// other kinds count under an account id.
     TokenWait,
+    /// A webhook check of the settings screen, a host lookup or a test request.
+    Probe,
 }
 
 impl AccountSlot {
@@ -2845,6 +2847,7 @@ impl AccountSlot {
             Self::Feed => AppState::FEEDS_PER_ACCOUNT_AT_ONCE,
             Self::Wait => AppState::WAITS_PER_ACCOUNT_AT_ONCE,
             Self::TokenWait => AppState::WAITS_PER_TOKEN_AT_ONCE,
+            Self::Probe => AppState::PROBES_PER_ACCOUNT_AT_ONCE,
         }
     }
 }
@@ -2862,6 +2865,8 @@ impl AppState {
     /// Calendar feeds of one account's boards that may be built at once, apart from its own
     /// whole-board reads.
     pub const FEEDS_PER_ACCOUNT_AT_ONCE: usize = 1;
+    /// Webhook checks of one account that may run at once.
+    pub const PROBES_PER_ACCOUNT_AT_ONCE: usize = 1;
     /// Attachment uploads that may run at once, each streaming its file to disk.
     pub const UPLOADS_AT_ONCE: usize = 8;
     /// Attachment uploads to one account's tasks that may run at once.

@@ -22382,8 +22382,9 @@ struct WebhookProbeInput {
 struct WebhookDnsView {
     /// True when the host resolves and every address it names is public.
     ok: bool,
-    /// `Resolves to public addresses only`, `Does not resolve` or `Resolves to a non-public
-    /// address`. No address is returned.
+    /// `Resolves to public addresses only` or `Does not resolve to a public address`, which a
+    /// host that does not resolve and one that resolves to a non-public address both get. No
+    /// address is returned.
     message: String,
 }
 
@@ -22392,17 +22393,18 @@ struct WebhookDnsView {
 struct WebhookTestView {
     /// The HTTP status the callback answered with, absent when it gave none.
     status: Option<u16>,
-    /// `refused: not a public address`, `timed out` or `could not connect`, absent when the
+    /// `timed out` or `could not connect`, which a host that does not resolve, one that is
+    /// unreachable and one that resolves to a non-public address all get. Absent when the
     /// callback answered.
     error: Option<String>,
 }
 
-/// Returns the 429 a check gets while both of its slots are taken.
+/// Returns the 429 a check gets while the account's own check or the server's two are running.
 #[must_use]
 fn probe_busy() -> AppError {
     AppError::with_status(
         StatusCode::TOO_MANY_REQUESTS,
-        "two webhook checks are already running, so try again in a moment",
+        "a webhook check of this account or two on the server are already running, so try again in a moment",
     )
     .with_code(ErrorCode::Busy)
 }
@@ -22421,7 +22423,7 @@ fn probe_busy() -> AppError {
         (status = 400, description = "A url that is missing, not http or https, carries credentials or names a loopback, private or link-local address"),
         (status = 403, description = "`session_required`: needs the browser session cookie"),
         (status = 404, description = "Board not found"),
-        (status = 429, description = "`busy`: two checks are already running"),
+        (status = 429, description = "`busy`: a check of this account or two on the server are already running"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -22437,15 +22439,20 @@ async fn test_webhook_dns(
     require_cookie_auth(&user)?;
     let input: WebhookProbeInput = parse_body(&headers, body).await?;
     let url = check_webhook_url(required(input.url.as_deref(), "url")?)?;
+    let permit = state
+        .account_slot(AccountSlot::Probe, account.account_id().as_str())
+        .try_acquire_owned()
+        .map_err(|_| probe_busy())?;
     let checked = state
         .prober
-        .check_host(&url)
+        .check_host(&url, permit)
         .await
         .map_err(|_| probe_busy())?;
     let (ok, message) = match checked {
         HostCheck::Resolves => (true, "Resolves to public addresses only"),
-        HostCheck::NotFound => (false, "Does not resolve"),
-        HostCheck::NotPublic => (false, "Resolves to a non-public address"),
+        HostCheck::NotFound | HostCheck::NotPublic => {
+            (false, "Does not resolve to a public address")
+        }
     };
     Ok(Json(WebhookDnsView {
         ok,
@@ -22454,8 +22461,8 @@ async fn test_webhook_dns(
 }
 
 /// Sends one unsigned `POST` with a small test event to a callback URL, through the guarded sender
-/// that deliveries use, and returns the status it answered with. At most two checks run at once.
-/// Needs the browser session.
+/// that deliveries use, and returns the status it answered with. An account runs one check at a
+/// time and the server two. Needs the browser session.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/webhooks/test-request",
@@ -22468,7 +22475,7 @@ async fn test_webhook_dns(
         (status = 400, description = "A url that is missing, not http or https, carries credentials or names a loopback, private or link-local address"),
         (status = 403, description = "`session_required`: needs the browser session cookie"),
         (status = 404, description = "Board not found"),
-        (status = 429, description = "`busy`: two checks are already running"),
+        (status = 429, description = "`busy`: a check of this account or two on the server are already running"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -22484,22 +22491,22 @@ async fn test_webhook_request(
     require_cookie_auth(&user)?;
     let input: WebhookProbeInput = parse_body(&headers, body).await?;
     let url = check_webhook_url(required(input.url.as_deref(), "url")?)?;
-    let sent = state.prober.send_test(&url, &board.row().id).await;
+    let permit = state
+        .account_slot(AccountSlot::Probe, account.account_id().as_str())
+        .try_acquire_owned()
+        .map_err(|_| probe_busy())?;
+    let sent = state.prober.send_test(&url, &board.row().id, permit).await;
     let view = match sent {
         Ok(status) => WebhookTestView {
             status: Some(status),
             error: None,
         },
         Err(ProbeError::Busy) => return Err(probe_busy()),
-        Err(ProbeError::Refused) => WebhookTestView {
-            status: None,
-            error: Some("refused: not a public address".to_string()),
-        },
         Err(ProbeError::TimedOut) => WebhookTestView {
             status: None,
             error: Some("timed out".to_string()),
         },
-        Err(ProbeError::Unreachable) => WebhookTestView {
+        Err(ProbeError::Refused | ProbeError::Unreachable) => WebhookTestView {
             status: None,
             error: Some("could not connect".to_string()),
         },

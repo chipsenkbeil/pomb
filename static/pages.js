@@ -2992,7 +2992,7 @@
 
   function webhookProbeFailure(path, message) {
     if (message.indexOf('url must name a public host') !== 0) return message;
-    return path === 'test-dns' ? 'Resolves to a non-public address' : 'refused: not a public address';
+    return path === 'test-dns' ? 'Does not resolve to a public address' : 'could not connect';
   }
 
   function webhookProbeText(result) {

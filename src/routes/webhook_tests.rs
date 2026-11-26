@@ -1172,7 +1172,7 @@ async fn send_test_should_refuse_a_loopback_url_under_the_real_policy() {
         .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     assert_eq!(reply.body["status"], Value::Null);
-    assert_eq!(reply.body["error"], "refused: not a public address");
+    assert_eq!(reply.body["error"], "could not connect");
     assert!(!reply.body.to_string().contains("127.0.0.1"));
     assert!(callback.requests().is_empty());
 }
@@ -1272,14 +1272,14 @@ async fn dns_check_should_report_each_verdict_without_leaking_addresses() {
         (
             vec![[8, 8, 8, 8], [10, 1, 2, 3]],
             false,
-            "Resolves to a non-public address",
+            "Does not resolve to a public address",
         ),
         (
             vec![[127, 0, 0, 1]],
             false,
-            "Resolves to a non-public address",
+            "Does not resolve to a public address",
         ),
-        (vec![], false, "Does not resolve"),
+        (vec![], false, "Does not resolve to a public address"),
     ];
     for (addresses, ok, message) in cases {
         let fx = Browser::new(Some(Prober::with_parts(
@@ -1313,32 +1313,72 @@ async fn dns_check_should_report_each_verdict_without_leaking_addresses() {
             json!({ "url": "https://gone.example.com/x" }),
         )
         .await;
-    assert_eq!(reply.body["message"], "Does not resolve");
+    assert_eq!(
+        reply.body["message"],
+        "Does not resolve to a public address"
+    );
+}
+
+#[tokio::test]
+async fn dns_check_should_answer_alike_for_a_non_public_and_an_unresolvable_host() {
+    let mut replies = Vec::new();
+    for lookup in [resolving_to(vec![[10, 1, 2, 3]]), nothing_resolves()] {
+        let fx = Browser::new(Some(Prober::with_parts(
+            is_public_address,
+            lookup,
+            Duration::from_secs(5),
+        )));
+        let reply = fx
+            .post(
+                &fx.uri("test-dns"),
+                json!({ "url": "https://internal.example.com/x" }),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        replies.push(reply.body);
+    }
+    assert_eq!(replies[0], replies[1]);
+    assert_eq!(replies[0]["ok"], json!(false));
+    assert!(!replies[0].to_string().contains("10.1.2.3"));
+}
+
+#[tokio::test]
+async fn send_test_should_answer_alike_for_a_non_public_and_an_unresolvable_host() {
+    let mut replies = Vec::new();
+    for lookup in [resolving_to(vec![[10, 1, 2, 3]]), nothing_resolves()] {
+        let fx = Browser::new(Some(Prober::with_parts(
+            is_public_address,
+            lookup,
+            Duration::from_secs(5),
+        )));
+        let reply = fx
+            .post(
+                &fx.uri("test-request"),
+                json!({ "url": "https://internal.example.com/hook" }),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        replies.push(reply.body);
+    }
+    assert_eq!(replies[0], replies[1]);
+    assert_eq!(replies[0]["error"], "could not connect");
+    assert_eq!(replies[0]["status"], Value::Null);
 }
 
 #[tokio::test]
 async fn probe_routes_should_answer_429_while_both_slots_are_busy() {
-    let lookup: Lookup = Arc::new(|_, port| {
-        thread::sleep(Duration::from_millis(1500));
-        Ok(vec![SocketAddr::from(([8, 8, 8, 8], port))])
-    });
-    let fx = Browser::new(Some(Prober::with_parts(
-        is_public_address,
-        lookup,
-        Duration::from_secs(5),
-    )));
+    let team = Team::new(3);
     let body = json!({ "url": "https://hook.example.com/x" });
-    let uri = fx.uri("test-dns");
-    let slow = || call(&fx.app, "POST", &uri, &SAME_ORIGIN, Some(body.clone()));
+    let slow = |member: usize| team.post(member, "test-dns", body.clone());
     let probing = async {
         tokio::time::sleep(Duration::from_millis(400)).await;
         let mut refused = Vec::new();
         for tail in ["test-dns", "test-request"] {
-            refused.push((tail, fx.post(&fx.uri(tail), body.clone()).await));
+            refused.push((tail, team.post(2, tail, body.clone()).await));
         }
         refused
     };
-    let (first, second, refused) = tokio::join!(slow(), slow(), probing);
+    let (first, second, refused) = tokio::join!(slow(0), slow(1), probing);
     for (tail, busy) in refused {
         assert_eq!(
             busy.status,
@@ -1351,8 +1391,107 @@ async fn probe_routes_should_answer_429_while_both_slots_are_busy() {
     for reply in [first, second] {
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     }
-    let after = fx.post(&fx.uri("test-dns"), body).await;
+    let after = team.post(2, "test-dns", body).await;
     assert_eq!(after.status, StatusCode::OK, "{}", after.body);
+}
+
+#[tokio::test]
+async fn probe_routes_should_answer_429_for_a_second_check_of_one_account() {
+    let team = Team::new(2);
+    let body = json!({ "url": "https://hook.example.com/x" });
+    let first = team.post(0, "test-dns", body.clone());
+    let probing = async {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let mut refused = Vec::new();
+        for tail in ["test-dns", "test-request"] {
+            refused.push((tail, team.post(0, tail, body.clone()).await));
+        }
+        let other = team.post(1, "test-dns", body.clone()).await;
+        (refused, other)
+    };
+    let (first, (refused, other)) = tokio::join!(first, probing);
+    for (tail, busy) in refused {
+        assert_eq!(
+            busy.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "{tail}: {}",
+            busy.body
+        );
+        assert_eq!(busy.code.as_deref(), Some("busy"), "{tail}");
+    }
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    assert_eq!(other.status, StatusCode::OK, "{}", other.body);
+    let after = team.post(0, "test-dns", body).await;
+    assert_eq!(after.status, StatusCode::OK, "{}", after.body);
+}
+
+#[tokio::test]
+async fn probe_routes_should_keep_the_account_slot_while_an_abandoned_check_runs() {
+    let team = Team::new(1);
+    let body = json!({ "url": "https://hook.example.com/x" });
+    let abandoned = tokio::time::timeout(
+        Duration::from_millis(300),
+        team.post(0, "test-dns", body.clone()),
+    )
+    .await;
+    assert!(abandoned.is_err(), "the check should still be running");
+    let busy = team.post(0, "test-dns", body.clone()).await;
+    assert_eq!(busy.status, StatusCode::TOO_MANY_REQUESTS, "{}", busy.body);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let after = team.post(0, "test-dns", body).await;
+    assert_eq!(after.status, StatusCode::OK, "{}", after.body);
+}
+
+struct Team {
+    _dir: tempfile::TempDir,
+    app: axum::Router,
+    members: Vec<(String, String)>,
+}
+
+impl Team {
+    fn new(count: usize) -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("team.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let members = (0..count)
+            .map(|index| {
+                let account = db.create_user(&format!("member{index}")).expect("user");
+                let session = db.create_session(&account, "").expect("session");
+                let board = db.create_board(&account, "Hooks").expect("board");
+                (format!("session={session}"), board)
+            })
+            .collect();
+        let lookup: Lookup = Arc::new(|_, port| {
+            thread::sleep(Duration::from_millis(1500));
+            Ok(vec![SocketAddr::from(([8, 8, 8, 8], port))])
+        });
+        let state = AppState::new(db.clone(), None, passkey_mode())
+            .with_disk(held_disk(&db))
+            .with_limits(unthrottled_limits())
+            .with_prober(Prober::with_parts(
+                is_public_address,
+                lookup,
+                Duration::from_secs(5),
+            ));
+        Self {
+            _dir: dir,
+            app: router(state),
+            members,
+        }
+    }
+
+    async fn post(&self, member: usize, tail: &str, body: Value) -> Reply {
+        let (cookie, board) = &self.members[member];
+        let uri = format!("/api/boards/{board}/webhooks/{tail}");
+        call(
+            &self.app,
+            "POST",
+            &uri,
+            &[("cookie", cookie.as_str()), SAME_ORIGIN[0]],
+            Some(body),
+        )
+        .await
+    }
 }
 
 #[tokio::test]

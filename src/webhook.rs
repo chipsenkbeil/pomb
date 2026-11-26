@@ -18,7 +18,7 @@ use std::time::Duration;
 use chrono::{TimeDelta, Utc};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::MissedTickBehavior;
 use ureq::Agent;
 use ureq::http::Uri;
@@ -486,8 +486,13 @@ impl Prober {
     }
 
     /// Looks up the host of `url` and says whether it resolves to public addresses only. The
-    /// addresses themselves stay inside.
-    pub async fn check_host(&self, url: &str) -> Result<HostCheck, ProbeError> {
+    /// addresses themselves stay inside. The `account` permit moves into the lookup, so it lasts
+    /// as long as the lookup does, even when the caller goes away.
+    pub async fn check_host(
+        &self,
+        url: &str,
+        account: OwnedSemaphorePermit,
+    ) -> Result<HostCheck, ProbeError> {
         let permit = self
             .slots
             .clone()
@@ -500,7 +505,7 @@ impl Prober {
         let resolver = self.resolver.clone();
         let wait = self.timeout;
         let checked = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+            let _permits = (permit, account);
             match resolver.addresses(host, port, wait) {
                 Ok(found) if found.is_empty() => HostCheck::NotFound,
                 Ok(found) if found.iter().any(|addr| !(resolver.policy)(addr.ip())) => {
@@ -515,8 +520,14 @@ impl Prober {
     }
 
     /// Posts one unsigned test event for board `board_id` to `url` and returns the status the
-    /// callback answered with.
-    pub async fn send_test(&self, url: &str, board_id: &str) -> Result<u16, ProbeError> {
+    /// callback answered with. The `account` permit moves into the request, so it lasts as long as
+    /// the request does, even when the caller goes away.
+    pub async fn send_test(
+        &self,
+        url: &str,
+        board_id: &str,
+        account: OwnedSemaphorePermit,
+    ) -> Result<u16, ProbeError> {
         let permit = self
             .slots
             .clone()
@@ -531,7 +542,7 @@ impl Prober {
         let agent = self.agent.clone();
         let url = url.to_string();
         tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+            let _permits = (permit, account);
             post(&agent, &url, "test", None, body.as_bytes())
         })
         .await
