@@ -150,13 +150,13 @@ t.test("bare_backup_usage refuses a --backup with no value before any ssh check"
     end
 end)
 
-t.test("verify_login_probe_should_use_the_curl_on_path", function()
+t.test("the verify login probe uses the curl on path", function()
     local code, text, curl = verify_on_release_fixture()
     t.eq(code, 1)
     t.ok(curl ~= nil and curl:find("https://pomb.chip.network/login", 1, true) ~= nil, text)
 end)
 
-t.test("verify_summary_should_follow_every_check_line_in_one_file", function()
+t.test("the verify summary follows every check line in one file", function()
     local code, text = verify_on_release_fixture()
     local lines = {}
     for line in text:gmatch("[^\n]+") do
@@ -188,13 +188,13 @@ local function assert_every_line_is_a_sentence(text)
     end
 end
 
-t.test("verify_messages_should_be_full_sentences_on_every_printed_line", function()
+t.test("verify messages are full sentences on every printed line", function()
     local _, text = verify_on_release_fixture()
     local _, usage = verify_with_fake_ssh({ "verify", "HEAD", "--backup" })
     assert_every_line_is_a_sentence(text .. "\n" .. usage)
 end)
 
-t.test("verify_messages_should_be_full_sentences_when_every_check_passes", function()
+t.test("verify messages are full sentences when every check passes", function()
     local code, text = verify_on_release_fixture({
         "HEAD",
         "--backup",
@@ -210,7 +210,7 @@ t.test("verify_messages_should_be_full_sentences_when_every_check_passes", funct
     assert_every_line_is_a_sentence(text)
 end)
 
-t.test("verify_messages_should_be_full_sentences_when_the_commit_is_missing", function()
+t.test("verify messages are full sentences when the commit is missing", function()
     local code, text = verify_on_release_fixture({ "nope" })
     t.eq(code, 1)
     t.ok(text:find("No commit nope exists.", 1, true) ~= nil, text)
@@ -225,7 +225,7 @@ local function add_worktrees(work)
     git(work .. "/.dev/worktrees/forced", "commit", "-q", "--allow-empty", "-m", "forced")
 end
 
-t.test("verify_messages_should_be_full_sentences_when_a_real_worktree_is_cleaned_up", function()
+t.test("verify messages are full sentences when a real worktree is cleaned up", function()
     local code, text = verify_on_release_fixture({
         "HEAD",
         "--cleanup",
@@ -250,14 +250,14 @@ t.test("verify_messages_should_be_full_sentences_when_a_real_worktree_is_cleaned
     assert_every_line_is_a_sentence(text)
 end)
 
-t.test("verify_messages_should_be_full_sentences_when_the_backup_is_refused", function()
+t.test("verify messages are full sentences when the backup is refused", function()
     local code, text = verify_on_release_fixture({ "HEAD", "--backup", "/etc/passwd" })
     t.eq(code, 1)
     t.ok(text:find("The --backup argument must be a file name", 1, true) ~= nil, text)
     assert_every_line_is_a_sentence(text)
 end)
 
-t.test("verify_messages_should_be_full_sentences_when_it_cannot_run", function()
+t.test("verify messages are full sentences when it cannot run", function()
     local code, text = verify_on_release_fixture({ "HEAD" }, nil, function(work)
         git(work, "config", "forge.remote", "nosuch")
     end)
@@ -266,7 +266,7 @@ t.test("verify_messages_should_be_full_sentences_when_it_cannot_run", function()
     assert_every_line_is_a_sentence(text)
 end)
 
-t.test("verify_messages_should_be_full_sentences_for_every_login_answer", function()
+t.test("verify messages are full sentences for every login answer", function()
     local replies = {
         { "HTTP/2 303\\r\\nlocation: /\\r\\n\\r\\n", 0, "redirected to /, with no sign-in" },
         { "HTTP/2 303\\r\\nlocation: /setup\\r\\n\\r\\n", 0, "redirected to /setup" },
@@ -282,7 +282,7 @@ t.test("verify_messages_should_be_full_sentences_for_every_login_answer", functi
     login_reply = "HTTP/2 200\\r\\n\\r\\n"
 end)
 
-t.test("verify_messages_should_be_full_sentences_when_the_backup_is_missing", function()
+t.test("verify messages are full sentences when the backup is missing", function()
     local missing = function(sha)
         return (passing_ssh_body(sha):gsub("exit 0", "exit 1"))
     end

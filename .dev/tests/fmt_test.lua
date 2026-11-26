@@ -13,7 +13,7 @@ local function project(fakes)
     return root
 end
 
-t.test("fmt_should_refuse_a_stray_flag", function()
+t.test("fmt refuses a stray flag", function()
     local root = project({})
     local _, code, err = testenv.verb(root, { "fmt", "--bogus" })
     t.eq(code, 2, err)
@@ -21,7 +21,7 @@ t.test("fmt_should_refuse_a_stray_flag", function()
     t.eq(testenv.calls(root, "cargo"), {})
 end)
 
-t.test("fmt_should_pass_the_cargo_exit_code_through", function()
+t.test("fmt passes the cargo exit code through", function()
     local root = project({ cargo = 3 })
     local _, code, err = testenv.verb(root, { "fmt" })
     t.eq(code, 3, err)
@@ -29,7 +29,7 @@ t.test("fmt_should_pass_the_cargo_exit_code_through", function()
     t.eq(testenv.calls(root, "stylua"), {})
 end)
 
-t.test("fmt_should_run_nightly_rustfmt", function()
+t.test("fmt runs nightly rustfmt", function()
     local root = project({})
     local _, code, err = testenv.verb(root, { "fmt" })
     t.eq(code, 0, err)

@@ -106,7 +106,7 @@ t.test("gate refuses two new runs", function()
     t.ok(code ~= 0)
 end)
 
-t.test("gate_should_find_a_run_past_the_newest_200", function()
+t.test("gate finds a run past the newest 200", function()
     local after = { row("bbbbbb", "passed", "local") }
     local out, code, err = gate({ before = {}, after = after, dev_exit = 0, narrow = {} })
     t.eq(code, 0, err)
@@ -127,7 +127,7 @@ t.test("gate refuses a dirty source", function()
     t.ok(err:find("only a clean local source counts.", 1, true), err)
 end)
 
-t.test("gate_should_accept_a_local_source_naming_head", function()
+t.test("gate accepts a local source naming head", function()
     local source = "local@" .. HEAD:sub(1, 12)
     local out, code, err =
         gate({ before = {}, after = { row("bbbbbb", "passed", source) }, dev_exit = 0 })
@@ -135,7 +135,7 @@ t.test("gate_should_accept_a_local_source_naming_head", function()
     t.eq(out, "bbbbbb " .. REPO .. " " .. source .. "\n")
 end)
 
-t.test("gate_should_refuse_a_local_source_naming_another_commit", function()
+t.test("gate refuses a local source naming another commit", function()
     local _, code, err = gate({
         before = {},
         after = { row("bbbbbb", "passed", "local@" .. OTHER:sub(1, 12)) },
@@ -145,7 +145,7 @@ t.test("gate_should_refuse_a_local_source_naming_another_commit", function()
     t.ok(err:find("which is not the HEAD " .. HEAD .. " of", 1, true), err)
 end)
 
-t.test("gate_should_refuse_a_dirty_local_source_naming_head", function()
+t.test("gate refuses a dirty local source naming head", function()
     local source = "local(dirty)@" .. HEAD:sub(1, 12)
     local _, code, err =
         gate({ before = {}, after = { row("bbbbbb", "passed", source) }, dev_exit = 0 })
@@ -159,7 +159,7 @@ t.test("gate refuses when dev fails", function()
     t.ok(code ~= 0)
 end)
 
-t.test("gate_should_read_head_through_jj_when_the_worktree_has_a_jj_directory", function()
+t.test("gate reads head through jj when the worktree has a jj directory", function()
     local source = "local@" .. HEAD:sub(1, 12)
     local out, code, err = gate({
         before = {},
@@ -171,7 +171,7 @@ t.test("gate_should_read_head_through_jj_when_the_worktree_has_a_jj_directory", 
     t.eq(out, "bbbbbb " .. REPO .. " " .. source .. "\n")
 end)
 
-t.test("gate_should_refuse_a_source_naming_the_git_head_in_a_jj_worktree", function()
+t.test("gate refuses a source naming the git head in a jj worktree", function()
     local source = "local@" .. OTHER:sub(1, 12)
     local _, code, err = gate({
         before = {},
@@ -183,7 +183,7 @@ t.test("gate_should_refuse_a_source_naming_the_git_head_in_a_jj_worktree", funct
     t.ok(err:find("which is not the HEAD " .. HEAD .. " of", 1, true), err)
 end)
 
-t.test("gate_should_read_head_through_git_without_a_jj_directory", function()
+t.test("gate reads head through git without a jj directory", function()
     local source = "local@" .. HEAD:sub(1, 12)
     local _, code, err = gate({
         before = {},

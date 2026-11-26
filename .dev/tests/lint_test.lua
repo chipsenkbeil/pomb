@@ -29,13 +29,13 @@ local function lint(words, cargo_body)
     return testenv.verb(root, argv, { env = { CI = "" } })
 end
 
-t.test("lint_should_refuse_a_stray_argument with a flag", function()
+t.test("lint refuses a stray argument that is a flag", function()
     local _, code, err = lint({ "--bogus" })
     t.eq(code, 2, err)
     t.ok(err:find("Unknown flag --bogus.", 1, true), err)
 end)
 
-t.test("lint_should_refuse_a_stray_argument with a word", function()
+t.test("lint refuses a stray argument that is a word", function()
     local _, code, err = lint({ "extra" })
     t.eq(code, 2, err)
     t.ok(
@@ -44,7 +44,7 @@ t.test("lint_should_refuse_a_stray_argument with a word", function()
     )
 end)
 
-t.test("lint_should_name_a_failed_check_and_keep_going", function()
+t.test("lint names a failed check and keeps going", function()
     local out, code, err = lint({}, FMT_CHECK_FAILS)
     t.eq(code, 1, err)
     t.ok(err:find("These checks failed: cargo fmt", 1, true), err)

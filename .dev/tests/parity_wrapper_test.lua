@@ -14,7 +14,7 @@ local function wrapper(name, code)
     return root, status, err
 end
 
-t.test("parity_wrappers_should_call_node_with_their_script", function()
+t.test("parity wrappers call node with their script", function()
     for _, name in ipairs(WRAPPERS) do
         local root, _, err = wrapper(name, 0)
         local calls = testenv.calls(root, "node")
@@ -23,7 +23,7 @@ t.test("parity_wrappers_should_call_node_with_their_script", function()
     end
 end)
 
-t.test("parity_wrappers_should_return_the_node_exit_code", function()
+t.test("parity wrappers return the node exit code", function()
     for _, name in ipairs(WRAPPERS) do
         local _, failed, failed_err = wrapper(name, 4)
         t.eq(failed, 4, name .. ": " .. failed_err)

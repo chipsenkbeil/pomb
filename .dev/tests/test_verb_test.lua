@@ -17,7 +17,7 @@ local function project(fakes)
     return root
 end
 
-t.test("test_verb_should_run_every_step_without_arguments", function()
+t.test("the test verb runs every step without arguments", function()
     local root = project({})
     local _, code, err = testenv.verb(root, { "test" })
     t.eq(code, 0, err)
@@ -31,7 +31,7 @@ t.test("test_verb_should_run_every_step_without_arguments", function()
     })
 end)
 
-t.test("test_verb_should_skip_the_doc_tests_with_arguments", function()
+t.test("the test verb skips the doc tests with arguments", function()
     local root = project({})
     local _, code, err = testenv.verb(root, { "test", "--", "-j", "1", "module" })
     t.eq(code, 0, err)
@@ -39,7 +39,7 @@ t.test("test_verb_should_skip_the_doc_tests_with_arguments", function()
     t.eq(#testenv.calls(root, "node"), 2)
 end)
 
-t.test("test_verb_should_stop_at_the_first_failing_step", function()
+t.test("the test verb stops at the first failing step", function()
     local root = project({ cargo = 3 })
     local _, code, err = testenv.verb(root, { "test" })
     t.eq(code, 3, err)

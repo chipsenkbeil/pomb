@@ -1305,6 +1305,9 @@ length the behavior needs. A bare `should_<behavior>` name is right
 wherever the enclosing module or file names the subject, such as a
 per-function submodule, a topic module or a `*_tests.rs` file.
 
+This rule covers Rust. A Lua test under `.dev/tests` is named in plain prose that
+reads as a sentence about its subject (`t.test` takes a string).
+
 Lint: ast-grep `test-fn-prefix` for the `test_` prefix. The `should` form is
 Review.
 
