@@ -313,6 +313,29 @@ async fn history_export_should_leave_a_missing_value_empty() {
 }
 
 #[tokio::test]
+async fn history_export_should_write_each_time_to_the_second_in_utc() {
+    let (_dir, fx) = fixture();
+    task_with(
+        &fx,
+        "Clock",
+        vec![event(
+            HistoryKind::Created,
+            "Task created in Todo",
+            "ann",
+            "2026-10-20T10:00:00.123456789Z",
+        )],
+    );
+    let uri = format!("/api/boards/{}/history?format=csv", fx.board_id);
+    let (status, csv) = send(&fx, "GET", &uri).await;
+    assert_eq!(status, StatusCode::OK, "{csv}");
+    assert!(
+        csv.lines()
+            .any(|line| line.starts_with("\"2026-10-20 10:00:00 UTC\",")),
+        "{csv}"
+    );
+}
+
+#[tokio::test]
 async fn history_should_hold_comments_and_deleted_tasks() {
     let (_dir, fx) = fixture();
     let id = task_with(

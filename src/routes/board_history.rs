@@ -362,8 +362,12 @@ pub(crate) fn export_cells(page: &HistoryPage) -> Vec<Vec<String>> {
         } else {
             (String::new(), String::new(), String::new())
         };
+        let time = DateTime::parse_from_rfc3339(&row.time).map_or_else(
+            |_| row.time.clone(),
+            |at| at.to_utc().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        );
         cells.push(vec![
-            row.time.clone(),
+            time,
             row.user.clone(),
             row.task.clone(),
             row.event.clone(),
