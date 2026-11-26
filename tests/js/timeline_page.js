@@ -5,12 +5,7 @@ if (start < 0 || end < start) throw new Error('TimelinePage not found');
 var TimelinePage;
 eval(src.slice(start, end).replace('const TimelinePage', 'TimelinePage'));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-  else console.log('PASS ' + name);
-}
+const { check, finish } = require('./support/check.js');
 
 var day = TimelinePage.isoDay('2026-11-03');
 check('a bad date has no day', TimelinePage.isoDay('2026-1-3'), null);
@@ -36,4 +31,4 @@ check('epics stay off the timeline',
   TimelinePage.cardsOf([{ id: 'a', kind: 'task' }, { id: 'e', kind: 'epic' }, { id: 'b' }]).map((task) => task.id),
   ['a', 'b']);
 check('no tasks is an empty list', TimelinePage.cardsOf(undefined), []);
-if (failures) process.exit(1);
+finish();

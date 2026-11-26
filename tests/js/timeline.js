@@ -5,12 +5,7 @@ if (start < 0 || end < start) throw new Error('TimelineDialog not found');
 var document = { getElementById: function () { return null; } };
 eval(src.slice(start, end));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-  else console.log('PASS ' + name);
-}
+const { check, finish } = require('./support/check.js');
 
 check('a task with a future due date runs from today to it',
   TimelineDialog.defaultRange('2026-10-31', '2026-11-05'), ['2026-10-31', '2026-11-05']);
@@ -37,4 +32,4 @@ check('the export wizard fills both Timeline columns',
   [src.indexOf('timeline_start: t.timeline_start') > -1, src.indexOf('timeline_end: t.timeline_end') > -1],
   [true, true]);
 
-process.exit(failures ? 1 : 0);
+finish();

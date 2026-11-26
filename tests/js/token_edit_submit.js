@@ -25,13 +25,7 @@ var window = {
 };
 eval(pages.slice(start, stop));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  var ok = g === w;
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + g + ' want ' + w));
-}
+const { check, finish } = require('./support/check.js');
 
 element('token-table');
 wireTokenRows();
@@ -54,4 +48,4 @@ press();
 check('a blank name sends nothing', sent.length, 1);
 check('a blank name shows an error', elements['tk-edit-error'].textContent, 'Give the token a name.');
 
-process.exit(failures ? 1 : 0);
+finish();

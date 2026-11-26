@@ -13,12 +13,7 @@ const document = {
 const window = { innerHeight: 800, innerWidth: 1000, addEventListener() {} };
 eval(src.slice(from, to + resize.length));
 
-let failures = 0;
-const check = (name, got, want) => {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got)));
-};
+const { check, finish } = require('./support/check.js');
 
 let focused = null;
 const option = (name) => ({ name, focus() { focused = this; }, contains(t) { return t === this; } });
@@ -83,5 +78,4 @@ a = openMenu([option('first')]);
 handlers.focusin({ target: { contains() { return false; } } });
 check('focus_moving_outside_the_menu_closes_it', [a.node.removed, pickerMenu], [true, null]);
 
-console.log('failures=' + failures);
-if (failures) throw new Error(failures + ' picker menu focus check(s) failed');
+finish();

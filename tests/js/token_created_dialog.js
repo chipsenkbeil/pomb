@@ -4,12 +4,7 @@ const start = src.indexOf('  function wireTokenCreatedDialog(');
 const end = src.indexOf('\n  }\n', start) + '\n  }\n'.length;
 if (start < 0 || end < start) throw new Error('wireTokenCreatedDialog not found');
 
-let failures = 0;
-function check(name, got, want) {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got) + ' want ' + JSON.stringify(want)));
-}
+const { check, finish } = require('./support/check.js');
 
 const elements = {};
 let focused = null;
@@ -53,4 +48,4 @@ check('token-created-dialog: Escape clears the token', elements['token-created-v
 check('token-created-dialog: Escape returns focus to Create token', focused, 'token-create-submit');
 check('token-created-dialog: Escape stops at the dialog', stopped, true);
 
-process.exit(failures ? 1 : 0);
+finish();

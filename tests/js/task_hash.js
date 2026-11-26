@@ -24,10 +24,7 @@ var TASK_HASH = '#task-';
 eval(fn('  function showTaskHash(taskId) {'));
 eval(fn('  function clearTaskHash() {'));
 
-var failures = 0;
-function check(name, got, want) {
-  if (got !== want) { failures++; console.log('FAIL ' + name + ': got ' + got + ' want ' + want); }
-}
+const { check, finish } = require('./support/check.js');
 
 showTaskHash('t1');
 check('opening a card sets its hash', location.hash, '#task-t1');
@@ -48,5 +45,4 @@ onBoard = false;
 showTaskHash('t1');
 check('a page without a board gets no hash', location.hash, '');
 check('no history entry is pushed', pushes, 0);
-console.log('failures=' + failures);
-process.exit(failures ? 1 : 0);
+finish();
