@@ -75,7 +75,12 @@ var bare = PrintBoard.sheetHtml(board, {
 }, now);
 check('a block holds only the chosen properties', bare.indexOf('<dl>') < 0, true);
 check('an empty result says so', PrintBoard.sheetHtml(board, {
-  columns: [], props: [], user: '', color: '', label: '', period: 'all',
+  columns: ['c3'], props: [], user: '', color: '', label: '', period: 'all',
 }, now).indexOf('No tasks match the filters.') >= 0, true);
+const noColumns = PrintBoard.sheetHtml(board, {
+  columns: [], props: [], user: '', color: '', label: '', period: 'all',
+}, now);
+check('choose_a_column_when_none_is_selected', noColumns.indexOf('Choose at least one column to print.') >= 0, true);
+check('choose_a_column_when_none_is_selected also drops the filter message', noColumns.indexOf('No tasks match the filters.') < 0, true);
 
 finish();

@@ -15763,8 +15763,9 @@
     }
 
     function sheetHtml(board, filters, now) {
-      var tasks = selectTasks(board, filters, now);
       var head = '<h2>' + escapeHtml(board.board ? board.board.name : '') + '</h2>';
+      if (!filters.columns.length) return head + '<p>Choose at least one column to print.</p>';
+      const tasks = selectTasks(board, filters, now);
       if (!tasks.length) return head + '<p>No tasks match the filters.</p>';
       return head + tasks.map(function (t) {
         return blockHtml(t, board, filters.props);
