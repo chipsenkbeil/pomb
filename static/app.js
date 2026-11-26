@@ -19368,16 +19368,13 @@
     },
 
     // layout-edit view ("Layout: <board>") with Add column / Add
-    // swimlane actions. The timer pill is hidden while this view is open
-    // (KanbanFlow parity, frame-review section 9).
+    // swimlane actions.
     editLayout: function () {
       var board = document.querySelector('main.board-wrap');
       var view = document.getElementById('layout-view');
       if (!board || !view) return;
       board.hidden = true;
       view.hidden = false;
-      var pill = document.getElementById('timer-pill');
-      if (pill) pill.hidden = true;
       // wire drag-reorder for the arrange lists.
       initLayoutSortables();
 
@@ -19390,8 +19387,6 @@
       if (board) board.hidden = false;
       if (view) view.hidden = true;
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
-      // renderPill restores the pill's own visibility state.
-      if (typeof TimerUI !== 'undefined' && TimerUI.renderPill) TimerUI.renderPill();
     },
 
     peopleDialog: function () {
