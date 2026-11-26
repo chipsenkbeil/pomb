@@ -1596,7 +1596,12 @@ impl Builder<'_> {
         let Some(info) = info else {
             return Ok(None);
         };
-        if let Some(role) = &info.role {
+        let role = info
+            .role
+            .as_deref()
+            .map(str::trim)
+            .filter(|role| !role.is_empty());
+        if let Some(role) = role {
             capped(role, TextCap::OWNER_ROLE, "the owner role")?;
         }
         let holder = match info.holder {
@@ -1617,7 +1622,7 @@ impl Builder<'_> {
         Ok(holder.map(|holder| Owner {
             holder,
             lease_expires_at: info.lease_expires_at,
-            role: info.role,
+            role: role.map(str::to_string),
             since: info.since,
         }))
     }
@@ -2681,6 +2686,36 @@ mod tests {
         });
         let error = read(&document).expect_err("too long");
         assert!(error.to_string().contains("the owner role"), "{error}");
+    }
+
+    #[test]
+    fn read_board_should_trim_a_padded_owner_role() {
+        let mut document = base();
+        document["tasks"][0]["owner"] = json!({
+            "holder": {"kind": "agent", "name": "builder"},
+            "role": format!(" {} ", "r".repeat(40))
+        });
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(
+            import.tasks[0]
+                .row
+                .owner
+                .as_ref()
+                .and_then(|owner| owner.role.as_deref()),
+            Some("r".repeat(40).as_str())
+        );
+    }
+
+    #[test]
+    fn read_board_should_drop_a_blank_owner_role() {
+        let mut document = base();
+        document["tasks"][0]["owner"] = json!({
+            "holder": {"kind": "agent", "name": "builder"},
+            "role": "   "
+        });
+        let (import, _) = read(&document).expect("a board");
+        let owner = import.tasks[0].row.owner.as_ref().expect("an owner");
+        assert_eq!(owner.role, None);
     }
 
     #[test]
