@@ -1730,10 +1730,12 @@ mod tests {
     use crate::db::{ColumnKind, GroupWrite, NewComment};
     use crate::models::{API_TOKEN_ACTOR, Actor, ActorKind, FieldOwner, InstanceMode};
 
+    #[must_use]
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 29, 12, 0, 0).unwrap()
     }
 
+    #[must_use]
     fn tar_of(files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut out = Vec::new();
         for (path, data) in files {
@@ -1745,12 +1747,14 @@ mod tests {
         out
     }
 
+    #[must_use]
     fn gzip(bytes: &[u8]) -> Vec<u8> {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(bytes).expect("write");
         encoder.finish().expect("finish")
     }
 
+    #[must_use]
     fn archive_of(document: &Value, files: &[(&str, &[u8])]) -> Vec<u8> {
         let json = document.to_string();
         let mut all: Vec<(&str, &[u8])> = vec![(BOARD_JSON, json.as_bytes())];
@@ -1758,6 +1762,7 @@ mod tests {
         gzip(&tar_of(&all))
     }
 
+    #[must_use]
     fn task(id: &str, name: &str) -> Value {
         json!({
             "id": id, "name": name, "description": "", "column_id": "c1", "swimlane_id": null,
@@ -1773,6 +1778,7 @@ mod tests {
         })
     }
 
+    #[must_use]
     fn lane(id: &str) -> Value {
         json!({
             "id": id, "name": id, "position": 0, "description": "", "limits": [],
@@ -1788,6 +1794,7 @@ mod tests {
         lane
     }
 
+    #[must_use]
     fn base() -> Value {
         json!({
             "format": "pomb-board-archive",
@@ -1805,6 +1812,7 @@ mod tests {
         })
     }
 
+    #[must_use]
     fn link(id: &str, kind: &str, target: Option<&str>) -> Value {
         json!({
             "id": id, "kind": kind, "target_task_id": target, "target_task_name": null,
@@ -1812,6 +1820,7 @@ mod tests {
         })
     }
 
+    #[must_use]
     fn entry(id: &str, started_at: &str) -> Value {
         json!({
             "id": id, "started_at": started_at, "minutes": 5, "seconds": 300, "kind": "manual",
@@ -1875,6 +1884,7 @@ mod tests {
 
     type Edit = Box<dyn Fn(&mut Value)>;
 
+    #[must_use]
     fn format_breaks() -> Vec<(&'static str, Edit, &'static str)> {
         let long = "n".repeat(501);
         vec![
@@ -2277,6 +2287,7 @@ mod tests {
         assert_eq!(task.row.attachments[1].token_name, None);
     }
 
+    #[must_use]
     fn link_document(url: &str) -> Value {
         let mut document = base();
         document["tasks"][0]["attachments"] = json!([{
@@ -2323,6 +2334,7 @@ mod tests {
         );
     }
 
+    #[must_use]
     fn versioned_document() -> Value {
         let mut document = base();
         document["tasks"][0]["attachments"] = json!([{
@@ -2390,6 +2402,7 @@ mod tests {
         assert!(error.to_string().contains("is not a document"), "{error}");
     }
 
+    #[must_use]
     fn covered_document(mime: &str, cover: &str) -> Value {
         let mut document = base();
         document["tasks"][0]["attachments"] = json!([{
@@ -2529,6 +2542,7 @@ mod tests {
         assert_eq!(import.tasks[0].row.responsible, None);
     }
 
+    #[must_use]
     fn claim_json(claimant: &str, expires_at: &str) -> Value {
         json!({
             "claimant": claimant, "role": null, "harness": null, "model": null,
@@ -3116,6 +3130,7 @@ mod tests {
         }
     }
 
+    #[must_use]
     fn export(db: &Db, account: &AccountId, board: &str) -> Vec<u8> {
         let snapshot = db
             .account(account)
@@ -3130,6 +3145,7 @@ mod tests {
         gzipped
     }
 
+    #[must_use]
     fn document_of(gzipped: &[u8]) -> Value {
         let limits = ReadLimits {
             unpacked_bytes: 1 << 30,
@@ -3195,6 +3211,7 @@ mod tests {
         }
     }
 
+    #[must_use]
     fn normalized(mut doc: Value) -> Value {
         doc.as_object_mut().expect("object").remove("exported_at");
         doc["tasks"]
@@ -3428,6 +3445,7 @@ mod tests {
         assert_eq!(copied[0].attachments.len(), 1);
     }
 
+    #[must_use]
     fn state(db: &Db, account: &AccountId) -> (usize, Option<u64>, usize) {
         (
             db.owner_boards(account).expect("boards").len(),
@@ -3479,6 +3497,7 @@ mod tests {
         assert_eq!(state(&world.db, &bob), before);
     }
 
+    #[must_use]
     fn comment(id: String, body: &str) -> Value {
         json!({
             "id": id, "author": "chip", "body": body, "created_at": "2026-10-01T10:00:00Z",
