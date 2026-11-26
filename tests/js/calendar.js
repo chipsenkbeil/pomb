@@ -40,12 +40,7 @@ function escapeHtml(s) { return String(s); }
 function parseDueAt(s) { return new Date(s); }
 eval(src.slice(start, end));
 
-var failures = 0;
-function check(name, got, want) {
-  var g = JSON.stringify(got), w = JSON.stringify(want);
-  if (g !== w) { failures++; console.log('FAIL ' + name + ': got ' + g + ' want ' + w); }
-  else console.log('PASS ' + name);
-}
+const { check, finish } = require('./support/check.js');
 function ymd(d) { return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
 
 check('headers start on Sunday by default',
@@ -205,5 +200,5 @@ flush().then(() => {
     [element('calendar-first-day').value, headers(element('calendar-grid').innerHTML)[0]], ['1', 'Mon']);
   check('a successful save shows no toast', [element('toast').hidden, element('toast').textContent], [true, '']);
   check('each save sends the week start', settingsSaves, [{ week_start: 'monday' }, { week_start: 'monday' }]);
-  process.exit(failures ? 1 : 0);
+  finish();
 });

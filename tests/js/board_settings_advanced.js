@@ -45,12 +45,7 @@ const click = () => {
 const answer = (ok) => waiting.shift()(ok);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-let failures = 0;
-const check = (name, got, want) => {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${ok ? '' : `: got ${JSON.stringify(got)}`}`);
-};
+const { check, finish } = require('./support/check.js');
 
 click();
 check('checkbox_should_be_disabled_while_saving: the box is disabled while the PUT is in flight', box.disabled, true);
@@ -75,5 +70,5 @@ settle().then(() => {
   check('failure: the box is restored to the last saved value', box.checked, true);
   check('failure: the error text is shown', error.textContent, 'Could not save the setting.');
   check('failure: the error is unhidden', error.hidden, false);
-  process.exit(failures ? 1 : 0);
+  finish();
 });

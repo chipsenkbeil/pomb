@@ -34,12 +34,7 @@ let boardGeneralInitialized = false;
 eval(src.slice(start, end));
 initBoardGeneralActions();
 
-let failures = 0;
-const check = (name, got, want) => {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${ok ? '' : `: got ${JSON.stringify(got)}`}`);
-};
+const { check, finish } = require('./support/check.js');
 const submit = (name) => {
   let prevented = false;
   const form = element('board-name-form');
@@ -70,5 +65,5 @@ settle().then(() => {
   check('a refused name stays on the page', window.location.href, '');
   check('a refused name shows the error text', element('board-action-error').textContent, 'Board name must be 1-100 characters.');
   check('a refused name unhides the error', element('board-action-error').hidden, false);
-  process.exit(failures ? 1 : 0);
+  finish();
 });

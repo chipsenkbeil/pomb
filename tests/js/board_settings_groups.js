@@ -41,14 +41,7 @@ const fetch = (url, options) => {
 eval(handlerSrc);
 pages['board-settings-groups']();
 
-let failures = 0;
-function check(name, got, want) {
-  const g = JSON.stringify(got);
-  const w = JSON.stringify(want);
-  const ok = g === w;
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + g + ' want ' + w));
-}
+const { check, finish } = require('./support/check.js');
 
 let prevented = 0;
 submitListener({ preventDefault: () => { prevented++; }, target: form });
@@ -101,4 +94,4 @@ check('save_should_reject_a_limit_below_one: the save of 0 sends no request', se
 check('save_should_reject_a_limit_below_one: the error box is shown', errorBox.hidden, false);
 check('save_should_reject_a_limit_below_one: the error box names the minimum', errorBox.textContent, 'The limit must be at least 1.');
 
-process.exit(failures ? 1 : 0);
+finish();

@@ -36,8 +36,9 @@ function moved(from, to, columnId, when) {
   return e;
 }
 
-var failures = 0;
-function check(name, s, want) {
+const { check, finish } = require('./support/check.js');
+
+function flowCheck(name, s, want) {
   var last = s.ends.length - 1;
   var band = function (label, back) {
     var k = s.order.indexOf(label);
@@ -49,9 +50,7 @@ function check(name, s, want) {
     var got = band(c[0], c[1]);
     if (got !== c[2]) problems.push(c[0] + '@-' + c[1] + '=' + got + ' want ' + c[2]);
   });
-  if (problems.length) failures++;
-  console.log((problems.length ? 'FAIL ' : 'PASS ') + name +
-    (problems.length ? ': ' + problems.join(', ') : ' | bands=' + s.order.join('|')));
+  check(name, problems, []);
 }
 
 var board = [{ id: 'todo', name: 'To-do', former_names: [] },
@@ -59,7 +58,7 @@ var board = [{ id: 'todo', name: 'To-do', former_names: [] },
 
 // Column Temp gets a task, is renamed Temp2, gets another, both leave,
 // then the column is deleted: one band, under the newest name.
-check('renamed then deleted column keeps one band', CumulativeFlowPage.seriesByDay({
+flowCheck('renamed then deleted column keeps one band', CumulativeFlowPage.seriesByDay({
   columns: board,
   tasks: [
     { id: 'a', column_id: 'todo', created_at: at(-3, 10), history: [
@@ -73,7 +72,7 @@ check('renamed then deleted column keeps one band', CumulativeFlowPage.seriesByD
 // A live column renamed after events keeps one band under its current
 // name, with ids and through former_names for name-only history.
 [true, false].forEach(function (withIds) {
-  check('renamed live column, ' + (withIds ? 'column ids' : 'name-only history'),
+  flowCheck('renamed live column, ' + (withIds ? 'column ids' : 'name-only history'),
     CumulativeFlowPage.seriesByDay({
       columns: [board[0], { id: 'rev', name: 'Reviewing', former_names: ['In Review'] }, board[1]],
       tasks: [{ id: 't', column_id: 'done', created_at: at(-1, 10), history: [
@@ -84,7 +83,7 @@ check('renamed then deleted column keeps one band', CumulativeFlowPage.seriesByD
 });
 
 // Name-only history of a deleted column still gets a band by its name.
-check('deleted column with name-only history', CumulativeFlowPage.seriesByDay({
+flowCheck('deleted column with name-only history', CumulativeFlowPage.seriesByDay({
   columns: board,
   tasks: [{ id: 'c', column_id: 'todo', created_at: at(-2, 10), history: [
     created('Old', null, at(-2, 10)), moved('Old', 'To-do', null, at(-1, 10))] }],
@@ -92,7 +91,7 @@ check('deleted column with name-only history', CumulativeFlowPage.seriesByDay({
 
 // Name-only history joins a deleted column's band when an id-bearing
 // event recorded that name for it.
-check('name-only event joins deleted column by recorded name', CumulativeFlowPage.seriesByDay({
+flowCheck('name-only event joins deleted column by recorded name', CumulativeFlowPage.seriesByDay({
   columns: board,
   tasks: [
     { id: 'd', column_id: 'todo', created_at: at(-3, 10), history: [
@@ -103,7 +102,7 @@ check('name-only event joins deleted column by recorded name', CumulativeFlowPag
 }), { order: 'To-do|Done|Temp', counts: [['Temp', 2, 2], ['To-do', 0, 2]] });
 
 // A deleted column that held nothing in the window leaves no band.
-check('empty history-only band is dropped', CumulativeFlowPage.seriesByDay({
+flowCheck('empty history-only band is dropped', CumulativeFlowPage.seriesByDay({
   columns: board,
   tasks: [{ id: 'f', column_id: 'todo', created_at: at(-60, 10), history: [
     created('Gone', 'gone', at(-60, 10)), moved('Gone', 'To-do', 'todo', at(-59, 10))] }],
@@ -124,26 +123,20 @@ var rect = { left: 100, top: 50, width: 360, height: 160 };
 function at2x(px, py) { return [rect.left + px / 2, rect.top + py / 2]; }
 function idx(px, py) { var p = at2x(px, py); return ReportChart.pointIndex(GEO, 30, rect, p[0], p[1]); }
 
-function checkPlain(name, got, want) {
-  if (JSON.stringify(got) !== JSON.stringify(want)) {
-    failures++;
-    console.log('FAIL ' + name + ': got ' + JSON.stringify(got) + ' want ' + JSON.stringify(want));
-  }
-}
-checkPlain('pointer at the left edge of the plot', idx(46, 100), 0);
-checkPlain('pointer at the right edge of the plot', idx(688, 100), 29);
-checkPlain('pointer between two points snaps to the nearer', idx(46 + 642 / 29 * 10.4, 100), 10);
-checkPlain('pointer left of the plot', idx(20, 100), -1);
-checkPlain('pointer above the plot', idx(300, 4), -1);
-checkPlain('pointer below the plot', idx(300, 300), -1);
+check('pointer at the left edge of the plot', idx(46, 100), 0);
+check('pointer at the right edge of the plot', idx(688, 100), 29);
+check('pointer between two points snaps to the nearer', idx(46 + 642 / 29 * 10.4, 100), 10);
+check('pointer left of the plot', idx(20, 100), -1);
+check('pointer above the plot', idx(300, 4), -1);
+check('pointer below the plot', idx(300, 300), -1);
 
 var tip = CumulativeFlowPage.tipFor(flow, 28);
-checkPlain('tooltip title is the long date', /^\d{1,2} [A-Z][a-z]+ 12:00 AM$/.test(tip.title), true);
-checkPlain('tooltip has one row per column', tip.rows.map(function (r) { return r.label + '=' + r.value; }), ['To-do=0', 'Done=1']);
-checkPlain('tooltip rows are coloured', colors(ReportChart.tipHtml(tip)), 2);
+check('tooltip title is the long date', /^\d{1,2} [A-Z][a-z]+ 12:00 AM$/.test(tip.title), true);
+check('tooltip has one row per column', tip.rows.map(function (r) { return r.label + '=' + r.value; }), ['To-do=0', 'Done=1']);
+check('tooltip rows are coloured', colors(ReportChart.tipHtml(tip)), 2);
 
 var svg = CumulativeFlowPage.chartSvg(flow);
-checkPlain('chart draws a hidden crosshair', /<line class="chart-crosshair"[^>]*visibility="hidden"/.test(svg), true);
+check('chart draws a hidden crosshair', /<line class="chart-crosshair"[^>]*visibility="hidden"/.test(svg), true);
 
 var handlers = {};
 var attrs = {};
@@ -162,20 +155,19 @@ var host = {
 ReportChart.attachCrosshair(host, GEO, 30, function (i) { return CumulativeFlowPage.tipFor(flow, i); });
 var p = at2x(46 + 642 / 29 * 10.4, 100);
 handlers.pointermove({ clientX: p[0], clientY: p[1] });
-checkPlain('crosshair follows the pointer to the nearest day', attrs.x1, ReportChart.pointX(GEO, 30, 10).toFixed(1));
-checkPlain('crosshair is shown', attrs.visibility, 'visible');
-checkPlain('tooltip is shown away from the data', box.hidden, false);
+check('crosshair follows the pointer to the nearest day', attrs.x1, ReportChart.pointX(GEO, 30, 10).toFixed(1));
+check('crosshair is shown', attrs.visibility, 'visible');
+check('tooltip is shown away from the data', box.hidden, false);
 handlers.pointerleave();
-checkPlain('leaving the plot hides the crosshair', attrs.visibility, 'hidden');
-checkPlain('leaving the plot hides the tooltip', box.hidden, true);
+check('leaving the plot hides the crosshair', attrs.visibility, 'hidden');
+check('leaving the plot hides the tooltip', box.hidden, true);
 p = at2x(10, 100);
 handlers.pointermove({ clientX: p[0], clientY: p[1] });
-checkPlain('pointer outside the plot shows nothing', box.hidden, true);
+check('pointer outside the plot shows nothing', box.hidden, true);
 var kept = CumulativeFlowPage.seriesByDay({
   columns: board,
   tasks: [{ id: 'a', column_id: 'todo', created_at: at(-3, 10), history: [created('To-do', 'todo', at(-3, 10))] }],
 }, []);
-checkPlain('a filter that keeps no task keeps every column band', kept.order.join('|'), 'To-do|Done');
-checkPlain('a filter that keeps no task counts nothing', kept.counts[0][kept.ends.length - 1], 0);
-console.log('failures=' + failures);
-if (failures) throw new Error(failures + ' cumulative flow check(s) failed');
+check('a filter that keeps no task keeps every column band', kept.order.join('|'), 'To-do|Done');
+check('a filter that keeps no task counts nothing', kept.counts[0][kept.ends.length - 1], 0);
+finish();
