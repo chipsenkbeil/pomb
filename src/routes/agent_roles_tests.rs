@@ -78,6 +78,45 @@ impl Fixture {
         }
     }
 
+    fn reopen_at(self, version: u64) -> Self {
+        // Close the fixture so the file can be reopened raw
+        let Fixture {
+            _dir,
+            app,
+            db,
+            alice,
+            bob,
+            cookies,
+            tokens,
+            boards,
+        } = self;
+        drop(app);
+        drop(db);
+
+        // Stamp the file at the given version so the upgrade runs on open
+        let file = _dir.path().join("agent-roles.redb");
+        let path = file.to_str().expect("utf8 path");
+        stamp_schema_version(path, version);
+
+        // Reopen the file and rebuild the app over the upgraded database
+        let db = Db::connect(path).expect("reopen");
+        let app = router(
+            AppState::new(db.clone(), None, passkey_mode())
+                .with_disk(held_disk(&db))
+                .with_limits(unthrottled_limits()),
+        );
+        Self {
+            _dir,
+            app,
+            db,
+            alice,
+            bob,
+            cookies,
+            tokens,
+            boards,
+        }
+    }
+
     async fn browse(&self, who: usize, method: &str, uri: &str, body: Option<Value>) -> Reply {
         call(
             &self.app,
@@ -1177,42 +1216,7 @@ async fn child_of_an_upgraded_lead_role_should_hold_links_delete() {
         .update_agent_role(fx.alice.as_str(), &lead.id, None, Some(held))
         .expect("update");
 
-    // Close the fixture so the file can be reopened raw
-    let Fixture {
-        _dir,
-        app,
-        db,
-        alice,
-        bob,
-        cookies,
-        tokens,
-        boards,
-    } = fx;
-    drop(app);
-    drop(db);
-
-    // Stamp the file at version 98 so the upgrade runs on open
-    let file = _dir.path().join("agent-roles.redb");
-    let path = file.to_str().expect("utf8 path");
-    stamp_schema_version(path, 98);
-
-    // Reopen the file and rebuild the app over the upgraded database
-    let db = Db::connect(path).expect("open version 98");
-    let app = router(
-        AppState::new(db.clone(), None, passkey_mode())
-            .with_disk(held_disk(&db))
-            .with_limits(unthrottled_limits()),
-    );
-    let fx = Fixture {
-        _dir,
-        app,
-        db,
-        alice,
-        bob,
-        cookies,
-        tokens,
-        boards,
-    };
+    let fx = fx.reopen_at(98);
 
     // Check the upgraded role row holds links.delete
     let upgraded = fx
