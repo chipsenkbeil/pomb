@@ -15615,6 +15615,23 @@
     };
   })();
 
+  const RelationPhrases = (() => {
+    let phrases = null;
+
+    const load = () => {
+      const wrap = document.querySelector('.board-wrap');
+      const raw = wrap ? wrap.getAttribute('data-relation-phrases') : null;
+      phrases = raw ? JSON.parse(raw) : {};
+    };
+
+    const phrase = (kind) => {
+      if (phrases === null) load();
+      return phrases[kind] || kind;
+    };
+
+    return { phrase };
+  })();
+
   var PrintBoard = (function () {
     var PROPERTIES = [
       ['description', 'Description'], ['color', 'Color'], ['members', 'Members'],
@@ -15626,9 +15643,6 @@
       ['all', 'All time'], ['this-week', 'This week'], ['last-week', 'Last week'],
       ['this-month', 'This month'], ['last-month', 'Last month'],
     ];
-    var RELATION_LABELS = {
-      blocked_by: 'Depends on', blocks: 'Required by', related: 'Relates to', parent: 'Part of',
-    };
     var UNASSIGNED = '__unassigned__';
 
     var data = null;
@@ -15727,7 +15741,7 @@
       }).join('<br>'));
       add('relations', 'Relations', (task.links || []).map(function (l) {
         var other = tasks[l.target_id];
-        return escapeHtml((RELATION_LABELS[l.kind] || l.kind) + ' ' +
+        return escapeHtml(RelationPhrases.phrase(l.kind) + ' ' +
           (other ? other.name : 'a task on another board'));
       }).join('<br>'));
       add('grouping', 'Grouping date', task.grouping_date ? escapeHtml(dayText(task.grouping_date)) : '');
@@ -21394,13 +21408,6 @@
     var subtaskTemplates = [];
     var relationAdds = [];
     var relationSeq = 0;
-    var RELATION_WORDS = {
-      related: 'Relates to',
-      blocked_by: 'Depends on',
-      blocks: 'Required by',
-      parent: 'Part of',
-      child: 'Umbrella of',
-    };
 
     function cardName(id) {
       var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
@@ -21481,7 +21488,7 @@
     }
 
     function relationLabel(link) {
-      return (RELATION_WORDS[link.kind] || link.kind) + ' ' + (link.name || cardName(link.target_id) || link.target_id);
+      return RelationPhrases.phrase(link.kind) + ' ' + (link.name || cardName(link.target_id) || link.target_id);
     }
 
     function fillRemovableRelations() {

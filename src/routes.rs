@@ -8,7 +8,7 @@ mod local_time;
 mod multipart;
 mod slot;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::net::IpAddr;
 use std::pin::Pin;
@@ -6603,6 +6603,13 @@ impl ShellChrome {
             LinkKind::Child,
         ]
         .map(|kind| (kind.as_str(), kind.phrase()))
+    }
+
+    /// Returns a JSON map from each relation kind's wire name to its words, for the page script.
+    #[must_use]
+    fn relation_phrases_json(&self) -> String {
+        let phrases: BTreeMap<_, _> = self.relation_options().into_iter().collect();
+        serde_json::to_string(&phrases).unwrap_or_default()
     }
 
     /// Returns the classes the page body carries for the account's display switches.

@@ -211,6 +211,26 @@ async fn board_and_settings_pages_should_show_the_full_name() {
 }
 
 #[tokio::test]
+async fn board_page_should_carry_the_relation_phrases() {
+    let fx = Fixture::new();
+    let board = fx.page(&format!("/b/{}", fx.board)).await;
+    let start = board
+        .find("data-relation-phrases=\"")
+        .expect("the attribute");
+    let attribute = &board[start..start + board[start..].find("\">").expect("its end")];
+    for (kind, phrase) in [
+        ("related", "Relates to"),
+        ("blocked_by", "Depends on"),
+        ("blocks", "Required by"),
+        ("parent", "Part of"),
+        ("child", "Umbrella of"),
+    ] {
+        let pair = format!("&quot;{kind}&quot;:&quot;{phrase}&quot;");
+        assert!(attribute.contains(&pair), "{pair}: {attribute}");
+    }
+}
+
+#[tokio::test]
 async fn hints_should_show_until_dismissed_for_good() {
     let fx = Fixture::new();
     let uri = format!("/b/{}", fx.board);

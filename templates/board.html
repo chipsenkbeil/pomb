@@ -446,7 +446,7 @@
 
 <div class="board-layout">
 
-<main class="board-wrap" data-board-id="{{ board_id }}" data-role="{{ role.as_str() }}" data-account="{{ chrome.username }}" data-new-tasks-at-top="{% if new_tasks_at_top %}1{% else %}0{% endif %}" data-default-members="{{ default_member_ids }}">
+<main class="board-wrap" data-board-id="{{ board_id }}" data-role="{{ role.as_str() }}" data-account="{{ chrome.username }}" data-new-tasks-at-top="{% if new_tasks_at_top %}1{% else %}0{% endif %}" data-default-members="{{ default_member_ids }}" data-relation-phrases="{{ chrome.relation_phrases_json() }}">
   <!-- Only the board region scrolls; the legend below stays put. -->
   <div class="board-scroll">
   <div class="board-table-wrap">

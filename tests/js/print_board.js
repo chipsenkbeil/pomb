@@ -6,7 +6,15 @@ var BoardHistoryPage, PrintBoard;
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
-var document = {};
+const phrases = {
+  related: 'Relates to', blocked_by: 'Depends on', blocks: 'Required by', parent: 'Part of',
+  child: 'Umbrella of',
+};
+var document = {
+  querySelector: () => ({
+    getAttribute: (name) => (name === 'data-relation-phrases' ? JSON.stringify(phrases) : null),
+  }),
+};
 eval(src.slice(from, to));
 
 const { check, finish } = require('./support/check.js');
@@ -25,7 +33,7 @@ var board = {
       timeline_start: '2026-10-01', timeline_end: '2026-10-03',
       subtasks: [{ name: 'a', done: true }, { name: 'b', done: false }],
       comments: [{ author: 'bob', body: 'hi' }],
-      links: [{ kind: 'blocked_by', target_id: 't2' }] },
+      links: [{ kind: 'blocked_by', target_id: 't2' }, { kind: 'child', target_id: 't2' }] },
     { id: 't2', name: 'Second', column_id: 'c1', position: 1, color_id: 'k2', member_ids: [], labels: [] },
     { id: 't3', name: 'Old done', column_id: 'c2', position: 1, member_ids: ['u2'], labels: ['api'],
       completed_at: '2026-01-05T10:00:00Z' },
@@ -58,6 +66,7 @@ check('the board name is escaped', sheet.indexOf('Work &lt;1&gt;') >= 0, true);
 check('the description is escaped', sheet.indexOf('Write &lt;it&gt;') >= 0, true);
 check('estimate and spent', sheet.indexOf('1h 30m') >= 0 && sheet.indexOf('1h 15m') >= 0, true);
 check('relation names the other task', sheet.indexOf('Depends on Second') >= 0, true);
+check('a child link prints its server phrase', sheet.indexOf('Umbrella of Second') >= 0, true);
 check('a date-only timeline prints as stored', sheet.indexOf('2026-10-01 to 2026-10-03') >= 0, true);
 check('members and color', sheet.indexOf('ann') >= 0 && sheet.indexOf('Urgent') >= 0, true);
 
