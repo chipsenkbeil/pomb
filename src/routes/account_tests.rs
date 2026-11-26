@@ -484,6 +484,42 @@ async fn settings_pages_should_carry_the_dark_class_when_dark_is_on() {
 }
 
 #[tokio::test]
+async fn task_relation_dialog_should_use_the_link_kind_phrases() {
+    let fx = Fixture::new();
+    let board = fx.page(&format!("/b/{}", fx.board)).await;
+    let (_, dialog) = board.split_once(r#"id="rel-kind""#).expect("rel-kind");
+    let (select, _) = dialog.split_once("</select>").expect("select end");
+    for option in [
+        r#"<option value="related">Relates to</option>"#,
+        r#"<option value="blocked_by">Depends on</option>"#,
+        r#"<option value="blocks">Required by</option>"#,
+        r#"<option value="parent">Part of</option>"#,
+    ] {
+        assert!(select.contains(option), "{option}");
+    }
+    assert!(!select.contains(r#"value="child""#));
+}
+
+#[tokio::test]
+async fn bulk_relation_dialog_should_use_the_link_kind_phrases() {
+    let fx = Fixture::new();
+    let board = fx.page(&format!("/b/{}", fx.board)).await;
+    let (_, dialog) = board
+        .split_once(r#"id="mu-rel-kind""#)
+        .expect("mu-rel-kind");
+    let (select, _) = dialog.split_once("</select>").expect("select end");
+    for option in [
+        r#"<option value="related">Relates to</option>"#,
+        r#"<option value="blocked_by">Depends on</option>"#,
+        r#"<option value="blocks">Required by</option>"#,
+        r#"<option value="parent">Part of</option>"#,
+        r#"<option value="child">Umbrella of</option>"#,
+    ] {
+        assert!(select.contains(option), "{option}");
+    }
+}
+
+#[tokio::test]
 async fn shell_pages_should_carry_the_dark_class_when_dark_is_on() {
     let fx = Fixture::new();
     let pages = [

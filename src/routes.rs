@@ -6592,6 +6592,19 @@ impl ShellChrome {
         self.tips_on && !self.dismissed_hints.iter().any(|hint| hint == id)
     }
 
+    /// Returns the wire name and the words of each relation kind a relation dialog offers.
+    #[must_use]
+    fn relation_options(&self) -> [(&'static str, &'static str); 5] {
+        [
+            LinkKind::Related,
+            LinkKind::BlockedBy,
+            LinkKind::Blocks,
+            LinkKind::Parent,
+            LinkKind::Child,
+        ]
+        .map(|kind| (kind.as_str(), kind.phrase()))
+    }
+
     /// Returns the classes the page body carries for the account's display switches.
     #[must_use]
     fn body_classes(&self) -> String {

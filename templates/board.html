@@ -1175,11 +1175,9 @@
         <label class="dlg-field">
           <span>Add relation</span>
           <select id="mu-rel-kind">
-            <option value="related">Relates to</option>
-            <option value="blocked_by">Depends on</option>
-            <option value="blocks">Required by</option>
-            <option value="parent">Part of (umbrella)</option>
-            <option value="child">Umbrella of</option>
+            {% for (value, text) in chrome.relation_options() %}
+            <option value="{{ value }}">{{ text }}</option>
+            {% endfor %}
           </select>
         </label>
         <label class="dlg-field">

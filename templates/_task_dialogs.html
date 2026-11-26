@@ -158,10 +158,9 @@
     <label class="dlg-field">
       <span>Relation</span>
       <select id="rel-kind">
-        <option value="related">Relates to</option>
-        <option value="blocked_by">Depends on</option>
-        <option value="blocks">Required by</option>
-        <option value="parent">Parent (part of an umbrella)</option>
+        {% for (value, text) in chrome.relation_options() %}{% if value != "child" %}
+        <option value="{{ value }}">{{ text }}</option>
+        {% endif %}{% endfor %}
       </select>
     </label>
     <label class="dlg-field">
