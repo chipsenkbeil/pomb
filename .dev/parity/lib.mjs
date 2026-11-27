@@ -9,7 +9,7 @@ process.env.PLAYWRIGHT_BROWSERS_PATH ??= '0';
 
 export function loadPlaywright() {
   const nm = process.env.PW_NODE_MODULES;
-  if (!nm) throw new Error('set PW_NODE_MODULES to the node_modules dir holding playwright 1.63');
+  if (!nm) throw new Error('Set PW_NODE_MODULES to the node_modules directory that holds playwright 1.63.');
   return createRequire(path.join(path.resolve(nm), 'x.js'))('playwright');
 }
 
@@ -175,7 +175,7 @@ async function resolveTasks(page, state, text) {
     const [, which, prefix] = /^\{task:(gm|vt):(.+)\}$/.exec(tok);
     const tasks = await pageApi(page, 'GET', `/api/boards/${state.boards[which]}/tasks`);
     const task = tasks.json.items.find((t) => t.name.startsWith(prefix));
-    if (!task) throw new Error(`no task ${prefix}`);
+    if (!task) throw new Error(`No task title starts with ${prefix}.`);
     text = text.replaceAll(tok, task.id);
   }
   return text;
@@ -274,7 +274,7 @@ export async function runSteps(page, steps, state, baseUrl, ctxInfo) {
         // "{task:vt:Task Beta}" inside the path or body becomes that task's id.
         const body = b ? JSON.parse(await resolveTasks(page, state, JSON.stringify(b))) : b;
         const r = await pageApi(page, m, p, body);
-        if (r.status >= 400) throw new Error(`api ${m} ${p} -> ${r.status} ${JSON.stringify(r.json || r.text)}`);
+        if (r.status >= 400) throw new Error(`The API call ${m} ${p} returned status ${r.status}: ${JSON.stringify(r.json || r.text)}.`);
         break;
       }
       case 'apiColumn': {
@@ -282,9 +282,9 @@ export async function runSteps(page, steps, state, baseUrl, ctxInfo) {
         const [which, name, body] = arg;
         const cols = await pageApi(page, 'GET', `/api/boards/${state.boards[which]}/columns`);
         const col = cols.json.find((c) => c.name === name);
-        if (!col) throw new Error(`no column ${name}`);
+        if (!col) throw new Error(`No column is named ${name}.`);
         const r = await pageApi(page, 'PATCH', `/api/columns/${col.id}`, body);
-        if (r.status >= 400) throw new Error(`PATCH column ${name} -> ${r.status}`);
+        if (r.status >= 400) throw new Error(`The PATCH to column ${name} returned status ${r.status}.`);
         break;
       }
       case 'apiTask': {
@@ -292,9 +292,9 @@ export async function runSteps(page, steps, state, baseUrl, ctxInfo) {
         const [which, prefix, method, suffix, body] = arg;
         const tasks = await pageApi(page, 'GET', `/api/boards/${state.boards[which]}/tasks`);
         const task = tasks.json.items.find((t) => t.name.startsWith(prefix));
-        if (!task) throw new Error(`no task ${prefix}`);
+        if (!task) throw new Error(`No task title starts with ${prefix}.`);
         const r = await pageApi(page, method, `/api/tasks/${task.id}${suffix || ''}`, body);
-        if (r.status >= 400) throw new Error(`${method} task ${prefix}${suffix} -> ${r.status}`);
+        if (r.status >= 400) throw new Error(`The ${method} to task ${prefix}${suffix} returned status ${r.status}.`);
         break;
       }
       case 'reload':
@@ -338,7 +338,7 @@ export async function runSteps(page, steps, state, baseUrl, ctxInfo) {
         await page.evaluate(([k, v]) => localStorage.setItem(k, v), arg);
         break;
       default:
-        throw new Error(`unknown step ${kind}`);
+        throw new Error(`Unknown step ${kind}.`);
     }
   }
 }
@@ -417,7 +417,7 @@ export function onlyFilter(onlyArg, entries) {
   const matches = (id, want) => id === want || id.startsWith(want + '-');
   const unmatched = wanted.filter((want) => !entries.some((entry) => matches(entry.id, want)));
   if (unmatched.length) {
-    console.error(`--only matches no manifest entry: ${unmatched.join(', ')}`);
+    console.error(`The --only list matches no manifest entry: ${unmatched.join(', ')}.`);
     process.exit(2);
   }
   return (id) => wanted.some((want) => matches(id, want));

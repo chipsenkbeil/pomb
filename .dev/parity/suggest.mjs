@@ -14,7 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const state = readJson(args.state);
 const manifest = loadManifest(args.manifest || path.join(here, 'manifest.json'));
 const entry = manifest.entries.find((e) => e.id === args.entry);
-if (!entry) throw new Error(`no entry ${args.entry}`);
+if (!entry) throw new Error(`No manifest entry is named ${args.entry}.`);
 const golden = readJson(path.join(goldensDir(), entry.golden + '.styles.json'));
 
 const pw = loadPlaywright();

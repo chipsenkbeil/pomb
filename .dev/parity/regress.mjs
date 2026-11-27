@@ -40,7 +40,7 @@ for (const d of ['candidate', 'baseline', 'diff']) mkdirSync(path.join(args.out,
 function diffPixels(a, b, diffOut) {
   const count = spawnSync('magick', [a, b, '-compose', 'difference', '-composite', '-separate',
     '-evaluate-sequence', 'max', '-threshold', fuzz, '-format', '%[fx:round(mean*w*h)]', 'info:'], { encoding: 'utf8' });
-  if (count.status !== 0) throw new Error(`magick: ${count.stderr}`);
+  if (count.status !== 0) throw new Error(`The magick compare failed: ${count.stderr}.`);
   spawnSync('magick', ['compare', '-metric', 'AE', '-fuzz', fuzz, '-highlight-color', 'red', '-lowlight-color', 'gray90', a, b, diffOut]);
   return Number(count.stdout);
 }

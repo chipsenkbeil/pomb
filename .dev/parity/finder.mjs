@@ -38,7 +38,7 @@ for (const q of ['a', 'e', 'o', 't', 's', 'r', 'i', 'n']) {
   if (pair.length === 2) break;
 }
 if (pair.length < 2) {
-  console.error('seed data gives no two queries with different top cards');
+  console.error('The seed data gives no two queries with different top cards.');
   process.exit(1);
 }
 const [first, second] = pair;
