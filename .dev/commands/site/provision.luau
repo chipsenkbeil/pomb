@@ -11,7 +11,7 @@ local ROLLBACK = "rm -f /etc/ssh/sshd_config.d/10-pomb.conf && sshd -t && system
 local function temp(argv)
     local out, code = devos.capture(argv)
     if code ~= 0 then
-        dev_command.die("site: cannot make a temporary path")
+        dev_command.die("Cannot make a temporary path.")
     end
     return (out:gsub("\n$", ""))
 end
@@ -55,10 +55,10 @@ local function fresh_login(host, sock)
     local fresh = site.append({ "ssh" }, site.ssh_opts())
     site.append(fresh, { "-o", "ControlPath=none", host, "true" })
     if (devos.run(fresh) or 1) == 0 then
-        dev_command.say("provision: fresh key login ok")
+        dev_command.say("The fresh key login works.")
         return 0
     end
-    dev_command.note("provision: fresh login failed, rolling back sshd hardening")
+    dev_command.note("The fresh login failed, so the sshd hardening is rolling back.")
     local code = devos.run({ "ssh", "-o", "ControlPath=" .. sock, host, ROLLBACK }) or 1
     if code ~= 0 then
         return code
@@ -112,7 +112,7 @@ return dev_command({
         local admin_ip = site.pass_line(site.ADMIN_IP_ENTRY)
         if not admin_ip:match("^[%x.:/]+$") then
             dev_command.die(
-                "site: the password store entry " .. site.ADMIN_IP_ENTRY .. " is not an address"
+                "The password store entry " .. site.ADMIN_IP_ENTRY .. " is not an address."
             )
         end
 

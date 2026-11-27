@@ -271,26 +271,27 @@ local function verify(opts)
         end
         if rc == RESOLVE.INVALID or not wait or os.time() >= deadline then
             fail(
-                "cannot work out what "
+                "Cannot work out what "
                     .. channel
                     .. " should run"
                     .. (st.expected ~= "" and " (expected " .. st.expected .. ")" or "")
+                    .. "."
             )
             return 1
         end
         dev_command.say(
-            "verify: no "
+            "There is no "
                 .. channel
                 .. " release"
                 .. (st.expected ~= "" and " for " .. st.expected or "")
-                .. " yet, waiting"
+                .. " yet, so this is waiting."
         )
         devos.stdout:flush()
         devos.nap(RELEASE_STEP_SECS)
     end
     local commit, id = st.commit, st.id
     dev_command.say(
-        "verify: " .. channel .. " expects " .. id .. " (commit " .. short(commit) .. ")"
+        "The " .. channel .. " channel expects " .. id .. " (commit " .. short(commit) .. ")."
     )
 
     -- Wait for the box to run the expected commit
@@ -302,11 +303,17 @@ local function verify(opts)
                 break
             end
             if os.time() >= deadline then
-                dev_command.say("verify: gave up waiting after " .. WAIT_LIMIT_SECS .. " seconds")
+                dev_command.say("Gave up waiting after " .. WAIT_LIMIT_SECS .. " seconds.")
                 break
             end
             dev_command.say(
-                "verify: " .. channel .. " runs " .. short(got) .. ", waiting for " .. short(commit)
+                "The "
+                    .. channel
+                    .. " channel runs "
+                    .. short(got)
+                    .. ", waiting for "
+                    .. short(commit)
+                    .. "."
             )
             devos.stdout:flush()
             devos.nap(WAIT_STEP_SECS)
@@ -316,15 +323,16 @@ local function verify(opts)
     -- Check the build sha
     local got = public_sha(url)
     if same_commit(commit, got) then
-        pass("build_sha at " .. url .. " is " .. short(got))
+        pass("The build_sha at " .. url .. " is " .. short(got) .. ".")
     else
         fail(
-            "build_sha at "
+            "The build_sha at "
                 .. url
                 .. " is "
                 .. (got ~= "" and got or "unreachable")
-                .. ", wanted "
+                .. ", and the wanted one is "
                 .. short(commit)
+                .. "."
         )
     end
 
@@ -334,19 +342,24 @@ local function verify(opts)
     local login_status = first_field(login, "status=")
     local setup_status = first_field(setup, "status=")
     if login_status == "200" and setup_status == "303" and header(setup, "location") == "/" then
-        pass("/login answers 200 and /setup redirects to /, an instance with a passkey")
+        pass(
+            "The /login page answers 200 and /setup redirects to /, as an instance with a passkey does."
+        )
     elseif
         login_status == "303"
         and header(login, "location") == "/setup"
         and setup_status == "200"
     then
-        pass("/login redirects to /setup and /setup answers 200, a fresh instance")
+        pass(
+            "The /login page redirects to /setup and /setup answers 200, as a fresh instance does."
+        )
     else
         fail(
-            "/login answered "
+            "The /login page answered "
                 .. (login_status ~= "" and login_status or "nothing")
-                .. " and /setup "
+                .. " and /setup answered "
                 .. (setup_status ~= "" and setup_status or "nothing")
+                .. "."
         )
     end
 
@@ -361,15 +374,15 @@ local function verify(opts)
         and has("frame-ancestors 'none'")
         and not has("unsafe-eval")
     then
-        pass("content-security-policy is strict")
+        pass("The content-security-policy header is strict.")
     else
-        fail("content-security-policy is missing or loose")
+        fail("The content-security-policy header is missing or loose.")
     end
     local hsts = header(login, "strict-transport-security")
     if hsts:find("max%-age=[1-9]%d*") then
-        pass("strict-transport-security is set (" .. hsts .. ")")
+        pass("The strict-transport-security header is set (" .. hsts .. ").")
     else
-        fail("strict-transport-security is missing")
+        fail("The strict-transport-security header is missing.")
     end
 
     -- Fetch the box report, waiting for the update to record
@@ -387,56 +400,58 @@ local function verify(opts)
     if report then
         local last = first_field(report, REPORT.LAST_UPDATE)
         if recorded_ok(last, id) then
-            pass("last-update-" .. channel .. " records ok for " .. id)
+            pass("The last-update-" .. channel .. " record says ok for " .. id .. ".")
         else
-            fail("last-update-" .. channel .. " is: " .. last)
+            fail("The last-update-" .. channel .. " record says " .. last .. ".")
         end
 
         local bad = field(report, REPORT.JOURNAL_BAD)
         local lines = first_field(report, REPORT.JOURNAL_LINES)
         if #bad == 0 then
             pass(
-                "journal since the unit started has no panic or error lines (" .. lines .. " lines)"
+                "The journal since the unit started has no panic or error lines ("
+                    .. lines
+                    .. " lines)."
             )
         else
-            fail("journal since the unit started has panic or error lines")
+            fail("The journal since the unit started has panic or error lines.")
             for _, line in ipairs(bad) do
                 dev_command.say("        " .. line)
             end
         end
-        note("setup code in the journal: " .. first_field(report, REPORT.SETUP_CODE))
+        note("The setup code in the journal is " .. first_field(report, REPORT.SETUP_CODE) .. ".")
 
         local releases = first_field(report, REPORT.RELEASES)
         if first_field(report, REPORT.BACKUP) == "present" then
-            pass("a pre-update backup named for " .. id .. " exists")
+            pass("A pre-update backup named for " .. id .. " exists.")
             if first_field(report, REPORT.ARCHIVES) == "present" then
-                pass("its board archive directory exists")
+                pass("Its board archive directory exists.")
             else
                 note(
-                    "no board archive directory beside the backup for "
+                    "There is no board archive directory beside the backup for "
                         .. id
-                        .. " (the binary running before the update has no archive command before 0.5.30)"
+                        .. " (the binary running before the update has no archive command before 0.5.30)."
                 )
             end
         elseif releases == "1" then
             note(
-                "no pre-update backup for "
+                "There is no pre-update backup for "
                     .. id
-                    .. ", and it is the only release on the box: a first install"
+                    .. ", and it is the only release on the box, so this is a first install."
             )
         else
-            fail("no pre-update backup named for " .. id)
+            fail("No pre-update backup is named for " .. id .. ".")
         end
     else
-        fail("cannot reach the box over ssh after " .. SSH_TRIES .. " tries")
+        fail("Cannot reach the box over ssh after " .. SSH_TRIES .. " tries.")
     end
 
     -- Report the outcome
     if failures > 0 then
-        dev_command.say("verify: " .. channel .. " FAILED (" .. failures .. ")")
+        dev_command.say("The " .. channel .. " channel failed " .. failures .. " checks.")
         return 1
     end
-    dev_command.say("verify: " .. channel .. " ok")
+    dev_command.say("The " .. channel .. " channel passed every check.")
     return 0
 end
 

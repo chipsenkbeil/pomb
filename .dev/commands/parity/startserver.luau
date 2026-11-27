@@ -146,7 +146,7 @@ faketime package on Linux). Stop the server with
                 stderr = log,
             })
             if not proc then
-                dev_command.note("server did not start")
+                dev_command.note("The server did not come up.")
                 devos.exit(1)
             end
             for _ = 1, POLLS do
@@ -155,7 +155,7 @@ faketime package on Linux). Stop the server with
                 end
                 devos.nap(POLL_SECS)
             end
-            dev_command.note("server did not start")
+            dev_command.note("The server did not come up.")
             devos.exit(1)
         end
 

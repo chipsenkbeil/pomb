@@ -11,7 +11,7 @@ return dev_command({
         local override = dev_os.getenv("POMB_HOST")
         if override ~= nil and override ~= "" then
             dev_command.die(
-                "site: firewall runs only through " .. site.TUNNEL_HOST .. ", so unset POMB_HOST"
+                "The firewall runs only through " .. site.TUNNEL_HOST .. ", so unset POMB_HOST."
             )
         end
         return site.ssh_script(site.read_script(ctx, "firewall"), { "bash", "-s" })
