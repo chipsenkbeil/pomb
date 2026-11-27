@@ -4,7 +4,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::held_disk;
+use super::test_support::{TEST_DOING_COLUMN, TEST_TODO_COLUMN, held_disk};
 use crate::db::{BOARD_COPY_TASK_CAP, ColumnPatch, ColumnWatch, Db};
 use crate::layouts::{Category, YOUR_BOARDS};
 use crate::models::{AccountId, Actor, BoardRole, Responsible, TaskRow};
@@ -27,9 +27,11 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let owner = db.create_user("admin").expect("create user");
     let session = db.create_session(&owner, "").expect("session");
     let board_id = db.create_board(&owner, "Source").expect("board");
-    let todo = db.create_column(&board_id, "Todo", None).expect("column");
+    let todo = db
+        .create_column(&board_id, TEST_TODO_COLUMN, None)
+        .expect("column");
     let doing = db
-        .create_column(&board_id, "Doing", Some(3))
+        .create_column(&board_id, TEST_DOING_COLUMN, Some(3))
         .expect("column");
     db.create_swimlane(&board_id, "Team").expect("lane");
     let app = router(
@@ -117,7 +119,10 @@ async fn copying_a_board_should_keep_columns_colors_limits_and_swimlanes() {
         .iter()
         .map(|column| (column.name.as_str(), column.wip_limit))
         .collect();
-    assert_eq!(shape, [("Todo", None), ("Doing", Some(3))]);
+    assert_eq!(
+        shape,
+        [(TEST_TODO_COLUMN, None), (TEST_DOING_COLUMN, Some(3))]
+    );
     let palette = |board: &str| -> Vec<(String, String, bool, bool)> {
         fx.db
             .list_colors(board)
@@ -380,9 +385,9 @@ async fn board_columns_should_report_limit_unit() {
 
     let (status, columns) = send(&fx, "GET", &columns_uri, Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{columns}");
-    assert_eq!(columns[0]["name"], "Todo");
+    assert_eq!(columns[0]["name"], TEST_TODO_COLUMN);
     assert_eq!(columns[0]["limit_unit"], "count");
-    assert_eq!(columns[1]["name"], "Doing");
+    assert_eq!(columns[1]["name"], TEST_DOING_COLUMN);
     assert_eq!(columns[1]["limit_unit"], "hours");
 
     let (status, detail) = send(&fx, "GET", &detail_uri, Value::Null).await;
@@ -394,12 +399,18 @@ async fn board_columns_should_report_limit_unit() {
 #[tokio::test]
 async fn watching_a_column_should_show_in_the_api_until_it_is_unwatched() {
     let (_dir, fx) = fixture();
-    assert_eq!(watched_flags(&fx).await[0], ("Todo".to_string(), false));
+    assert_eq!(
+        watched_flags(&fx).await[0],
+        (TEST_TODO_COLUMN.to_string(), false)
+    );
 
     assert_eq!(watch(&fx, &fx.todo, true).await, StatusCode::OK);
     assert_eq!(
         watched_flags(&fx).await,
-        [("Todo".to_string(), true), ("Doing".to_string(), false)]
+        [
+            (TEST_TODO_COLUMN.to_string(), true),
+            (TEST_DOING_COLUMN.to_string(), false)
+        ]
     );
 
     assert_eq!(watch(&fx, &fx.todo, true).await, StatusCode::OK);
@@ -407,7 +418,10 @@ async fn watching_a_column_should_show_in_the_api_until_it_is_unwatched() {
     assert_eq!(column.watchers, [fx.owner.as_str()]);
 
     assert_eq!(watch(&fx, &fx.todo, false).await, StatusCode::OK);
-    assert_eq!(watched_flags(&fx).await[0], ("Todo".to_string(), false));
+    assert_eq!(
+        watched_flags(&fx).await[0],
+        (TEST_TODO_COLUMN.to_string(), false)
+    );
 }
 
 #[tokio::test]
@@ -426,7 +440,10 @@ async fn a_watch_should_belong_to_its_account_alone() {
         )
         .expect("watch");
 
-    assert_eq!(watched_flags(&fx).await[0], ("Todo".to_string(), false));
+    assert_eq!(
+        watched_flags(&fx).await[0],
+        (TEST_TODO_COLUMN.to_string(), false)
+    );
     assert_eq!(watch(&fx, &fx.todo, true).await, StatusCode::OK);
     assert_eq!(watch(&fx, &fx.todo, false).await, StatusCode::OK);
     let column = fx.db.list_columns(&fx.board_id).expect("columns").remove(0);
@@ -503,13 +520,28 @@ async fn two_members_of_a_shared_board_should_watch_the_same_column_apart() {
 
     assert_eq!(watch(&bob, &fx.todo, true).await, StatusCode::OK);
     assert_eq!(watch(&carol, &fx.todo, true).await, StatusCode::OK);
-    assert_eq!(watched_flags(&bob).await[0], ("Todo".to_string(), true));
-    assert_eq!(watched_flags(&carol).await[0], ("Todo".to_string(), true));
-    assert_eq!(watched_flags(&fx).await[0], ("Todo".to_string(), false));
+    assert_eq!(
+        watched_flags(&bob).await[0],
+        (TEST_TODO_COLUMN.to_string(), true)
+    );
+    assert_eq!(
+        watched_flags(&carol).await[0],
+        (TEST_TODO_COLUMN.to_string(), true)
+    );
+    assert_eq!(
+        watched_flags(&fx).await[0],
+        (TEST_TODO_COLUMN.to_string(), false)
+    );
 
     assert_eq!(watch(&bob, &fx.todo, false).await, StatusCode::OK);
-    assert_eq!(watched_flags(&bob).await[0], ("Todo".to_string(), false));
-    assert_eq!(watched_flags(&carol).await[0], ("Todo".to_string(), true));
+    assert_eq!(
+        watched_flags(&bob).await[0],
+        (TEST_TODO_COLUMN.to_string(), false)
+    );
+    assert_eq!(
+        watched_flags(&carol).await[0],
+        (TEST_TODO_COLUMN.to_string(), true)
+    );
     let column = fx.db.list_columns(&fx.board_id).expect("columns").remove(0);
     assert_eq!(column.watchers, [carol.owner.as_str()]);
 }

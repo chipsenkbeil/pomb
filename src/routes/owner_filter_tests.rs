@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, held_disk};
+use super::test_support::{Reply, TEST_TODO_COLUMN, call, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -33,7 +33,9 @@ impl Fixture {
         let session = db.create_session(&account, "").expect("session");
         let board = db.create_board(&account, "Filter").expect("board");
         db.create_swimlane(&board, "Lane").expect("lane");
-        let column = db.create_column(&board, "Todo", None).expect("column");
+        let column = db
+            .create_column(&board, TEST_TODO_COLUMN, None)
+            .expect("column");
         let role = db
             .create_agent_role(account.as_str(), "builder", BTreeSet::<Permission>::new())
             .expect("role");

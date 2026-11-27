@@ -3,7 +3,9 @@ use serde_json::{Value, json};
 use utoipa::OpenApi;
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, held_disk};
+use super::test_support::{
+    Reply, TEST_DOING_COLUMN, TEST_DONE_COLUMN, TEST_TODO_COLUMN, call, held_disk,
+};
 use super::{ApiDoc, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
@@ -33,9 +35,15 @@ impl Fixture {
         let account = db.create_user("admin").expect("user");
         let session = db.create_session(&account, "").expect("session");
         let board = db.create_board(&account, "Owner").expect("board");
-        let column = db.create_column(&board, "Todo", None).expect("column");
-        let other_column = db.create_column(&board, "Doing", None).expect("column");
-        let done_column = db.create_column(&board, "Done", None).expect("column");
+        let column = db
+            .create_column(&board, TEST_TODO_COLUMN, None)
+            .expect("column");
+        let other_column = db
+            .create_column(&board, TEST_DOING_COLUMN, None)
+            .expect("column");
+        let done_column = db
+            .create_column(&board, TEST_DONE_COLUMN, None)
+            .expect("column");
         db.set_column_done(&done_column, true).expect("done");
         let token = || {
             let issued = db.list_account_api_tokens(&account).expect("tokens").len();
