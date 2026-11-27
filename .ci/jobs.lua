@@ -108,6 +108,20 @@ return {
                 run("Run tests", "dev test " .. table.concat(args, " "))
             end,
         },
+        fmt = {
+            name = "Format Rust",
+            matrix = { RUNNER },
+            run = function()
+                check_rust()
+                run(
+                    "Snapshot tree",
+                    "git init -q && git add -A && git -c user.name=ci -c user.email=ci@localhost commit -q -m base"
+                )
+                run("Run fmt", "dev fmt")
+                run("Write patch", "git diff > fmt.patch")
+                ci.artifact("fmt.patch")
+            end,
+        },
         nixcheck = {
             name = "Nix check",
             matrix = { RUNNER },

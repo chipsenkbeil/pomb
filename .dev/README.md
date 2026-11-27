@@ -297,7 +297,9 @@ dev --remote build
 
 Format the workspace with `cargo +nightly fmt`, which the unstable options in
 `rustfmt.toml` need, then drop the trailing period from each `//` one-liner.
-It takes no flags of its own.
+It formats on ci and applies the patch here: dev starts the `fmt` job, which
+keeps `fmt.patch`, and applies it to the working tree. `--local` formats on
+this machine instead.
 
 Example:
 
