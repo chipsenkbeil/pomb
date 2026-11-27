@@ -32,6 +32,12 @@ pub(crate) const TEST_TODO_COLUMN: &str = "Todo";
 pub(crate) const TEST_DOING_COLUMN: &str = "Doing";
 pub(crate) const TEST_DONE_COLUMN: &str = "Done";
 pub(crate) const TEST_BLOCKED_COLUMN: &str = "Blocked";
+pub(crate) const TEST_BACKLOG_COLUMN: &str = "Backlog";
+pub(crate) const TEST_READY_COLUMN: &str = "Ready";
+pub(crate) const TEST_IN_PROGRESS_COLUMN: &str = "In Progress";
+pub(crate) const TEST_IN_REVIEW_COLUMN: &str = "In Review";
+pub(crate) const TEST_VERIFY_COLUMN: &str = "Verify";
+pub(crate) const TEST_RELEASE_COLUMN: &str = "Release";
 
 /// A software authenticator holding one P-256 passkey, which speaks WebAuthn's JSON the way the
 /// browser script sends it.

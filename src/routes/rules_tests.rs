@@ -8,7 +8,10 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{TEST_BLOCKED_COLUMN, TEST_DONE_COLUMN, held_disk};
+use super::test_support::{
+    TEST_BACKLOG_COLUMN, TEST_BLOCKED_COLUMN, TEST_DONE_COLUMN, TEST_IN_PROGRESS_COLUMN,
+    TEST_IN_REVIEW_COLUMN, TEST_READY_COLUMN, TEST_RELEASE_COLUMN, TEST_VERIFY_COLUMN, held_disk,
+};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{
@@ -82,8 +85,12 @@ impl Fixture {
             db.create_session(&owner, "").expect("session")
         );
         let board = db.create_board(&owner, "Rules").expect("board");
-        let backlog = db.create_column(&board, "Backlog", None).expect("backlog");
-        let ready = db.create_column(&board, "Ready", None).expect("ready");
+        let backlog = db
+            .create_column(&board, TEST_BACKLOG_COLUMN, None)
+            .expect("backlog");
+        let ready = db
+            .create_column(&board, TEST_READY_COLUMN, None)
+            .expect("ready");
         let lane = db.create_swimlane(&board, "Extra").expect("lane");
         let mut stages = BTreeMap::new();
         let stage_patch = |stage| ColumnPatch {
@@ -93,10 +100,10 @@ impl Fixture {
         db.update_column(&ready, &stage_patch(ColumnStage::Ready))
             .expect("stage ready");
         for (key, name, stage) in [
-            ("progress", "In Progress", ColumnStage::InProgress),
-            ("review", "In Review", ColumnStage::Review),
-            ("verify", "Verify", ColumnStage::Verify),
-            ("release", "Release", ColumnStage::Release),
+            ("progress", TEST_IN_PROGRESS_COLUMN, ColumnStage::InProgress),
+            ("review", TEST_IN_REVIEW_COLUMN, ColumnStage::Review),
+            ("verify", TEST_VERIFY_COLUMN, ColumnStage::Verify),
+            ("release", TEST_RELEASE_COLUMN, ColumnStage::Release),
         ] {
             let id = db.create_column(&board, name, None).expect(name);
             db.update_column(&id, &stage_patch(stage)).expect(name);
@@ -294,7 +301,7 @@ mod role_moves {
         let body = parse(&text);
         assert_eq!(body["code"], "role_move_forbidden", "{text}");
         let message = body["message"].as_str().expect("message");
-        for named in ["implementer", "In Progress", "Verify"] {
+        for named in ["implementer", TEST_IN_PROGRESS_COLUMN, TEST_VERIFY_COLUMN] {
             assert!(message.contains(named), "{message}");
         }
     }
