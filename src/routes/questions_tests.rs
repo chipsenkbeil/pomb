@@ -10,6 +10,8 @@ use crate::auth::new_api_token_record;
 use crate::db::{Db, NewTaskPlacement};
 use crate::models::{AccountId, AuthScope, HistoryKind, NEEDS_HUMAN_LABEL, TaskRow};
 
+const REVIEW_COLUMN: &str = "Review";
+const PARKED_COLUMN: &str = "Parked";
 const SHIPPED_COLUMN: &str = "Shipped";
 
 /// Edits a valid question to drop or break one part.
@@ -53,7 +55,9 @@ fn fixture() -> Fixture {
     let blocked = db
         .create_column(&board_id, "Waiting", None)
         .expect("column");
-    let review = db.create_column(&board_id, "Review", None).expect("column");
+    let review = db
+        .create_column(&board_id, REVIEW_COLUMN, None)
+        .expect("column");
     let done = db
         .create_column(&board_id, SHIPPED_COLUMN, None)
         .expect("column");
@@ -1156,7 +1160,10 @@ struct Elsewhere {
 
 fn elsewhere(fx: &Fixture) -> Elsewhere {
     let board = fx.db.create_board(&fx.user_id, "Elsewhere").expect("board");
-    let parked = fx.db.create_column(&board, "Parked", None).expect("column");
+    let parked = fx
+        .db
+        .create_column(&board, PARKED_COLUMN, None)
+        .expect("column");
     let done = fx
         .db
         .create_column(&board, SHIPPED_COLUMN, None)
