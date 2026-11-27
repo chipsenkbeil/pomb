@@ -7,7 +7,7 @@ use tempfile::TempDir;
 use super::multi_tests::admin_settings;
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, held_disk};
+use super::test_support::{Reply, TEST_TODO_COLUMN, call, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -126,13 +126,19 @@ async fn board_activity_should_update_from_agent_tokens_and_throttle() {
     let start = now();
     let recent = fx.board_used_at("Recent", start - WITHIN_THE_HOUR_SECONDS);
     let stale = fx.board_used_at("Stale", start - PAST_THE_HOUR_SECONDS);
-    let column = fx.db.create_column(&stale, "Todo", None).expect("column");
+    let column = fx
+        .db
+        .create_column(&stale, TEST_TODO_COLUMN, None)
+        .expect("column");
     let task = fx
         .db
         .create_task(&column, None, "Task", 1, None)
         .expect("task");
     let linked = fx.board_used_at("Linked", start - PAST_THE_HOUR_SECONDS);
-    let linked_column = fx.db.create_column(&linked, "Todo", None).expect("column");
+    let linked_column = fx
+        .db
+        .create_column(&linked, TEST_TODO_COLUMN, None)
+        .expect("column");
     let linked_task = fx
         .db
         .create_task(&linked_column, None, "Linked task", 1, None)

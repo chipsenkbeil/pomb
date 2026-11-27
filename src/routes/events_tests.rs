@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, held_disk};
+use super::test_support::{Reply, TEST_DONE_COLUMN, TEST_TODO_COLUMN, call, held_disk};
 use super::{REQUEST_TIMEOUT_SECS, router};
 use crate::auth::new_api_token_record;
 use crate::db::{Db, NewTaskPlacement, WipCheck};
@@ -85,8 +85,12 @@ impl Fixture {
             raw
         };
         let board = db.create_board(&admin, "Events").expect("board");
-        let todo = db.create_column(&board, "Todo", None).expect("column");
-        let done = db.create_column(&board, "Done", None).expect("column");
+        let todo = db
+            .create_column(&board, TEST_TODO_COLUMN, None)
+            .expect("column");
+        let done = db
+            .create_column(&board, TEST_DONE_COLUMN, None)
+            .expect("column");
         let state = AppState::new(db.clone(), None, passkey_mode())
             .with_disk(held_disk(&db))
             .with_mode(InstanceMode::Multi)
@@ -429,7 +433,10 @@ async fn a_wait_should_outlast_the_request_timeout_and_end_at_its_own() {
 async fn a_move_to_another_board_should_name_the_right_column_on_each_board() {
     let fx = Fixture::new();
     let other = fx.db.create_board(&fx.admin, "Other").expect("board");
-    let target = fx.db.create_column(&other, "Todo", None).expect("column");
+    let target = fx
+        .db
+        .create_column(&other, TEST_TODO_COLUMN, None)
+        .expect("column");
     let task = fx.add_task("Travel");
     let uri = |board: &str| format!("/api/boards/{board}/events/wait?after=1&timeout=60");
     let from = tokio::spawn(send(fx.app.clone(), fx.work.clone(), uri(&fx.board)));

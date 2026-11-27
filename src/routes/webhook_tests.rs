@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, held_disk, none_mode};
+use super::test_support::{Reply, TEST_TODO_COLUMN, call, held_disk, none_mode};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{Db, MAX_WEBHOOKS_PER_BOARD, NewWebhook};
@@ -38,7 +38,9 @@ impl Fixture {
         let (record, work_token) = new_api_token_record(&admin, "work", AuthScope::Work, None);
         db.create_api_token(&record).expect("token");
         let board = db.create_board(&admin, "Hooks").expect("board");
-        let column = db.create_column(&board, "Todo", None).expect("column");
+        let column = db
+            .create_column(&board, TEST_TODO_COLUMN, None)
+            .expect("column");
         let app = router(
             AppState::new(db.clone(), None, passkey_mode())
                 .with_disk(held_disk(&db))
@@ -793,7 +795,9 @@ impl Browser {
         let (record, token) = new_api_token_record(&owner, "admin", AuthScope::Admin, None);
         db.create_api_token(&record).expect("token");
         let board = db.create_board(&owner, "Hooks").expect("board");
-        let column = db.create_column(&board, "Todo", None).expect("column");
+        let column = db
+            .create_column(&board, TEST_TODO_COLUMN, None)
+            .expect("column");
         let mut state = AppState::new(db.clone(), None, none_mode(None))
             .with_disk(held_disk(&db))
             .with_limits(unthrottled_limits());
@@ -868,7 +872,7 @@ async fn settings_page_should_list_each_webhook_with_its_column_events_and_state
     assert!(html.contains(&format!("data-webhook-id=\"{}\"", plain.id)));
     assert!(html.contains("https://example.com/filtered"));
     assert!(html.contains("Task created, Task restored"));
-    assert!(html.contains("Todo"));
+    assert!(html.contains(TEST_TODO_COLUMN));
     assert!(html.contains("All columns"));
     assert!(html.contains("Enabled"));
     assert!(html.contains("Disabled"));
@@ -951,7 +955,10 @@ async fn add_page_should_render_the_general_and_filter_fields() {
     }
     assert!(html.contains("value=\"taskRestored\""));
     assert!(html.contains("<option value=\"\" selected>All columns</option>"));
-    assert!(html.contains(&format!("<option value=\"{}\">Todo</option>", fx.column)));
+    assert!(html.contains(&format!(
+        "<option value=\"{}\">{}</option>",
+        fx.column, TEST_TODO_COLUMN
+    )));
     assert!(!html.contains(" checked>"));
     assert!(html.contains("data-page=\"board-settings-webhook-form\""));
 }
@@ -972,8 +979,8 @@ async fn edit_page_should_prefill_the_webhook() {
     assert!(html.contains("value=\"taskChanged\">"));
     assert_eq!(html.matches(" checked>").count(), 2);
     assert!(html.contains(&format!(
-        "<option value=\"{}\" selected>Todo</option>",
-        fx.column
+        "<option value=\"{}\" selected>{}</option>",
+        fx.column, TEST_TODO_COLUMN
     )));
 }
 

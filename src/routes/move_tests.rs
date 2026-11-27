@@ -1,12 +1,12 @@
 use axum::http::StatusCode;
 use serde_json::json;
 
-use super::test_support::Fixture;
+use super::test_support::{Fixture, TEST_DOING_COLUMN, TEST_TODO_COLUMN};
 
 #[tokio::test]
 async fn single_move_without_a_position_should_follow_the_new_task_position_setting() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     fx.task(&columns[1], "d").await;
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
@@ -32,7 +32,7 @@ async fn single_move_without_a_position_should_follow_the_new_task_position_sett
 #[tokio::test]
 async fn single_move_with_a_position_should_ignore_the_new_task_position_setting() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     fx.top_placement(&board).await;
     fx.task(&columns[1], "d").await;
     let a = fx.task(&columns[0], "a").await;

@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{call, held_disk};
+use super::test_support::{TEST_DONE_COLUMN, TEST_TODO_COLUMN, call, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -27,7 +27,9 @@ impl Fixture {
         let account = db.create_user("admin").expect("user");
         let session = db.create_session(&account, "").expect("session");
         let board = db.create_board(&account, "Face").expect("board");
-        let column = db.create_column(&board, "Todo", None).expect("column");
+        let column = db
+            .create_column(&board, TEST_TODO_COLUMN, None)
+            .expect("column");
         let slots = vec![
             SeatSlot {
                 name: "code".to_string(),
@@ -255,7 +257,7 @@ async fn card_face_should_show_only_the_owner_on_a_done_card() {
     let fx = Fixture::new();
     let done = fx
         .db
-        .create_column(&fx.board, "Done", None)
+        .create_column(&fx.board, TEST_DONE_COLUMN, None)
         .expect("column");
     fx.db.set_column_done(&done, true).expect("done");
     let task = fx.task().await;
@@ -499,7 +501,7 @@ async fn panel_should_fold_the_seats_on_a_done_card() {
 
     let done = fx
         .db
-        .create_column(&fx.board, "Done", None)
+        .create_column(&fx.board, TEST_DONE_COLUMN, None)
         .expect("column");
     fx.db.set_column_done(&done, true).expect("done");
     fx.db.move_task(&task, &done, None, 1.0).expect("move");

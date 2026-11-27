@@ -8,7 +8,9 @@ use tower::ServiceExt;
 
 use super::multi_tests::admin_settings;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, SoftAuthenticator, add_passkey, call, held_disk, session_of};
+use super::test_support::{
+    Reply, SoftAuthenticator, TEST_TODO_COLUMN, add_passkey, call, held_disk, session_of,
+};
 use super::{ROUTE_ACCESS, RouteClass, Writes, router};
 use crate::AppState;
 use crate::auth::{PENDING_ROUTES, new_api_token_record, required_permission, required_role};
@@ -339,8 +341,11 @@ pub(crate) fn seed(
     let board2 = db
         .create_board(account, &format!("{name} 2"))
         .expect("board");
-    let column = db.create_column(&board, "Todo", None).expect("column");
-    db.create_column(&board2, "Todo", None).expect("column");
+    let column = db
+        .create_column(&board, TEST_TODO_COLUMN, None)
+        .expect("column");
+    db.create_column(&board2, TEST_TODO_COLUMN, None)
+        .expect("column");
     let lane = db.create_swimlane(&board, "Lane").expect("lane");
     db.create_swimlane(&board, "Other lane").expect("lane");
     let task = db

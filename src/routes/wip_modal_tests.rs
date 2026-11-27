@@ -1,12 +1,12 @@
 use axum::http::StatusCode;
 use serde_json::json;
 
-use super::test_support::Fixture;
+use super::test_support::{Fixture, TEST_DOING_COLUMN, TEST_TODO_COLUMN};
 
 #[tokio::test]
 async fn bulk_move_should_pass_a_wip_limit_only_when_forced() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     fx.db.set_column_wip(&columns[1], Some(1)).expect("limit");
     fx.task(&columns[1], "d").await;
     let a = fx.task(&columns[0], "a").await;
@@ -28,7 +28,7 @@ async fn bulk_move_should_pass_a_wip_limit_only_when_forced() {
 #[tokio::test]
 async fn modal_of_a_task_with_no_content_should_be_bare() {
     let fx = Fixture::new();
-    let (_, columns) = fx.board("Plans", &["Todo"]);
+    let (_, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let id = fx.task(&columns[0], "empty").await;
 
     let reply = fx
@@ -43,7 +43,7 @@ async fn modal_of_a_task_with_no_content_should_be_bare() {
 #[tokio::test]
 async fn modal_of_a_task_with_a_label_should_not_be_bare() {
     let fx = Fixture::new();
-    let (_, columns) = fx.board("Plans", &["Todo"]);
+    let (_, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let id = fx.task(&columns[0], "labelled").await;
     let patch = fx
         .send(
@@ -66,7 +66,7 @@ async fn modal_of_a_task_with_a_label_should_not_be_bare() {
 #[tokio::test]
 async fn estimated_hours_limit_should_refuse_a_move_past_the_hours_and_show_in_the_header() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let limit = json!({"wip_limit": 3, "config_json": "{\"wip_limit_type\":\"hours\"}"});
     let reply = fx
         .send(

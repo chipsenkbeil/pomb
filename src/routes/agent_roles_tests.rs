@@ -4,7 +4,9 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, drop_seeded_roles, held_disk};
+use super::test_support::{
+    Reply, TEST_DOING_COLUMN, TEST_TODO_COLUMN, call, drop_seeded_roles, held_disk,
+};
 use super::{history_actor, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
@@ -1598,7 +1600,7 @@ async fn role_child_should_pass_the_child_checks_in_one_write() {
 fn acting_task(fx: &Fixture) -> String {
     let column = fx
         .db
-        .create_column(&fx.boards[ALICE], "Todo", None)
+        .create_column(&fx.boards[ALICE], TEST_TODO_COLUMN, None)
         .expect("column");
     fx.db
         .create_task(&column, None, "Card", 1, None)
@@ -2789,8 +2791,14 @@ async fn only_the_lead_role_should_delete_or_convert_a_subtask() {
 
 async fn assert_lead_runs_the_cards(fx: &Fixture, raw: &str) -> String {
     let board = &fx.boards[ALICE];
-    let todo = fx.db.create_column(board, "Todo", None).expect("column");
-    let doing = fx.db.create_column(board, "Doing", None).expect("column");
+    let todo = fx
+        .db
+        .create_column(board, TEST_TODO_COLUMN, None)
+        .expect("column");
+    let doing = fx
+        .db
+        .create_column(board, TEST_DOING_COLUMN, None)
+        .expect("column");
     let task = fx.db.create_task(&todo, None, "A", 1, None).expect("task");
     let other = fx.db.create_task(&todo, None, "B", 2, None).expect("task");
     let sub = fx

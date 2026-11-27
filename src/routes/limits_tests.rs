@@ -22,7 +22,7 @@ use tower::ServiceExt;
 
 use super::server::{passkey_mode, unthrottled_limits};
 use super::slot::SEND_SECS;
-use super::test_support::{Reply, call, held_disk};
+use super::test_support::{Reply, TEST_DOING_COLUMN, TEST_TODO_COLUMN, call, held_disk};
 use super::{
     AppError, REQUEST_TIMEOUT_SECS, ROUTE_ACCESS, SLOW_REQUEST_TIMEOUT_SECS, Writes, router,
 };
@@ -206,7 +206,10 @@ impl Fixture {
     /// Creates a board with one column for `owner` directly, returning the board and column ids.
     fn board(&self, owner: &AccountId, name: &str) -> (String, String) {
         let board = self.db.create_board(owner, name).expect("board");
-        let column = self.db.create_column(&board, "Todo", None).expect("column");
+        let column = self
+            .db
+            .create_column(&board, TEST_TODO_COLUMN, None)
+            .expect("column");
         (board, column)
     }
 
@@ -3382,7 +3385,9 @@ async fn upload_should_answer_busy_while_two_uploads_hold_every_slot() {
     let (record, raw) = new_api_token_record(&admin, "agent", AuthScope::Admin, None);
     db.create_api_token(&record).expect("token");
     let board = db.create_board(&admin, "Board").expect("board");
-    let column = db.create_column(&board, "Todo", None).expect("column");
+    let column = db
+        .create_column(&board, TEST_TODO_COLUMN, None)
+        .expect("column");
     let task = db
         .create_task(&column, None, "Task", 1, None)
         .expect("task");
@@ -4199,7 +4204,9 @@ async fn unread_downloads_should_hold_their_slots_until_dropped() {
     let (record, raw) = new_api_token_record(&admin, "agent", AuthScope::Admin, None);
     db.create_api_token(&record).expect("token");
     let board = db.create_board(&admin, "Board").expect("board");
-    let column = db.create_column(&board, "Todo", None).expect("column");
+    let column = db
+        .create_column(&board, TEST_TODO_COLUMN, None)
+        .expect("column");
     let task = db
         .create_task(&column, None, "Task", 1, None)
         .expect("task");
@@ -5772,7 +5779,7 @@ impl Fixture {
         let (board, column) = self.board(&self.member, "Board");
         let other_column = self
             .db
-            .create_column(&board, "Doing", None)
+            .create_column(&board, TEST_DOING_COLUMN, None)
             .expect("column");
         let task = self
             .db
