@@ -1,7 +1,9 @@
+local dev_board = require("@dev/board")
 local board_land = require("@dev/board/land")
 local check = require("@dev/board/check")
 local devos = require("@dev/os")
 local fs = require("@dev/fs")
+local scm = require("@dev/scm")
 local cargo = require("@lib/pomb/cargo")
 local drain = require("@lib/pomb/drain")
 local forge = require("@lib/pomb/forge")
@@ -10,6 +12,7 @@ local standalone = require("@dev/standalone")
 local dev_command = require("@dev/command")
 
 local ATTEMPTS = 3
+local MAIN_MOVED_STATUS = 3
 local QUIET = { stderr = "null" }
 local WAIT_INTERVAL_SECS = 30
 local WAIT_BOUND_SECS = 21600
@@ -227,20 +230,25 @@ local function retire_landed_worktrees(repo, cand)
     end
 end
 
-local function move_to_release(repo, card, landed)
-    local path = repo .. "/.dev/worktrees/move-" .. card
-    if fs.exists(path) then
-        run_git(repo, "worktree", "remove", "--force", path)
+local function card_in(dir, card)
+    local found, message = dev_board.find(scm.workspace(dir))
+    if not found then
+        return nil, message
     end
-    local moved = run_git(repo, "worktree", "add", "-q", "--detach", path, landed)
-    if moved == 0 then
-        moved = devos.run({ "dev", "board", "move", card, "release" }, { cwd = path })
-        run_git(repo, "worktree", "remove", "--force", path)
+    return found:find_card(card)
+end
+
+local function move_to_release(repo, card, state)
+    local found, message = card_in(repo, card)
+    local moved, reason
+    if found then
+        moved, reason = found:move_to_release(state)
     end
-    if moved ~= 0 then
+    if not moved then
         warn(
-            ("Landed, but dev board move %s release failed, so move the card yourself.\n"):format(
-                card
+            ("Landed, but the move of card %s to release failed (%s), so move the card yourself.\n"):format(
+                card,
+                reason or message or "no reason given"
             )
         )
     end
@@ -590,9 +598,9 @@ Steps, any failure aborts before the push:
 1. Fetch the remote of record. Refuse a commit that is not exactly one commit past its merge-base with <remote>/main, or that changes the package version in Cargo.toml or the pomb entry of Cargo.lock: only dev release bumps the version. Refuse a commit that adds a file under .dev/standalone unless the card has the standalone-ok label.
 2. Take the land lock .dev/land.lock, which names the card and the pid, to allow one land at a time to apply, test and push. Wait for it while a live land holds it, polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) up to POMB_LAND_WAIT_BOUND seconds (default 21600) and saying who holds it, and take over a lock whose pid is gone. Drop it after the push, after a push refused because main moved, after a refusal and on every other exit. Then wait for the release lock .dev/release.lock to clear, up to POMB_LAND_WAIT_BOUND seconds (default 21600), polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) and saying who holds it. A lock whose pid is gone is removed. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>, first removing a clean land worktree left by an earlier attempt, and refusing when that worktree holds uncommitted changes. On gerrit the commit gets a Change-Id trailer when it has none.
 3. Refuse attribution trailers through the push_main helper's --check, before any gate. Then, on the first attempt only, read the card's dev-review notes from dev board show and refuse, before any gate, a commit whose code or style review is missing, is of an earlier patch without a recheck at this commit, or says needs-work, so nothing is pushed.
-4. Read the card's latest mode=run dev-check note from dev board show, and match each of its rows `N result RUNID` to the card's checks list by position. When its sum matches the card's current checks list, it has a result for every checks row, passes the rows dev --remote lint and dev --remote test, and names the landed commit or one with the same git patch-id, skip the gates whether or not main moved since, and say so. Otherwise say why and run dev lint --remote, then dev test --remote, through the gate helper, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts. When the commit changes a path under tests/ or .dev/ or a Cargo file, also run dev nixcheck --remote through the gate helper after test with the same drain retry, even when the card's dev-check let lint and test skip, since that note records only lint and test. Any other change runs no nixcheck gate.
-5. Push to main through the push_main helper, remove the land worktree, print the landed sha, note it on the card with dev board note and move the card to Release with dev board move from a detached worktree at the landed commit. Then remove the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch. In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the bookmark of the same name. A worktree with uncommitted changes is kept, and the command says why.
-6. A push refused because main moved on (exit 3) removes the worktree, drops the land lock, fetches, and repeats steps 2 to 5 on the new main, 3 attempts in all. It never forces the push.
+4. Read the card's latest mode=run dev-check note from dev board show, and match each of its rows `N result RUNID` to the card's checks list by position. When its sum matches the card's current checks list, it has a result for every checks row, passes the rows dev --remote lint and dev --remote test, and names the landed commit or one with the same git patch-id, skip the gates whether or not main moved since, and say so. Otherwise say why and run dev lint --remote, then dev test --remote, through the gate helper, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts. When the commit changes a path under tests/ or .dev/ or a Cargo file, also run dev nixcheck --remote through the gate helper after test with the same drain retry, even when the card's dev-check let lint and test skip, since that note records only lint and test. Any other change runs no nixcheck gate. Before the push, carry the card's check and reviews onto the landed commit with dev's carry_proof, and refuse when it cannot, so nothing is pushed.
+5. Push to main through the push_main helper, remove the land worktree, print the landed sha, note it on the card with dev board note and move the card to Release from the main checkout with dev's move_to_release, which proves the landed commit. Then remove the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch. In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the bookmark of the same name. A worktree with uncommitted changes is kept, and the command says why.
+6. A push refused because main moved on (exit 3), or a carry refused because main moved on while the gates ran, removes the worktree, drops the land lock, fetches, and repeats steps 2 to 5 on the new main, 3 attempts in all. It never forces the push.
 The remote of record is forge.remote, else gerrit when that remote exists, else origin. A failed land leaves its worktree behind; the next land removes it when it is clean, and a worktree with uncommitted changes is removed by hand. A push refused a third time exits 1 with the worktree left behind, and so does any other push failure, which is not retried.
 ]],
     run = function(opts, args, ctx)
@@ -677,6 +685,7 @@ The remote of record is forge.remote, else gerrit when that remote exists, else 
             end
         end
         local sha
+        local state
         local verdict
         local attempt = 1
         local lock_wait = 0
@@ -702,6 +711,16 @@ The remote of record is forge.remote, else gerrit when that remote exists, else 
                 fork = fork,
                 base = base,
             })
+            local state_why
+            state, state_why = scm.workspace(wt):state()
+            if not state then
+                die(
+                    ("Could not read the landed commit in %s: %s So nothing was pushed."):format(
+                        wt,
+                        dev_command.vcs_sentence(state_why, wt)
+                    )
+                )
+            end
             check_attribution(root, wt)
             if attempt == 1 then
                 local problem = review_problem(repo, wt, card, sha)
@@ -745,13 +764,37 @@ The remote of record is forge.remote, else gerrit when that remote exists, else 
                 run_git(repo, "worktree", "remove", "--force", wt)
                 drop_land_lock()
             else
-                local push = { "dev", "-l", helper(root, "push_main"), wt }
-                local status = devos.run(push, { cwd = wt })
+                local carry, carry_why = card_in(wt, card)
+                local carried, reason
+                if carry then
+                    carried, reason = carry:carry_proof()
+                else
+                    reason = carry_why
+                end
+                local status
+                if carried then
+                    local push = { "dev", "-l", helper(root, "push_main"), wt }
+                    status = devos.run(push, { cwd = wt })
+                else
+                    local refetched = run_git(repo, "fetch", "-q", remote)
+                    local current = read_git(repo, "rev-parse", remote .. "/main")
+                    if refetched ~= 0 or current == base then
+                        die(
+                            ("The check and reviews of card %s could not be carried onto commit %s: %s So nothing was pushed, and the worktree is left at %s."):format(
+                                card,
+                                sha,
+                                reason or "no reason given",
+                                wt
+                            )
+                        )
+                    end
+                    status = MAIN_MOVED_STATUS
+                end
                 if status == 0 then
                     drop_land_lock()
                     break
                 end
-                if status ~= 3 then
+                if status ~= MAIN_MOVED_STATUS then
                     die(
                         ("The push failed with status %s, and the worktree is left at %s."):format(
                             status,
@@ -797,7 +840,7 @@ The remote of record is forge.remote, else gerrit when that remote exists, else 
                 )
             )
         end
-        move_to_release(repo, card, sha)
+        move_to_release(repo, card, state)
         retire_landed_worktrees(repo, cand)
         return 0
     end,

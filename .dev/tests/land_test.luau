@@ -1,7 +1,11 @@
+local dev_board = require("@dev/board")
 local board_check = require("@dev/board/check")
+local board_review = require("@dev/board/review")
 local devos = require("@dev/os")
 local fs = require("@dev/fs")
+local json = require("@dev/json")
 local runtime = require("@dev/runtime")
+local scm = require("@dev/scm")
 local t = require("@dev/testing")
 local testenv = require("@dev/testenv")
 local gitenv = require("@lib/pomb/gitenv")
@@ -11,8 +15,9 @@ local ROOT = testkit.root
 
 devos.defaults.env = gitenv.env
 
-local CARD = "abc123"
-local RELEASE = "release"
+local CARD = ""
+local BOARD = "land"
+local LINT, TEST = "dev --remote lint", "dev --remote test"
 local VERBS = {
     "commands/land.luau",
     "helpers/gate.luau",
@@ -30,7 +35,7 @@ case "$1" in -l) exec '@dev@' "$@";; esac
 [ "$1" != --remote ] || shift
 if [ "$1" = board ] && [ "$2" = show ]; then [ -e '@dir@/fail-show' ] && exit 1; printf 'abc123  Ready  1 Pomodoro  %s  name\n' "$(cat '@dir@/labels' 2>/dev/null || echo -)"; cat '@dir@/check-note' 2>/dev/null; cat '@dir@/reviews' 2>/dev/null; exit 0; fi
 if [ "$1" = board ] && [ "$2" = note ] && [ -e '@dir@/note-warns' ]; then echo 'dev: card prose holds a hex id or hash' >&2; fi
-if [ "$1" = board ]; then echo "$*" >>'@dir@/notes'; if [ "$2" = move ]; then pwd -P >>'@dir@/move-dirs'; git rev-parse HEAD >>'@dir@/move-heads'; [ ! -e '@dir@/fail-move' ] || exit 1; fi; exit 0; fi
+if [ "$1" = board ]; then echo "$*" >>'@dir@/notes'; exit 0; fi
 touch '@dir@/runs.jsonl'
 echo "$1" >>'@dir@/calls'
 if [ -e '@dir@/drain-'"$1" ] && [ "$(cat '@dir@/drain-'"$1")" -gt 0 ]; then
@@ -41,6 +46,12 @@ fi
 if [ "$1" = lint ] && [ -e '@dir@/lock-on-lint' ]; then
 printf 'batch=9 pid=%s\n' "$(cat '@dir@/lock-on-lint')" >'@dir@/work/.dev/release.lock'
 rm '@dir@/lock-on-lint'
+fi
+if [ "$1" = lint ] && [ -e '@dir@/move-on-lint' ]; then
+g='@dir@/remote.git'
+c=$(git --git-dir="$g" commit-tree -p main -m moved "$(git --git-dir="$g" rev-parse 'main^{tree}')")
+git --git-dir="$g" update-ref refs/heads/main "$c"
+rm '@dir@/move-on-lint'
 fi
 status=passed
 code=0
@@ -96,9 +107,81 @@ end
 
 local function stub(dir, name, body)
     local path = dir .. "/bin/" .. name
-    local text = body:gsub("@(%w+)@", { dir = dir, dev = runtime.exe })
+    local text = body:gsub("@(%w+)@", { dir = dir, dev = runtime.exe, card = CARD })
     assert(fs.write(path, "#!/bin/sh\n" .. text))
     assert(devos.run({ "chmod", "755", path }) == 0)
+end
+
+local function home_env(dir)
+    return {
+        HOME = dir,
+        XDG_CONFIG_HOME = dir .. "/config",
+        XDG_STATE_HOME = dir .. "/state",
+        DEV_AGENT = "pomb/lander",
+        DEV_BOARD_TOKEN = "",
+        DEV_SELF = runtime.exe,
+    }
+end
+
+local function board_card(fix)
+    for name, value in pairs(home_env(fix.dir)) do
+        devos.setenv(name, value)
+    end
+    local found = assert(dev_board.find(scm.workspace(fix.work)))
+    return found, assert(found:find_card(fix.card))
+end
+
+local function board_dev(fix, words)
+    local argv = { runtime.exe, table.unpack(words) }
+    local out, code =
+        devos.capture(argv, { cwd = fix.work, env = home_env(fix.dir), stderr = "stdout" })
+    assert(code == 0, out)
+    return out
+end
+
+local function board_comments(fix)
+    local found, card = board_card(fix)
+    local bodies = {}
+    for _, comment in ipairs(assert(found.backend:comments(card.card.id))) do
+        bodies[#bodies + 1] = comment.body
+    end
+    return bodies
+end
+
+local function board_note(fix, body)
+    if fix.mirror then
+        local found, card = board_card(fix)
+        assert(found.backend:note(card.card.id, body))
+    end
+end
+
+local function make_board(fix)
+    assert(fs.mkdir(fix.dir .. "/config/dev", { parents = true }))
+    assert(fs.write(fix.dir .. "/config/dev/config.toml", ""))
+    board_dev(fix, { "board", "init" })
+    local added = board_dev(fix, {
+        "board",
+        "add",
+        "Land",
+        "--problem",
+        "x",
+        "--change",
+        "x",
+        "--out-of-scope",
+        "y",
+        "--size",
+        "1",
+        "--column",
+        "verify",
+        "--done-when",
+        "It works",
+    })
+    local id = assert(added:match("added (%x+)"), added)
+    fix.card = id:sub(1, 8)
+    CARD = fix.card
+    board_dev(fix, { "board", "outcome", id, "--tick", "1", "--as", "verifier" })
+    local found, card = board_card(fix)
+    assert(found.backend:set_checks(card.card.id, { LINT, TEST }))
 end
 
 local function fixture()
@@ -107,6 +190,13 @@ local function fixture()
     git(dir, "init", "-q", "--bare", "remote.git")
     git(dir, "clone", "-q", "remote.git", "work")
     git(work, "checkout", "-q", "-b", "main")
+    assert(fs.mkdir(work .. "/.dev", { parents = true }))
+    assert(
+        fs.write(
+            work .. "/.dev/config.toml",
+            ('[board]\nbackend = "local"\nname = "%s"\n'):format(BOARD)
+        )
+    )
     assert(fs.write(work .. "/Cargo.toml", manifest("1.0.0")))
     assert(fs.write(work .. "/Cargo.lock", lock("1.0.0")))
     for _, verb in ipairs(VERBS) do
@@ -123,7 +213,10 @@ local function fixture()
     stub(dir, "ci", STUB_CI)
     stub(dir, "jj", STUB_JJ)
     stub(dir, "jj-git-guard", STUB_GUARD)
-    return { dir = dir, work = work, remote = dir .. "/remote.git", name = "origin" }
+    local fix = { dir = dir, work = work, remote = dir .. "/remote.git", name = "origin" }
+    make_board(fix)
+    fix.mirror = true
+    return fix
 end
 
 local function lines(fix, name)
@@ -171,7 +264,6 @@ local function check_note(fix, commit, rows, mode, checks)
     check_notes(fix, checks or commands, { { commit = commit, mode = mode, rows = results } })
 end
 
-local LINT, TEST = "dev --remote lint", "dev --remote test"
 local PASSED = { { "pass", LINT }, { "pass", TEST } }
 
 local function refuse_pushes(fix, count)
@@ -191,6 +283,16 @@ local function record_reviews(fix, commit, records)
             commit,
             if record.of then " of=" .. record.of else ""
         )
+        board_note(
+            fix,
+            board_review.record(
+                record.kind,
+                ("pomb/reviewer/%s/%s"):format(fix.card, record.kind),
+                { commit = commit, change = "-" },
+                "clean",
+                record.of
+            )
+        )
     end
     assert(fs.write(fix.dir .. "/reviews", text))
 end
@@ -209,6 +311,11 @@ local function candidate(fix, files, message, unreviewed)
     git(fix.work, "commit", "-q", "-m", message)
     local sha = git(fix.work, "rev-parse", "HEAD")
     git(fix.work, "checkout", "-q", "main")
+    local rows = {}
+    for i, command in ipairs({ LINT, TEST }) do
+        rows[i] = { run = command, result = board_check.Result.PASS, run_id = "34b701" }
+    end
+    board_note(fix, board_check.record({ commit = sha, change = "-" }, rows, false))
     if not unreviewed then
         record_clean_reviews(fix, sha)
     end
@@ -225,7 +332,9 @@ local function advance_remote_main(fix, name)
 end
 
 local function land(fix, commit, env)
-    local vars = { TMPDIR = fix.dir, PATH = fix.dir .. "/bin:" .. devos.getenv("PATH") }
+    local vars = home_env(fix.dir)
+    vars.TMPDIR = fix.dir
+    vars.PATH = fix.dir .. "/bin:" .. devos.getenv("PATH")
     for name, value in pairs(env or {}) do
         vars[name] = value
     end
@@ -712,7 +821,7 @@ t.test("land notes the landed sha on the card", function()
     local _, code, err = land(fix, cand)
     t.ok(code == 0, err)
     local notes = lines(fix, "notes")
-    t.eq(#notes, 2, table.concat(notes, "|"))
+    t.eq(#notes, 1, table.concat(notes, "|"))
     t.eq(
         notes[1],
         "board note "
@@ -721,21 +830,39 @@ t.test("land notes the landed sha on the card", function()
             .. remote_main(fix)
             .. " on origin/main, waited 0 s for the land lock"
     )
-    t.eq(notes[2], "board move " .. CARD .. " " .. RELEASE)
+    local found, card = board_card(fix)
+    t.eq(card.card.column, found:release_column())
     done(fix)
 end)
 
-t.test("land moves the card from the checked commit", function()
-    local fix = fixture()
-    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
-    local _, code, err = land(fix, cand)
-    t.ok(code == 0, err)
-    eq_list(lines(fix, "move-dirs"), { fix.work .. "/.dev/worktrees/move-" .. CARD })
-    eq_list(lines(fix, "move-heads"), { cand })
-    done(fix)
-end)
+local function checked_at(fix, commit)
+    for _, body in ipairs(board_comments(fix)) do
+        if body:find("dev-check: commit=" .. commit, 1, true) then
+            return true
+        end
+    end
+    return false
+end
 
-t.test("land_should_move_the_card_from_the_landed_commit", function()
+local function move_worktree_exists(fix)
+    return fs.exists(fix.work .. "/.dev/worktrees/move-" .. fix.card)
+        or fs.exists(fix.work .. "/.git/worktrees/move-" .. fix.card)
+end
+
+t.test("land should carry the check onto the landed commit", function()
+    local failing = fixture()
+    local failing_cand = candidate(failing, { ["feature.txt"] = "feature" }, "add feature")
+    advance_remote_main(failing, "other.txt")
+    mark(failing, "fail-push")
+    local _, failing_code = land(failing, failing_cand)
+    t.ok(failing_code ~= 0)
+    local pending =
+        git(failing.work .. "/.dev/worktrees/land-" .. failing.card, "rev-parse", "HEAD")
+    t.ok(pending ~= failing_cand)
+    t.ok(checked_at(failing, pending))
+    t.ok(not move_worktree_exists(failing))
+    done(failing)
+
     local fix = fixture()
     local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
     advance_remote_main(fix, "other.txt")
@@ -743,26 +870,64 @@ t.test("land_should_move_the_card_from_the_landed_commit", function()
     t.ok(code == 0, err)
     local landed = remote_main(fix)
     t.ok(landed ~= cand)
-    eq_list(lines(fix, "move-heads"), { landed })
+    t.ok(checked_at(fix, landed))
+    local found, card = board_card(fix)
+    t.eq(card.card.column, found:release_column())
+    t.ok(not move_worktree_exists(fix))
     done(fix)
 end)
 
-t.test("land removes the move worktree", function()
+t.test("land warns when the move to release fails", function()
     local fix = fixture()
     local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    local path = fix.dir .. "/state/dev/boards/" .. BOARD .. ".json"
+    local doc = assert(json.decode(assert(fs.read(path))))
+    for _, listed in ipairs(doc.cards) do
+        if listed.id:sub(1, #fix.card) == fix.card then
+            for _, outcome in ipairs(listed.outcomes) do
+                outcome.done = false
+            end
+        end
+    end
+    assert(fs.write(path, json.encode(doc)))
     local _, code, err = land(fix, cand)
     t.ok(code == 0, err)
-    t.ok(not fs.exists(fix.work .. "/.dev/worktrees/move-" .. CARD))
+    t.ok(err:find("the move of card " .. fix.card .. " to release failed", 1, true), err)
+    local found, card = board_card(fix)
+    t.ok(card.card.column ~= found:release_column())
+    t.ok(not move_worktree_exists(fix))
     done(fix)
+end)
 
-    local failing = fixture()
-    local failing_cand = candidate(failing, { ["feature.txt"] = "feature" }, "add feature")
-    mark(failing, "fail-move")
-    local _, failing_code, failing_err = land(failing, failing_cand)
-    t.ok(failing_code == 0, failing_err)
-    t.ok(failing_err:find("dev board move " .. CARD .. " release failed", 1, true), failing_err)
-    t.ok(not fs.exists(failing.work .. "/.dev/worktrees/move-" .. CARD))
-    done(failing)
+t.test("land should refuse when the carry fails", function()
+    local fix = fixture()
+    fix.mirror = false
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    fix.mirror = true
+    candidate(fix, { ["feature.txt"] = "different" }, "add other")
+    local before = remote_main(fix)
+    local _, code, err = land(fix, cand)
+    t.ok(code ~= 0)
+    t.ok(err:find("could not be carried onto commit", 1, true), err)
+    t.ok(err:find("nothing was pushed", 1, true), err)
+    t.eq(#lines(fix, "pushes"), 0)
+    t.eq(remote_main(fix), before)
+    t.ok(not fs.exists(fix.work .. "/.dev/land.lock"))
+    done(fix)
+end)
+
+t.test("land should apply again when main moved during the gates", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    advance_remote_main(fix, "other.txt")
+    mark(fix, "move-on-lint")
+    local out, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.ok(out:find("moved on, so the commit is applied again", 1, true), out)
+    t.eq(#lines(fix, "pushes"), 1)
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    t.ok(not fs.exists(fix.work .. "/.dev/land.lock"))
+    done(fix)
 end)
 
 t.test("land removes the card worktree and deletes its branch", function()
@@ -774,7 +939,8 @@ t.test("land removes the card worktree and deletes its branch", function()
     t.ok(not fs.exists(worktree))
     t.ok(not git_ok(fix.work, "rev-parse", "--verify", "-q", "refs/heads/card"))
     eq_list(lines(fix, "calls"), { "lint", "test" })
-    t.eq(lines(fix, "notes")[2], "board move " .. CARD .. " " .. RELEASE)
+    local found, card = board_card(fix)
+    t.eq(card.card.column, found:release_column())
     t.eq(#lines(fix, "jjcalls"), 0)
     done(fix)
 end)
@@ -951,7 +1117,7 @@ end
 local STUB_LAND_SLEEP = [=[
 echo "$*" >>'@dir@/sleeps'
 git --git-dir='@dir@/remote.git' rev-parse main >>'@dir@/during'
-[ ! -e '@dir@/work/.dev/worktrees/land-abc123' ] || echo applied >>'@dir@/during'
+[ ! -e '@dir@/work/.dev/worktrees/land-@card@' ] || echo applied >>'@dir@/during'
 [ ! -e '@dir@/calls' ] || echo gated >>'@dir@/during'
 rm -f '@dir@/work/.dev/land.lock'
 ]=]
