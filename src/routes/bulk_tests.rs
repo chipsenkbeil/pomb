@@ -1,7 +1,9 @@
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 
-use super::test_support::{Fixture, Reply, call};
+use super::test_support::{
+    Fixture, Reply, TEST_DOING_COLUMN, TEST_DONE_COLUMN, TEST_TODO_COLUMN, call,
+};
 use crate::auth::new_api_token_record;
 use crate::db::{ChangeOutcome, Commit, NewWebhook};
 use crate::models::{
@@ -11,7 +13,7 @@ use crate::models::{
 #[tokio::test]
 async fn bulk_move_should_keep_the_given_order_in_the_target_cell() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     fx.task(&columns[0], "b").await;
     let c = fx.task(&columns[0], "c").await;
@@ -31,7 +33,7 @@ async fn bulk_move_should_keep_the_given_order_in_the_target_cell() {
 #[tokio::test]
 async fn bulk_move_should_not_count_tasks_of_the_batch_already_in_the_target_cell() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     fx.task(&columns[0], "b").await;
     let c = fx.task(&columns[0], "c").await;
@@ -48,7 +50,7 @@ async fn bulk_move_should_not_count_tasks_of_the_batch_already_in_the_target_cel
 #[tokio::test]
 async fn bulk_move_should_give_each_task_of_a_group_drag_its_own_place_in_the_same_column() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     fx.task(&columns[0], "b").await;
     let c = fx.task(&columns[0], "c").await;
@@ -65,7 +67,7 @@ async fn bulk_move_should_give_each_task_of_a_group_drag_its_own_place_in_the_sa
 #[tokio::test]
 async fn bulk_move_should_write_a_moved_event_for_each_task_that_changes_column() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[1], "b").await;
 
@@ -81,14 +83,20 @@ async fn bulk_move_should_write_a_moved_event_for_each_task_that_changes_column(
             .map(|event| event.detail.clone())
             .collect()
     };
-    assert_eq!(details(&a), ["Moved from Todo to Doing"]);
+    assert_eq!(
+        details(&a),
+        [format!(
+            "Moved from {} to {}",
+            TEST_TODO_COLUMN, TEST_DOING_COLUMN
+        )]
+    );
     assert!(details(&b).is_empty());
 }
 
 #[tokio::test]
 async fn bulk_move_should_change_nothing_when_one_task_is_on_another_board() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let (other_board, other) = fx.board("Ops", &["Queue"]);
     let a = fx.task(&columns[0], "a").await;
     let x = fx.task(&other[0], "x").await;
@@ -104,7 +112,7 @@ async fn bulk_move_should_change_nothing_when_one_task_is_on_another_board() {
 #[tokio::test]
 async fn bulk_move_should_change_nothing_when_a_task_is_missing() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
 
     let body = json!({"task_ids": [a, "missing"], "action": "move", "column_id": columns[1]});
@@ -117,7 +125,7 @@ async fn bulk_move_should_change_nothing_when_a_task_is_missing() {
 #[tokio::test]
 async fn bulk_move_should_take_tasks_to_another_board_in_order() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let (other_board, other) = fx.board("Ops", &["Queue"]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
@@ -139,7 +147,7 @@ async fn bulk_move_should_take_tasks_to_another_board_in_order() {
 #[tokio::test]
 async fn bulk_move_should_refuse_no_tasks_and_a_repeated_task() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
 
     let none = json!({"task_ids": [], "action": "move", "column_id": columns[1]});
@@ -156,7 +164,7 @@ async fn bulk_move_should_refuse_no_tasks_and_a_repeated_task() {
 #[tokio::test]
 async fn bulk_color_should_recolor_every_task_and_write_an_event_for_each() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     let colors = fx.db.list_colors(&board).expect("colors");
@@ -181,7 +189,7 @@ async fn bulk_color_should_recolor_every_task_and_write_an_event_for_each() {
 #[tokio::test]
 async fn bulk_color_should_change_nothing_for_an_unknown_color() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let before = fx.db.task(&a).expect("read").expect("task").color_id;
 
@@ -198,7 +206,7 @@ async fn bulk_color_should_change_nothing_for_an_unknown_color() {
 #[tokio::test]
 async fn bulk_members_should_add_and_remove_on_every_task_with_an_event_each() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     let me = fx.admin.as_str().to_string();
@@ -233,7 +241,7 @@ async fn bulk_members_should_add_and_remove_on_every_task_with_an_event_each() {
 #[tokio::test]
 async fn bulk_unassign_should_clear_the_members_of_every_task() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     let me = fx.admin.as_str().to_string();
@@ -259,7 +267,7 @@ async fn bulk_unassign_should_clear_the_members_of_every_task() {
 #[tokio::test]
 async fn bulk_members_should_change_nothing_for_an_unknown_member() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
 
     let body = json!({"task_ids": [a], "action": "members", "add_member_ids": ["ghost"]});
@@ -279,7 +287,7 @@ async fn bulk_members_should_change_nothing_for_an_unknown_member() {
 #[tokio::test]
 async fn bulk_color_should_set_the_size_of_the_color_without_an_estimate_event() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let colors = fx.db.list_colors(&board).expect("colors");
     let red = colors.iter().find(|c| c.value == "red").expect("red");
@@ -301,7 +309,7 @@ async fn bulk_color_should_set_the_size_of_the_color_without_an_estimate_event()
 #[tokio::test]
 async fn bulk_members_should_keep_the_responsible_consistent_with_the_members() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let me = fx.admin.as_str().to_string();
 
@@ -331,7 +339,7 @@ async fn bulk_members_should_keep_the_responsible_consistent_with_the_members() 
 #[tokio::test]
 async fn bulk_change_should_write_nothing_when_a_later_task_is_missing() {
     let fx = Fixture::new();
-    let (_board, columns) = fx.board("Plans", &["Todo"]);
+    let (_board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let ids = [a.clone(), "missing".to_string()];
 
@@ -350,7 +358,7 @@ async fn bulk_change_should_write_nothing_when_a_later_task_is_missing() {
 #[tokio::test]
 async fn bulk_change_should_write_nothing_when_a_later_task_is_refused() {
     let fx = Fixture::new();
-    let (_board, columns) = fx.board("Plans", &["Todo"]);
+    let (_board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     let ids = [a.clone(), b.clone()];
@@ -373,7 +381,7 @@ async fn bulk_change_should_write_nothing_when_a_later_task_is_refused() {
 #[tokio::test]
 async fn bulk_should_refuse_a_color_without_an_id_and_an_empty_members_change() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
 
     let color = json!({"task_ids": [a], "action": "color"});
@@ -388,8 +396,8 @@ async fn bulk_should_refuse_a_color_without_an_id_and_an_empty_members_change() 
 #[tokio::test]
 async fn bulk_color_should_change_nothing_when_a_task_is_on_another_board() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
-    let (_other, other_columns) = fx.board("Other", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
+    let (_other, other_columns) = fx.board("Other", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let foreign = fx.task(&other_columns[0], "f").await;
     let colors = fx.db.list_colors(&board).expect("colors");
@@ -409,8 +417,8 @@ async fn bulk_color_should_change_nothing_when_a_task_is_on_another_board() {
 #[tokio::test]
 async fn bulk_color_should_change_nothing_for_a_color_of_another_board() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
-    let (other, _) = fx.board("Other", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
+    let (other, _) = fx.board("Other", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let foreign = fx.db.list_colors(&other).expect("colors")[1].id.clone();
     let before = fx.db.task(&a).expect("read").expect("task").color_id;
@@ -428,7 +436,7 @@ async fn bulk_color_should_change_nothing_for_a_color_of_another_board() {
 #[tokio::test]
 async fn bulk_move_without_a_position_should_follow_the_new_task_position_setting() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     fx.task(&columns[1], "d").await;
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
@@ -443,7 +451,7 @@ async fn bulk_move_without_a_position_should_follow_the_new_task_position_settin
 #[tokio::test]
 async fn bulk_move_without_a_position_should_go_to_the_top_when_new_tasks_do() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     fx.top_placement(&board).await;
     fx.task(&columns[1], "d").await;
     let a = fx.task(&columns[0], "a").await;
@@ -470,7 +478,7 @@ async fn labelled(fx: &Fixture, column: &str, name: &str, labels: &[&str]) -> St
 #[tokio::test]
 async fn bulk_labels_should_remove_and_add_on_every_task_with_an_event_each() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = labelled(&fx, &columns[0], "a", &["old", "keep"]).await;
     let b = labelled(&fx, &columns[0], "b", &["old"]).await;
 
@@ -500,7 +508,7 @@ async fn bulk_labels_should_remove_and_add_on_every_task_with_an_event_each() {
 #[tokio::test]
 async fn bulk_labels_should_refuse_a_request_without_labels() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
 
     let body = json!({"task_ids": [a], "action": "labels", "add_labels": [" "]});
@@ -511,7 +519,7 @@ async fn bulk_labels_should_refuse_a_request_without_labels() {
 #[tokio::test]
 async fn bulk_labels_should_change_nothing_for_a_label_past_the_length_cap() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
 
     let body = json!({"task_ids": [a], "action": "labels", "add_labels": ["x".repeat(51)]});
@@ -524,7 +532,7 @@ async fn bulk_labels_should_change_nothing_for_a_label_past_the_length_cap() {
 #[tokio::test]
 async fn bulk_move_dry_run_should_leave_sibling_positions_and_the_outbox_alone() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let hook = fx
         .db
         .create_webhook(NewWebhook {
@@ -564,7 +572,7 @@ async fn bulk_move_dry_run_should_leave_sibling_positions_and_the_outbox_alone()
 #[tokio::test]
 async fn bulk_labels_should_change_nothing_when_the_result_passes_the_label_cap() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let full: Vec<String> = (0..50).map(|n| format!("l{n}")).collect();
     let b = labelled(
@@ -585,7 +593,7 @@ async fn bulk_labels_should_change_nothing_when_the_result_passes_the_label_cap(
 #[tokio::test]
 async fn bulk_dry_run_should_list_old_and_new_labels_and_change_nothing() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = labelled(&fx, &columns[0], "a", &["old"]).await;
     let b = fx.task(&columns[0], "b").await;
     let before = fx.db.task(&a).expect("read").expect("task");
@@ -618,7 +626,7 @@ async fn bulk_dry_run_should_list_old_and_new_labels_and_change_nothing() {
 #[tokio::test]
 async fn bulk_dry_run_should_list_old_and_new_color_and_change_nothing() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let colors = fx.db.list_colors(&board).expect("colors");
     let red = colors.iter().find(|c| c.value == "red").expect("red");
@@ -641,7 +649,7 @@ async fn bulk_dry_run_should_list_old_and_new_color_and_change_nothing() {
 #[tokio::test]
 async fn bulk_dry_run_should_list_old_and_new_members_and_change_nothing() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
 
     let body = json!({
@@ -668,7 +676,7 @@ async fn bulk_dry_run_should_list_old_and_new_members_and_change_nothing() {
 #[tokio::test]
 async fn bulk_dry_run_should_list_old_and_new_column_and_move_nothing() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let (_other, other_columns) = fx.board("Other", &["Review"]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[1], "b").await;
@@ -680,8 +688,8 @@ async fn bulk_dry_run_should_list_old_and_new_column_and_move_nothing() {
     assert_eq!(
         reply.body["tasks"],
         json!([
-            {"id": a, "name": "a", "before": "Todo", "after": "Doing"},
-            {"id": b, "name": "b", "before": "Doing", "after": "Doing"},
+            {"id": a, "name": "a", "before": TEST_TODO_COLUMN, "after": TEST_DOING_COLUMN},
+            {"id": b, "name": "b", "before": TEST_DOING_COLUMN, "after": TEST_DOING_COLUMN},
         ])
     );
     let across =
@@ -702,8 +710,8 @@ async fn bulk_dry_run_should_list_old_and_new_column_and_move_nothing() {
 #[tokio::test]
 async fn bulk_dry_run_should_refuse_what_the_real_request_refuses() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
-    let (_other, other_columns) = fx.board("Other", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
+    let (_other, other_columns) = fx.board("Other", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let foreign = fx.task(&other_columns[0], "f").await;
     let locked = labelled(&fx, &columns[0], "l", &["needs:human"]).await;
@@ -724,7 +732,7 @@ async fn bulk_dry_run_should_refuse_what_the_real_request_refuses() {
 #[tokio::test]
 async fn bulk_should_refuse_the_whole_request_when_one_task_is_locked() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let locked = labelled(&fx, &columns[0], "l", &["needs:human"]).await;
 
@@ -751,7 +759,7 @@ async fn bulk_should_refuse_the_whole_request_when_one_task_is_locked() {
 #[tokio::test]
 async fn bulk_should_refuse_a_task_in_the_recycle_bin() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let gone = fx.task(&columns[0], "gone").await;
     let reply = fx.send("DELETE", &format!("/api/tasks/{gone}"), None).await;
@@ -767,7 +775,7 @@ async fn bulk_should_refuse_a_task_in_the_recycle_bin() {
 #[tokio::test]
 async fn bulk_should_queue_one_webhook_event_for_each_changed_task_and_none_for_a_dry_run() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let hook = fx
         .db
         .create_webhook(NewWebhook {
@@ -849,7 +857,7 @@ fn events_of(task: &TaskRow, kind: HistoryKind) -> usize {
 #[tokio::test]
 async fn bulk_subtasks_should_append_the_names_to_every_task_with_an_event_each() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     fx.db.add_subtask(&a, "old").expect("subtask");
@@ -875,7 +883,7 @@ async fn bulk_subtasks_should_append_the_names_to_every_task_with_an_event_each(
 #[tokio::test]
 async fn bulk_subtasks_should_list_the_counts_in_a_dry_run_and_change_nothing() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     fx.db.add_subtask(&a, "old").expect("subtask");
 
@@ -894,7 +902,7 @@ async fn bulk_subtasks_should_list_the_counts_in_a_dry_run_and_change_nothing() 
 #[tokio::test]
 async fn bulk_subtasks_should_refuse_a_request_without_names() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
 
     let body = json!({"task_ids": [a], "action": "subtasks", "add_subtasks": [" "]});
@@ -911,7 +919,7 @@ fn set_due(fx: &Fixture, id: &str, due: &str) {
 #[tokio::test]
 async fn bulk_due_add_should_skip_a_task_with_a_due_date_unless_told_to_replace() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     set_due(&fx, &b, "2030-01-01T09:00:00+00:00");
@@ -958,7 +966,7 @@ async fn bulk_due_add_should_skip_a_task_with_a_due_date_unless_told_to_replace(
 #[tokio::test]
 async fn bulk_due_change_should_leave_a_task_without_a_due_date() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     set_due(&fx, &a, "2030-01-01T09:00:00+00:00");
@@ -983,7 +991,7 @@ async fn bulk_due_change_should_leave_a_task_without_a_due_date() {
 #[tokio::test]
 async fn bulk_due_delete_should_clear_the_date_and_its_target_and_list_it_in_a_dry_run() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     set_due(&fx, &a, "2030-01-01T09:00:00+00:00");
@@ -1014,7 +1022,7 @@ async fn bulk_due_delete_should_clear_the_date_and_its_target_and_list_it_in_a_d
 #[tokio::test]
 async fn bulk_due_should_refuse_a_missing_date_and_a_target_on_another_board() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let (_, other) = fx.board("Other", &["Away"]);
     let a = fx.task(&columns[0], "a").await;
 
@@ -1041,7 +1049,7 @@ async fn bulk_due_should_refuse_a_missing_date_and_a_target_on_another_board() {
 #[tokio::test]
 async fn bulk_relations_should_add_and_remove_links_on_every_task() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     let hub = fx.task(&columns[0], "hub").await;
@@ -1077,7 +1085,7 @@ async fn bulk_relations_should_add_and_remove_links_on_every_task() {
 #[tokio::test]
 async fn bulk_relations_dry_run_should_list_the_relations_and_change_nothing() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let hub = fx.epic(&columns[0], "hub").await;
     let old = fx.task(&columns[0], "old").await;
@@ -1106,7 +1114,7 @@ async fn bulk_relations_dry_run_should_list_the_relations_and_change_nothing() {
 #[tokio::test]
 async fn bulk_relations_should_change_nothing_when_one_task_cannot_take_the_link() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     let hub = fx.task(&columns[0], "hub").await;
@@ -1129,7 +1137,7 @@ async fn bulk_relations_should_change_nothing_when_one_task_cannot_take_the_link
 #[tokio::test]
 async fn bulk_relations_should_refuse_no_links_an_unknown_kind_and_a_target_among_the_tasks() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
 
@@ -1152,7 +1160,7 @@ async fn bulk_relations_should_refuse_no_links_an_unknown_kind_and_a_target_amon
 #[tokio::test]
 async fn bulk_relations_without_links_delete_should_remove_only_links_the_token_made() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let other = fx.task(&columns[0], "other").await;
     fx.db
@@ -1175,7 +1183,7 @@ async fn bulk_relations_without_links_delete_should_remove_only_links_the_token_
 #[tokio::test]
 async fn bulk_delete_should_move_every_task_to_the_recycle_bin_with_a_lead_token() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     let keep = fx.task(&columns[0], "keep").await;
@@ -1207,7 +1215,7 @@ async fn bulk_delete_should_move_every_task_to_the_recycle_bin_with_a_lead_token
 #[tokio::test]
 async fn bulk_delete_should_refuse_a_work_token_even_for_a_dry_run() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     let work = fx.token_of(AuthScope::Work);
@@ -1239,7 +1247,7 @@ async fn bulk_delete_should_refuse_a_work_token_even_for_a_dry_run() {
 #[tokio::test]
 async fn bulk_delete_dry_run_should_list_the_column_and_delete_nothing() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let before = fx.row(&a);
 
@@ -1249,7 +1257,7 @@ async fn bulk_delete_dry_run_should_list_the_column_and_delete_nothing() {
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     assert_eq!(
         reply.body["tasks"],
-        json!([{"id": a, "name": "a", "before": "Todo", "after": "Recycle bin"}])
+        json!([{"id": a, "name": "a", "before": TEST_TODO_COLUMN, "after": "Recycle bin"}])
     );
     assert_eq!(fx.row(&a).updated_at, before.updated_at);
     assert!(fx.bin(&board).await.is_empty());
@@ -1258,7 +1266,7 @@ async fn bulk_delete_dry_run_should_list_the_column_and_delete_nothing() {
 #[tokio::test]
 async fn bulk_delete_should_delete_nothing_when_a_task_is_locked() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = labelled(&fx, &columns[0], "b", &["needs:human"]).await;
     let lead = fx.token_of(AuthScope::Provision);
@@ -1273,7 +1281,7 @@ async fn bulk_delete_should_delete_nothing_when_a_task_is_locked() {
 #[tokio::test]
 async fn bulk_relations_should_refuse_a_parent_link_to_a_plain_task_as_not_an_epic() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let plain = fx.task(&columns[0], "plain").await;
 
@@ -1292,7 +1300,7 @@ async fn bulk_relations_should_refuse_a_parent_link_to_a_plain_task_as_not_an_ep
 #[tokio::test]
 async fn bulk_relations_should_refuse_a_second_child_under_an_umbrella_and_change_nothing() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     let first = fx.epic(&columns[0], "first").await;
@@ -1316,7 +1324,7 @@ async fn bulk_relations_should_refuse_a_second_child_under_an_umbrella_and_chang
 #[tokio::test]
 async fn bulk_relations_should_change_a_relation_type_by_removing_then_adding_it() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let other = fx.task(&columns[0], "other").await;
     fx.db
@@ -1340,7 +1348,7 @@ async fn bulk_relations_should_change_a_relation_type_by_removing_then_adding_it
 #[tokio::test]
 async fn bulk_relations_should_refuse_a_locked_target() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let locked = labelled(&fx, &columns[0], "l", &["needs:human"]).await;
     let work = fx.token_of(AuthScope::Work);
@@ -1360,7 +1368,7 @@ async fn bulk_relations_should_refuse_a_locked_target() {
 #[tokio::test]
 async fn bulk_delete_should_refuse_a_task_linked_to_a_locked_task() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let locked = labelled(&fx, &columns[0], "l", &["needs:human"]).await;
     fx.db
@@ -1379,7 +1387,7 @@ async fn bulk_delete_should_refuse_a_task_linked_to_a_locked_task() {
 #[tokio::test]
 async fn bulk_delete_should_queue_webhook_events_and_none_for_a_dry_run() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let hook = fx
         .db
         .create_webhook(NewWebhook {
@@ -1408,7 +1416,7 @@ async fn bulk_delete_should_queue_webhook_events_and_none_for_a_dry_run() {
 #[tokio::test]
 async fn bulk_dry_run_should_return_null_for_a_missing_value() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     assert!(
         fx.db
@@ -1439,7 +1447,7 @@ async fn bulk_dry_run_should_return_null_for_a_missing_value() {
 #[tokio::test]
 async fn bulk_dry_run_should_not_return_the_none_text_for_a_real_value_spelled_none() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
     let a = labelled(&fx, &columns[0], "a", &["(none)"]).await;
 
     let body = json!({
@@ -1467,7 +1475,7 @@ async fn epic_with_child(fx: &Fixture, column: &str) -> (String, String) {
 #[tokio::test]
 async fn a_bulk_epic_move_should_pass_with_the_children_first() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Done"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DONE_COLUMN]);
     fx.db.set_column_done(&columns[1], true).expect("done");
     let (epic, child) = epic_with_child(&fx, &columns[0]).await;
 
@@ -1487,7 +1495,7 @@ async fn a_bulk_epic_move_should_pass_with_the_children_first() {
 #[tokio::test]
 async fn a_bulk_epic_move_should_pass_with_the_epic_first() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Done"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DONE_COLUMN]);
     fx.db.set_column_done(&columns[1], true).expect("done");
     let (epic, child) = epic_with_child(&fx, &columns[0]).await;
 
@@ -1507,7 +1515,7 @@ async fn a_bulk_epic_move_should_pass_with_the_epic_first() {
 #[tokio::test]
 async fn a_bulk_epic_move_should_refuse_a_child_left_out() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Done"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DONE_COLUMN]);
     fx.db.set_column_done(&columns[1], true).expect("done");
     let (epic, child) = epic_with_child(&fx, &columns[0]).await;
 
@@ -1555,7 +1563,7 @@ async fn fenced_bulk(fx: &Fixture, board: &str, fence: u64, body: Value) -> Repl
 #[tokio::test]
 async fn bulk_move_should_refuse_a_stale_claim_fence() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     let a = fx.task(&columns[0], "a").await;
     let b = fx.task(&columns[0], "b").await;
     let fence = claim_fence(&fx, &b).await;
@@ -1572,7 +1580,7 @@ async fn bulk_move_should_refuse_a_stale_claim_fence() {
 #[tokio::test]
 async fn bulk_move_should_accept_the_live_claim_fence() {
     let fx = Fixture::new();
-    let (board, columns) = fx.board("Plans", &["Todo", "Doing"]);
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
     fx.db.set_column_wip(&columns[1], Some(1)).expect("limit");
     fx.task(&columns[1], "d").await;
     let a = fx.task(&columns[0], "a").await;
