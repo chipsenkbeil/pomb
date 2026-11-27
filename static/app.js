@@ -16631,7 +16631,7 @@
           done += counts[(Math.random() * counts.length) | 0];
           d++;
         }
-        out.push(startMs + d * 86400000);
+        out.push(addCalendarDays(startMs, d).getTime());
       }
       out.sort(function (a, b) { return a - b; });
       return out;
@@ -16661,20 +16661,32 @@
       renderChart(sorted);
     }
 
+    const addCalendarDays = (ms, days) => {
+      const d = new Date(ms);
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days);
+    };
+
+    const localMidnight = (ms) => addCalendarDays(ms, 0).getTime();
+
+    const bucketForecast = (sorted) => {
+      const first = localMidnight(sorted[0]);
+      const nDays = Math.max(1, Math.round((localMidnight(sorted[sorted.length - 1]) - first) / DAY) + 1);
+      const buckets = new Array(nDays).fill(0);
+      sorted.forEach((ms) => {
+        const idx = Math.round((localMidnight(ms) - first) / DAY);
+        if (idx >= 0 && idx < nDays) buckets[idx]++;
+      });
+      return { first, buckets };
+    };
+
     // Histogram of simulated completion dates (one bar per day) with dashed
     // vertical percentile lines, KanbanFlow-style.
     function renderChart(sorted) {
       var host = qs('mc-chart');
       if (!host) return;
-      var minD = Math.floor(sorted[0] / DAY) * DAY;
-      var maxD = Math.floor(sorted[sorted.length - 1] / DAY) * DAY;
-      var nDays = Math.max(1, Math.round((maxD - minD) / DAY) + 1);
-      var buckets = [];
-      for (var i = 0; i < nDays; i++) buckets.push(0);
-      sorted.forEach(function (ms) {
-        var idx = Math.round((Math.floor(ms / DAY) * DAY - minD) / DAY);
-        if (idx >= 0 && idx < nDays) buckets[idx]++;
-      });
+      const { first: minD, buckets } = bucketForecast(sorted);
+      const nDays = buckets.length;
+      const dayAt = (index) => addCalendarDays(minD, index);
       var max = 1;
       buckets.forEach(function (b) { if (b > max) max = b; });
 
@@ -16699,13 +16711,13 @@
       // labels never crowd (forecasts can span years).
       var monthIdx = [];
       for (dIdx = 0; dIdx < nDays; dIdx++) {
-        var mdt = new Date(minD + dIdx * DAY);
+        const mdt = dayAt(dIdx);
         if (mdt.getDate() === 1) monthIdx.push(dIdx);
       }
       var mStep = Math.max(1, Math.ceil(monthIdx.length / 8));
       monthIdx.forEach(function (mi, mk) {
         if (mk % mStep !== 0) return;
-        var mdt2 = new Date(minD + mi * DAY);
+        const mdt2 = dayAt(mi);
         svg += '<text x="' + (padL + slot * mi + slot / 2).toFixed(1) + '" y="' + (H - 10) +
           '" text-anchor="middle" class="chart-tick">' + escapeHtml(ReportChart.shortDate(mdt2)) + '</text>';
       });
@@ -16716,12 +16728,12 @@
           '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) +
           '" class="mc-bar"><title>' + buckets[b] +
           (buckets[b] === 1 ? ' simulation' : ' simulations') +
-          ' complete ' + escapeHtml(ReportChart.longDate(new Date(minD + b * DAY))) + '</title></rect>';
+          ' complete ' + escapeHtml(ReportChart.longDate(dayAt(b))) + '</title></rect>';
       }
       // Percentile markers.
       PCTS.forEach(function (p) {
-        var at = percentile(sorted, p);
-        var pos = (Math.floor(at / DAY) * DAY - minD) / DAY;
+        const at = percentile(sorted, p);
+        const pos = Math.round((localMidnight(at) - minD) / DAY);
         var px = padL + slot * pos + slot / 2;
         svg += '<line x1="' + px.toFixed(1) + '" y1="' + padT + '" x2="' + px.toFixed(1) +
           '" y2="' + (padT + innerH) + '" class="mc-pct" style="stroke:' + PCT_COLORS[p] + '"/>' +
@@ -17039,6 +17051,7 @@
       init: init, startDateMs: startDateMs, bindStartDate: bindStartDate, taskMatches: taskMatches,
       boardCount: boardCount, periodRange: periodRange, forecastRows: forecastRows,
       forecastLines: forecastLines, dailyThroughput: dailyThroughput, notEnoughMessage: notEnoughMessage,
+      runSimulation: runSimulation, bucketForecast: bucketForecast,
       PCTS: PCTS, PCT_COLORS: PCT_COLORS, SIMULATIONS: SIMULATIONS,
     };
   })();
