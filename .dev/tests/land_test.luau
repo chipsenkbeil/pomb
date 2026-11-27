@@ -28,7 +28,7 @@ local VERBS = {
 local STUB_DEV = [[
 case "$1" in -l) exec '@dev@' "$@";; esac
 [ "$1" != --remote ] || shift
-if [ "$1" = board ] && [ "$2" = show ]; then [ -e '@dir@/fail-show' ] && exit 1; printf 'abc123  Ready  1 Pomodoro  %s  name\n' "$(cat '@dir@/labels' 2>/dev/null || echo -)"; cat '@dir@/check-note' 2>/dev/null; exit 0; fi
+if [ "$1" = board ] && [ "$2" = show ]; then [ -e '@dir@/fail-show' ] && exit 1; printf 'abc123  Ready  1 Pomodoro  %s  name\n' "$(cat '@dir@/labels' 2>/dev/null || echo -)"; cat '@dir@/check-note' 2>/dev/null; cat '@dir@/reviews' 2>/dev/null; exit 0; fi
 if [ "$1" = board ] && [ "$2" = note ] && [ -e '@dir@/note-warns' ]; then echo 'dev: card prose holds a hex id or hash' >&2; fi
 if [ "$1" = board ]; then echo "$*" >>'@dir@/notes'; if [ "$2" = move ]; then pwd -P >>'@dir@/move-dirs'; git rev-parse HEAD >>'@dir@/move-heads'; [ ! -e '@dir@/fail-move' ] || exit 1; fi; exit 0; fi
 touch '@dir@/runs.jsonl'
@@ -182,7 +182,24 @@ local function mark(fix, name)
     assert(fs.write(fix.dir .. "/" .. name, ""))
 end
 
-local function candidate(fix, files, message)
+local function record_reviews(fix, commit, records)
+    local text = fs.read(fix.dir .. "/reviews") or ""
+    for _, record in ipairs(records) do
+        text ..= ("2d2adabc  agents  review  -  2026-11-09 18:58  dev-review: kind=%s by=pomb/reviewer/abc123/%s commit=%s change=-%s verdict=clean\n"):format(
+            record.kind,
+            record.kind,
+            commit,
+            if record.of then " of=" .. record.of else ""
+        )
+    end
+    assert(fs.write(fix.dir .. "/reviews", text))
+end
+
+local function record_clean_reviews(fix, commit)
+    record_reviews(fix, commit, { { kind = "code" }, { kind = "style" } })
+end
+
+local function candidate(fix, files, message, unreviewed)
     git(fix.work, "checkout", "-q", "-B", "card", fix.name .. "/main")
     for name, body in pairs(files) do
         assert(fs.mkdir(fs.dirname(fix.work .. "/" .. name), { parents = true }))
@@ -192,6 +209,9 @@ local function candidate(fix, files, message)
     git(fix.work, "commit", "-q", "-m", message)
     local sha = git(fix.work, "rev-parse", "HEAD")
     git(fix.work, "checkout", "-q", "main")
+    if not unreviewed then
+        record_clean_reviews(fix, sha)
+    end
     return sha
 end
 
@@ -1166,5 +1186,61 @@ t.test("land should abort naming the drain when it outlasts the bound", function
     eq_list(lines(fix, "calls"), { "lint", "lint", "lint" })
     t.eq(#lines(fix, "pushes"), 0)
     t.eq(remote_main(fix), before)
+    done(fix)
+end)
+
+local function changed_since_reviews()
+    local fix = fixture()
+    local reviewed = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    advance_remote_main(fix, "other.txt")
+    git(fix.work, "fetch", "-q", fix.name)
+    local cand = candidate(fix, { ["feature.txt"] = "changed" }, "add feature", true)
+    t.ok(cand ~= reviewed)
+    return fix, cand
+end
+
+t.test("land should refuse a patch changed since its reviews", function()
+    local fix, cand = changed_since_reviews()
+    local before = remote_main(fix)
+    local _, code, err = land(fix, cand)
+    t.ok(code ~= 0)
+    t.ok(err:find("earlier commit", 1, true), err)
+    t.ok(err:find("Record a recheck", 1, true), err)
+    t.ok(err:find("nothing was pushed", 1, true), err)
+    t.eq(#lines(fix, "calls"), 0)
+    t.eq(#lines(fix, "pushes"), 0)
+    t.eq(remote_main(fix), before)
+    t.ok(not fs.exists(land_lock_path(fix)))
+    done(fix)
+end)
+
+t.test("land should refuse a commit with no code review", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature", true)
+    record_reviews(fix, cand, { { kind = "style" } })
+    local before = remote_main(fix)
+    local _, code, err = land(fix, cand)
+    t.ok(code ~= 0)
+    t.ok(err:find("No code review", 1, true), err)
+    t.ok(err:find("nothing was pushed", 1, true), err)
+    t.eq(#lines(fix, "calls"), 0)
+    t.eq(#lines(fix, "pushes"), 0)
+    t.eq(remote_main(fix), before)
+    t.ok(not fs.exists(land_lock_path(fix)))
+    done(fix)
+end)
+
+t.test("land should land when a recheck covers the changed patch", function()
+    local fix, cand = changed_since_reviews()
+    record_reviews(
+        fix,
+        cand,
+        { { kind = "recheck", of = "code" }, { kind = "recheck", of = "style" } }
+    )
+    local _, code, err = land(fix, cand)
+    t.ok(code == 0, err)
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "changed")
+    eq_list(lines(fix, "calls"), { "lint", "test" })
+    t.ok(not fs.exists(land_lock_path(fix)))
     done(fix)
 end)

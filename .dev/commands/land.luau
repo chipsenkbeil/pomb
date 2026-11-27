@@ -1,3 +1,4 @@
+local board_land = require("@dev/board/land")
 local check = require("@dev/board/check")
 local devos = require("@dev/os")
 local fs = require("@dev/fs")
@@ -430,6 +431,32 @@ local function latest_check(text)
     return latest_run or latest
 end
 
+local function review_problem(repo, wt, card, sha)
+    local out, code = devos.capture(
+        { "dev", "board", "show", card },
+        { cwd = repo, stderr = "null" }
+    )
+    if code ~= 0 then
+        die(("Could not read card %s to check its reviews, so nothing was pushed."):format(card))
+    end
+    local comments = {}
+    for _, line in ipairs(lines(out)) do
+        local body = line:match("(dev%-review:.*)$")
+        if body then
+            comments[#comments + 1] = { body = trim(body) }
+        end
+    end
+    local state = { commit = sha, change = "-" }
+    local found = board_land.missing_reviews(comments, state, wt)
+    for _, refused in ipairs(board_land.refused_reviews(comments, state, wt)) do
+        found[#found + 1] = refused
+    end
+    if #found == 0 then
+        return nil
+    end
+    return table.concat(found, " ")
+end
+
 local function judged(record)
     return ("judged dev-check commit %s, mode %s"):format(record.commit, record.mode)
 end
@@ -562,7 +589,7 @@ return dev_command({
 Steps, any failure aborts before the push:
 1. Fetch the remote of record. Refuse a commit that is not exactly one commit past its merge-base with <remote>/main, or that changes the package version in Cargo.toml or the pomb entry of Cargo.lock: only dev release bumps the version. Refuse a commit that adds a file under .dev/standalone unless the card has the standalone-ok label.
 2. Take the land lock .dev/land.lock, which names the card and the pid, to allow one land at a time to apply, test and push. Wait for it while a live land holds it, polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) up to POMB_LAND_WAIT_BOUND seconds (default 21600) and saying who holds it, and take over a lock whose pid is gone. Drop it after the push, after a push refused because main moved, after a refusal and on every other exit. Then wait for the release lock .dev/release.lock to clear, up to POMB_LAND_WAIT_BOUND seconds (default 21600), polling every POMB_LAND_WAIT_INTERVAL seconds (default 30) and saying who holds it. A lock whose pid is gone is removed. Apply the commit onto <remote>/main in .dev/worktrees/land-<ID>, first removing a clean land worktree left by an earlier attempt, and refusing when that worktree holds uncommitted changes. On gerrit the commit gets a Change-Id trailer when it has none.
-3. Refuse attribution trailers through the push_main helper's --check, before any gate.
+3. Refuse attribution trailers through the push_main helper's --check, before any gate. Then, on the first attempt only, read the card's dev-review notes from dev board show and refuse, before any gate, a commit whose code or style review is missing, is of an earlier patch without a recheck at this commit, or says needs-work, so nothing is pushed.
 4. Read the card's latest mode=run dev-check note from dev board show, and match each of its rows `N result RUNID` to the card's checks list by position. When its sum matches the card's current checks list, it has a result for every checks row, passes the rows dev --remote lint and dev --remote test, and names the landed commit or one with the same git patch-id, skip the gates whether or not main moved since, and say so. Otherwise say why and run dev lint --remote, then dev test --remote, through the gate helper, one at a time on ci, logging to a temp dir. A gate refused because the ci hub is draining is run again after POMB_DRAIN_INTERVAL seconds (default 60) until POMB_DRAIN_BOUND seconds (default 3600) have passed. Any other failing gate aborts. When the commit changes a path under tests/ or .dev/ or a Cargo file, also run dev nixcheck --remote through the gate helper after test with the same drain retry, even when the card's dev-check let lint and test skip, since that note records only lint and test. Any other change runs no nixcheck gate.
 5. Push to main through the push_main helper, remove the land worktree, print the landed sha, note it on the card with dev board note and move the card to Release with dev board move from a detached worktree at the landed commit. Then remove the card's worktree under .dev/worktrees, whose HEAD is the verified commit, and its branch. In a jj repo (.jj exists) it also forgets the jj workspace at that path and deletes the bookmark of the same name. A worktree with uncommitted changes is kept, and the command says why.
 6. A push refused because main moved on (exit 3) removes the worktree, drops the land lock, fetches, and repeats steps 2 to 5 on the new main, 3 attempts in all. It never forces the push.
@@ -676,6 +703,19 @@ The remote of record is forge.remote, else gerrit when that remote exists, else 
                 base = base,
             })
             check_attribution(root, wt)
+            if attempt == 1 then
+                local problem = review_problem(repo, wt, card, sha)
+                if problem then
+                    die(
+                        ("The reviews of card %s do not cover commit %s: %s So nothing was pushed, and the worktree is left at %s."):format(
+                            card,
+                            sha,
+                            problem,
+                            wt
+                        )
+                    )
+                end
+            end
             if not verdict then
                 verdict = { skip_reason(repo, card, cand) }
             end
