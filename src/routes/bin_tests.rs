@@ -4,7 +4,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{TEST_TODO_COLUMN, held_disk};
+use super::test_support::{TEST_SHIPPED_COLUMN, TEST_TODO_COLUMN, held_disk};
 use crate::auth::new_api_token_record;
 use crate::db::{Db, RestoreOutcome, WipCheck};
 use crate::models::{
@@ -34,7 +34,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
         .create_column(&board_id, TEST_TODO_COLUMN, None)
         .expect("column");
     let col_done = db
-        .create_column(&board_id, "Shipped", None)
+        .create_column(&board_id, TEST_SHIPPED_COLUMN, None)
         .expect("column");
     db.set_column_done(&col_done, true).expect("set done");
     let app = router(
@@ -696,8 +696,8 @@ async fn the_bin_should_name_the_column_a_restore_puts_the_task_in() {
     let uri = format!("/api/boards/{}/bin", fx.board_id);
 
     let (_, bin) = call(&fx, "GET", &uri, None).await;
-    assert_eq!(bin["tasks"][0]["location"], "Shipped");
-    assert_eq!(bin["tasks"][0]["restores_to"], "Shipped");
+    assert_eq!(bin["tasks"][0]["location"], TEST_SHIPPED_COLUMN);
+    assert_eq!(bin["tasks"][0]["restores_to"], TEST_SHIPPED_COLUMN);
 
     let (status, _) = call(
         &fx,
@@ -708,7 +708,7 @@ async fn the_bin_should_name_the_column_a_restore_puts_the_task_in() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let (_, bin) = call(&fx, "GET", &uri, None).await;
-    assert_eq!(bin["tasks"][0]["location"], "Shipped");
+    assert_eq!(bin["tasks"][0]["location"], TEST_SHIPPED_COLUMN);
     assert_eq!(bin["tasks"][0]["restores_to"], "Finale");
 
     let (status, _) = call(

@@ -6,7 +6,8 @@ use serde_json::{Value, json};
 
 use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{
-    Reply, TEST_DOING_COLUMN, TEST_DONE_COLUMN, TEST_TODO_COLUMN, call, held_disk,
+    Reply, TEST_DOING_COLUMN, TEST_DONE_COLUMN, TEST_SHIPPED_COLUMN, TEST_TODO_COLUMN, call,
+    held_disk,
 };
 use super::{SEARCH_BUDGET_SECS, router, run_search};
 use crate::AppState;
@@ -129,8 +130,8 @@ async fn seeded() -> Seeded {
     let fx = Fixture::new();
     let (plans, columns) = fx.board(
         "Plans",
-        &[TEST_TODO_COLUMN, TEST_DOING_COLUMN, "Shipped"],
-        "Shipped",
+        &[TEST_TODO_COLUMN, TEST_DOING_COLUMN, TEST_SHIPPED_COLUMN],
+        TEST_SHIPPED_COLUMN,
     );
     let (ops, ops_columns) = fx.board("Ops", &["Queue"], "none");
     let colors = fx.db.list_colors(&plans).expect("colors");

@@ -4,7 +4,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{TEST_BODY_4_MIB_BYTES, held_disk};
+use super::test_support::{TEST_BODY_4_MIB_BYTES, TEST_SHIPPED_COLUMN, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{Db, NewTaskPlacement};
@@ -12,7 +12,6 @@ use crate::models::{AccountId, AuthScope, HistoryKind, NEEDS_HUMAN_LABEL, TaskRo
 
 const REVIEW_COLUMN: &str = "Review";
 const PARKED_COLUMN: &str = "Parked";
-const SHIPPED_COLUMN: &str = "Shipped";
 
 /// Edits a valid question to drop or break one part.
 type Breaker = Box<dyn Fn(&mut Value)>;
@@ -59,7 +58,7 @@ fn fixture() -> Fixture {
         .create_column(&board_id, REVIEW_COLUMN, None)
         .expect("column");
     let done = db
-        .create_column(&board_id, SHIPPED_COLUMN, None)
+        .create_column(&board_id, TEST_SHIPPED_COLUMN, None)
         .expect("column");
     let app = router(
         AppState::new(db.clone(), None, passkey_mode())
@@ -1166,7 +1165,7 @@ fn elsewhere(fx: &Fixture) -> Elsewhere {
         .expect("column");
     let done = fx
         .db
-        .create_column(&board, SHIPPED_COLUMN, None)
+        .create_column(&board, TEST_SHIPPED_COLUMN, None)
         .expect("column");
     Elsewhere { parked, done }
 }

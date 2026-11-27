@@ -3,7 +3,9 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{TEST_BODY_4_MIB_BYTES, held_disk, make_plain, move_to};
+use super::test_support::{
+    TEST_BODY_4_MIB_BYTES, TEST_SHIPPED_COLUMN, held_disk, make_plain, move_to,
+};
 use super::{EPIC_TEMPLATE, TimerSession, check_timer_stop_room, log_timer_session, router};
 use crate::AppState;
 use crate::db::{Db, MAX_ENTRIES_PER_DAY, NewTimeEntry};
@@ -978,7 +980,7 @@ async fn an_epics_cards_should_list_each_with_its_column_a_done_mark_and_a_forei
     let other = fx.db.create_board(&fx.user_id, "Elsewhere").expect("board");
     let shipped = fx
         .db
-        .create_column(&other, "Shipped", None)
+        .create_column(&other, TEST_SHIPPED_COLUMN, None)
         .expect("column");
     let (status, done) = call(
         &fx,
@@ -1006,7 +1008,10 @@ async fn an_epics_cards_should_list_each_with_its_column_a_done_mark_and_a_forei
         far_row.contains("class=\"tm-relation-board\">Elsewhere<"),
         "{far_row}"
     );
-    assert!(far_row.contains("&#10003; Shipped</span>"), "{far_row}");
+    assert!(
+        far_row.contains(&format!("&#10003; {TEST_SHIPPED_COLUMN}</span>")),
+        "{far_row}"
+    );
     assert!(
         far_row.contains(&format!("data-open-task=\"{far}\"")),
         "{far_row}"

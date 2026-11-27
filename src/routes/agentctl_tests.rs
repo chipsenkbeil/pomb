@@ -9,8 +9,8 @@ use utoipa::OpenApi;
 
 use super::server::passkey_mode;
 use super::test_support::{
-    TEST_DONE_COLUMN, TEST_TODO_COLUMN, drop_seeded_roles, held_disk, make_epic, make_plain,
-    named_standard_role,
+    TEST_DONE_COLUMN, TEST_SHIPPED_COLUMN, TEST_TODO_COLUMN, drop_seeded_roles, held_disk,
+    make_epic, make_plain, named_standard_role,
 };
 use super::{ApiDoc, DeviceApproveForm, device_grant, router};
 use crate::auth::new_api_token_record;
@@ -53,7 +53,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
         .create_column(&board_id, TEST_TODO_COLUMN, None)
         .expect("column");
     let col_done = db
-        .create_column(&board_id, "Shipped", None)
+        .create_column(&board_id, TEST_SHIPPED_COLUMN, None)
         .expect("column");
     db.set_column_done(&col_done, true).expect("set done");
     let lane_a = db.create_swimlane(&board_id, "A").expect("lane");
@@ -4496,7 +4496,10 @@ async fn a_cross_board_move_should_keep_valid_shared_fields_and_record_the_dropp
     );
     assert_eq!(
         event_details(&fx, &c, HistoryKind::Moved),
-        vec![format!("Moved from {} to Shipped", TEST_TODO_COLUMN)]
+        vec![format!(
+            "Moved from {} to {}",
+            TEST_TODO_COLUMN, TEST_SHIPPED_COLUMN
+        )]
     );
 }
 
@@ -9654,7 +9657,7 @@ async fn parent_and_child_links_should_list_on_both_tasks_and_count_done_childre
     );
     assert_eq!(view["children_total"], 2);
     assert_eq!(view["children"][0]["done"], true);
-    assert_eq!(view["children"][0]["column_name"], "Shipped");
+    assert_eq!(view["children"][0]["column_name"], TEST_SHIPPED_COLUMN);
 
     let html = card_html(&fx, &umbrella).await;
     assert!(html.contains("task-card-umbrella"), "{html}");
@@ -10254,7 +10257,9 @@ async fn the_link_picker_should_list_the_tasks_a_child_link_would_accept() {
     let uri = format!("/api/tasks/{card}/link-picker?mode=child");
     let (_, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
     assert!(
-        html.contains("<span class=\"tm-picker-column\">Agentctl / Shipped</span>"),
+        html.contains(&format!(
+            "<span class=\"tm-picker-column\">Agentctl / {TEST_SHIPPED_COLUMN}</span>"
+        )),
         "{html}"
     );
 
@@ -12645,7 +12650,7 @@ async fn a_restricted_token_should_not_read_the_names_of_a_board_outside_its_set
         assert!(text.contains("Moved to another board"), "{text}");
         assert!(text.contains("Created on another board"), "{text}");
         assert!(
-            text.contains("Shipped"),
+            text.contains(TEST_SHIPPED_COLUMN),
             "a move inside the set keeps its names: {text}"
         );
     }
@@ -14020,7 +14025,7 @@ async fn claiming_an_epic_whose_child_on_an_unseen_board_is_done_should_succeed(
     let (board, _, far_task) = other_board(&fx);
     let done = fx
         .db
-        .create_column(&board, "Shipped", None)
+        .create_column(&board, TEST_SHIPPED_COLUMN, None)
         .expect("column");
     fx.db.set_column_done(&done, true).expect("set done");
     fx.db.move_task(&far_task, &done, None, 1.0).expect("move");

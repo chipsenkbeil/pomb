@@ -8,7 +8,8 @@ use tower::ServiceExt;
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{
-    Reply, TEST_BLOCKED_COLUMN, TEST_DONE_COLUMN, TEST_TODO_COLUMN, call, held_disk,
+    Reply, TEST_BLOCKED_COLUMN, TEST_DONE_COLUMN, TEST_SHIPPED_COLUMN, TEST_TODO_COLUMN, call,
+    held_disk,
 };
 use crate::AppState;
 use crate::auth::new_api_token_record;
@@ -217,17 +218,17 @@ async fn a_token_renaming_a_column_should_notify_with_the_new_name() {
     fx.send(
         "PATCH",
         &format!("/api/columns/{}", fx.done),
-        Some(json!({"name": "Shipped"})),
+        Some(json!({"name": TEST_SHIPPED_COLUMN})),
     )
     .await;
     let rows = fx.notifications();
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].kind, NotificationKind::ColumnRenamed);
-    assert_eq!(rows[0].detail.as_deref(), Some("Shipped"));
+    assert_eq!(rows[0].detail.as_deref(), Some(TEST_SHIPPED_COLUMN));
     fx.send(
         "PATCH",
         &format!("/api/columns/{}", fx.done),
-        Some(json!({"name": "Shipped", "collapsed": true})),
+        Some(json!({"name": TEST_SHIPPED_COLUMN, "collapsed": true})),
     )
     .await;
     assert_eq!(
