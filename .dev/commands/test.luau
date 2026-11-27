@@ -52,8 +52,6 @@ return dev_command({
     summary = "Run the Rust tests with nextest and the doctests",
     long = LONG,
     group = "Check your work",
-    positional = true,
-    pass_unknown = true,
     args = { { name = "nextest", list = true, rest = true, help = "arguments for nextest" } },
     run = function(_: unknown, args: { nextest: { string }? }, ctx: Ctx): number
         local root = ctx.root
@@ -81,7 +79,7 @@ return dev_command({
 
         local names, message = fs.list(root .. "/tests/js")
         if not names then
-            dev_command.die(message)
+            dev_command.die(message or "cannot list tests/js")
         end
         for _, name: string in ipairs(names :: { string }) do
             if name:sub(1, 1) ~= "." and name:match("%.js$") then

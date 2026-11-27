@@ -2,7 +2,7 @@
 local dev_command = require("@dev/command")
 local dev_os = require("@dev/os")
 local fs = require("@dev/fs")
-local lintset = require("@lib/lintset")
+local lintset: any = require("@dev/lintset")
 
 type Ctx = {
     ---absolute path of the project root
@@ -677,7 +677,7 @@ return dev_command({
             local manifest = json.decode(fs.read(fs.join(root, ".dev/parity/manifest.json")) or "")
             local ids = {}
             for _, file in ipairs(manifest and manifest.include or {}) do
-                local doc = json.decode(fs.read(fs.join(root, ".dev/parity", file)) or "")
+                local doc = json.decode(fs.read(fs.join(root, ".dev/parity", file :: string)) or "")
                 for _, entry in ipairs(doc and doc.entries or {}) do
                     ids[(entry :: { id: string }).id] = true
                 end

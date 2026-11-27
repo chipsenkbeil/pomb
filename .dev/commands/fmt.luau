@@ -1,7 +1,7 @@
 --!strict
 local dev_command = require("@dev/command")
+local lintset: any = require("@dev/lintset")
 local dev_os = require("@dev/os")
-local lintset = require("@lib/lintset")
 
 type Ctx = {
     ---absolute path of the project root

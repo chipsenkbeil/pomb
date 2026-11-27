@@ -9,3 +9,4 @@ scratchpad/
 .dev/release.lock.*
 .dev/land.lock
 .dev/land.lock.*
+.dev/types
