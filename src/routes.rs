@@ -10339,10 +10339,7 @@ async fn update_task(
         created_by: &user.handle,
         actor,
     };
-    if becomes_epic
-        && let Some(timer) = db.active_timer().map_err(AppError::from)?
-        && timer.task_id.as_deref() == Some(id.as_str())
-    {
+    if becomes_epic && let Some(timer) = timer_running_on(db, &id)? {
         check_timer_stop_room(db, &timer, epic_stop)?;
     }
     let applied = db
@@ -10583,10 +10580,7 @@ async fn update_task(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     applied?;
-    if becomes_epic
-        && let Some(timer) = db.active_timer().map_err(AppError::from)?
-        && timer.task_id.as_deref() == Some(id.as_str())
-    {
+    if becomes_epic && let Some(timer) = timer_running_on(db, &id)? {
         log_timer_session(db, &timer, epic_stop)?;
     }
 
@@ -29783,6 +29777,12 @@ fn log_timer_session(
         record_task_session(db, &task, timer.mode, completed)?;
     }
     Ok(Some((minutes, completed)))
+}
+
+/// Returns the account's running timer when it runs on the task `id`.
+fn timer_running_on(db: &AccountDb, id: &str) -> Result<Option<ActiveTimer>, AppError> {
+    let timer = db.active_timer().map_err(AppError::from)?;
+    Ok(timer.filter(|timer| timer.task_id.as_deref() == Some(id)))
 }
 
 /// Returns the RFC3339 start of `timer`'s session.

@@ -2520,12 +2520,14 @@ async fn a_stop_at_the_bytes_margin_should_leave_the_card_a_task() {
     fx.db
         .update_instance_settings(|settings| settings.quotas.stored_mib_per_account = 1024)
         .expect("quotas");
-    let ceiling = 2 * 1024 * 1024;
-    let room = entry_bytes - 30;
+    const CEILING_BYTES: i64 = 2 * 1024 * 1024;
+    const MARGIN_BYTES: i64 = 30;
+    const TOLERANCE_BYTES: i64 = 8;
+    let room = entry_bytes - MARGIN_BYTES;
     let before = usage();
     attach("probe0.bin", 1000, 9);
     let overhead = usage() - before - 1000;
-    let fill = ceiling - room - usage();
+    let fill = CEILING_BYTES - room - usage();
     for index in 0..3_u8 {
         let len = (fill / 3 - overhead) as usize;
         attach(&format!("fill_{index}.bin"), len, index + 1);
@@ -2533,8 +2535,11 @@ async fn a_stop_at_the_bytes_margin_should_leave_the_card_a_task() {
     fx.db
         .update_instance_settings(|settings| settings.quotas.stored_mib_per_account = 1)
         .expect("quotas");
-    let left = ceiling - usage();
-    assert!((left - room).abs() <= 8, "room {left}, wanted {room}");
+    let left = CEILING_BYTES - usage();
+    assert!(
+        (left - room).abs() <= TOLERANCE_BYTES,
+        "room {left}, wanted {room}"
+    );
 
     // The pre-check refuses the stop, and the stop itself is refused and leaves its timer running
     let account = fx.db.account(&fx.user_id);
