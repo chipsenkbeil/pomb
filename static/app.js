@@ -16539,7 +16539,7 @@
     var RELATIVE_MONTHS = { '6m': 6, '12m': 12 };
     var fixedCount = null;
     var MIN_BASIS = 5;
-    var DAY = ReportRange.DAY_MS;
+    const DAY = ReportRange.DAY_MS;
     var MAX_CUSTOM_DAYS = 3660;
     var lastBasis = null;  // { starts, counts } for the current settings
 
@@ -16588,7 +16588,7 @@
       tasks.forEach(function (t) {
         (t.history || []).forEach(function (e) {
           if (!e || e.kind !== 'moved' || e.detail.indexOf('Moved from ') !== 0) return;
-          var m = ColumnHistory.parseMoveDetail(e.detail);
+          const m = ColumnHistory.parseMoveDetail(e.detail);
           if (!m || m.to !== targetName) return;
           var d = new Date(e.created_at);
           if (isNaN(d.getTime())) return;
