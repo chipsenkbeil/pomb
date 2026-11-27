@@ -7,7 +7,9 @@ use super::test_support::{TEST_BODY_4_MIB_BYTES, held_disk, make_plain, move_to}
 use super::{EPIC_TEMPLATE, router};
 use crate::AppState;
 use crate::db::{Db, MAX_ENTRIES_PER_DAY, NewTimeEntry};
-use crate::models::{AccountId, ActiveTimer, EntryKind, HistoryKind, TimerMode};
+use crate::models::{
+    AccountId, ActiveTimer, Actor, EntryKind, HistoryKind, InstanceMode, TimerMode,
+};
 
 struct Fixture {
     db: Db,
@@ -23,10 +25,18 @@ struct Fixture {
 }
 
 fn fixture() -> (tempfile::TempDir, Fixture) {
+    fixture_in(InstanceMode::Single)
+}
+
+fn fixture_in(mode: InstanceMode) -> (tempfile::TempDir, Fixture) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("epics.redb");
     let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
-    let user_id = db.create_user("admin").expect("create user");
+    db.apply_mode(mode).expect("mode");
+    let mut user_id = db.create_user("admin").expect("create user");
+    if mode == InstanceMode::Multi {
+        user_id = db.create_user("bob").expect("create member");
+    }
     let session = db.create_session(&user_id, "").expect("session");
     let board_id = db.create_board(&user_id, "Epics").expect("board");
     let col_todo = db.create_column(&board_id, "Todo", None).expect("column");
@@ -40,6 +50,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let lane_b = db.create_swimlane(&board_id, "B").expect("lane");
     let app = router(
         AppState::new(db.clone(), None, passkey_mode())
+            .with_mode(mode)
             .with_disk(held_disk(&db))
             .with_limits(unthrottled_limits()),
     );
@@ -2315,6 +2326,124 @@ async fn a_refused_timer_stop_should_leave_the_card_a_task_with_its_timer_runnin
         .expect("still running");
     assert_eq!(running.task_id.as_deref(), Some(card.as_str()));
     assert_eq!(running.started_at, day_start);
+}
+
+#[tokio::test]
+async fn a_refused_kind_change_should_keep_the_timer_running() {
+    let (_dir, fx) = fixture();
+
+    // Create a card and start a stopwatch on it, backdated so a stop would log it
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let (status, started) = call(
+        &fx,
+        "POST",
+        "/api/timer/start",
+        Some(json!({"task_id": card, "mode": "stopwatch"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let started_at = chrono::Utc::now().timestamp() - 600;
+    fx.db
+        .account(&fx.user_id)
+        .set_active_timer(&ActiveTimer {
+            task_id: Some(card.clone()),
+            mode: TimerMode::Stopwatch,
+            started_at,
+            duration_secs: None,
+        })
+        .expect("timer");
+
+    // Make the card an epic with a color that is not on the board
+    let (status, refused) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{card}"),
+        Some(json!({"kind": "epic", "color_id": "no-such-color"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+
+    // The card is still a task, its timer runs on and no entry was logged
+    let (_, shown) = call(&fx, "GET", &format!("/api/tasks/{card}"), None).await;
+    assert_eq!(shown["kind"], "task", "{shown}");
+    let running = fx
+        .db
+        .account(&fx.user_id)
+        .active_timer()
+        .expect("timer")
+        .expect("still running");
+    assert_eq!(running.task_id.as_deref(), Some(card.as_str()));
+    assert_eq!(running.started_at, started_at);
+    assert!(fx.db.list_entries(&card).expect("entries").is_empty());
+}
+
+#[tokio::test]
+async fn a_stop_refused_for_stored_bytes_should_leave_the_card_a_task_with_its_timer_running() {
+    let (_dir, fx) = fixture_in(InstanceMode::Multi);
+
+    // Create a card with a timer backdated so a stop would log it
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let (status, started) = call(
+        &fx,
+        "POST",
+        "/api/timer/start",
+        Some(json!({"task_id": card, "mode": "stopwatch"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let started_at = chrono::Utc::now().timestamp() - 600;
+    fx.db
+        .account(&fx.user_id)
+        .set_active_timer(&ActiveTimer {
+            task_id: Some(card.clone()),
+            mode: TimerMode::Stopwatch,
+            started_at,
+            duration_secs: None,
+        })
+        .expect("timer");
+
+    // Store more than a timer session may overshoot, then lower the quota under it
+    fx.db
+        .update_instance_settings(|settings| settings.quotas.stored_mib_per_account = 1024)
+        .expect("quotas");
+    for (index, fill) in [1_u8, 2, 3].into_iter().enumerate() {
+        fx.db
+            .add_attachment(
+                &card,
+                &format!("file{index}.bin"),
+                "application/octet-stream",
+                &vec![fill; 900 * 1024],
+                Actor::SYSTEM,
+            )
+            .expect("attach")
+            .expect("task");
+    }
+    fx.db
+        .update_instance_settings(|settings| settings.quotas.stored_mib_per_account = 1)
+        .expect("quotas");
+
+    // Make the card an epic, which the stored-bytes quota refuses for the session's entry
+    let (status, refused) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{card}"),
+        Some(json!({"kind": "epic"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+
+    // The card is still a task, its timer runs on and no entry was logged
+    let (_, shown) = call(&fx, "GET", &format!("/api/tasks/{card}"), None).await;
+    assert_eq!(shown["kind"], "task", "{shown}");
+    let running = fx
+        .db
+        .account(&fx.user_id)
+        .active_timer()
+        .expect("timer")
+        .expect("still running");
+    assert_eq!(running.task_id.as_deref(), Some(card.as_str()));
+    assert_eq!(running.started_at, started_at);
+    assert!(fx.db.list_entries(&card).expect("entries").is_empty());
 }
 
 #[tokio::test]

@@ -10328,24 +10328,15 @@ async fn update_task(
         ChildLinks::Keep
     };
 
-    // An epic holds no work, so a timer still running on the card stops and logs its session
-    // first, and a refused stop leaves the card a task
-    if input.kind == Some(TaskKind::Epic) && owned.row().kind != TaskKind::Epic {
+    // An epic holds no work, so a timer running on the card stops once the kind is stored. A stop
+    // the entry quota would refuse answers first, so it leaves the card a task
+    let becomes_epic = input.kind == Some(TaskKind::Epic) && owned.row().kind != TaskKind::Epic;
+    if becomes_epic {
         let _gate = db.lock_timer();
         if let Some(timer) = db.active_timer().map_err(AppError::from)?
             && timer.task_id.as_deref() == Some(id.as_str())
         {
-            log_timer_session(
-                db,
-                &timer,
-                TimerSession {
-                    claimed_completed: false,
-                    reason: Some("Card became an epic"),
-                    activity_id: None,
-                    created_by: &user.handle,
-                    actor: user.actor(),
-                },
-            )?;
+            check_timer_stop_room(db, &timer, actor)?;
         }
     }
     let applied = db
@@ -10586,6 +10577,24 @@ async fn update_task(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     applied?;
+    if becomes_epic {
+        let _gate = db.lock_timer();
+        if let Some(timer) = db.active_timer().map_err(AppError::from)?
+            && timer.task_id.as_deref() == Some(id.as_str())
+        {
+            log_timer_session(
+                db,
+                &timer,
+                TimerSession {
+                    claimed_completed: false,
+                    reason: Some("Card became an epic"),
+                    activity_id: None,
+                    created_by: &user.handle,
+                    actor,
+                },
+            )?;
+        }
+    }
 
     if wants_json(&headers, &user) {
         let task = found(db.task(&id), "task not found")?;
@@ -29777,6 +29786,27 @@ fn log_timer_session(
     Ok(Some((minutes, completed)))
 }
 
+/// Returns the RFC3339 start of `timer`'s session.
+fn timer_started_at(timer: &ActiveTimer) -> String {
+    DateTime::from_timestamp(timer.started_at, 0)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339()
+}
+
+/// Refuses, as [`log_timer_session`] would, a stop of `timer` whose entry the account has no room
+/// for, and stores nothing.
+fn check_timer_stop_room(
+    db: &AccountDb,
+    timer: &ActiveTimer,
+    actor: Actor<'_>,
+) -> Result<(), AppError> {
+    if chrono::Utc::now().timestamp() - timer.started_at < 20 {
+        return Ok(());
+    }
+    db.check_session_entry_room(&timer_started_at(timer), actor.token_name)
+        .map_err(AppError::from)
+}
+
 /// Stores the time entry of `timer`'s finished session, or nothing for one under 20 seconds,
 /// which returns [`None`].
 fn record_timer_session(
@@ -29802,9 +29832,7 @@ fn record_timer_session(
         Some(duration) => elapsed + COMPLETION_GRACE_SECS >= duration as i64,
         None => claimed_completed,
     };
-    let started_at = DateTime::from_timestamp(timer.started_at, 0)
-        .unwrap_or_else(chrono::Utc::now)
-        .to_rfc3339();
+    let started_at = timer_started_at(timer);
 
     // Only attribute the session to a break activity when the id matches a defined activity, and
     // anything else is ignored (not stored)

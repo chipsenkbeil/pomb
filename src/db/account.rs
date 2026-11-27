@@ -2748,6 +2748,17 @@ impl AccountDb {
         )
     }
 
+    /// Refuses a timer session's entry the account has no room for; see
+    /// [`Db::check_session_entry_room`].
+    pub fn check_session_entry_room(
+        &self,
+        started_at: &str,
+        token_name: Option<&str>,
+    ) -> DbResult<()> {
+        self.db
+            .check_session_entry_room(&self.account, started_at, token_name)
+    }
+
     /// Creates a time entry for the account; [`None`] when its task is gone or another account's.
     pub fn create_entry_full(&self, entry: NewTimeEntry<'_>) -> DbResult<Option<String>> {
         if let Some(task_id) = entry.task_id {
