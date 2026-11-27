@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 use super::access_tests::{Payload, Seeded, Who, open, payload, seeded, send, uri};
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, held_disk, make_epic};
+use super::test_support::{Reply, TEST_TODO_COLUMN, call, held_disk, make_epic};
 use super::{ROUTE_ACCESS, RouteClass, route_class, router};
 use crate::AppState;
 use crate::auth::{ROUTE_PERMISSIONS, new_api_token_record, required_role};
@@ -42,7 +42,9 @@ impl Fixture {
         let carol = db.create_user("carol").expect("carol");
         let dave = db.create_user("dave").expect("dave");
         let board = db.create_board(&alice, "Shared").expect("board");
-        let column = db.create_column(&board, "Todo", None).expect("column");
+        let column = db
+            .create_column(&board, TEST_TODO_COLUMN, None)
+            .expect("column");
         let task = db
             .create_task(&column, None, "Card", 1, None)
             .expect("task");
@@ -443,7 +445,7 @@ fn moving_a_task_to_a_board_a_member_cannot_reach_should_stop_that_members_timer
     let elsewhere = fx.db.create_board(&fx.alice, "Private").expect("board");
     let column = fx
         .db
-        .create_column(&elsewhere, "Todo", None)
+        .create_column(&elsewhere, TEST_TODO_COLUMN, None)
         .expect("column");
     fx.db.move_task(&fx.task, &column, None, 0.0).expect("move");
     assert!(fx.db.active_timer(&fx.bob).expect("read").is_none());
@@ -453,7 +455,10 @@ fn moving_a_task_to_a_board_a_member_cannot_reach_should_stop_that_members_timer
 async fn a_member_should_not_delete_a_task_or_link_that_rewrites_a_board_it_only_reads() {
     let fx = Fixture::new();
     let reading = fx.db.create_board(&fx.alice, "Reading").expect("board");
-    let column = fx.db.create_column(&reading, "Todo", None).expect("column");
+    let column = fx
+        .db
+        .create_column(&reading, TEST_TODO_COLUMN, None)
+        .expect("column");
     let other = fx
         .db
         .create_task(&column, None, "Other", 1, None)
@@ -533,7 +538,10 @@ fn moving_a_task_to_a_board_a_member_only_reads_should_stop_that_members_timer()
     fx.db
         .set_board_member(&reading, "bob", BoardRole::Viewer)
         .expect("viewer");
-    let column = fx.db.create_column(&reading, "Todo", None).expect("column");
+    let column = fx
+        .db
+        .create_column(&reading, TEST_TODO_COLUMN, None)
+        .expect("column");
     fx.db.move_task(&fx.task, &column, None, 0.0).expect("move");
     assert!(fx.db.active_timer(&fx.bob).expect("read").is_none());
 }
@@ -544,7 +552,7 @@ fn changing_an_umbrella_should_refuse_a_member_without_a_role_on_the_old_parents
     let elsewhere = fx.db.create_board(&fx.alice, "Private").expect("board");
     let far = fx
         .db
-        .create_column(&elsewhere, "Todo", None)
+        .create_column(&elsewhere, TEST_TODO_COLUMN, None)
         .expect("column");
     let parent = fx
         .db
@@ -600,7 +608,10 @@ async fn board_page_should_carry_the_role_of_the_signed_in_account() {
 fn task_history_should_hide_a_link_event_naming_a_task_the_account_cannot_reach() {
     let fx = Fixture::new();
     let private = fx.db.create_board(&fx.alice, "Private").expect("board");
-    let column = fx.db.create_column(&private, "Todo", None).expect("column");
+    let column = fx
+        .db
+        .create_column(&private, TEST_TODO_COLUMN, None)
+        .expect("column");
     let hidden = fx
         .db
         .create_task(&column, None, "Hidden", 1, None)
@@ -628,7 +639,10 @@ fn task_history_should_hide_a_link_event_naming_a_task_the_account_cannot_reach(
 fn listing_links_should_hide_a_task_on_a_board_the_account_holds_no_role_on() {
     let fx = Fixture::new();
     let private = fx.db.create_board(&fx.bob, "Private").expect("board");
-    let column = fx.db.create_column(&private, "Todo", None).expect("column");
+    let column = fx
+        .db
+        .create_column(&private, TEST_TODO_COLUMN, None)
+        .expect("column");
     let hidden = fx
         .db
         .create_task(&column, None, "Hidden", 1, None)
@@ -1053,7 +1067,10 @@ async fn a_time_logged_event_should_carry_only_the_logging_account_time() {
 async fn a_bulk_edit_should_refuse_a_link_to_a_board_the_member_only_views() {
     let fx = Fixture::new();
     let viewed = fx.db.create_board(&fx.alice, "Viewed").expect("board");
-    let column = fx.db.create_column(&viewed, "Todo", None).expect("column");
+    let column = fx
+        .db
+        .create_column(&viewed, TEST_TODO_COLUMN, None)
+        .expect("column");
     let other = fx
         .db
         .create_task(&column, None, "Other", 1, None)

@@ -9,7 +9,8 @@ use utoipa::OpenApi;
 
 use super::server::passkey_mode;
 use super::test_support::{
-    drop_seeded_roles, held_disk, make_epic, make_plain, named_standard_role,
+    TEST_DONE_COLUMN, TEST_TODO_COLUMN, drop_seeded_roles, held_disk, make_epic, make_plain,
+    named_standard_role,
 };
 use super::{ApiDoc, DeviceApproveForm, device_grant, router};
 use crate::auth::new_api_token_record;
@@ -48,7 +49,9 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let (record, read_token) = new_api_token_record(&user_id, "reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
     let board_id = db.create_board(&user_id, "Agentctl").expect("board");
-    let col_todo = db.create_column(&board_id, "Todo", None).expect("column");
+    let col_todo = db
+        .create_column(&board_id, TEST_TODO_COLUMN, None)
+        .expect("column");
     let col_done = db
         .create_column(&board_id, "Shipped", None)
         .expect("column");
@@ -4454,7 +4457,10 @@ async fn a_cross_board_move_should_keep_valid_shared_fields_and_record_the_dropp
     let moved = event_details(&fx, &a, HistoryKind::Moved);
     assert_eq!(
         moved.last().expect("moved event"),
-        "Moved from Todo to To-do; dropped fields: {\"flag\":true,\"only_here\":\"x\",\"stage\":\"review\"}",
+        &format!(
+            "Moved from {} to To-do; dropped fields: {{\"flag\":true,\"only_here\":\"x\",\"stage\":\"review\"}}",
+            TEST_TODO_COLUMN
+        ),
         "undefined keys and values invalid on the target are dropped and recorded"
     );
 
@@ -4473,7 +4479,7 @@ async fn a_cross_board_move_should_keep_valid_shared_fields_and_record_the_dropp
     assert_eq!(detail(&fx, &b).await["fields"], json!({"stage": "draft"}));
     assert_eq!(
         event_details(&fx, &b, HistoryKind::Moved),
-        vec!["Moved from Todo to To-do".to_string()]
+        vec![format!("Moved from {} to To-do", TEST_TODO_COLUMN)]
     );
 
     let c = create(
@@ -4490,7 +4496,7 @@ async fn a_cross_board_move_should_keep_valid_shared_fields_and_record_the_dropp
     );
     assert_eq!(
         event_details(&fx, &c, HistoryKind::Moved),
-        vec!["Moved from Todo to Shipped".to_string()]
+        vec![format!("Moved from {} to Shipped", TEST_TODO_COLUMN)]
     );
 }
 
@@ -8360,7 +8366,10 @@ fn token_boards(fx: &Fixture, id: &str) -> BoardAccess {
 /// Seeds a second board with a column and a task, and returns all three ids.
 fn other_board(fx: &Fixture) -> (String, String, String) {
     let board = fx.db.create_board(&fx.user_id, "Other").expect("board");
-    let column = fx.db.create_column(&board, "Todo", None).expect("column");
+    let column = fx
+        .db
+        .create_column(&board, TEST_TODO_COLUMN, None)
+        .expect("column");
     let task = fx
         .db
         .create_task(&column, None, "Far task", 1, None)
@@ -9627,7 +9636,7 @@ async fn parent_and_child_links_should_list_on_both_tasks_and_count_done_childre
     assert_eq!(view["children_total"], 2);
     assert_eq!(view["children_done"], 0);
     assert_eq!(view["children"][0]["name"], "Slice A");
-    assert_eq!(view["children"][0]["column_name"], "Todo");
+    assert_eq!(view["children"][0]["column_name"], TEST_TODO_COLUMN);
     assert_eq!(view["children"][0]["done"], false);
     let view = detail(&fx, &a).await;
     assert_eq!(view["parent"]["id"], umbrella.as_str());
@@ -9731,7 +9740,7 @@ async fn parent_link_should_not_reach_a_task_of_another_account() {
     let bob_board = fx.db.create_board(&bob, "Bob").expect("board");
     let bob_column = fx
         .db
-        .create_column(&bob_board, "Todo", None)
+        .create_column(&bob_board, TEST_TODO_COLUMN, None)
         .expect("column");
     let theirs = fx
         .db
@@ -10437,7 +10446,7 @@ async fn the_link_picker_should_cap_the_list_refuse_a_bad_mode_and_stay_in_the_a
     let bob_board = fx.db.create_board(&bob, "Bob").expect("board");
     let bob_column = fx
         .db
-        .create_column(&bob_board, "Todo", None)
+        .create_column(&bob_board, TEST_TODO_COLUMN, None)
         .expect("column");
     let theirs = fx
         .db
@@ -11257,7 +11266,7 @@ async fn listing_attachments_should_show_a_board_limited_token_only_its_boards()
         .expect("other board");
     let other_column = fx
         .db
-        .create_column(&other_board, "Todo", None)
+        .create_column(&other_board, TEST_TODO_COLUMN, None)
         .expect("column");
     let theirs = fx
         .db
@@ -13916,13 +13925,13 @@ async fn the_open_child_refusal_should_follow_the_column_settings_after_a_rename
         &fx,
         "PATCH",
         &format!("/api/columns/{}", fx.col_todo),
-        Some(json!({"name": "Done"})),
+        Some(json!({"name": TEST_DONE_COLUMN})),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     let elsewhere = fx
         .db
-        .create_column(&fx.board_id, "Done", None)
+        .create_column(&fx.board_id, TEST_DONE_COLUMN, None)
         .expect("column");
 
     for column in [&limited, &fx.col_done] {

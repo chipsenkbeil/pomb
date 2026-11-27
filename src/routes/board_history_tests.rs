@@ -6,7 +6,7 @@ use tower::ServiceExt;
 
 use super::board_history::{Filter, Order};
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::held_disk;
+use super::test_support::{TEST_DOING_COLUMN, TEST_DONE_COLUMN, TEST_TODO_COLUMN, held_disk};
 use super::{load_history_page, router};
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -32,7 +32,9 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let user_id = db.create_user("admin").expect("create user");
     let session = db.create_session(&user_id, "").expect("session");
     let board_id = db.create_board(&user_id, "History").expect("board");
-    let column = db.create_column(&board_id, "Todo", None).expect("column");
+    let column = db
+        .create_column(&board_id, TEST_TODO_COLUMN, None)
+        .expect("column");
     let app = router(
         AppState::new(db.clone(), None, passkey_mode())
             .with_disk(held_disk(&db))
@@ -138,19 +140,19 @@ fn task_in(fx: &Fixture, column: &str, name: &str, history: Vec<TaskEvent>) -> S
 fn seeded(fx: &Fixture) {
     let mut moved = event(
         HistoryKind::Moved,
-        "Moved from Todo to Doing",
+        &format!("Moved from {} to {}", TEST_TODO_COLUMN, TEST_DOING_COLUMN),
         "ann",
         "2026-10-20T10:00:00Z",
     );
-    moved.from = Some("Todo".to_string());
-    moved.to = Some("Doing".to_string());
+    moved.from = Some(TEST_TODO_COLUMN.to_string());
+    moved.to = Some(TEST_DOING_COLUMN.to_string());
     task_with(
         fx,
         "Alpha",
         vec![
             event(
                 HistoryKind::Created,
-                "Task created in Todo",
+                &format!("Task created in {}", TEST_TODO_COLUMN),
                 "ann",
                 "2026-10-10T10:00:00Z",
             ),
@@ -169,7 +171,7 @@ fn seeded(fx: &Fixture) {
         vec![
             event(
                 HistoryKind::Created,
-                "Task created in Todo",
+                &format!("Task created in {}", TEST_TODO_COLUMN),
                 "bob",
                 "2026-10-15T10:00:00Z",
             ),
@@ -190,9 +192,9 @@ async fn history_should_list_newest_first_and_oldest_first_on_order() {
     let newest = details(&rows(&fx, "").await);
     assert_eq!(newest.len(), 5, "{newest:?}");
     assert_eq!(newest[0], "Linked to Alpha");
-    assert_eq!(newest[4], "Task created in Todo");
+    assert_eq!(newest[4], format!("Task created in {}", TEST_TODO_COLUMN));
     let oldest = details(&rows(&fx, "order=oldest").await);
-    assert_eq!(oldest[0], "Task created in Todo");
+    assert_eq!(oldest[0], format!("Task created in {}", TEST_TODO_COLUMN));
     assert_eq!(oldest[4], "Linked to Alpha");
 }
 
@@ -207,7 +209,10 @@ async fn history_should_keep_only_the_rows_in_the_period() {
     .await;
     assert_eq!(
         details(&page),
-        ["Moved from Todo to Doing", "Changed the labels"]
+        [
+            format!("Moved from {} to {}", TEST_TODO_COLUMN, TEST_DOING_COLUMN),
+            "Changed the labels".to_string()
+        ]
     );
     let open_end = rows(&fx, "from=2026-10-26T10:00:00Z").await;
     assert_eq!(details(&open_end), ["Linked to Alpha"]);
@@ -219,7 +224,10 @@ async fn history_should_filter_by_event_property_and_user() {
     seeded(&fx);
     assert_eq!(
         details(&rows(&fx, "event=created&order=oldest").await),
-        ["Task created in Todo", "Task created in Todo"]
+        [
+            format!("Task created in {}", TEST_TODO_COLUMN),
+            format!("Task created in {}", TEST_TODO_COLUMN)
+        ]
     );
     assert_eq!(
         details(&rows(&fx, "event=relation").await),
@@ -227,7 +235,10 @@ async fn history_should_filter_by_event_property_and_user() {
     );
     assert_eq!(
         details(&rows(&fx, "event=changed&order=oldest").await),
-        ["Moved from Todo to Doing", "Changed the labels"]
+        [
+            format!("Moved from {} to {}", TEST_TODO_COLUMN, TEST_DOING_COLUMN),
+            "Changed the labels".to_string()
+        ]
     );
     assert_eq!(
         details(&rows(&fx, "event=changed&property=labels_updated").await),
@@ -236,7 +247,10 @@ async fn history_should_filter_by_event_property_and_user() {
     let by_bob = rows(&fx, "user=bob&order=oldest").await;
     assert_eq!(
         details(&by_bob),
-        ["Task created in Todo", "Changed the labels"]
+        [
+            format!("Task created in {}", TEST_TODO_COLUMN),
+            "Changed the labels".to_string()
+        ]
     );
     assert_eq!(by_bob["users"], serde_json::json!(["ann", "bob"]));
 }
@@ -246,7 +260,7 @@ async fn history_should_give_the_old_and_new_value_of_a_change() {
     let (_dir, fx) = fixture();
     let mut legacy = event(
         HistoryKind::Moved,
-        "Moved from Todo to Done",
+        &format!("Moved from {} to {}", TEST_TODO_COLUMN, TEST_DONE_COLUMN),
         "ann",
         "2026-10-20T10:00:00Z",
     );
@@ -258,11 +272,11 @@ async fn history_should_give_the_old_and_new_value_of_a_change() {
     let moved = &page["rows"][0];
     assert_eq!(moved["task"], "Old");
     assert_eq!(moved["changed"], true);
-    assert_eq!(moved["old_value"], "Todo");
-    assert_eq!(moved["new_value"], "Done");
+    assert_eq!(moved["old_value"], TEST_TODO_COLUMN);
+    assert_eq!(moved["new_value"], TEST_DONE_COLUMN);
     let alpha = &page["rows"][1];
-    assert_eq!(alpha["old_value"], "Todo");
-    assert_eq!(alpha["new_value"], "Doing");
+    assert_eq!(alpha["old_value"], TEST_TODO_COLUMN);
+    assert_eq!(alpha["new_value"], TEST_DOING_COLUMN);
     let created = &rows(&fx, "event=created").await["rows"][0];
     assert_eq!(created["changed"], false);
 }
@@ -276,12 +290,12 @@ async fn history_should_give_null_for_a_missing_old_or_new_value() {
         "ann",
         "2026-10-20T10:00:00Z",
     );
-    cleared.from = Some("Todo".to_string());
+    cleared.from = Some(TEST_TODO_COLUMN.to_string());
     let id = task_with(&fx, "Gap", vec![cleared]);
     add_comment(&fx, &id, "c1", "Looks fine", "2026-10-27T10:00:00Z");
     let moved = &rows(&fx, "property=moved").await["rows"][0];
     assert_eq!(moved["changed"], true);
-    assert_eq!(moved["old_value"], "Todo");
+    assert_eq!(moved["old_value"], TEST_TODO_COLUMN);
     assert!(moved["new_value"].is_null(), "{moved}");
     let comment = &rows(&fx, "event=comment").await["rows"][0];
     assert!(comment["old_value"].is_null(), "{comment}");
@@ -297,7 +311,7 @@ async fn history_export_should_leave_a_missing_value_empty() {
         "ann",
         "2026-10-20T10:00:00Z",
     );
-    cleared.from = Some("Todo".to_string());
+    cleared.from = Some(TEST_TODO_COLUMN.to_string());
     task_with(&fx, "Gap", vec![cleared]);
     let uri = format!(
         "/api/boards/{}/history?format=csv&property=moved",
@@ -306,7 +320,10 @@ async fn history_export_should_leave_a_missing_value_empty() {
     let (status, csv) = send(&fx, "GET", &uri).await;
     assert_eq!(status, StatusCode::OK, "{csv}");
     assert!(
-        csv.contains("\"Todo\",\"\",\"Cleared the column\""),
+        csv.contains(&format!(
+            "\"{}\",\"\",\"Cleared the column\"",
+            TEST_TODO_COLUMN
+        )),
         "{csv}"
     );
     assert!(!csv.contains("(none)"), "{csv}");
@@ -320,7 +337,7 @@ async fn history_export_should_write_each_time_to_the_second_in_utc() {
         "Clock",
         vec![event(
             HistoryKind::Created,
-            "Task created in Todo",
+            &format!("Task created in {}", TEST_TODO_COLUMN),
             "ann",
             "2026-10-20T10:00:00.123456789Z",
         )],
@@ -343,7 +360,7 @@ async fn history_should_hold_comments_and_deleted_tasks() {
         "Gone",
         vec![event(
             HistoryKind::Created,
-            "Task created in Todo",
+            &format!("Task created in {}", TEST_TODO_COLUMN),
             "ann",
             "2026-10-10T10:00:00Z",
         )],
@@ -453,7 +470,7 @@ async fn history_should_leave_out_a_deleted_task_past_its_retention() {
         "Gone",
         vec![event(
             HistoryKind::Created,
-            "Task created in Todo",
+            &format!("Task created in {}", TEST_TODO_COLUMN),
             "ann",
             "2026-10-10T10:00:00Z",
         )],
@@ -491,7 +508,7 @@ async fn history_should_not_split_a_legacy_move_whose_column_name_holds_to() {
         "Odd",
         vec![event(
             HistoryKind::Moved,
-            "Moved from Back to backlog to Done",
+            &format!("Moved from Back to backlog to {}", TEST_DONE_COLUMN),
             "ann",
             "2026-10-20T10:00:00Z",
         )],
@@ -536,13 +553,13 @@ async fn board_history_should_hide_the_other_board_from_a_limited_token() {
     created.column_id = Some(staging.clone());
     let mut moved = event(
         HistoryKind::Moved,
-        "Moved from Staging Lane to Todo",
+        &format!("Moved from Staging Lane to {}", TEST_TODO_COLUMN),
         "bob",
         "2026-10-20T10:00:00Z",
     );
     moved.column_id = Some(fx.column.clone());
     moved.from = Some("Staging Lane".to_string());
-    moved.to = Some("Todo".to_string());
+    moved.to = Some(TEST_TODO_COLUMN.to_string());
     let linked = event(
         HistoryKind::LinkAdded,
         &format!("Added link related \"Quarry Plan\" ({quarry})"),
@@ -557,7 +574,7 @@ async fn board_history_should_hide_the_other_board_from_a_limited_token() {
         "{owner:?}"
     );
     assert!(
-        owner.contains(&"Moved from Staging Lane to Todo".to_string()),
+        owner.contains(&format!("Moved from Staging Lane to {}", TEST_TODO_COLUMN)),
         "{owner:?}"
     );
     assert!(
@@ -679,7 +696,7 @@ async fn task_history_should_return_the_rows_oldest_first() {
             ),
             event(
                 HistoryKind::Created,
-                "Task created in Todo",
+                &format!("Task created in {}", TEST_TODO_COLUMN),
                 "ann",
                 "2026-10-10T10:00:00Z",
             ),
@@ -689,7 +706,11 @@ async fn task_history_should_return_the_rows_oldest_first() {
     let page = task_page(&fx, &id, "").await;
     assert_eq!(
         details(&page),
-        ["Task created in Todo", "Looks fine", "Changed the labels"]
+        [
+            format!("Task created in {}", TEST_TODO_COLUMN),
+            "Looks fine".to_string(),
+            "Changed the labels".to_string()
+        ]
     );
     assert_eq!(
         row_ids(&page),
@@ -722,21 +743,21 @@ async fn task_history_should_hide_the_rows_a_limited_token_may_not_read() {
     created.column_id = Some(staging.clone());
     let mut moved = event(
         HistoryKind::Moved,
-        "Moved from Staging Lane to Todo",
+        &format!("Moved from Staging Lane to {}", TEST_TODO_COLUMN),
         "bob",
         "2026-10-20T10:00:00Z",
     );
     moved.column_id = Some(fx.column.clone());
     moved.from = Some("Staging Lane".to_string());
-    moved.to = Some("Todo".to_string());
+    moved.to = Some(TEST_TODO_COLUMN.to_string());
     let id = task_with(&fx, "Local Card", vec![created, moved]);
 
     let owner = details(&task_page(&fx, &id, "").await);
     assert_eq!(
         owner,
         [
-            "Task created in Staging Lane",
-            "Moved from Staging Lane to Todo"
+            "Task created in Staging Lane".to_string(),
+            format!("Moved from Staging Lane to {}", TEST_TODO_COLUMN)
         ]
     );
 
@@ -765,7 +786,7 @@ async fn task_history_should_page_and_resume_from_a_cursor() {
         vec![
             event(
                 HistoryKind::Created,
-                "Task created in Todo",
+                &format!("Task created in {}", TEST_TODO_COLUMN),
                 "ann",
                 "2026-10-10T10:00:00Z",
             ),
@@ -777,7 +798,7 @@ async fn task_history_should_page_and_resume_from_a_cursor() {
             ),
             event(
                 HistoryKind::Moved,
-                "Moved from Todo to Doing",
+                &format!("Moved from {} to {}", TEST_TODO_COLUMN, TEST_DOING_COLUMN),
                 "ann",
                 "2026-10-14T10:00:00Z",
             ),
@@ -786,11 +807,20 @@ async fn task_history_should_page_and_resume_from_a_cursor() {
     let first = task_page(&fx, &id, "?limit=2").await;
     assert_eq!(
         details(&first),
-        ["Task created in Todo", "Changed the labels"]
+        [
+            format!("Task created in {}", TEST_TODO_COLUMN),
+            "Changed the labels".to_string()
+        ]
     );
     let cursor = first["next_cursor"].as_str().expect("cursor").to_string();
     let second = task_page(&fx, &id, &format!("?limit=2&cursor={cursor}")).await;
-    assert_eq!(details(&second), ["Moved from Todo to Doing"]);
+    assert_eq!(
+        details(&second),
+        [format!(
+            "Moved from {} to {}",
+            TEST_TODO_COLUMN, TEST_DOING_COLUMN
+        )]
+    );
     let last = second["next_cursor"].as_str().expect("cursor").to_string();
 
     let empty = task_page(&fx, &id, &format!("?cursor={last}")).await;
@@ -810,14 +840,17 @@ async fn task_history_should_refuse_a_foreign_task_and_a_bad_cursor() {
         "Alpha",
         vec![event(
             HistoryKind::Created,
-            "Task created in Todo",
+            &format!("Task created in {}", TEST_TODO_COLUMN),
             "ann",
             "2026-10-10T10:00:00Z",
         )],
     );
     let other = fx.db.create_user("other").expect("user");
     let board = fx.db.create_board(&other, "Theirs").expect("board");
-    let column = fx.db.create_column(&board, "Todo", None).expect("column");
+    let column = fx
+        .db
+        .create_column(&board, TEST_TODO_COLUMN, None)
+        .expect("column");
     let foreign = fx
         .db
         .create_task(&column, None, "Secret", 1, None)

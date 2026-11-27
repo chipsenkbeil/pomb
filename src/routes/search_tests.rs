@@ -5,7 +5,9 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, held_disk};
+use super::test_support::{
+    Reply, TEST_DOING_COLUMN, TEST_DONE_COLUMN, TEST_TODO_COLUMN, call, held_disk,
+};
 use super::{SEARCH_BUDGET_SECS, router, run_search};
 use crate::AppState;
 use crate::auth::new_api_token_record;
@@ -125,7 +127,11 @@ struct Seeded {
 
 async fn seeded() -> Seeded {
     let fx = Fixture::new();
-    let (plans, columns) = fx.board("Plans", &["Todo", "Doing", "Shipped"], "Shipped");
+    let (plans, columns) = fx.board(
+        "Plans",
+        &[TEST_TODO_COLUMN, TEST_DOING_COLUMN, "Shipped"],
+        "Shipped",
+    );
     let (ops, ops_columns) = fx.board("Ops", &["Queue"], "none");
     let colors = fx.db.list_colors(&plans).expect("colors");
     let red = colors
@@ -203,11 +209,16 @@ async fn search_should_find_cards_by_fuzzy_words_from_the_first_letter() {
 #[tokio::test]
 async fn search_should_report_the_board_column_field_and_ranges() {
     let Seeded { fx, plans, .. } = seeded().await;
-    let reply = fx.search("dpl in:title board:Plans column:Todo").await;
+    let reply = fx
+        .search(&format!(
+            "dpl in:title board:Plans column:{}",
+            TEST_TODO_COLUMN
+        ))
+        .await;
     let item = &reply.body["items"][0];
     assert_eq!(item["board_id"], plans);
     assert_eq!(item["board_name"], "Plans");
-    assert_eq!(item["column_name"], "Todo");
+    assert_eq!(item["column_name"], TEST_TODO_COLUMN);
     assert_eq!(item["status"], "open");
     assert_eq!(item["matched_field"], "title");
     assert_eq!(item["matched_index"], Value::Null);
@@ -334,7 +345,7 @@ async fn search_should_drop_cards_with_a_negated_label() {
         fx.names("deploy -label:backend -label:bug").await,
         ["Deploy docs", "Deploy old stuff"]
     );
-    let (_, solo_columns) = fx.board("Solo", &["Todo"], "none");
+    let (_, solo_columns) = fx.board("Solo", &[TEST_TODO_COLUMN], "none");
     fx.task(json!({
         "column_id": solo_columns[0],
         "name": "Deploy with a bug",
@@ -422,8 +433,12 @@ async fn search_should_refuse_unknown_and_malformed_terms() {
 #[tokio::test]
 async fn search_should_rank_title_first_and_open_above_done_and_archived() {
     let fx = Fixture::new();
-    let (_, columns) = fx.board("Plans", &["Todo", "Done"], "Done");
-    let (old_board, archive_columns) = fx.board("Old", &["Todo"], "none");
+    let (_, columns) = fx.board(
+        "Plans",
+        &[TEST_TODO_COLUMN, TEST_DONE_COLUMN],
+        TEST_DONE_COLUMN,
+    );
+    let (old_board, archive_columns) = fx.board("Old", &[TEST_TODO_COLUMN], "none");
     fx.task(json!({"column_id": columns[0], "name": "Plan", "description": "the release soon"}))
         .await;
     fx.task(json!({"column_id": columns[0], "name": "Release notes"}))
@@ -663,8 +678,8 @@ async fn search_should_answer_within_the_budget_over_the_golden_board() {
 
 async fn needs_human_fixture() -> (Fixture, String, String) {
     let fx = Fixture::new();
-    let (alpha, alpha_columns) = fx.board("Alpha", &["Todo"], "none");
-    let (beta, beta_columns) = fx.board("Beta", &["Todo"], "none");
+    let (alpha, alpha_columns) = fx.board("Alpha", &[TEST_TODO_COLUMN], "none");
+    let (beta, beta_columns) = fx.board("Beta", &[TEST_TODO_COLUMN], "none");
     for (column, board, count) in [
         (&alpha_columns[0], "alpha", 3),
         (&beta_columns[0], "beta", 2),

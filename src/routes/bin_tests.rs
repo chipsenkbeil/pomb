@@ -4,7 +4,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::held_disk;
+use super::test_support::{TEST_TODO_COLUMN, held_disk};
 use crate::auth::new_api_token_record;
 use crate::db::{Db, RestoreOutcome, WipCheck};
 use crate::models::{
@@ -30,7 +30,9 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let user_id = db.create_user("admin").expect("create user");
     let session = db.create_session(&user_id, "").expect("session");
     let board_id = db.create_board(&user_id, "Bin").expect("board");
-    let col_todo = db.create_column(&board_id, "Todo", None).expect("column");
+    let col_todo = db
+        .create_column(&board_id, TEST_TODO_COLUMN, None)
+        .expect("column");
     let col_done = db
         .create_column(&board_id, "Shipped", None)
         .expect("column");
@@ -173,7 +175,7 @@ async fn deleting_a_task_should_bin_it_and_hide_it_from_every_reader() {
     .await;
     assert_eq!(export["tasks"], json!([]));
     assert_eq!(export["deleted"][0]["name"], "Findable");
-    assert_eq!(export["deleted"][0]["column"], "Todo");
+    assert_eq!(export["deleted"][0]["column"], TEST_TODO_COLUMN);
 
     let (status, bin) = call(
         &fx,
@@ -186,7 +188,7 @@ async fn deleting_a_task_should_bin_it_and_hide_it_from_every_reader() {
     assert_eq!(bin["retention_days"], 30);
     assert_eq!(bin["tasks"][0]["id"], id.as_str());
     assert_eq!(bin["tasks"][0]["name"], "Findable");
-    assert_eq!(bin["tasks"][0]["location"], "Todo");
+    assert_eq!(bin["tasks"][0]["location"], TEST_TODO_COLUMN);
     assert_eq!(bin["tasks"][0]["deleted_by"], "admin");
     assert!(bin["tasks"][0]["unrestorable_after"].is_string());
     assert_eq!(
@@ -248,7 +250,7 @@ async fn restoring_should_use_the_first_column_when_the_old_one_is_gone() {
     let (status, body) = call(&fx, "POST", &format!("/api/bin/{id}/restore"), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["column_id"], fx.col_todo.as_str());
-    assert_eq!(body["column_name"], "Todo");
+    assert_eq!(body["column_name"], TEST_TODO_COLUMN);
 }
 
 #[tokio::test]
@@ -674,8 +676,14 @@ async fn the_history_should_name_the_task_and_the_column_it_left_and_returned_to
     assert_eq!(
         details,
         [
-            "Task Round trip was deleted from column Todo",
-            "Task Round trip was restored to column Todo"
+            format!(
+                "Task Round trip was deleted from column {}",
+                TEST_TODO_COLUMN
+            ),
+            format!(
+                "Task Round trip was restored to column {}",
+                TEST_TODO_COLUMN
+            )
         ]
     );
 }
@@ -712,7 +720,7 @@ async fn the_bin_should_name_the_column_a_restore_puts_the_task_in() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let (_, bin) = call(&fx, "GET", &uri, None).await;
-    assert_eq!(bin["tasks"][0]["restores_to"], "Todo");
+    assert_eq!(bin["tasks"][0]["restores_to"], TEST_TODO_COLUMN);
 }
 
 #[tokio::test]
@@ -725,7 +733,7 @@ async fn a_permanent_delete_should_remove_only_its_task_and_follow_its_boards_se
     let other_board = fx.db.create_board(&fx.user_id, "Other").expect("board");
     let other_column = fx
         .db
-        .create_column(&other_board, "Todo", None)
+        .create_column(&other_board, TEST_TODO_COLUMN, None)
         .expect("column");
     let foreign = task_in(&fx, &other_column, "Foreign");
     for id in [&first, &second, &foreign] {
