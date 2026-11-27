@@ -2719,6 +2719,17 @@ mod tests {
     }
 
     #[test]
+    fn read_board_should_refuse_an_over_limit_role_on_a_dropped_holder() {
+        let mut document = base();
+        document["tasks"][0]["owner"] = json!({
+            "holder": {"kind": "human", "handle": "ann"},
+            "role": "r".repeat(41)
+        });
+        let error = read(&document).expect_err("too long");
+        assert!(error.to_string().contains("the owner role"), "{error}");
+    }
+
+    #[test]
     fn read_board_should_keep_an_owner_role_at_the_api_limit() {
         let mut document = base();
         document["tasks"][0]["owner"] = json!({
