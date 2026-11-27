@@ -213,7 +213,7 @@ mod tests {
         EntryEdit, MAX_TASK_ROW_BYTES, META, NewComment, NewTimeEntry, SCHEMA_VERSION_KEY,
     };
     use crate::models::{
-        Actor, ActorKind, EntryKind, HistoryKind, InstanceMode, Quotas, TaskEvent, format_minutes,
+        Actor, ActorKind, EntryKind, HistoryKind, InstanceMode, Quotas, format_minutes,
     };
 
     fn edit(started_at: &str) -> EntryEdit<'_> {
@@ -586,8 +586,31 @@ mod tests {
         }
     }
 
-    fn fill_task_row(db: &Db, task: &str) {
+    fn fill_task_row(fx: &Fixture, task: &str) {
         const COMMENT_BYTES: usize = 5000;
+        const WHOLE_SECOND_STAMP_BYTES: usize = 25;
+        let db = &fx.db;
+
+        // Measure a real time-log event on a probe task
+        let column = db.task(task).expect("read").expect("task").column_id;
+        let probe = db
+            .create_task(&column, None, "Probe", 1, None)
+            .expect("probe task");
+        db.log_task_time(
+            &fx.admin,
+            timed(Some(&probe), ""),
+            "Logged time",
+            Actor::SYSTEM,
+        )
+        .expect("probe entry");
+        let probe_row = db.task(&probe).expect("read").expect("probe task");
+        let probe_event = probe_row
+            .history
+            .iter()
+            .rfind(|event| event.kind == HistoryKind::TimeLogged)
+            .expect("probe event");
+        let probe_event_bytes = serde_json::to_vec(probe_event).expect("json").len();
+        let probe_stamp_len = probe_event.created_at.len();
         db.add_comment(task, comment(""), Actor::SYSTEM, None)
             .expect("first comment");
         let before = row_bytes(db, task);
@@ -615,27 +638,12 @@ mod tests {
         }
 
         // Check no time-log event still fits in the remaining room
-        let event = TaskEvent {
-            id: "0".repeat(36),
-            kind: HistoryKind::TimeLogged,
-            detail: "Logged time".to_string(),
-            actor: Actor::SYSTEM.name.to_string(),
-            created_at: "2026-11-11T09:00:00+00:00".to_string(),
-            column_id: None,
-            token_name: None,
-            from: Some("0m".to_string()),
-            to: Some("5m".to_string()),
-            parent_token: None,
-            role_id: None,
-            role_name: None,
-            label: None,
-            paid_by: None,
-        };
-        let event_bytes = serde_json::to_vec(&event).expect("json").len();
+        let smallest_event = probe_event_bytes - probe_stamp_len + WHOLE_SECOND_STAMP_BYTES;
         let left = MAX_TASK_ROW_BYTES.saturating_sub(row_bytes(db, task));
         assert!(
-            left < event_bytes,
-            "{left} bytes left for a {event_bytes} byte event"
+            left < smallest_event,
+            "{left} bytes left for a {smallest_event} byte event in a {} byte row",
+            row_bytes(db, task)
         );
     }
 
@@ -664,7 +672,7 @@ mod tests {
     fn log_task_time_should_store_no_entry_when_the_event_write_fails() {
         let fx = fixture();
         let task = board_task(&fx, "Full");
-        fill_task_row(&fx.db, &task);
+        fill_task_row(&fx, &task);
         let result = fx.db.log_task_time(
             &fx.admin,
             timed(Some(&task), ""),
@@ -679,7 +687,7 @@ mod tests {
     fn log_task_time_should_store_a_timer_entry_and_no_event_at_the_row_cap() {
         let fx = fixture();
         let task = board_task(&fx, "Full");
-        fill_task_row(&fx.db, &task);
+        fill_task_row(&fx, &task);
         let events = |db: &Db| {
             let row = db.task(&task).expect("read").expect("task");
             row.history
@@ -708,7 +716,7 @@ mod tests {
         let fx = fixture();
         let full = board_task(&fx, "Full");
         let other = board_task(&fx, "Other");
-        fill_task_row(&fx.db, &full);
+        fill_task_row(&fx, &full);
         let entry = fx
             .db
             .log_task_time(
@@ -840,7 +848,7 @@ mod tests {
             )
             .expect("logged")
             .expect("entry id");
-        fill_task_row(&fx.db, &full);
+        fill_task_row(&fx, &full);
         let refusal = fx
             .db
             .update_entry(
