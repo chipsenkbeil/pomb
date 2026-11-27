@@ -17,7 +17,7 @@ use crate::db::{
 use crate::models::{
     AccountId, AgentRoleRow, ApiTokenRecord, AuthScope, BoardAccess, BoardRole, HistoryKind, Hours,
 };
-use crate::permissions::{Permission, Preset, STANDARD_ROLES};
+use crate::permissions::{Permission, Preset, STANDARD_ROLES, StandardKey};
 
 /// Two accounts, each with a browser session, a read token and a board.
 struct Fixture {
@@ -2983,7 +2983,11 @@ fn lead_set_issuer(fx: &Fixture) -> String {
 async fn lead_role_token_should_mint_each_standard_role_with_its_full_set() {
     let fx = Fixture::new();
     let lead_bearer = lead_set_issuer(&fx);
-    for name in ["verifier", "implementer", "planner"] {
+    for standard in STANDARD_ROLES
+        .iter()
+        .filter(|role| role.key != StandardKey::Lead)
+    {
+        let name = standard.name;
         let role = standard_role(&fx, name).await;
         let body = json!({"name": name, "role_id": role["id"]});
         let child = issue_child(&fx, &lead_bearer, body).await;
@@ -2993,6 +2997,20 @@ async fn lead_role_token_should_mint_each_standard_role_with_its_full_set() {
             permission_names(&role),
             "{name}"
         );
+    }
+}
+
+#[test]
+fn lead_token_test_should_not_list_role_names_by_hand() {
+    let source = include_str!("agent_roles_tests.rs");
+    let start = source
+        .find("async fn lead_role_token_should_mint_each_standard_role_with_its_full_set")
+        .expect("lead test");
+    let rest = &source[start..];
+    let body = &rest[..rest.find("\n}\n").expect("end of lead test")];
+    for standard in STANDARD_ROLES {
+        let quoted = format!("\"{}\"", standard.name);
+        assert!(!body.contains(&quoted), "{quoted} is listed by hand");
     }
 }
 
