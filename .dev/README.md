@@ -15,10 +15,15 @@ topics and `dev help <topic>` prints one. The project's own topics are the
 `-h` after a command prints its description, usage and flags. `--help` after a
 command prints the long form.
 
-Global flags work before a `--` on every command:
+Global flags work before the command word on every command, and `-v` and `-q`
+also work after it:
 
 - `-v` or `--verbose`: print each command before it runs
-- `-vv`: also trace every line of dev and of each bash script it runs
+- `-vv`: also log every spawn with its folder, exit code and time
+- `-vvv`: also trace every native `dev.*` call, and run each `.sh` command
+  under `bash -x`
+- `-vvvv`: also trace calls between dev's Luau modules
+- `-q` or `--quiet`: show errors only
 - `--remote`: run the command's job from `.ci/jobs.lua` on ci
 - `--local`: run here, whatever `[remote] default` says
 - `--detach`: with `--remote`, start the job and return
@@ -30,8 +35,10 @@ Global flags work before a `--` on every command:
 A command with a ci job runs remote by default. `DEV_REMOTE=0` or `--local`
 runs it here, and `--local` with `--remote` is a usage error.
 
-A script gets a flag only when its `flags:` header line declares it. Everything
-after the first `--` reaches the script untouched.
+Past the first command word, every other word belongs to the command. A
+command gets a flag only when its spec declares it (or, in a `.sh` file, a
+`# flag:` header line). Words after the first `--` are plain arguments, unless
+the spec sets `passthrough`, and then they reach the command untouched.
 
 ## The dev modules
 
@@ -40,18 +47,22 @@ doc comments of the module hold every function.
 
 ### dev.command
 
-The helpers a command needs: `usage_error(ctx, msg)` exits 2, `no_args(ctx)`
-refuses any positional argument, `note(msg)` writes to standard error,
-`die(msg)` exits 1, `show(ctx, argv)` prints `+ <argv>` at `-v`, and
+The spec constructor and the helpers a command needs: `usage_error(ctx, msg)`
+exits 2, `say(msg)` writes to standard output, `note(msg)` writes to standard
+error, `die(msg)` exits 1, `show(ctx, argv)` prints `+ <argv>` at `-v`, and
 `need(binary, install)` exits 1 when `binary` is not on `PATH`.
 
 ```lua
 local dev_command = require("@dev/command")
 
-local ctx = ...
-dev_command.no_args(ctx)
-dev_command.need("rg", "brew install ripgrep")
-dev_command.note("searching " .. ctx.root)
+return dev_command({
+    summary = "Search the project",
+    run = function(_opts, _args, ctx)
+        dev_command.need("rg", "brew install ripgrep")
+        dev_command.note("searching " .. ctx.root)
+        return 0
+    end,
+})
 ```
 
 ### dev.fs
@@ -166,41 +177,33 @@ end
 ### A command
 
 `.dev/commands/NAME.luau` is a command. A `.luau` file needs no exec bit and
-wins over a `.sh` file of the same name. The file returns
-`require("@dev/command")` called with a spec table, and its `run(opts, args,
-ctx)` gets the context third.
+wins over a `.sh` file of the same name. The file returns the table that
+`require("@dev/command")` validates, called a spec, and its `run(opts, args,
+ctx)` gets the parsed flags, the parsed arguments and the context.
 
 - `ctx.name`: the command as typed
 - `ctx.words`: the command words
 - `ctx.root`: the project root, an absolute path
-- `ctx.args`: the positional arguments, with each `KEY=value` word whose key
-  starts with an uppercase letter removed, unless the header has a
-  `positional` line
+- `ctx.argv`: the unparsed words after the command words
+- `ctx.passthrough`: the words after a `--`, when the spec sets `passthrough`
 - `ctx.vars`: the `KEY=value` arguments whose key starts with an uppercase
-  letter, by key, and empty under a `positional` line
-- `ctx.after`: how many of `ctx.args` follow a `--`
-- `ctx.dashed`: whether a `--` was typed
-- `ctx.verbose`: 0, 1 or 2
-- `ctx.interpreter`: the program dev runs under
+  letter, by key, and empty when the spec sets `positional`
+- `ctx.verbose`: 0 to 4
 
-The chunk returns the exit code as an integer, and nothing means 0. A Lua
-error ends the run with `dev <name>: <message>` and exit 1.
-
-The first header line that is not a `group:`, `hidden`, `local`, `positional`
-or `flags:` line is the description in `dev help`. This command runs as
-`dev greet NAME=you`.
+`run` returns the exit code as an integer, and nothing means 0. A Lua error
+ends the run with `dev <name>: <message>` and exit 1. `summary` is the line
+`dev help` shows. This command runs as `dev greet NAME=you`.
 
 ```lua
---[[
-Print a greeting.
-usage: greet [NAME=who]
-]]
 local dev_command = require("@dev/command")
 
-local ctx = ...
-dev_command.no_args(ctx)
-print("hello " .. (ctx.vars.NAME or "world"))
-return 0
+return dev_command({
+    summary = "Print a greeting",
+    run = function(_opts, _args, ctx)
+        dev_command.say("hello " .. (ctx.vars.NAME or "world"))
+        return 0
+    end,
+})
 ```
 
 ### A subcommand
@@ -214,60 +217,63 @@ subcommands. Saved as `.dev/commands/cache/show.luau`, this subcommand runs as
 `dev cache show` and prints `cache show`.
 
 ```lua
---[[
-Print the command's state.
-]]
 local dev_command = require("@dev/command")
 
-local ctx = ...
-dev_command.no_args(ctx)
-print(ctx.name)
+return dev_command({
+    summary = "Print the command's state",
+    run = function(_opts, _args, ctx)
+        dev_command.say(ctx.name)
+        return 0
+    end,
+})
 ```
 
 ### A flag
 
-A script gets a flag only when its header declares it. Before a `--`, any
+A command gets a flag only when its spec declares it in `flags`. Each flag has
+a `name`, a `kind` of `string`, `number` or `boolean`, and optional `short`,
+`default`, `choices`, `repeatable`, `required`, `hidden` and `help` fields. Any
 other word that starts with `-` stops dev with exit 2, and `-h` and `--help`
-stay reserved, so a `flags:` line cannot declare them.
+stay reserved, so a spec cannot declare them. `opts` holds each flag by name
+with `-` as `_`. A `.sh` or `.ps1` command declares each flag on a `# flag:`
+header line under the shebang, as in
+`# flag: loud kind=boolean -- Shout the greeting`. The old `# flags:` and
+`# local` lines fail at load, and `dev help commands` has the header grammar.
 
 ```lua
---[[
-Print a greeting.
-usage: greet [--loud]
-flags: --loud
-]]
 local dev_command = require("@dev/command")
 
-local ctx = ...
-local loud = false
-for _, arg in ipairs(ctx.args) do
-    if arg == "--loud" then
-        loud = true
-    else
-        dev_command.usage_error(ctx, "unknown argument " .. arg)
-    end
-end
-print(loud and "HELLO" or "hello")
+return dev_command({
+    summary = "Print a greeting",
+    flags = {
+        { name = "loud", kind = "boolean", help = "Shout the greeting" },
+    },
+    run = function(opts, _args, _ctx)
+        dev_command.say(opts.loud and "HELLO" or "hello")
+        return 0
+    end,
+})
 ```
 
-### Group and hidden lines
+### Group and hidden fields
 
-`group: <name>` sets the heading `dev help` lists the command under, and a
-command with none lands in a group named after the project directory. `hidden`
-keeps the command out of `dev help` and `dev help -a` still lists it. Scripts in
+`group` sets the heading `dev help` lists the command under, and a command with
+none lands in a group named after the project directory. `hidden = true` keeps
+the command out of `dev help` and `dev help -a` still lists it. Scripts in
 `helpers/` never appear in any listing.
 
 ```lua
---[[
-group: Check your work
-hidden
-Print the checks this repo runs.
-]]
 local dev_command = require("@dev/command")
 
-local ctx = ...
-dev_command.no_args(ctx)
-print("lint")
+return dev_command({
+    summary = "Print the checks this repo runs",
+    group = "Check your work",
+    hidden = true,
+    run = function(_opts, _args, _ctx)
+        dev_command.say("lint")
+        return 0
+    end,
+})
 ```
 
 ### Your own modules
