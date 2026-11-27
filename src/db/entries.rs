@@ -1,12 +1,12 @@
 use chrono::{DateTime, Days, NaiveDate, TimeZone, Utc};
 use redb::{ReadableMultimapTable, WriteTransaction};
 
-use super::usage::{OverQuota, txn_store_entry};
+use super::usage::OverQuota;
 use super::{
-    Bound, Db, DbResult, ENTRIES_BY_ACCOUNT, ENTRIES_BY_DAY, NewTimeEntry, QuotaExceeded,
-    TIME_ENTRIES, day_in, index_in, read_in, rows_in, txn_refuse_over_quota, txn_refuse_stranded,
+    Bound, Db, DbResult, ENTRIES_BY_ACCOUNT, ENTRIES_BY_DAY, QuotaExceeded, TIME_ENTRIES, day_in,
+    index_in, read_in, rows_in, txn_refuse_over_quota,
 };
-use crate::models::{AccountId, EntryKind, Quota, TimeEntryRow};
+use crate::models::{AccountId, Quota, TimeEntryRow};
 
 /// Most time entries one account may start on one UTC day, the admin's included.
 pub const MAX_ENTRIES_PER_DAY: usize = 500;
@@ -146,38 +146,6 @@ fn started_instant(entry: &TimeEntryRow) -> i64 {
 }
 
 impl Db {
-    /// Refuses, with [`QuotaExceeded`], a timer session's entry that started at the RFC3339
-    /// `started_at` and that a token named `token_name` wrote, when the store of that entry would
-    /// refuse it, and stores nothing. The write is rolled back unseen.
-    pub fn check_session_entry_room(
-        &self,
-        account: &AccountId,
-        started_at: &str,
-        token_name: Option<&str>,
-    ) -> DbResult<()> {
-        let entry = NewTimeEntry {
-            task_id: None,
-            started_at,
-            minutes: 0,
-            seconds: 0,
-            note: "",
-            kind: EntryKind::Stopwatch,
-            interrupted: false,
-            interrupt_reason: None,
-            labels: &[],
-            created_by: "",
-            activity_id: None,
-            role: None,
-            token_name,
-            role_id: None,
-            role_name: None,
-        }
-        .into_row(String::new(), "", account.as_str().to_string());
-        let txn = self.db.begin_write()?;
-        txn_refuse_stranded(&txn, account)?;
-        txn_store_entry(&txn, &entry, OverQuota::TimerSession)
-    }
-
     /// Returns every time entry `account` logged, in no set order.
     pub fn account_entries(&self, account: &AccountId) -> DbResult<Vec<TimeEntryRow>> {
         let txn = self.read()?;

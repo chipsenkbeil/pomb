@@ -12947,6 +12947,19 @@ impl Db {
         detail: &str,
         actor: Actor<'_>,
     ) -> DbResult<Option<String>> {
+        self.log_task_time_with(account, entry, detail, actor, Commit::Write)
+    }
+
+    /// Logs time as [`Db::log_task_time`] does and ends the write the way `commit` says, so
+    /// [`Commit::Discard`] runs every check and refusal of the real write and stores nothing.
+    pub fn log_task_time_with(
+        &self,
+        account: &AccountId,
+        entry: NewTimeEntry<'_>,
+        detail: &str,
+        actor: Actor<'_>,
+        commit: Commit,
+    ) -> DbResult<Option<String>> {
         let Some(task_id) = entry.task_id else {
             return Ok(None);
         };
@@ -12995,7 +13008,7 @@ impl Db {
                         .is_some_and(|refusal| refusal.bound == Bound::TaskRowBytes) => {}
             Err(error) => return Err(error),
         }
-        txn.commit()?;
+        commit.finish(txn)?;
         Ok(Some(entry.id))
     }
 

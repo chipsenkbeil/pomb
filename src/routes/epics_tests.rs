@@ -4,11 +4,11 @@ use tower::ServiceExt;
 
 use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{TEST_BODY_4_MIB_BYTES, held_disk, make_plain, move_to};
-use super::{EPIC_TEMPLATE, router};
+use super::{EPIC_TEMPLATE, TimerSession, check_timer_stop_room, log_timer_session, router};
 use crate::AppState;
 use crate::db::{Db, MAX_ENTRIES_PER_DAY, NewTimeEntry};
 use crate::models::{
-    AccountId, ActiveTimer, Actor, EntryKind, HistoryKind, InstanceMode, TimerMode,
+    AccountId, ActiveTimer, Actor, EntryKind, HistoryKind, InstanceMode, TimeEntryRow, TimerMode,
 };
 
 struct Fixture {
@@ -2444,6 +2444,143 @@ async fn a_stop_refused_for_stored_bytes_should_leave_the_card_a_task_with_its_t
     assert_eq!(running.task_id.as_deref(), Some(card.as_str()));
     assert_eq!(running.started_at, started_at);
     assert!(fx.db.list_entries(&card).expect("entries").is_empty());
+}
+
+#[tokio::test]
+async fn a_stop_at_the_bytes_margin_should_leave_the_card_a_task() {
+    let (_dir, fx) = fixture_in(InstanceMode::Multi);
+
+    // Create a card with a stopwatch backdated so a stop would log it
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let (status, started) = call(
+        &fx,
+        "POST",
+        "/api/timer/start",
+        Some(json!({"task_id": card, "mode": "stopwatch"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let started_at = chrono::Utc::now().timestamp() - 600;
+    fx.db
+        .account(&fx.user_id)
+        .set_active_timer(&ActiveTimer {
+            task_id: Some(card.clone()),
+            mode: TimerMode::Stopwatch,
+            started_at,
+            duration_secs: None,
+        })
+        .expect("timer");
+
+    // Size the entry the stop stores
+    let entry = TimeEntryRow {
+        id: "0".repeat(36),
+        task_id: card.clone(),
+        minutes: 10,
+        seconds: 600,
+        note: String::new(),
+        started_at: chrono::DateTime::from_timestamp(started_at, 0)
+            .expect("instant")
+            .to_rfc3339(),
+        kind: EntryKind::Stopwatch.as_str().to_string(),
+        interrupted: false,
+        interrupt_reason: None,
+        labels: Vec::new(),
+        created_by: "bob".to_string(),
+        activity_id: None,
+        account_id: fx.user_id.as_str().to_string(),
+        role: None,
+        token_name: None,
+        role_id: None,
+        role_name: None,
+    };
+    let entry_bytes = serde_json::to_vec(&entry).expect("entry").len() as i64;
+
+    // Fill the account to 30 bytes short of that entry past a 1 MiB quota and its 1 MiB overage,
+    // which leaves room for an entry with no id, task or author but not for the real one
+    let usage = || {
+        fx.db
+            .stored_bytes_by_account()
+            .expect("usage")
+            .get(fx.user_id.as_str())
+            .copied()
+            .unwrap_or(0) as i64
+    };
+    let attach = |name: &str, len: usize, fill: u8| {
+        fx.db
+            .add_attachment(
+                &card,
+                name,
+                "application/octet-stream",
+                &vec![fill; len],
+                Actor::SYSTEM,
+            )
+            .expect("attach")
+            .expect("task");
+    };
+    fx.db
+        .update_instance_settings(|settings| settings.quotas.stored_mib_per_account = 1024)
+        .expect("quotas");
+    let ceiling = 2 * 1024 * 1024;
+    let room = entry_bytes - 30;
+    let before = usage();
+    attach("probe0.bin", 1000, 9);
+    let overhead = usage() - before - 1000;
+    let fill = ceiling - room - usage();
+    for index in 0..3_u8 {
+        let len = (fill / 3 - overhead) as usize;
+        attach(&format!("fill_{index}.bin"), len, index + 1);
+    }
+    fx.db
+        .update_instance_settings(|settings| settings.quotas.stored_mib_per_account = 1)
+        .expect("quotas");
+    let left = ceiling - usage();
+    assert!((left - room).abs() <= 8, "room {left}, wanted {room}");
+
+    // The pre-check refuses the stop, and the stop itself is refused and leaves its timer running
+    let account = fx.db.account(&fx.user_id);
+    let timer = account
+        .active_timer()
+        .expect("timer")
+        .expect("still running");
+    let session = TimerSession {
+        claimed_completed: false,
+        reason: Some("Card became an epic"),
+        activity_id: None,
+        created_by: "bob",
+        actor: Actor::SYSTEM,
+    };
+    assert!(check_timer_stop_room(&account, &timer, session).is_err());
+    assert!(log_timer_session(&account, &timer, session).is_err());
+    let running = account
+        .active_timer()
+        .expect("timer")
+        .expect("still running");
+    assert_eq!(running.started_at, started_at);
+    assert!(fx.db.list_entries(&card).expect("entries").is_empty());
+
+    // An entry as small as the one the old pre-check sized still fits the room
+    fx.db
+        .create_entry_full(
+            &fx.user_id,
+            NewTimeEntry {
+                task_id: None,
+                started_at: &entry.started_at,
+                minutes: 10,
+                seconds: 600,
+                note: "",
+                kind: EntryKind::Stopwatch,
+                interrupted: false,
+                interrupt_reason: None,
+                labels: &[],
+                created_by: "",
+                activity_id: None,
+                role: None,
+                token_name: None,
+                role_id: None,
+                role_name: None,
+            },
+        )
+        .expect("a smaller entry fits");
 }
 
 #[tokio::test]

@@ -10331,13 +10331,19 @@ async fn update_task(
     // An epic holds no work, so a timer running on the card stops once the kind is stored. A stop
     // the entry quota would refuse answers first, so it leaves the card a task
     let becomes_epic = input.kind == Some(TaskKind::Epic) && owned.row().kind != TaskKind::Epic;
-    if becomes_epic {
-        let _gate = db.lock_timer();
-        if let Some(timer) = db.active_timer().map_err(AppError::from)?
-            && timer.task_id.as_deref() == Some(id.as_str())
-        {
-            check_timer_stop_room(db, &timer, actor)?;
-        }
+    let _gate = becomes_epic.then(|| db.lock_timer());
+    let epic_stop = TimerSession {
+        claimed_completed: false,
+        reason: Some("Card became an epic"),
+        activity_id: None,
+        created_by: &user.handle,
+        actor,
+    };
+    if becomes_epic
+        && let Some(timer) = db.active_timer().map_err(AppError::from)?
+        && timer.task_id.as_deref() == Some(id.as_str())
+    {
+        check_timer_stop_room(db, &timer, epic_stop)?;
     }
     let applied = db
         .apply_task_change_in_board(&owned, children, actor, |task, context| {
@@ -10577,23 +10583,11 @@ async fn update_task(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     applied?;
-    if becomes_epic {
-        let _gate = db.lock_timer();
-        if let Some(timer) = db.active_timer().map_err(AppError::from)?
-            && timer.task_id.as_deref() == Some(id.as_str())
-        {
-            log_timer_session(
-                db,
-                &timer,
-                TimerSession {
-                    claimed_completed: false,
-                    reason: Some("Card became an epic"),
-                    activity_id: None,
-                    created_by: &user.handle,
-                    actor,
-                },
-            )?;
-        }
+    if becomes_epic
+        && let Some(timer) = db.active_timer().map_err(AppError::from)?
+        && timer.task_id.as_deref() == Some(id.as_str())
+    {
+        log_timer_session(db, &timer, epic_stop)?;
     }
 
     if wants_json(&headers, &user) {
@@ -29775,7 +29769,7 @@ fn log_timer_session(
     timer: &ActiveTimer,
     session: TimerSession<'_>,
 ) -> Result<Option<(i64, bool)>, AppError> {
-    let recorded = record_timer_session(db, timer, session)?;
+    let recorded = record_timer_session(db, timer, session, Commit::Write)?;
     db.clear_active_timer().map_err(AppError::from)?;
     let Some((minutes, completed, task)) = recorded else {
         return Ok(None);
@@ -29794,25 +29788,23 @@ fn timer_started_at(timer: &ActiveTimer) -> String {
 }
 
 /// Refuses, as [`log_timer_session`] would, a stop of `timer` whose entry the account has no room
-/// for, and stores nothing.
+/// for, and stores nothing. It builds the entry the stop builds from the same `session`.
 fn check_timer_stop_room(
     db: &AccountDb,
     timer: &ActiveTimer,
-    actor: Actor<'_>,
+    session: TimerSession<'_>,
 ) -> Result<(), AppError> {
-    if chrono::Utc::now().timestamp() - timer.started_at < 20 {
-        return Ok(());
-    }
-    db.check_session_entry_room(&timer_started_at(timer), actor.token_name)
-        .map_err(AppError::from)
+    record_timer_session(db, timer, session, Commit::Discard)?;
+    Ok(())
 }
 
 /// Stores the time entry of `timer`'s finished session, or nothing for one under 20 seconds,
-/// which returns [`None`].
+/// which returns [`None`]. With [`Commit::Discard`] it runs the same store and keeps nothing.
 fn record_timer_session(
     db: &AccountDb,
     timer: &ActiveTimer,
     session: TimerSession<'_>,
+    commit: Commit,
 ) -> Result<Option<RecordedSession>, AppError> {
     let TimerSession {
         claimed_completed,
@@ -29877,7 +29869,7 @@ fn record_timer_session(
     let logged_on_task = match task {
         Some(task) => {
             let detail = session_detail(timer.mode, minutes);
-            db.log_task_time(&task, entry(task_id.as_deref()), &detail, actor)
+            db.log_task_time_with(&task, entry(task_id.as_deref()), &detail, actor, commit)
                 .map_err(AppError::from)?
                 .map(|_| task)
         }
@@ -29886,7 +29878,7 @@ fn record_timer_session(
 
     // Sessions without a task, breaks included, still reach the timer log and the break-activity
     // statistics, as does one whose task was deleted under the timer
-    if logged_on_task.is_none() {
+    if logged_on_task.is_none() && commit == Commit::Write {
         db.create_entry_full(entry(None)).map_err(AppError::from)?;
     }
     Ok(Some((minutes, completed, logged_on_task)))

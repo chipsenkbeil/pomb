@@ -2739,24 +2739,27 @@ impl AccountDb {
         detail: &str,
         actor: Actor<'_>,
     ) -> DbResult<Option<String>> {
+        self.log_task_time_with(task, entry, detail, actor, Commit::Write)
+    }
+
+    /// Logs time as [`AccountDb::log_task_time`] does and ends the write the way `commit` says.
+    /// See [`Db::log_task_time_with`].
+    pub fn log_task_time_with(
+        &self,
+        task: &OwnedTask,
+        entry: NewTimeEntry<'_>,
+        detail: &str,
+        actor: Actor<'_>,
+        commit: Commit,
+    ) -> DbResult<Option<String>> {
         let task_id = Some(task.row().id.as_str());
-        self.db.log_task_time(
+        self.db.log_task_time_with(
             &self.account,
             NewTimeEntry { task_id, ..entry },
             detail,
             actor,
+            commit,
         )
-    }
-
-    /// Refuses a timer session's entry the account has no room for; see
-    /// [`Db::check_session_entry_room`].
-    pub fn check_session_entry_room(
-        &self,
-        started_at: &str,
-        token_name: Option<&str>,
-    ) -> DbResult<()> {
-        self.db
-            .check_session_entry_room(&self.account, started_at, token_name)
     }
 
     /// Creates a time entry for the account; [`None`] when its task is gone or another account's.
