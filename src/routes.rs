@@ -29728,6 +29728,9 @@ async fn timer_stop(
 /// the client's 1 s tick.
 const COMPLETION_GRACE_SECS: i64 = 2;
 
+/// The shortest timer session that logs anything, in seconds.
+const MIN_SESSION_SECS: i64 = 20;
+
 /// The most a timed session logs past its duration while it waits for "Take break" or Start.
 const MAX_OVERTIME_SECS: i64 = 3600;
 
@@ -29823,7 +29826,7 @@ fn record_timer_session(
         actor,
     } = session;
     let elapsed = (chrono::Utc::now().timestamp() - timer.started_at).max(0);
-    if elapsed < 20 {
+    if elapsed < MIN_SESSION_SECS {
         return Ok(None);
     }
 
@@ -31819,16 +31822,17 @@ mod tests {
     use super::{
         ApiDoc, AvatarView, BandView, BoardDeleteTemplate, BoardLayout, BoardTemplate, Build,
         COMPLETION_GRACE_SECS, CellView, ColorView, ColumnHead, CommentReaction,
-        CreatedWebhookView, EstimateUnit, MAX_COMMIT_URL_TEMPLATE_CHARS, RepeatCadence,
-        ShellChrome, SubtaskDisplay, TaskCardDisplay, TimerSession, UpdateColumnInput,
-        UpdateTaskInput, build_board_export_data, build_ical_feed, csv_field, done_drop_position,
-        done_group_label, entry_badge, estimate_hours_to_size, folds_done_subtasks, format_added,
-        format_due, format_entry_duration, format_estimate_hours, format_pomodori,
-        format_relative_day, format_time_kf, format_timeline, generate_feed_token, history_csv,
-        ical_escape, ical_fold, is_overdue, log_timer_session, needs_lane_label_column,
-        normalize_due_input, normalize_due_input_at, normalize_due_input_in,
-        normalize_estimate_hours, parse_manual_range, parse_repeat_cadence, place_overdue_strips,
-        reaction_pills, router, static_response, subtasks_on_face, timer_status_view, version_info,
+        CreatedWebhookView, EstimateUnit, MAX_COMMIT_URL_TEMPLATE_CHARS, MIN_SESSION_SECS,
+        RepeatCadence, ShellChrome, SubtaskDisplay, TaskCardDisplay, TimerSession,
+        UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed, csv_field,
+        done_drop_position, done_group_label, entry_badge, estimate_hours_to_size,
+        folds_done_subtasks, format_added, format_due, format_entry_duration,
+        format_estimate_hours, format_pomodori, format_relative_day, format_time_kf,
+        format_timeline, generate_feed_token, history_csv, ical_escape, ical_fold, is_overdue,
+        log_timer_session, needs_lane_label_column, normalize_due_input, normalize_due_input_at,
+        normalize_due_input_in, normalize_estimate_hours, parse_manual_range, parse_repeat_cadence,
+        place_overdue_strips, reaction_pills, router, static_response, subtasks_on_face,
+        timer_status_view, version_info,
     };
     use crate::auth::is_event_wait;
     use crate::db::{BootstrapToken, Db, NewTimeEntry, SwimlanePatch};
@@ -31992,6 +31996,19 @@ mod tests {
         let grace = format!("{}-second grace", COMPLETION_GRACE_SECS);
         assert!(stop.contains(&grace), "{stop}");
         assert!(stop.contains("A stopwatch has no duration"), "{stop}");
+    }
+
+    #[test]
+    fn timer_docs_should_state_the_minimum_session_seconds() {
+        let doc = serde_json::to_value(ApiDoc::openapi()).expect("openapi json");
+        let stop = doc["paths"]["/api/timer/stop"]["post"]["description"]
+            .as_str()
+            .expect("stop description")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let minimum = format!("under {MIN_SESSION_SECS} seconds");
+        assert!(stop.contains(&minimum), "{stop}");
     }
 
     /// OpenAPI summaries describe the read-only GETs as they are.
@@ -32350,6 +32367,42 @@ mod tests {
         assert!(taskless.interrupted);
         let started = DateTime::parse_from_rfc3339(&overtime.started_at).expect("rfc3339");
         assert_eq!(started.timestamp(), now - 90);
+    }
+
+    #[test]
+    fn record_timer_session_should_discard_a_session_one_second_under_the_minimum() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("timer.redb");
+        let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let account = db.account(&AccountId::ownerless());
+        let now = chrono::Utc::now().timestamp();
+        let pomodoro = |elapsed: i64| ActiveTimer {
+            task_id: None,
+            mode: TimerMode::Pomodoro,
+            started_at: now - elapsed,
+            duration_secs: Some(60),
+        };
+        let session = TimerSession {
+            claimed_completed: false,
+            reason: Some("Email"),
+            activity_id: None,
+            created_by: "tester",
+            actor: test_actor(),
+        };
+
+        let under = log_timer_session(&account, &pomodoro(MIN_SESSION_SECS - 1), session);
+        assert!(
+            under.is_ok_and(|logged| logged.is_none()),
+            "a session one second under the minimum logs nothing"
+        );
+        assert!(account.all_entries().expect("entries").is_empty());
+
+        let at = log_timer_session(&account, &pomodoro(MIN_SESSION_SECS), session);
+        assert!(
+            at.is_ok_and(|logged| logged.is_some()),
+            "a session at the minimum logs an entry"
+        );
+        assert_eq!(account.all_entries().expect("entries").len(), 1);
     }
 
     /// Entries, the TODAY list and the long-break cycle all bucket by the server-local day a
