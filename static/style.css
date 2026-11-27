@@ -4191,9 +4191,10 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   overflow-y: auto;
   overscroll-behavior: contain;
 }
-#edit-column-dialog .dlg-grid2 { grid-template-columns: repeat(3, 1fr); }
+#edit-column-dialog .dlg-grid2 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#edit-column-dialog .dlg-grid2 select { min-width: 0; width: 100%; }
 @media (max-width: 639px) {
-  #edit-column-dialog .dlg-grid2 { grid-template-columns: repeat(2, 1fr); }
+  #edit-column-dialog .dlg-grid2 { grid-template-columns: minmax(0, 1fr); }
 }
 .dlg-overlay--popover .dlg {
   position: fixed;

@@ -16,5 +16,6 @@
  "teardown":[{"apiColumn":["gm","In Progress",{"collapsed":false}]}],
  "comparisons":[
   {"id":"collapsedByClick","sel":"th.columnHeader--collapsed","expect":{"w":28},"props":["w"]}
- ]}
+ ]},
+{"id":"columns-09-edit-dialog-selects","noGolden":"Pomb-only dialog state with no KanbanFlow golden; regress mode compares it between builds.","viewport":{"width":1280,"height":1400},"note":"The Edit column dialog opened from a column menu at 1280px: the six Task properties selects sit three across, and the due-dates select shows its default Show active due in 7 days.","setup":[{"goto":"/b/{gm}"},{"contextmenu":".columnHeader-name","nth":2},{"click":"#column-menu [data-col-act=\"edit\"]"},{"waitFor":"#edit-column-dialog .dlg"}],"teardown":[],"comparisons":[]}
 ]}
