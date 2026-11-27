@@ -290,6 +290,12 @@ pub(crate) fn held_disk(db: &Db) -> DiskGuard {
     DiskGuard::with_clock(DiskProbe::of(db), Path::new("."), Arc::new(move || born))
 }
 
+#[must_use]
+pub(crate) fn task_snapshot(db: &Db, id: &str) -> Vec<u8> {
+    let row = db.task(id).expect("read").expect("task");
+    serde_json::to_vec(&row).expect("json")
+}
+
 impl Fixture {
     pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");

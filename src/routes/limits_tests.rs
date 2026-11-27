@@ -22,7 +22,9 @@ use tower::ServiceExt;
 
 use super::server::{passkey_mode, unthrottled_limits};
 use super::slot::SEND_SECS;
-use super::test_support::{Reply, TEST_DOING_COLUMN, TEST_TODO_COLUMN, call, held_disk};
+use super::test_support::{
+    Reply, TEST_DOING_COLUMN, TEST_TODO_COLUMN, call, held_disk, task_snapshot,
+};
 use super::{
     AppError, REQUEST_TIMEOUT_SECS, ROUTE_ACCESS, SLOW_REQUEST_TIMEOUT_SECS, Writes, router,
 };
@@ -2908,7 +2910,7 @@ async fn rename_should_stop_at_the_task_row_cap_with_a_409() {
     assert!(message.contains("bytes in one task"), "{message}");
     let row = fx.db.task(&task).expect("read").expect("task");
     assert_eq!(row.attachments[0].name, "a.bin");
-    let row_bytes = serde_json::to_vec(&row).expect("json").len();
+    let row_bytes = task_snapshot(&fx.db, &task).len();
     assert!(row_bytes <= MAX_TASK_ROW_BYTES, "{row_bytes} bytes");
 }
 
@@ -4461,8 +4463,7 @@ async fn rename_attachment_should_write_nothing_for_a_missing_task_or_attachment
     let first = fx.upload(&task, "a.bin", vec![1; 32]).await;
     assert_eq!(first.status, StatusCode::OK, "{}", first.body);
     let first_id = first.body["id"].as_str().expect("id");
-    let before = fx.db.task(&task).expect("read").expect("task");
-    let before = serde_json::to_vec(&before).expect("json");
+    let before = task_snapshot(&fx.db, &task);
     let missing_attachment = fx
         .db
         .rename_attachment(&task, "no-such-attachment", "c", Actor::SYSTEM)
@@ -4474,8 +4475,7 @@ async fn rename_attachment_should_write_nothing_for_a_missing_task_or_attachment
         .expect("rename");
     assert!(missing_task.is_none());
     assert!(fx.db.task("no-such-task").expect("read").is_none());
-    let after = fx.db.task(&task).expect("read").expect("task");
-    let after = serde_json::to_vec(&after).expect("json");
+    let after = task_snapshot(&fx.db, &task);
     assert_eq!(after, before);
     assert!(history_details(&fx, &task, HistoryKind::AttachmentRenamed).is_empty());
 }
@@ -4840,7 +4840,7 @@ async fn task_rows_should_stop_growing_at_one_mib_with_a_409() {
         .expect("a quota refusal");
     assert_eq!(refusal.bound, Bound::TaskRowBytes);
     let stored = fx.db.task(&task).expect("read").expect("task");
-    let row_bytes = serde_json::to_vec(&stored).expect("json").len();
+    let row_bytes = task_snapshot(&fx.db, &task).len();
     assert!(row_bytes <= MAX_TASK_ROW_BYTES, "{row_bytes} bytes");
 
     let uri = format!("/api/tasks/{task}/comments");
