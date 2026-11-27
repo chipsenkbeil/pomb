@@ -1,0 +1,25 @@
+id: js-own-check-helper
+language: javascript
+severity: error
+message: Import check from tests/js/support/check.js instead of defining your own.
+note: "A private check function and failures counter drift from the shared helper. Use const { check, finish } = require('./support/check.js')."
+ignores:
+  - tests/js/support/check.js
+rule:
+  any:
+    - kind: function_declaration
+      has:
+        field: name
+        regex: '^check$'
+    - kind: variable_declarator
+      has:
+        field: name
+        kind: identifier
+        regex: '^check$'
+      any:
+        - has:
+            field: value
+            kind: arrow_function
+        - has:
+            field: value
+            kind: function_expression

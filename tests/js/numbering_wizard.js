@@ -44,12 +44,7 @@ const open = (prefixValue, startValue) => {
   click('numbering-activate');
 };
 
-let failures = 0;
-const check = (name, got, want) => {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${ok ? '' : `: got ${JSON.stringify(got)}`}`);
-};
+const { check, finish } = require('./support/check.js');
 
 const prefixMessage = 'the numbering prefix must be 1 to 10 letters or digits';
 const startMessage = 'the start value must be a whole number from 1';
@@ -79,4 +74,4 @@ click('numbering-wizard-next');
 click('numbering-wizard-next');
 check('a filled start is sent as parsed', JSON.parse(sent[1].options.body).numbering.start, 7);
 
-process.exit(failures ? 1 : 0);
+finish();

@@ -1,0 +1,29 @@
+id: js-own-check-helper
+snapshots:
+  "const check = (name, ok) => ok;\n":
+    labels:
+    - source: check = (name, ok) => ok
+      style: primary
+      start: 6
+      end: 30
+    - source: (name, ok) => ok
+      style: secondary
+      start: 14
+      end: 30
+    - source: check
+      style: secondary
+      start: 6
+      end: 11
+  "function check(name, ok) {\n  return ok;\n}\n":
+    labels:
+    - source: |-
+        function check(name, ok) {
+          return ok;
+        }
+      style: primary
+      start: 0
+      end: 41
+    - source: check
+      style: secondary
+      start: 9
+      end: 14

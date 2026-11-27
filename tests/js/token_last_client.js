@@ -13,12 +13,7 @@ const loaded = eval(src.slice(sortStart, stop) + '\n({ sort: TokenSort, inspect:
 const inspect = loaded.inspect;
 const sort = loaded.sort;
 
-let failures = 0;
-const check = (name, got, want) => {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got) + ' want ' + JSON.stringify(want)));
-};
+const { check, finish } = require('./support/check.js');
 
 const elements = {};
 const doc = {
@@ -60,4 +55,4 @@ check('last_client_rows: a token used before recording shows unknown',
 check('last_client_rows: the sort columns follow the table cells',
   sort.columns.indexOf('last_client'), 5);
 
-process.exit(failures ? 1 : 0);
+finish();

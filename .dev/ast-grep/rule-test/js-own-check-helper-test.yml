@@ -1,0 +1,15 @@
+id: js-own-check-helper
+valid:
+  - |
+    const { check, finish } = require("./support/check.js");
+  - |
+    check("adds a card", true);
+  - |
+    const check = { checked: true, closest: (sel) => null };
+invalid:
+  - |
+    function check(name, ok) {
+      return ok;
+    }
+  - |
+    const check = (name, ok) => ok;

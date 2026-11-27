@@ -47,12 +47,7 @@ pages['board-settings-webhook-form']();
 
 element('wh-url').value = '  https://example.com/hook  ';
 
-let failures = 0;
-const check = (name, got, want) => {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures++;
-  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${ok ? '' : `: got ${JSON.stringify(got)}`}`);
-};
+const { check, finish } = require('./support/check.js');
 
 const probes = [
   { button: 'wh-test-dns', result: 'wh-dns-result', path: 'test-dns' },
@@ -86,5 +81,5 @@ const run = async (probe, label, reply, want) => {
     await run(probe, 'refusal', () => answer(400, { message: 'url is not valid' }), 'url is not valid');
     await run(probe, 'network failure', () => fail('Failed to fetch'), 'Failed to fetch');
   }
-  process.exit(failures ? 1 : 0);
+  finish();
 })();

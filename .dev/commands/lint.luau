@@ -510,6 +510,15 @@ return dev_command({
                 "static",
                 "tests/js",
             })
+            lint:check("js own check helper", {
+                "ast-grep",
+                "scan",
+                "--config",
+                "sgconfig.yml",
+                "--filter",
+                "js-own-check-helper",
+                "tests/js",
+            })
         end
 
         local function script_hits(name, message, argv)
