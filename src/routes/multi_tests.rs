@@ -85,6 +85,7 @@ const OWNED_TABLES: [&str; 35] = [
 type Dump = BTreeMap<String, Vec<(String, String)>>;
 
 /// Reads every row of every table and multimap in the closed database file at `path`.
+#[must_use]
 fn dump(path: &Path) -> Dump {
     let db = redb::ReadOnlyDatabase::open(path).expect("read-only open");
     let txn = db.begin_read().expect("read txn");
@@ -316,6 +317,7 @@ impl Instance {
     }
 
     /// Returns the id of the account with `handle`.
+    #[must_use]
     pub(crate) fn account(&self, handle: &str) -> AccountId {
         self.db
             .account_by_handle(handle)
@@ -418,6 +420,7 @@ async fn delete_account(app: &axum::Router, cookie: &str, handle: &str) -> Reply
 }
 
 /// Returns the recovery code a setup, registration or recovery showed.
+#[must_use]
 pub(crate) fn recovery_code(reply: &Reply) -> String {
     reply.body["recovery_code"]
         .as_str()
@@ -1581,6 +1584,7 @@ async fn single_mode_should_keep_the_multi_user_routes_closed() {
 
 /// Returns a full `PUT /api/v1/admin/settings` body with registration mode `mode`, pending-account
 /// cap `cap` and the default quotas and limits.
+#[must_use]
 pub(crate) fn admin_settings(mode: &str, cap: u32) -> Value {
     json!({
         "registration": mode,
@@ -1654,7 +1658,7 @@ async fn requested() -> Requested {
     );
     let asked = request_account(&fx.instance.app, "Carol", &mut SoftAuthenticator::new(81)).await;
     assert_eq!(asked.status, StatusCode::OK, "{}", asked.body);
-    recovery_code(&asked);
+    assert!(!recovery_code(&asked).is_empty(), "{}", asked.body);
     Requested {
         carol: session_of(&asked),
         carol_id: fx.instance.account("carol"),
@@ -1663,6 +1667,7 @@ async fn requested() -> Requested {
 }
 
 /// Returns the status `id` has in the store.
+#[must_use]
 fn status_of(instance: &Instance, id: &AccountId) -> AccountStatus {
     instance
         .db

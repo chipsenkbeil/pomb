@@ -1136,6 +1136,7 @@ fn board_ids(reply: &Value) -> BTreeSet<String> {
         .collect()
 }
 
+#[must_use]
 fn token_total(fx: &Fixture) -> usize {
     fx.db
         .list_account_api_tokens(&fx.alice)
@@ -1787,6 +1788,7 @@ fn issue_on(fx: &Fixture, role: &Value, name: &str, boards: &[&str]) -> ApiToken
         .expect("role")
 }
 
+#[must_use]
 fn live_names(fx: &Fixture) -> BTreeSet<String> {
     fx.db
         .list_account_api_tokens(&fx.alice)
@@ -2530,6 +2532,7 @@ fn issue_holding(fx: &Fixture, role: &Value, name: &str) -> (ApiTokenRecord, Str
     (stored, raw)
 }
 
+#[must_use]
 fn column_of(fx: &Fixture, task: &str) -> String {
     fx.db
         .task(task)
@@ -2539,6 +2542,7 @@ fn column_of(fx: &Fixture, task: &str) -> String {
         .clone()
 }
 
+#[must_use]
 fn labels_of(fx: &Fixture, task: &str) -> Vec<String> {
     fx.db
         .task(task)
@@ -3229,6 +3233,7 @@ fn the_settings_fill_should_switch_off_on_a_narrow_window() {
     assert!(!outside.contains(".bshell-fill"));
 }
 
+#[must_use]
 fn roles_pane(html: &str) -> &str {
     let pane = html.split("id=\"agent-roles\"").nth(1).expect("roles pane");
     pane.split("class=\"settings-pane\"")
@@ -3236,6 +3241,7 @@ fn roles_pane(html: &str) -> &str {
         .expect("pane end")
 }
 
+#[must_use]
 fn role_uri(role: &Value) -> String {
     format!("/api/v1/agent-roles/{}", role["id"].as_str().expect("id"))
 }
