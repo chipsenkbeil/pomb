@@ -65,7 +65,7 @@ const fixtureCards = () => [
   makeCard('e', 'c3', { colorValue: 'blue', labels: '["bug","ui"]', memberIds: 'u1,u2', dueAt: dueOn(30), dueDone: '0' }),
 ];
 
-const load = () => {
+const load = (withWip = (send) => send(false)) => {
   const els = {};
   const sections = {};
   STEP_NAMES.forEach((name) => { sections[name] = makeEl('section'); });
@@ -97,7 +97,6 @@ const load = () => {
     return new Promise((resolve) => { pending.push(resolve); });
   };
   const fetchJson = () => Promise.resolve([]);
-  const withWip = (send) => send(false);
   const boardId = () => 'b1';
   const boardNameFor = () => 'Board';
   const showConfirmDialog = () => {};
@@ -273,6 +272,24 @@ const tests = {
     verify('count', page.byId('mu-preview-count').textContent, '2 tasks will be updated');
     verify('rows', page.byId('mu-preview-body').children.map((row) => row.children.map((cell) => cell.textContent)),
       [['Card b', 'Todo', 'Done'], ['Card e', previewCell(null), 'Done']]);
+    verify('apply enabled', page.byId('mu-apply').disabled, false);
+  },
+
+  mass_update_should_send_force_only_on_the_retry: async () => {
+    const sendOffThenOn = (send) => send(false).then(() => send(true));
+    const page = load(sendOffThenOn);
+    page.byId('mu-color').value = 'blue';
+    page.click('mu-next');
+    page.click('mu-next');
+    page.byId('mu-move-column').value = 'c2';
+    page.click('mu-next');
+    page.respond(0, []);
+    await page.flush();
+    page.respond(1, [{ name: 'Card b', before: 'Todo', after: 'Done' }, { name: 'Card e', before: null, after: 'Done' }]);
+    await page.flush();
+    verify('bodies', page.calls.map((c) => [c.body.dry_run, c.body.action, c.body.task_ids, c.body.column_id, 'force' in c.body, c.body.force]),
+      [[true, 'move', ['b', 'e'], 'c2', false, null], [true, 'move', ['b', 'e'], 'c2', true, true]]);
+    verify('count', page.byId('mu-preview-count').textContent, '2 tasks will be updated');
     verify('apply enabled', page.byId('mu-apply').disabled, false);
   },
 
