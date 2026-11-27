@@ -14,10 +14,11 @@ function element(id) {
   };
   return elements[id];
 }
-const document = { getElementById: element };
+const document = { getElementById: element, createElement: () => ({}) };
 const window = { setTimeout: () => 0, clearTimeout() {}, location: { origin: 'https://x.test' } };
 const settingsSaves = [];
 let saveStatus = 200;
+let boardData = { board: { name: 'One' }, tasks: [], columns: [], swimlanes: [], colors: [], users: [] };
 function fetch(url, opts) {
   if (opts && opts.method === 'PUT') {
     settingsSaves.push(JSON.parse(opts.body));
@@ -25,7 +26,7 @@ function fetch(url, opts) {
   }
   return Promise.resolve({
     ok: true,
-    json: () => Promise.resolve({ board: { name: 'One' }, tasks: [], columns: [], swimlanes: [], colors: [], users: [] }),
+    json: () => Promise.resolve(boardData),
   });
 }
 const fetchJson = (url) => fetch(url, {}).then((res) => res.json());
@@ -39,6 +40,12 @@ var accountPrefs = { hour12: true, weekStart: 0 };
 function escapeHtml(s) { return String(s); }
 function parseDueAt(s) { return new Date(s); }
 eval(src.slice(start, end));
+
+const RealDate = Date;
+Date = class extends RealDate {
+  constructor(...args) { super(...(args.length ? args : [2026, 9, 14, 12])); }
+  static now() { return new RealDate(2026, 9, 14, 12).getTime(); }
+};
 
 const { check, finish } = require('./support/check.js');
 function ymd(d) { return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
@@ -93,49 +100,7 @@ function task(id, extra) {
   Object.keys(extra || {}).forEach(function (k) { t[k] = extra[k]; });
   return t;
 }
-var none = { user: '', color: '', label: '', swimlane: '' };
-function withFilter(extra) {
-  var f = {};
-  Object.keys(none).forEach(function (k) { f[k] = none[k]; });
-  Object.keys(extra).forEach(function (k) { f[k] = extra[k]; });
-  return f;
-}
-
-check('the Unassigned user filter keeps only tasks without members',
-  [CalendarPage.taskPasses(task('a'), withFilter({ user: '__unassigned__' })),
-    CalendarPage.taskPasses(task('b', { member_ids: ['u1'] }), withFilter({ user: '__unassigned__' }))],
-  [true, false]);
-check('a user filter keeps that user\'s tasks',
-  [CalendarPage.taskPasses(task('a', { member_ids: ['u1'] }), withFilter({ user: 'u1' })),
-    CalendarPage.taskPasses(task('b'), withFilter({ user: 'u1' }))], [true, false]);
-check('color and label filters narrow tasks',
-  [CalendarPage.taskPasses(task('a', { color_id: 'red' }), withFilter({ color: 'red' })),
-    CalendarPage.taskPasses(task('b', { color_id: 'blue' }), withFilter({ color: 'red' })),
-    CalendarPage.taskPasses(task('c', { labels: ['x'] }), withFilter({ label: 'x' })),
-    CalendarPage.taskPasses(task('d'), withFilter({ label: 'x' }))], [true, false, true, false]);
-
-var oct = CalendarPage.gridRange(2026, 9, 0);
-var weekly = task('w', { due_repeat: 'every week' });
-var shownWith = CalendarPage.bucketTasks([weekly], oct.start, oct.end, true, none).shown;
-var shownWithout = CalendarPage.bucketTasks([weekly], oct.start, oct.end, false, none).shown;
-check('repeating tasks show every instance in view', shownWith, 4);
-check('the repeating toggle off hides the repeats', shownWithout, 1);
-check('a task that does not repeat shows once either way',
-  [CalendarPage.bucketTasks([task('p')], oct.start, oct.end, true, none).shown,
-    CalendarPage.bucketTasks([task('p')], oct.start, oct.end, false, none).shown], [1, 1]);
-
-var sundayGrid = CalendarPage.gridHtml([], 2026, 9, 0, true, none, '2026-10-14').html;
-var mondayGrid = CalendarPage.gridHtml([], 2026, 9, 1, true, none, '2026-10-14').html;
 function headers(html) { return (html.match(/role="columnheader">(\w+)</g) || []).map(function (h) { return h.replace(/^.*>(\w+)<$/, '$1'); }); }
-check('the grid starts on Sunday when the week does',
-  [headers(sundayGrid)[0], sundayGrid.split('cal-day"').length - 1 + sundayGrid.split('cal-day cal-').length - 1], ['Sun', 35]);
-check('the grid starts on Monday when the week does',
-  [headers(mondayGrid)[0], headers(mondayGrid)[6], mondayGrid.indexOf('>28<') < mondayGrid.indexOf('>29<')], ['Mon', 'Sun', true]);
-check('the first week differs between the two starts', sundayGrid === mondayGrid, false);
-var repeatGrid = function (repeats) {
-  return CalendarPage.gridHtml([weekly], 2026, 9, 0, repeats, none, '2026-10-14').html.split('class="cal-chip"').length - 1;
-};
-check('the grid draws the repeats only when shown', [repeatGrid(true), repeatGrid(false)], [4, 1]);
 
 var merged = CalendarPage.mergeBoards([
   { data: { board: { name: 'One' }, tasks: [task('a')], columns: [{ id: 'c1' }], swimlanes: [], colors: [{ id: 'k1' }], users: [{ id: 'u1' }] } },
@@ -171,19 +136,106 @@ check('a feed row shows its label, URL and a delete button',
   [row.indexOf('Phone') > -1, row.indexOf('https://x.test/api/calendar-feed/t.ics') > -1,
     row.indexOf('data-feed-delete') > -1, row.indexOf('data-feed-id="f1"') > -1], [true, true, true, true]);
 
-var chip = CalendarPage.renderChip({ id: 't9', name: 'Pay', color_id: '', column_id: '' }, null);
-check('a chip carries its task id so a click can open the task',
-  [chip.indexOf('data-task-id="t9"') > -1, chip.indexOf('role="button"') > -1], [true, true]);
-
 const flush = () => new Promise((resolve) => setImmediate(resolve));
+const fire = (id, props) => {
+  const el = element(id);
+  Object.assign(el, props);
+  el.listeners.change.forEach((fn) => fn());
+};
 const changeFirstDay = (value) => {
-  const day = element('calendar-first-day');
-  day.value = value;
-  day.listeners.change.forEach((fn) => fn());
+  fire('calendar-first-day', { value });
   return flush();
 };
-CalendarPage.open('b1');
-flush().then(() => {
+const setRepeats = (checked) => {
+  fire('calendar-show-repeats', { checked });
+  return flush();
+};
+const view = () => ({ html: element('calendar-grid').innerHTML, status: element('calendar-status').textContent });
+const openCalendar = (tasks, extra) => {
+  boardData = Object.assign(
+    { board: { name: 'One' }, columns: [], swimlanes: [], colors: [], users: [] }, extra, { tasks });
+  CalendarPage.open('b1');
+  return flush().then(view);
+};
+const chipIds = (html) => (html.match(/data-task-id="[^"]*"/g) || []).map((m) => m.slice(14, -1));
+const filterIds = ['calendar-user-filter', 'calendar-color-filter', 'calendar-label-filter', 'calendar-swimlane-filter'];
+const applyFilters = (values) => {
+  filterIds.forEach((id) => { fire(id, { value: values[id] || '' }); });
+  const { html, status } = view();
+  return [chipIds(html), status];
+};
+
+const filterChecks = async () => {
+  const tasks = [
+    task('a', { member_ids: ['u1'], color_id: 'red', labels: ['x'], swimlane_id: 'l1' }),
+    task('b', { color_id: 'blue', swimlane_id: 'l2' }),
+    task('c', { member_ids: ['u2'], labels: ['x'] }),
+  ];
+  await openCalendar(tasks, {
+    swimlanes: [{ id: 'l1', name: 'One', archived: false }, { id: 'l2', name: 'Two', archived: false }],
+    users: [{ id: 'u1', username: 'ann' }, { id: 'u2', username: 'bob' }],
+  });
+  const keeps = (name, values, ids) => {
+    const count = ids.length === 1 ? '1 task with a due date in view.' : ids.length + ' tasks with due dates in view.';
+    check('calendar_filter_should_keep_matching_tasks: ' + name, applyFilters(values), [ids, count]);
+  };
+  keeps('no filter keeps every task', {}, ['a', 'b', 'c']);
+  keeps('the Unassigned user filter keeps only tasks without members', { 'calendar-user-filter': '__unassigned__' }, ['b']);
+  keeps('a user filter keeps that user\'s tasks', { 'calendar-user-filter': 'u1' }, ['a']);
+  keeps('a color filter keeps that color', { 'calendar-color-filter': 'red' }, ['a']);
+  keeps('a label filter keeps that label', { 'calendar-label-filter': 'x' }, ['a', 'c']);
+  keeps('a swimlane filter keeps that lane', { 'calendar-swimlane-filter': 'l2' }, ['b']);
+  keeps('filters combine', { 'calendar-user-filter': 'u2', 'calendar-label-filter': 'x' }, ['c']);
+  check('calendar_filter_should_keep_matching_tasks: a filter nothing matches says so',
+    applyFilters({ 'calendar-color-filter': 'blue', 'calendar-label-filter': 'x' }),
+    [[], 'No tasks with due dates in view.']);
+  applyFilters({});
+};
+
+const repeatChecks = async () => {
+  const weekly = task('w', { due_repeat: 'every week' });
+  const plain = task('p');
+  await setRepeats(true);
+  let shown = await openCalendar([weekly, plain]);
+  check('calendar_repeats_should_show_every_instance: the toggle on draws every instance',
+    [chipIds(shown.html), shown.status], [['w', 'p', 'w', 'w', 'w'], '5 tasks with due dates in view.']);
+  await setRepeats(false);
+  shown = view();
+  check('calendar_repeats_should_show_every_instance: the toggle off draws a repeating task once',
+    [chipIds(shown.html), shown.status], [['w', 'p'], '2 tasks with due dates in view.']);
+  const off = chipIds((await openCalendar([plain])).html);
+  await setRepeats(true);
+  const on = chipIds(view().html);
+  check('calendar_repeats_should_show_every_instance: a task that does not repeat shows once either way',
+    [off, on], [['p'], ['p']]);
+  await setRepeats(false);
+};
+
+const weekdayChecks = async () => {
+  await changeFirstDay('0');
+  const sunday = (await openCalendar([])).html;
+  check('calendar_grid_should_start_on_the_chosen_weekday: the grid starts on Sunday when the week does',
+    [headers(sunday)[0], sunday.split('cal-day"').length - 1 + sunday.split('cal-day cal-').length - 1], ['Sun', 35]);
+  await changeFirstDay('1');
+  const monday = view().html;
+  check('calendar_grid_should_start_on_the_chosen_weekday: the grid starts on Monday when the week does',
+    [headers(monday)[0], headers(monday)[6], monday.indexOf('>28<') < monday.indexOf('>29<')], ['Mon', 'Sun', true]);
+  check('calendar_grid_should_start_on_the_chosen_weekday: the first week differs between the two starts',
+    sunday === monday, false);
+  await changeFirstDay('0');
+};
+
+const chipChecks = async () => {
+  const { html } = await openCalendar([{ id: 't9', name: 'Pay', due_at: '2026-10-07T12:00:00', color_id: '', column_id: '' }]);
+  check('calendar_chip_should_carry_its_task_id: a chip carries its task id and button role',
+    [html.indexOf('data-task-id="t9"') > -1, html.indexOf('role="button"') > -1], [true, true]);
+};
+
+settingsSaves.length = 0;
+filterChecks().then(repeatChecks).then(weekdayChecks).then(chipChecks).then(() => {
+  settingsSaves.length = 0;
+  return openCalendar([]);
+}).then(() => {
   saveStatus = 500;
   return changeFirstDay('1');
 }).then(() => {
