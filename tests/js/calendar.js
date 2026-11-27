@@ -263,13 +263,14 @@ filterChecks().then(repeatChecks).then(monthEndChecks).then(weekdayChecks).then(
   settingsSaves.length = 0;
   return openCalendar([]);
 }).then(() => {
+  element('calendar-grid').innerHTML = 'stale grid';
   saveStatus = 500;
   return changeFirstDay('1');
 }).then(() => {
   check('a failed save reverts the select', element('calendar-first-day').value, '0');
   check('a failed save says the setting could not be saved',
     [element('toast').hidden, element('toast').textContent], [false, 'Could not save the setting.']);
-  check('a failed save renders the grid with the old first day', headers(element('calendar-grid').innerHTML)[0], 'Sun');
+  check('a failed save re-renders the grid after the revert', headers(element('calendar-grid').innerHTML)[0], 'Sun');
   saveStatus = 200;
   element('toast').hidden = true;
   element('toast').textContent = '';
