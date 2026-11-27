@@ -16539,7 +16539,7 @@
     var RELATIVE_MONTHS = { '6m': 6, '12m': 12 };
     var fixedCount = null;
     var MIN_BASIS = 5;
-    var DAY = 86400000;
+    var DAY = ReportRange.DAY_MS;
     var MAX_CUSTOM_DAYS = 3660;
     var lastBasis = null;  // { starts, counts } for the current settings
 
@@ -16579,16 +16579,6 @@
       });
     }
 
-    // "Moved from {from} to {to}" — split on the last " to " so column
-    // names containing " to " parse deterministically (same approach as
-    // CumulativeFlowPage).
-    function parseMoveDetail(detail) {
-      var body = detail.slice('Moved from '.length);
-      var i = body.lastIndexOf(' to ');
-      if (i === -1) return null;
-      return { from: body.slice(0, i), to: body.slice(i + 4) };
-    }
-
     // Per-day arrival counts into the target column over the last `days`
     // days (oldest first). Arrivals come from "moved" history events whose
     // destination matches the target column's current name.
@@ -16598,12 +16588,12 @@
       tasks.forEach(function (t) {
         (t.history || []).forEach(function (e) {
           if (!e || e.kind !== 'moved' || e.detail.indexOf('Moved from ') !== 0) return;
-          var m = parseMoveDetail(e.detail);
+          var m = ColumnHistory.parseMoveDetail(e.detail);
           if (!m || m.to !== targetName) return;
           var d = new Date(e.created_at);
           if (isNaN(d.getTime())) return;
           var day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-          var idx = Math.round((day.getTime() - startMs) / 86400000);
+          var idx = Math.round((day.getTime() - startMs) / DAY);
           if (idx >= 0 && idx < days) counts[idx]++;
         });
       });

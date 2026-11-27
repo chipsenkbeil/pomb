@@ -1,7 +1,7 @@
 process.env.TZ = 'America/New_York';
 const fs = require('fs');
 const src = fs.readFileSync(process.argv[2], 'utf8');
-const { LocalTime, ReportChart, ReportFile, escapeHtml, isoDate } = require('../../static/pure.js');
+const { ColumnHistory, LocalTime, ReportChart, ReportFile, ReportRange, escapeHtml, isoDate } = require('../../static/pure.js');
 LocalTime.use({ hour12: true });
 const block = (start) => {
   const from = src.indexOf(start);

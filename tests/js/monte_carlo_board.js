@@ -1,6 +1,6 @@
 var fs = require('fs');
 var src = fs.readFileSync(process.argv[2], 'utf8');
-const { LocalTime, ReportChart, ReportFile, escapeHtml, isoDate } = require('../../static/pure.js');
+const { ColumnHistory, LocalTime, ReportChart, ReportFile, ReportRange, escapeHtml, isoDate } = require('../../static/pure.js');
 LocalTime.use({ hour12: true });
 function block(start) {
   var from = src.indexOf(start);
@@ -53,6 +53,10 @@ check('days across a clock change all start at midnight', dst.starts.map(functio
 var moved = { id: 'm', history: [{ kind: 'moved', detail: 'Moved from To do to Done', created_at: new Date(2026, 9, 2, 10).toISOString() }] };
 var th = MonteCarloPage.dailyThroughput([moved], 'Done', new Date(2026, 9, 1).getTime(), 5);
 check('throughput counts arrivals inside the range', th.counts, [0, 1, 0, 0, 0]);
+const spaced = { id: 's', history: [{ kind: 'moved', detail: 'Moved from Ready to Get to Done', created_at: new Date(2026, 9, 2, 10).toISOString() }] };
+const ths = MonteCarloPage.dailyThroughput([spaced], 'Done', new Date(2026, 9, 1).getTime(), 5);
+check('throughput counts a move out of a column whose name holds " to "', ths.counts, [0, 1, 0, 0, 0]);
+check('move parser splits on the last " to "', ColumnHistory.parseMoveDetail('Moved from Ready to Get to Done'), { from: 'Ready to Get', to: 'Done' });
 
 var fc = { nTasks: 12, startMs: new Date(2026, 10, 15).getTime(), sims: 10000, basisTotal: 40,
   sorted: [new Date(2026, 11, 1).getTime(), new Date(2026, 11, 2).getTime(), new Date(2026, 11, 3).getTime()] };

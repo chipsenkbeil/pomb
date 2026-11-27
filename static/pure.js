@@ -297,7 +297,7 @@ function boardEventPlan(events, cardColumns) {
       return tl;
     }
 
-    return { lookup: columnLookup, eventKey: eventKey, timelineFor: timelineFor, recordedDestination: recordedDestination };
+    return { lookup: columnLookup, eventKey: eventKey, timelineFor: timelineFor, recordedDestination: recordedDestination, parseMoveDetail: parseMoveDetail };
   })();
 
   var ReportFile = (function () {
