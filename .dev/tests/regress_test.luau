@@ -133,6 +133,15 @@ local function git_calls(fix)
     return table.concat(testenv.calls(fix.work, "git"), "\n")
 end
 
+case("regress fetches the baseline through its checkout kind", function(kind)
+    local fix = fixture(kind)
+    local _, code, err = testenv.command(fix.work, { "regress" }, { env = {} })
+    t.eq(code, 0, err)
+    local jj = table.concat(testenv.calls(fix.work, "jj"), "\n")
+    t.eq(jj:find("git fetch --remote gerrit", 1, true) ~= nil, kind == Kind.JJ)
+    t.eq(git_calls(fix):find("fetch", 1, true) ~= nil, false)
+end)
+
 t.test("regress reads the checkout through jj when .jj exists", function()
     local fix = fixture(Kind.JJ)
     local _, code, err = testenv.command(fix.work, { "regress" }, { env = {} })

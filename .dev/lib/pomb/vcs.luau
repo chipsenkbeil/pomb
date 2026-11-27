@@ -102,6 +102,16 @@ function M.merge_base(root, remote_main)
     return code == 0 and out:match("^%x+") or nil
 end
 
+---Update the remote-tracking `main` of `remote`.
+---@param root string absolute path of the repository, a jj one when `.jj` exists there
+---@param remote string remote name
+---@return integer code exit status of the fetch
+function M.fetch(root, remote)
+    local argv = is_jj(root) and { "jj", "--no-pager", "git", "fetch", "--remote", remote }
+        or { "git", "fetch", "-q", remote, "main" }
+    return devos.run(argv, { cwd = root }) or 1
+end
+
 ---Resolve `rev` to a full commit id.
 ---@param root string absolute path of the repository
 ---@param rev string revision, where `remote/branch` means `branch@remote` in jj

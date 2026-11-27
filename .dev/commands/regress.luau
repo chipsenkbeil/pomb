@@ -31,7 +31,7 @@ local function baseline_rev(root, requested)
     if not found then
         dev_command.die(dev_command.vcs_sentence(why, root))
     end
-    local code = devos.run({ "git", "fetch", "-q", found.remote, "main" }, { cwd = root }) or 1
+    local code = vcs.fetch(root, found.remote)
     if code ~= 0 then
         return nil, code
     end
