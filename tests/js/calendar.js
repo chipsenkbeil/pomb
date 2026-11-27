@@ -211,6 +211,33 @@ const repeatChecks = async () => {
   await setRepeats(false);
 };
 
+const chipCells = (html, id) => {
+  const cells = html.split('role="gridcell"').slice(1);
+  const hits = cells.map((cell, i) => (cell.indexOf('data-task-id="' + id + '"') > -1 ? i : -1)).filter((i) => i > -1);
+  return [cells.length, hits];
+};
+const stepMonths = (months) => {
+  const button = months < 0 ? 'calendar-prev' : 'calendar-next';
+  for (let i = 0; i < Math.abs(months); i++) element(button).listeners.click.forEach((fn) => fn());
+  return flush().then(() => view().html);
+};
+
+const monthEndChecks = async () => {
+  await changeFirstDay('0');
+  await setRepeats(true);
+  const { html } = await openCalendar([task('m', { due_at: '2026-07-31T12:00:00', due_repeat: 'every month' })]);
+  check('calendar_repeats_should_count_months_from_the_due_date: a monthly repeat due on the 31st sits on 31 October',
+    chipCells(html, 'm'), [35, [3, 34]]);
+  const leap = task('y', { due_at: '2024-02-29T12:00:00', due_repeat: 'every year' });
+  await openCalendar([leap]);
+  check('calendar_repeats_should_count_months_from_the_due_date: a yearly repeat due on 29 February sits on 28 February in a common year',
+    chipCells(await stepMonths(-20), 'y'), [35, [33]]);
+  await openCalendar([leap]);
+  check('calendar_repeats_should_count_months_from_the_due_date: a yearly repeat due on 29 February sits on 29 February in a leap year',
+    chipCells(await stepMonths(16), 'y'), [35, [30]]);
+  await setRepeats(false);
+};
+
 const weekdayChecks = async () => {
   await changeFirstDay('0');
   const sunday = (await openCalendar([])).html;
@@ -232,7 +259,7 @@ const chipChecks = async () => {
 };
 
 settingsSaves.length = 0;
-filterChecks().then(repeatChecks).then(weekdayChecks).then(chipChecks).then(() => {
+filterChecks().then(repeatChecks).then(monthEndChecks).then(weekdayChecks).then(chipChecks).then(() => {
   settingsSaves.length = 0;
   return openCalendar([]);
 }).then(() => {

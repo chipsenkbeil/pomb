@@ -15925,12 +15925,12 @@
       return r;
     }
 
-    function stepRepeat(d, cadence) {
-      if (cadence === 'daily') { var a = new Date(d.getTime()); a.setDate(a.getDate() + 1); return a; }
-      if (cadence === 'weekly') { var w = new Date(d.getTime()); w.setDate(w.getDate() + 7); return w; }
-      if (cadence === 'monthly') return addMonthsClamped(d, 1);
-      if (cadence === 'yearly') { var y = new Date(d.getTime()); y.setFullYear(y.getFullYear() + 1); return y; }
-      return new Date(d.getTime());
+    function instanceAt(dueDay, cadence, n) {
+      if (cadence === 'daily') { const a = new Date(dueDay.getTime()); a.setDate(a.getDate() + n); return a; }
+      if (cadence === 'weekly') { const w = new Date(dueDay.getTime()); w.setDate(w.getDate() + 7 * n); return w; }
+      if (cadence === 'monthly') return addMonthsClamped(dueDay, n);
+      if (cadence === 'yearly') return addMonthsClamped(dueDay, 12 * n);
+      return new Date(dueDay.getTime());
     }
 
     // Recurrence instances of a due day within [start, end], exclusive of
@@ -15940,9 +15940,8 @@
       var cadence = parseRepeatCadence(repeatText);
       if (!cadence) return [];
       var out = [];
-      var d = new Date(dueDay.getTime());
       for (var i = 0; i < 400; i++) {
-        d = stepRepeat(d, cadence);
+        const d = instanceAt(dueDay, cadence, i + 1);
         if (d > end) break;
         if (d >= start) out.push(new Date(d.getTime()));
       }
