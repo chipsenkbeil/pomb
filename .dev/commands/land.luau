@@ -338,6 +338,8 @@ local function take_land_lock(repo, card)
     local interval = positive_env("POMB_LAND_WAIT_INTERVAL", WAIT_INTERVAL_SECS)
     local bound = positive_env("POMB_LAND_WAIT_BOUND", WAIT_BOUND_SECS)
     local waited = 0
+    local said_card: string?
+    local said_pid: number?
     while not lock.land.take(repo, card) do
         local holder = lock.land.holder(repo)
         if holder and not lock.land.alive(holder) then
@@ -356,7 +358,8 @@ local function take_land_lock(repo, card)
                     )
                 )
             end
-            if holder then
+            if holder and (holder.card ~= said_card or holder.pid ~= said_pid) then
+                said_card, said_pid = holder.card, holder.pid
                 say(
                     ("Waiting for the land of card %s (pid %s) to finish before landing.\n"):format(
                         holder.card,

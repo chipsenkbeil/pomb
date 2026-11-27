@@ -957,6 +957,29 @@ t.test("land should wait while a live land holds the land lock", function()
     done(fix)
 end)
 
+local STUB_LAND_SLEEP_TWICE = [=[
+echo "$*" >>'@dir@/sleeps'
+[ ! -e '@dir@/polled' ] || rm -f '@dir@/work/.dev/land.lock'
+echo polled >>'@dir@/polled'
+]=]
+
+t.test("land should print the land lock wait once", function()
+    local fix = fixture()
+    local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
+    stub(fix.dir, "sleep", STUB_LAND_SLEEP_TWICE)
+    assert(fs.write(land_lock_path(fix), ("card=other pid=%d\n"):format(devos.getpid())))
+    local out, code, err = land(fix, cand, { POMB_LAND_WAIT_INTERVAL = "1" })
+    t.ok(code == 0, err)
+    local phrase = "Waiting for the land of card other (pid " .. devos.getpid() .. ")"
+    local first = out:find(phrase, 1, true)
+    t.ok(first ~= nil, out)
+    t.ok(first == nil or not out:find(phrase, first + 1, true), out)
+    t.eq(#lines(fix, "sleeps"), 2)
+    t.eq(show(fix, "refs/heads/main:feature.txt"), "feature")
+    t.ok(not fs.exists(land_lock_path(fix)))
+    done(fix)
+end)
+
 t.test("land notes the land lock wait", function()
     local fix = fixture()
     local cand = candidate(fix, { ["feature.txt"] = "feature" }, "add feature")
