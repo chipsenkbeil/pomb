@@ -12,7 +12,7 @@ use super::test_support::{
     TEST_DONE_COLUMN, TEST_SHIPPED_COLUMN, TEST_TODO_COLUMN, drop_seeded_roles, held_disk,
     make_epic, make_plain, named_standard_role,
 };
-use super::{ApiDoc, DeviceApproveForm, device_grant, router};
+use super::{ApiDoc, DeviceApproveForm, ErrorCode, child_refusal, device_grant, router};
 use crate::auth::new_api_token_record;
 use crate::db::{
     BootstrapToken, ChildTokenRefusal, Db, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT, NewComment,
@@ -14852,6 +14852,21 @@ async fn a_child_should_not_be_stored_once_its_parent_is_gone() {
     assert_eq!(token_count(&fx), before);
 }
 
+#[test]
+fn child_refusal_should_word_an_expired_issuer_apart_from_a_revoked_one() {
+    // A revoked issuer keeps its wording
+    let revoked = child_refusal(ChildTokenRefusal::ParentGone);
+    assert_eq!(revoked.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(revoked.code, ErrorCode::TokenInvalid);
+    assert_eq!(revoked.message, "the calling token was revoked");
+
+    // An expired issuer gets its own wording
+    let expired = child_refusal(ChildTokenRefusal::ParentExpired);
+    assert_eq!(expired.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(expired.code, ErrorCode::TokenInvalid);
+    assert_eq!(expired.message, "the calling token expired");
+}
+
 #[tokio::test]
 async fn a_child_should_not_be_stored_under_an_expired_parent() {
     let (_dir, fx) = fixture();
@@ -14866,7 +14881,7 @@ async fn a_child_should_not_be_stored_under_an_expired_parent() {
         .db
         .create_child_api_token(record, Hours::DEFAULT, now)
         .expect("create");
-    assert_eq!(refusal.map(|_| ()), Err(ChildTokenRefusal::ParentGone));
+    assert_eq!(refusal.map(|_| ()), Err(ChildTokenRefusal::ParentExpired));
     assert_eq!(token_count(&fx), before);
 }
 

@@ -2895,8 +2895,9 @@ impl AccountDb {
     /// # Errors
     ///
     /// The inner result holds a [`ChildTokenRefusal`] when the database refuses the child:
-    /// - [`ChildTokenRefusal::ParentGone`]: the issuing token was revoked, expired or never
-    ///   existed on the account.
+    /// - [`ChildTokenRefusal::ParentGone`]: the issuing token was revoked or never existed on the
+    ///   account.
+    /// - [`ChildTokenRefusal::ParentExpired`]: the issuing token has passed its expiry.
     /// - [`ChildTokenRefusal::NameTaken`]: another token of the account has the name, whatever its
     ///   letter case.
     /// - [`ChildTokenRefusal::IssuerIsIssued`]: the issuing token was itself issued, so its child
@@ -2924,8 +2925,9 @@ impl AccountDb {
     /// The inner result holds a [`RoleTokenRefusal`].
     /// [`RoleTokenRefusal::UnknownRole`] means the account holds no such role.
     /// [`RoleTokenRefusal::Child`] wraps a [`ChildTokenRefusal`]:
-    /// - [`ChildTokenRefusal::ParentGone`]: the issuing token was revoked, expired or never
-    ///   existed on the account.
+    /// - [`ChildTokenRefusal::ParentGone`]: the issuing token was revoked or never existed on the
+    ///   account.
+    /// - [`ChildTokenRefusal::ParentExpired`]: the issuing token has passed its expiry.
     /// - [`ChildTokenRefusal::NameTaken`]: another token of the account has the name, whatever its
     ///   letter case.
     /// - [`ChildTokenRefusal::IssuerIsIssued`]: the issuing token was itself issued, so its child

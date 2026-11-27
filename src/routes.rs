@@ -28244,6 +28244,10 @@ fn child_refusal(refusal: ChildTokenRefusal) -> AppError {
             AppError::with_status(StatusCode::UNAUTHORIZED, "the calling token was revoked")
                 .with_code(ErrorCode::TokenInvalid)
         }
+        ChildTokenRefusal::ParentExpired => {
+            AppError::with_status(StatusCode::UNAUTHORIZED, "the calling token expired")
+                .with_code(ErrorCode::TokenInvalid)
+        }
         ChildTokenRefusal::NameTaken => {
             AppError::conflict("another token of the account has that name")
         }

@@ -4916,7 +4916,7 @@ fn txn_check_child_token(
         return Ok(Err(ChildTokenRefusal::ParentGone));
     };
     if parent.is_expired(now) {
-        return Ok(Err(ChildTokenRefusal::ParentGone));
+        return Ok(Err(ChildTokenRefusal::ParentExpired));
     }
     if parent.parent_id.is_some() && record.permissions.contains(&Permission::TokensIssue) {
         return Ok(Err(ChildTokenRefusal::IssuerIsIssued));
@@ -5469,8 +5469,10 @@ pub struct TokenEdit {
 /// Why a child token was not stored.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ChildTokenRefusal {
-    /// The issuing token was revoked, expired or never existed on the account.
+    /// The issuing token was revoked or never existed on the account.
     ParentGone,
+    /// The issuing token has passed its expiry.
+    ParentExpired,
     /// Another token of the account has the name, whatever its letter case.
     NameTaken,
     /// The issuing token was itself issued, so its child may not hold `tokens.issue`.
