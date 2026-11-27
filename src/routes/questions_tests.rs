@@ -7,7 +7,7 @@ use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{TEST_BODY_4_MIB_BYTES, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::Db;
+use crate::db::{Db, NewTaskPlacement};
 use crate::models::{AccountId, AuthScope, HistoryKind, NEEDS_HUMAN_LABEL, TaskRow};
 
 /// Edits a valid question to drop or break one part.
@@ -1145,4 +1145,113 @@ async fn a_browser_question_on_a_locked_card_should_still_move_it_to_blocked() {
 
     assert_eq!(status, StatusCode::OK, "{comment}");
     assert_eq!(row(&fx, &task).column_id, fx.blocked);
+}
+
+struct Elsewhere {
+    parked: String,
+    done: String,
+}
+
+fn elsewhere(fx: &Fixture) -> Elsewhere {
+    let board = fx.db.create_board(&fx.user_id, "Elsewhere").expect("board");
+    let parked = fx.db.create_column(&board, "Parked", None).expect("column");
+    let done = fx
+        .db
+        .create_column(&board, "Shipped", None)
+        .expect("column");
+    Elsewhere { parked, done }
+}
+
+async fn move_to(fx: &Fixture, task: &str, column: &str) {
+    let (status, moved) = send(
+        fx,
+        Caller::Browser,
+        "POST",
+        &format!("/api/tasks/{task}/move"),
+        Some(json!({"column_id": column, "position": 0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+}
+
+#[tokio::test]
+async fn a_moved_card_should_answer_into_the_same_named_column() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let other = elsewhere(&fx);
+    let task = card(&fx, json!({})).await;
+    let (_, asked) = ask(&fx, &task, question(&fx)).await;
+    let comment = asked["id"].as_str().expect("id");
+    move_to(&fx, &task, &other.parked).await;
+
+    let (status, answered) =
+        answer(&fx, Caller::Browser, &task, comment, json!({"choice": 1})).await;
+
+    assert_eq!(status, StatusCode::OK, "{answered}");
+    assert_eq!(
+        answered["question"]["choices"][0]["column_id"],
+        json!(other.done)
+    );
+    assert_eq!(row(&fx, &task).column_id, other.done);
+}
+
+#[tokio::test]
+async fn a_moved_card_without_the_column_should_stay_put() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let other = elsewhere(&fx);
+    let task = card(&fx, json!({})).await;
+    let (_, asked) = ask(&fx, &task, question(&fx)).await;
+    let comment = asked["id"].as_str().expect("id");
+    move_to(&fx, &task, &other.parked).await;
+
+    let (status, answered) =
+        answer(&fx, Caller::Browser, &task, comment, json!({"choice": 2})).await;
+
+    assert_eq!(status, StatusCode::OK, "{answered}");
+    assert_eq!(answered["question"]["answer"]["choice"], 2);
+    assert_eq!(answered["question"]["choices"][1]["column_id"], Value::Null);
+    assert_eq!(row(&fx, &task).column_id, other.parked);
+}
+
+#[tokio::test]
+async fn a_choice_column_on_another_board_should_be_refused() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let other = elsewhere(&fx);
+    let task = card(&fx, json!({})).await;
+    let (_, asked) = ask(&fx, &task, question(&fx)).await;
+    let comment = asked["id"].as_str().expect("id");
+    let mut stale = row(&fx, &task);
+    stale.id = "stale-card".to_string();
+    stale.comments[0]
+        .question
+        .as_mut()
+        .expect("question")
+        .choices[0]
+        .column_id = Some(other.done.clone());
+    fx.db
+        .insert_task(stale, NewTaskPlacement::Bottom)
+        .expect("insert");
+
+    let (status, refused) = answer(
+        &fx,
+        Caller::Browser,
+        "stale-card",
+        comment,
+        json!({"choice": 1}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    let after = row(&fx, "stale-card");
+    assert!(
+        after.comments[0]
+            .question
+            .as_ref()
+            .expect("question")
+            .answer
+            .is_none()
+    );
+    assert_eq!(after.column_id, fx.blocked);
 }

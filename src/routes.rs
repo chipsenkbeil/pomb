@@ -15386,6 +15386,11 @@ async fn answer_comment_question(
                 .column(column_id)
                 .map_err(AppError::from)?
                 .ok_or_else(|| AppError::conflict("the column of this choice is gone"))?;
+            if destination.row().board_id != task.board_id() {
+                return Err(AppError::conflict(
+                    "the column of this choice is on another board",
+                ));
+            }
             if task.row().column_id != destination.row().id {
                 if let Some(from) = account
                     .column(&task.row().column_id)

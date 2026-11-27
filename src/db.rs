@@ -3654,6 +3654,42 @@ fn txn_unlink_children(
     Ok(())
 }
 
+/// Points each open question choice of `task` at the column of the same name on `board_id`, and
+/// clears a choice whose column the board lacks. A choice already on `board_id` stays.
+fn remap_question_choices(
+    txn: &WriteTransaction,
+    task: &mut TaskRow,
+    board_id: &str,
+) -> DbResult<()> {
+    let target: Vec<ColumnRow> = txn_indexed_rows(txn, COLUMNS_BY_BOARD, board_id, COLUMNS)?;
+    for comment in &mut task.comments {
+        let Some(question) = comment
+            .question
+            .as_mut()
+            .filter(|question| question.answer.is_none())
+        else {
+            continue;
+        };
+        for choice in &mut question.choices {
+            let Some(column_id) = choice.column_id.as_deref() else {
+                continue;
+            };
+            if target.iter().any(|column| column.id == column_id) {
+                continue;
+            }
+            let name =
+                txn_read_one::<ColumnRow>(txn, COLUMNS, column_id)?.map(|column| column.name);
+            choice.column_id = name.and_then(|name| {
+                target
+                    .iter()
+                    .find(|column| column.name == name)
+                    .map(|column| column.id.clone())
+            });
+        }
+    }
+    Ok(())
+}
+
 fn task_context_in(txn: &WriteTransaction, task: &TaskRow) -> DbResult<TaskContext> {
     let board_id = column_board_in(txn, &task.column_id)?;
     let fields = match &board_id {
@@ -12684,6 +12720,7 @@ impl Db {
         // A due target column belongs to the task's old board
         if crosses_boards {
             moved.due_target_column_id = None;
+            remap_question_choices(txn, &mut moved, &target.board_id)?;
         }
         let dropped = if crosses_boards {
             carry_fields(&mut moved.fields, &target_fields)
