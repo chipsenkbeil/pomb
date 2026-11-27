@@ -28,6 +28,9 @@ const FLAG_ATTESTED_DATA: u8 = 0x40;
 pub(crate) const TEST_ATTACHMENT_3_MIB_BYTES: usize = 3 * 1024 * 1024;
 pub(crate) const TEST_BODY_4_MIB_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const TEST_BODY_16_MIB_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const TEST_TODO_COLUMN: &str = "Todo";
+pub(crate) const TEST_DONE_COLUMN: &str = "Done";
+pub(crate) const TEST_BLOCKED_COLUMN: &str = "Blocked";
 
 /// A software authenticator holding one P-256 passkey, which speaks WebAuthn's JSON the way the
 /// browser script sends it.

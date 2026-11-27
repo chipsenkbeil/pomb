@@ -6,7 +6,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::passkey_mode;
-use super::test_support::held_disk;
+use super::test_support::{TEST_BLOCKED_COLUMN, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -49,7 +49,9 @@ impl Fixture {
         );
         let board = db.create_board(&owner, "Labels").expect("board");
         db.create_swimlane(&board, "Lane").expect("swimlane");
-        let column = db.create_column(&board, "Blocked", None).expect("column");
+        let column = db
+            .create_column(&board, TEST_BLOCKED_COLUMN, None)
+            .expect("column");
         let app = router(AppState::new(db.clone(), None, passkey_mode()).with_disk(held_disk(&db)));
         let [lead, work, read] = tokens.each_mut().map(std::mem::take);
         Self {

@@ -8,7 +8,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::held_disk;
+use super::test_support::{TEST_BLOCKED_COLUMN, TEST_DONE_COLUMN, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{
@@ -103,10 +103,12 @@ impl Fixture {
             stages.insert(key, id);
         }
         let done = db
-            .create_column_as(&board, "Done", None, ColumnKind::Done)
+            .create_column_as(&board, TEST_DONE_COLUMN, None, ColumnKind::Done)
             .expect("done");
         stages.insert("done", done);
-        let blocked = db.create_column(&board, "Blocked", None).expect("blocked");
+        let blocked = db
+            .create_column(&board, TEST_BLOCKED_COLUMN, None)
+            .expect("blocked");
         let mut config = serde_json::Map::new();
         config.insert("blocked_column_id".to_string(), json!(blocked));
         db.set_board_config(&board, &config).expect("config");

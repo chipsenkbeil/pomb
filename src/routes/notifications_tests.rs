@@ -7,7 +7,9 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, held_disk};
+use super::test_support::{
+    Reply, TEST_BLOCKED_COLUMN, TEST_DONE_COLUMN, TEST_TODO_COLUMN, call, held_disk,
+};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::Db;
@@ -37,10 +39,15 @@ impl Fixture {
         let (record, token) = new_api_token_record(&admin, "agent-1", AuthScope::Admin, None);
         db.create_api_token(&record).expect("token");
         let board = db.create_board(&admin, "Work").expect("board");
-        let todo = db.create_column(&board, "Todo", None).expect("column");
-        let done = db.create_column(&board, "Done", None).expect("column");
+        let todo = db
+            .create_column(&board, TEST_TODO_COLUMN, None)
+            .expect("column");
+        let done = db
+            .create_column(&board, TEST_DONE_COLUMN, None)
+            .expect("column");
         let spare = db.create_board(&admin, "Spare").expect("board");
-        db.create_column(&spare, "Todo", None).expect("column");
+        db.create_column(&spare, TEST_TODO_COLUMN, None)
+            .expect("column");
         let state = AppState::new(db.clone(), None, passkey_mode())
             .with_disk(held_disk(&db))
             .with_mode(InstanceMode::Multi)
@@ -156,7 +163,7 @@ async fn a_token_moving_a_followed_task_should_notify_with_the_column_it_went_to
     let rows = fx.notifications();
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].kind, NotificationKind::TaskMoved);
-    assert_eq!(rows[0].detail.as_deref(), Some("Done"));
+    assert_eq!(rows[0].detail.as_deref(), Some(TEST_DONE_COLUMN));
 }
 
 #[tokio::test]
@@ -238,7 +245,7 @@ async fn a_token_deleting_a_column_should_notify_with_its_name() {
     let rows = fx.notifications();
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].kind, NotificationKind::ColumnDeleted);
-    assert_eq!(rows[0].detail.as_deref(), Some("Done"));
+    assert_eq!(rows[0].detail.as_deref(), Some(TEST_DONE_COLUMN));
 }
 
 #[tokio::test]
@@ -574,7 +581,7 @@ async fn a_browser_question_should_watch_the_task() {
     let fx = Fixture::new();
     let blocked = fx
         .db
-        .create_column(&fx.board, "Blocked", None)
+        .create_column(&fx.board, TEST_BLOCKED_COLUMN, None)
         .expect("column");
     fx.send(
         "PUT",
@@ -586,8 +593,8 @@ async fn a_browser_question_should_watch_the_task() {
     let question = json!({
         "text": "Which?",
         "choices": [
-            {"label": "Done", "column_id": fx.done},
-            {"label": "Todo", "column_id": fx.todo}
+            {"label": TEST_DONE_COLUMN, "column_id": fx.done},
+            {"label": TEST_TODO_COLUMN, "column_id": fx.todo}
         ],
         "recommended": 1,
         "why": "needs the owner"
