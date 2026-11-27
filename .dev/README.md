@@ -307,6 +307,18 @@ Example:
 dev fmt
 ```
 
+### dev journal
+
+Print the green-box journal for `pomb` or `caddy` between two UTC times, over
+one read-only ssh. `--since` must come before `--until`, and a missing,
+unordered or non-UTC time exits 2.
+
+Example:
+
+```sh
+dev journal --since "2026-11-11 16:30:00" --until "2026-11-11 17:30:00" --unit caddy
+```
+
 ### dev land
 
 Apply a verified commit onto the remote's main and push it once lint and test
