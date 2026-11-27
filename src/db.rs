@@ -762,8 +762,19 @@ pub struct BoardCopy {
 pub struct BulkMove {
     /// What the move does with its transaction once every task moved.
     pub commit: Commit,
+    /// The fence each task must still allow when the write runs.
+    pub fence: Option<u64>,
     /// Whether a task may enter a column or limit group at its WIP limit.
     pub wip: WipCheck,
+}
+
+/// How a bulk write runs.
+#[derive(Copy, Clone, Debug)]
+pub struct BulkWrite {
+    /// What the write does with its transaction once every task changed.
+    pub commit: Commit,
+    /// The fence each task must still allow when the write runs.
+    pub fence: Option<u64>,
 }
 
 /// What a bulk write does with its transaction once every task changed.
@@ -795,6 +806,8 @@ pub enum ChangeOutcome<E> {
     Refused(E),
     /// A task is missing, and no task changed.
     NotFound,
+    /// A task's claim or owner fence is no longer the one given, and no task changed.
+    StaleFence,
 }
 
 /// What a WIP-limited column holds: tasks for a count limit, estimated minutes for an hours limit.
@@ -10729,13 +10742,16 @@ impl Db {
         &self,
         ids: &[String],
         edit: &LinkEdit<'_>,
-        commit: Commit,
+        write: BulkWrite,
         actor: Actor<'_>,
     ) -> DbResult<ChangeOutcome<LinkRefusal>> {
         let txn = self.db.begin_write()?;
         for id in ids {
-            if txn_read_one::<TaskRow>(&txn, TASKS, id)?.is_none() {
+            let Some(task) = txn_read_one::<TaskRow>(&txn, TASKS, id)? else {
                 return Ok(ChangeOutcome::NotFound);
+            };
+            if !task.fence_allows(write.fence) {
+                return Ok(ChangeOutcome::StaleFence);
             }
             for (kind, target_id) in edit.remove {
                 let Some(link_id) = Self::held_link_in(&txn, id, *kind, target_id)? else {
@@ -10759,7 +10775,7 @@ impl Db {
                 }
             }
         }
-        commit.finish(txn)?;
+        write.commit.finish(txn)?;
         Ok(ChangeOutcome::Changed)
     }
 
@@ -11942,7 +11958,7 @@ impl Db {
     pub fn apply_tasks_change<E, F>(
         &self,
         ids: &[String],
-        commit: Commit,
+        write: BulkWrite,
         actor: Actor<'_>,
         mut f: F,
     ) -> DbResult<ChangeOutcome<E>>
@@ -11955,6 +11971,9 @@ impl Db {
             let Some(mut task) = task_in(&tbl, id)? else {
                 return Ok(ChangeOutcome::NotFound);
             };
+            if !task.fence_allows(write.fence) {
+                return Ok(ChangeOutcome::StaleFence);
+            }
             let context = task_context_in(&txn, &task)?;
             if let Err(error) = f(&mut task, &context) {
                 return Ok(ChangeOutcome::Refused(error));
@@ -11962,7 +11981,7 @@ impl Db {
             task.updated_at = Some(Utc::now().to_rfc3339());
             txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
         }
-        commit.finish(txn)?;
+        write.commit.finish(txn)?;
         Ok(ChangeOutcome::Changed)
     }
 
@@ -12550,6 +12569,7 @@ impl Db {
                 event: detail.as_deref(),
                 batch: &ids[offset + 1..],
                 enforce_wip: run.wip == WipCheck::Enforce,
+                fence: run.fence,
                 ..MoveGuards::default()
             };
             let at = position + offset as f64;

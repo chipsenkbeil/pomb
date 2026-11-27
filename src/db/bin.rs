@@ -5,11 +5,11 @@ use redb::{ReadableTable, WriteTransaction};
 use super::outbox::{txn_queue_task_deleted, txn_queue_task_restored};
 use super::usage::{OverQuota, txn_count_usage, txn_remove_entry, txn_store_entry, txn_write_task};
 use super::{
-    BIN, BIN_BY_BOARD, BOARDS, COLUMNS, COLUMNS_BY_BOARD, Commit, Db, DbResult, ENTRIES_BY_TASK,
-    LINKS_BY_TARGET, SETTINGS, SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS, TASKS_BY_COLUMN,
-    TIME_ENTRIES, USERS, WipCheck, blocked_before, blocked_by_reaches, bump_flipped, index_in,
-    link_event_detail, mmap_insert, mmap_remove, parent_chain_reaches, push_column_event,
-    push_event, read_in, read_one, task_in, task_owner_in, txn_board_accounts,
+    BIN, BIN_BY_BOARD, BOARDS, BulkWrite, COLUMNS, COLUMNS_BY_BOARD, ChangeOutcome, Db, DbResult,
+    ENTRIES_BY_TASK, LINKS_BY_TARGET, SETTINGS, SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS,
+    TASKS_BY_COLUMN, TIME_ENTRIES, USERS, WipCheck, blocked_before, blocked_by_reaches,
+    bump_flipped, index_in, link_event_detail, mmap_insert, mmap_remove, parent_chain_reaches,
+    push_column_event, push_event, read_in, read_one, task_in, task_owner_in, txn_board_accounts,
     txn_board_task_count, txn_clear_timer_if, txn_mmap_get, txn_read_one,
     txn_refuse_board_over_quota, txn_task_bytes, txn_wip_refusal, unlink_deleted_tasks, write_one,
 };
@@ -320,22 +320,28 @@ impl Db {
     }
 
     /// Moves each of `ids` into the recycle bin in one write transaction, as [`Db::delete_task`]
-    /// does for one. A missing task leaves every task in place, and [`Commit::Discard`] ends the
-    /// run without a commit. Returns `false` when a task is unknown.
+    /// does for one. A missing task or a task whose fence is no longer `write.fence` leaves every
+    /// task in place, and a discarding write ends the run without a commit.
     pub fn delete_tasks_logged(
         &self,
         ids: &[String],
-        commit: Commit,
+        write: BulkWrite,
         actor: Actor<'_>,
-    ) -> DbResult<bool> {
+    ) -> DbResult<ChangeOutcome<()>> {
         let txn = self.db.begin_write()?;
         for id in ids {
+            let Some(task) = txn_read_one::<TaskRow>(&txn, TASKS, id)? else {
+                return Ok(ChangeOutcome::NotFound);
+            };
+            if !task.fence_allows(write.fence) {
+                return Ok(ChangeOutcome::StaleFence);
+            }
             if bin_task_in(&txn, id, actor)?.is_none() {
-                return Ok(false);
+                return Ok(ChangeOutcome::NotFound);
             }
         }
-        commit.finish(txn)?;
-        Ok(true)
+        write.commit.finish(txn)?;
+        Ok(ChangeOutcome::Changed)
     }
 
     /// Removes a task its own creation takes back, with whatever reached it meanwhile, leaving

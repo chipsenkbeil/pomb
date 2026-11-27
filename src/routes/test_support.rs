@@ -328,6 +328,7 @@ impl Fixture {
         (board, ids)
     }
 
+    #[must_use]
     pub(crate) fn token(&self) -> &str {
         &self.token
     }

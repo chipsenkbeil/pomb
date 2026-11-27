@@ -4,8 +4,11 @@ use serde_json::{Value, json};
 use super::test_support::{
     Fixture, Reply, TEST_DOING_COLUMN, TEST_DONE_COLUMN, TEST_TODO_COLUMN, call,
 };
+use super::{IF_CLAIM_FENCE, IF_OWNER_FENCE};
 use crate::auth::new_api_token_record;
-use crate::db::{ChangeOutcome, Commit, NewWebhook};
+use crate::db::{
+    BulkMove, BulkWrite, ChangeOutcome, Commit, LinkEdit, MoveOutcome, NewWebhook, WipCheck,
+};
 use crate::models::{
     Actor, AuthScope, HistoryKind, LinkKind, TaskRow, WebhookEvent, color_value_to_size,
 };
@@ -345,7 +348,7 @@ async fn bulk_change_should_write_nothing_when_a_later_task_is_missing() {
 
     let outcome = fx
         .db
-        .apply_tasks_change(&ids, Commit::Write, Actor::SYSTEM, |task, _| {
+        .apply_tasks_change(&ids, write_with(None), Actor::SYSTEM, |task, _| {
             task.name = "changed".to_string();
             Ok::<(), ()>(())
         })
@@ -365,7 +368,7 @@ async fn bulk_change_should_write_nothing_when_a_later_task_is_refused() {
 
     let outcome = fx
         .db
-        .apply_tasks_change(&ids, Commit::Write, Actor::SYSTEM, |task, _| {
+        .apply_tasks_change(&ids, write_with(None), Actor::SYSTEM, |task, _| {
             if task.id == b {
                 return Err("refused");
             }
@@ -1546,12 +1549,18 @@ async fn claim_fence(fx: &Fixture, task: &str) -> u64 {
     reply.body["fence"].as_u64().expect("fence")
 }
 
-async fn fenced_bulk(fx: &Fixture, board: &str, fence: u64, body: Value) -> Reply {
+async fn fenced_bulk(
+    fx: &Fixture,
+    board: &str,
+    header: &'static str,
+    fence: u64,
+    body: Value,
+) -> Reply {
     let uri = format!("/api/boards/{board}/tasks/bulk");
     let fence = fence.to_string();
     let headers = [
         ("authorization", format!("Bearer {}", fx.token())),
-        ("if-claim-fence", fence),
+        (header, fence),
     ];
     let headers: Vec<(&str, &str)> = headers
         .iter()
@@ -1569,7 +1578,7 @@ async fn bulk_move_should_refuse_a_stale_claim_fence() {
     let fence = claim_fence(&fx, &b).await;
 
     let body = json!({"task_ids": [a, b], "action": "move", "column_id": columns[1]});
-    let reply = fenced_bulk(&fx, &board, fence + 1, body).await;
+    let reply = fenced_bulk(&fx, &board, IF_CLAIM_FENCE, fence + 1, body).await;
 
     assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
     assert_eq!(reply.body["code"], "stale_fence", "{}", reply.body);
@@ -1592,8 +1601,178 @@ async fn bulk_move_should_accept_the_live_claim_fence() {
         "column_id": columns[1],
         "force": true,
     });
-    let reply = fenced_bulk(&fx, &board, fence, body).await;
+    let reply = fenced_bulk(&fx, &board, IF_CLAIM_FENCE, fence, body).await;
 
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     assert_eq!(fx.cell(&board, &columns[1]), ["d", "a"]);
+}
+
+#[tokio::test]
+async fn bulk_move_should_refuse_a_stale_owner_fence() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
+    let a = fx.task(&columns[0], "a").await;
+    let owner_uri = format!("/api/tasks/{a}/owner");
+    let grab = json!({"name": "builder", "ttl_seconds": 600});
+    let first = fx.send("POST", &owner_uri, Some(grab.clone())).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let old = first.body["fence"].as_u64().expect("fence");
+    let release = json!({"name": "builder"});
+    let bearer = format!("Bearer {}", fx.token());
+    let fence = old.to_string();
+    let headers = [("authorization", bearer.as_str()), (IF_OWNER_FENCE, &fence)];
+    let released = call(
+        &fx.app,
+        "POST",
+        &format!("{owner_uri}/release"),
+        &headers,
+        Some(release),
+    )
+    .await;
+    assert_eq!(released.status, StatusCode::OK, "{}", released.body);
+    let second = fx.send("POST", &owner_uri, Some(grab)).await;
+    assert_eq!(second.status, StatusCode::OK, "{}", second.body);
+    assert_ne!(second.body["fence"].as_u64().expect("fence"), old);
+
+    let body = json!({"task_ids": [a], "action": "move", "column_id": columns[1]});
+    let reply = fenced_bulk(&fx, &board, IF_OWNER_FENCE, old, body).await;
+
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
+    assert_eq!(reply.body["code"], "stale_fence", "{}", reply.body);
+    assert_eq!(fx.cell(&board, &columns[0]), ["a"]);
+}
+
+async fn superseded_fence(fx: &Fixture, task: &str) -> u64 {
+    let old = claim_fence(fx, task).await;
+    let uri = format!("/api/tasks/{task}/claim/release");
+    let released = fx.send("POST", &uri, Some(json!({"fence": old}))).await;
+    assert_eq!(released.status, StatusCode::OK, "{}", released.body);
+    let live = claim_fence(fx, task).await;
+    assert_ne!(live, old);
+    old
+}
+
+#[must_use]
+fn write_with(fence: Option<u64>) -> BulkWrite {
+    BulkWrite {
+        commit: Commit::Write,
+        fence,
+    }
+}
+
+#[tokio::test]
+async fn apply_tasks_change_should_refuse_a_stale_fence_and_write_nothing() {
+    let fx = Fixture::new();
+    let (_board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    let old = superseded_fence(&fx, &b).await;
+    let ids = [a.clone(), b.clone()];
+
+    let outcome = fx
+        .db
+        .apply_tasks_change(&ids, write_with(Some(old)), Actor::SYSTEM, |task, _| {
+            task.name = "changed".to_string();
+            Ok::<(), ()>(())
+        })
+        .expect("change");
+
+    assert_eq!(outcome, ChangeOutcome::StaleFence);
+    assert_eq!(fx.row(&a).name, "a");
+    assert_eq!(fx.row(&b).name, "b");
+}
+
+#[tokio::test]
+async fn apply_tasks_change_should_accept_the_live_fence() {
+    let fx = Fixture::new();
+    let (_board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
+    let a = fx.task(&columns[0], "a").await;
+    let live = claim_fence(&fx, &a).await;
+
+    let outcome = fx
+        .db
+        .apply_tasks_change(
+            std::slice::from_ref(&a),
+            write_with(Some(live)),
+            Actor::SYSTEM,
+            |task, _| {
+                task.name = "changed".to_string();
+                Ok::<(), ()>(())
+            },
+        )
+        .expect("change");
+
+    assert_eq!(outcome, ChangeOutcome::Changed);
+    assert_eq!(fx.row(&a).name, "changed");
+}
+
+#[tokio::test]
+async fn change_links_logged_should_refuse_a_stale_fence_and_write_nothing() {
+    let fx = Fixture::new();
+    let (_board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    let hub = fx.task(&columns[0], "hub").await;
+    let old = superseded_fence(&fx, &b).await;
+    let add = [(LinkKind::Related, hub)];
+    let edit = LinkEdit {
+        remove: &[],
+        add: &add,
+        token_id: None,
+        owner: None,
+    };
+
+    let outcome = fx
+        .db
+        .change_links_logged(
+            &[a.clone(), b.clone()],
+            &edit,
+            write_with(Some(old)),
+            Actor::SYSTEM,
+        )
+        .expect("links");
+
+    assert_eq!(outcome, ChangeOutcome::StaleFence);
+    assert!(fx.row(&a).links.is_empty());
+    assert!(fx.row(&b).links.is_empty());
+}
+
+#[tokio::test]
+async fn delete_tasks_logged_should_refuse_a_stale_fence_and_leave_the_tasks() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    let old = superseded_fence(&fx, &b).await;
+
+    let outcome = fx
+        .db
+        .delete_tasks_logged(&[a, b], write_with(Some(old)), Actor::SYSTEM)
+        .expect("delete");
+
+    assert_eq!(outcome, ChangeOutcome::StaleFence);
+    assert_eq!(fx.cell(&board, &columns[0]), ["a", "b"]);
+}
+
+#[tokio::test]
+async fn move_tasks_logged_should_refuse_a_stale_fence_and_move_nothing() {
+    let fx = Fixture::new();
+    let (board, columns) = fx.board("Plans", &[TEST_TODO_COLUMN, TEST_DOING_COLUMN]);
+    let a = fx.task(&columns[0], "a").await;
+    let b = fx.task(&columns[0], "b").await;
+    let old = superseded_fence(&fx, &b).await;
+    let run = BulkMove {
+        commit: Commit::Write,
+        fence: Some(old),
+        wip: WipCheck::Enforce,
+    };
+
+    let outcome = fx
+        .db
+        .move_tasks_logged(&[a, b], &columns[1], None, 0.0, run, Actor::SYSTEM)
+        .expect("move");
+
+    assert_eq!(outcome, MoveOutcome::StaleFence);
+    assert_eq!(fx.cell(&board, &columns[0]), ["a", "b"]);
+    assert!(fx.cell(&board, &columns[1]).is_empty());
 }

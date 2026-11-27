@@ -14,11 +14,11 @@ use tokio::sync::watch;
 
 use super::{
     AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardCopy, BoardImport,
-    BoardMember, BoardSnapshot, BookmarkAdd, BookmarkPatch, BulkMove, COLUMNS, COLUMNS_BY_BOARD,
-    Change, ChangeOutcome, ChildLinks, ChildTokenRefusal, ClaimOutcome, ClaimRequest,
-    ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnMove, ColumnPatch, CommentWrite,
-    Commit, CopyTasks, Db, DbResult, DeviceGrant, EntryEdit, EpicCloseOutcome, EventRead,
-    FIELD_DEFS, FeedAdd, FencedWrite, FieldCreateOutcome, GrabRequest, GroupWrite,
+    BoardMember, BoardSnapshot, BookmarkAdd, BookmarkPatch, BulkMove, BulkWrite, COLUMNS,
+    COLUMNS_BY_BOARD, Change, ChangeOutcome, ChildLinks, ChildTokenRefusal, ClaimOutcome,
+    ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnMove, ColumnPatch,
+    CommentWrite, Commit, CopyTasks, Db, DbResult, DeviceGrant, EntryEdit, EpicCloseOutcome,
+    EventRead, FIELD_DEFS, FeedAdd, FencedWrite, FieldCreateOutcome, GrabRequest, GroupWrite,
     INBOUND_ADDRESSES, Incoming, IssuedInbound, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome,
     LinkEdit, LinkRefusal, MemberSet, MoveGuards, MoveOutcome, NewComment, NewInbound,
     NewTaskPlacement, NewTimeEntry, NewWebhook, NotificationPage, OwnerChange, OwnerOutcome,
@@ -1768,7 +1768,7 @@ impl AccountDb {
     pub fn apply_tasks_change<E, F>(
         &self,
         tasks: &[OwnedTask],
-        commit: Commit,
+        write: BulkWrite,
         actor: Actor<'_>,
         f: F,
     ) -> DbResult<ChangeOutcome<E>>
@@ -1776,7 +1776,7 @@ impl AccountDb {
         F: FnMut(&mut TaskRow, &TaskContext) -> Result<(), E>,
     {
         let ids: Vec<String> = tasks.iter().map(|task| task.row().id.clone()).collect();
-        self.db.apply_tasks_change(&ids, commit, actor, f)
+        self.db.apply_tasks_change(&ids, write, actor, f)
     }
 
     /// Moves `tasks` into `column` in the order given, all in one write transaction: when any
@@ -1806,14 +1806,14 @@ impl AccountDb {
     }
 
     /// Moves each of `tasks` into the recycle bin in one write transaction, as
-    /// [`AccountDb::delete_task`] does for one. Returns `false` and moves none when any task is
-    /// missing. With [`Commit::Discard`] it moves none.
+    /// [`AccountDb::delete_task`] does for one. Moves none when any task is missing or its fence
+    /// is stale. With [`Commit::Discard`] it moves none.
     pub fn delete_tasks_logged(
         &self,
         tasks: &[OwnedTask],
-        commit: Commit,
+        write: BulkWrite,
         actor: Actor<'_>,
-    ) -> DbResult<bool> {
+    ) -> DbResult<ChangeOutcome<()>> {
         let mut ids = Vec::with_capacity(tasks.len());
         for task in tasks {
             self.check_links_granted(&task.row().id)?;
@@ -1822,7 +1822,7 @@ impl AccountDb {
             }
             ids.push(task.row().id.clone());
         }
-        self.db.delete_tasks_logged(&ids, commit, actor)
+        self.db.delete_tasks_logged(&ids, write, actor)
     }
 
     /// Edits the links of each of `tasks` in one write transaction, writing nothing when a change
@@ -1832,7 +1832,7 @@ impl AccountDb {
         &self,
         tasks: &[OwnedTask],
         edit: &LinkEdit<'_>,
-        commit: Commit,
+        write: BulkWrite,
         actor: Actor<'_>,
     ) -> DbResult<ChangeOutcome<LinkRefusal>> {
         let mut ids = Vec::with_capacity(tasks.len());
@@ -1847,7 +1847,7 @@ impl AccountDb {
             }
             ids.push(task.row().id.clone());
         }
-        self.db.change_links_logged(&ids, edit, commit, actor)
+        self.db.change_links_logged(&ids, edit, write, actor)
     }
 
     /// Removes a task its own creation takes back, leaving nothing in the recycle bin.

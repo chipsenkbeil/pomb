@@ -69,12 +69,12 @@ use crate::backup::{BackupFile, RunError};
 use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
     AdminActionOutcome, AgentRoleNameTaken, BoardDenied, BookmarkAdd, BookmarkPatch, Bound,
-    BulkMove, ChangeOutcome, ChildLinks, ChildRef, ChildTokenRefusal, ClaimOutcome, ClaimRequest,
-    ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnMove, ColumnWatch, CommentWrite,
-    Commit, CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, DuplicateAttachment,
-    EntryEdit, EpicCloseOutcome, EventRead, FeedAdd, FencedWrite, FieldCreateOutcome,
-    FirstPasskeyOutcome, GrabRequest, InboundColumnMissing, Incoming, InstanceDb, LargestUse,
-    LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkReads, LinkRefusal,
+    BulkMove, BulkWrite, ChangeOutcome, ChildLinks, ChildRef, ChildTokenRefusal, ClaimOutcome,
+    ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnMove, ColumnWatch,
+    CommentWrite, Commit, CopyTasks, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll,
+    DuplicateAttachment, EntryEdit, EpicCloseOutcome, EventRead, FeedAdd, FencedWrite,
+    FieldCreateOutcome, FirstPasskeyOutcome, GrabRequest, InboundColumnMissing, Incoming,
+    InstanceDb, LargestUse, LinkAddOutcome, LinkDeleteOutcome, LinkEdit, LinkReads, LinkRefusal,
     MAX_AGENT_ROLES_PER_ACCOUNT, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MemberSet,
     MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment,
     NewTaskPlacement, NewTimeEntry, NewWebhook, NumberingExhausted, OwnedBoard, OwnedColumn,
@@ -11196,7 +11196,7 @@ struct BulkTasksResult {
         (status = 400, description = "Invalid input: no tasks, too many, a repeated id, a task of another board, an unknown column or swimlane, a `color` without a known `color_id`, a `labels` change with no labels, a `members` change with no ids or an id that is not the account, a `subtasks` change with no names, a `due_dates` change without a mode or a date or with a target column of another board, a `relations` change with no links, an unknown kind, a target among the tasks, a link the tasks cannot hold or a `parent` or `child` link whose umbrella is not an epic (`not_epic`)"),
         (status = 403, description = "`permission_denied`: the token lacks the permission the action needs, or lacks `links.delete` and removes a link it did not create. `card_locked`: a task carries a locking label, or a task it links to carries one and the link is not `blocked_by` or `related`, and the token lacks `tasks.edit_locked`. `role_move_forbidden`: a `move` by a token issued as a role that the board's column rules do not let move one of the tasks out of its column into the target. `permission_denied` also covers a `move` of an epic across a Done column boundary without `epics.manage`, which refuses the whole batch"),
         (status = 404, description = "Board or task not found, or a task is in the recycle bin"),
-        (status = 409, description = "`lane_archived`: a task, or a task a relation touches, sits in an archived swimlane, or a `move` names one, which refuses the whole batch. `stale_fence`: a named task has a live claim or owner lease holding another fence, which refuses the whole batch before any write. `epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column. `wip_limit_reached`: a `move` would put a task past the target column's or limit group's WIP limit and `force` is not true, and no task moves"),
+        (status = 409, description = "`lane_archived`: a task, or a task a relation touches, sits in an archived swimlane, or a `move` names one, which refuses the whole batch. `stale_fence`: a named task has a live claim or owner lease holding another fence, which refuses the whole batch before any write, and so does a task whose fence went stale before the write. `epic_has_open_children`: a `move` of an epic with a child that is not Done into a WIP-limited or Done column. `wip_limit_reached`: a `move` would put a task past the target column's or limit group's WIP limit and `force` is not true, and no task moves"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -11264,7 +11264,7 @@ async fn bulk_tasks(
         tasks: &tasks,
         input: &input,
         actor,
-        commit,
+        write: BulkWrite { commit, fence },
         dry_run: input.dry_run,
     };
     let dry_run = run.dry_run;
@@ -11299,8 +11299,8 @@ struct BulkRun<'a> {
     input: &'a BulkTasksInput,
     /// Who the history events name.
     actor: Actor<'a>,
-    /// Whether the write commits.
-    commit: Commit,
+    /// Whether the write commits and the fence it holds each task to.
+    write: BulkWrite,
     /// Whether the request only checks.
     dry_run: bool,
 }
@@ -11322,7 +11322,7 @@ fn run_bulk_color(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> {
     bulk_change(
         db,
         run.tasks,
-        run.commit,
+        run.write,
         run.actor,
         show,
         None,
@@ -11347,7 +11347,7 @@ fn run_bulk_labels(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> 
     bulk_change(
         run.account,
         run.tasks,
-        run.commit,
+        run.write,
         run.actor,
         show,
         None,
@@ -11377,7 +11377,7 @@ fn run_bulk_members(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError>
     bulk_change(
         run.account,
         run.tasks,
-        run.commit,
+        run.write,
         run.actor,
         show_members,
         None,
@@ -11393,7 +11393,7 @@ fn run_bulk_unassign_members(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, 
     bulk_change(
         run.account,
         run.tasks,
-        run.commit,
+        run.write,
         run.actor,
         show_members,
         None,
@@ -11435,7 +11435,7 @@ fn run_bulk_subtasks(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError
     bulk_change(
         db,
         run.tasks,
-        run.commit,
+        run.write,
         actor,
         show_subtasks,
         None,
@@ -11476,7 +11476,7 @@ fn run_bulk_due_dates(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppErro
     let mut changed = bulk_change(
         run.account,
         &changing,
-        run.commit,
+        run.write,
         run.actor,
         show_due,
         change.target_name.as_deref(),
@@ -11546,10 +11546,11 @@ fn run_bulk_relations(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppErro
         Vec::new()
     };
     match db
-        .change_links_logged(run.tasks, &edit, run.commit, run.actor)
+        .change_links_logged(run.tasks, &edit, run.write, run.actor)
         .map_err(AppError::from)?
     {
         ChangeOutcome::Changed => {}
+        ChangeOutcome::StaleFence => return Err(stale_fence()),
         ChangeOutcome::NotFound => return Err(AppError::not_found("task not found")),
         ChangeOutcome::Refused(refusal) => return Err(link_refusal(refusal)),
     }
@@ -11570,11 +11571,14 @@ fn run_bulk_delete(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> 
     } else {
         Vec::new()
     };
-    if !db
-        .delete_tasks_logged(run.tasks, run.commit, run.actor)
+    match db
+        .delete_tasks_logged(run.tasks, run.write, run.actor)
         .map_err(AppError::from)?
     {
-        return Err(AppError::not_found("task not found"));
+        ChangeOutcome::Changed => {}
+        ChangeOutcome::NotFound => return Err(AppError::not_found("task not found")),
+        ChangeOutcome::StaleFence => return Err(stale_fence()),
+        ChangeOutcome::Refused(()) => {}
     }
     if !run.dry_run {
         for task in run.tasks {
@@ -11642,7 +11646,8 @@ fn run_bulk_move(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> {
             swimlane_id.as_deref(),
             position,
             BulkMove {
-                commit: run.commit,
+                commit: run.write.commit,
+                fence: run.write.fence,
                 wip: WipCheck::forcing(run.input.force),
             },
             run.actor,
@@ -11658,9 +11663,7 @@ fn run_bulk_move(run: &BulkRun<'_>) -> Result<Vec<BulkTaskPreview>, AppError> {
         MoveOutcome::GroupLimit { count, limit } => {
             return Err(WipRefused::Group { count, limit }.into());
         }
-        MoveOutcome::StaleFence => {
-            return Err(AppError::conflict("the tasks could not be moved"));
-        }
+        MoveOutcome::StaleFence => return Err(stale_fence()),
     }
     Ok(previews)
 }
@@ -11917,7 +11920,7 @@ fn move_previews(
 fn bulk_change<F>(
     db: &AccountDb,
     tasks: &[OwnedTask],
-    commit: Commit,
+    write: BulkWrite,
     actor: Actor<'_>,
     show: BulkShow,
     target_name: Option<&str>,
@@ -11929,7 +11932,7 @@ where
     let users = db.list_users().map_err(AppError::from)?;
     let mut previews = Vec::with_capacity(tasks.len());
     let outcome = db
-        .apply_tasks_change(tasks, commit, actor, |task, context| {
+        .apply_tasks_change(tasks, write, actor, |task, context| {
             let before = task.clone();
             edit(task, context)?;
             previews.push(BulkTaskPreview {
@@ -11957,6 +11960,7 @@ where
         ChangeOutcome::Changed => Ok(previews),
         ChangeOutcome::Refused(error) => Err(error),
         ChangeOutcome::NotFound => Err(AppError::not_found("task not found")),
+        ChangeOutcome::StaleFence => Err(stale_fence()),
     }
 }
 
