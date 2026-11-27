@@ -4,6 +4,8 @@ use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+const LISTENING_LINE: &str = "pomb listening on http://127.0.0.1:";
+
 /// The interim reply hyper sends once a handler reads a request that expects it.
 const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
 
@@ -55,10 +57,9 @@ impl Server {
             port: 0,
             stdout,
         };
-        let prefix = "pomb listening on http://127.0.0.1:";
-        let seen = server.wait_for_line(prefix);
+        let seen = server.wait_for_line(LISTENING_LINE);
         let line = seen.last().expect("listening line");
-        let rest = line.strip_prefix(prefix).expect("listening line");
+        let rest = line.strip_prefix(LISTENING_LINE).expect("listening line");
         server.port = rest
             .split_whitespace()
             .next()
@@ -270,7 +271,7 @@ fn sigterm_during_startup_should_leave_a_cleanly_closed_database() {
     };
     let seen = server.wait_for_line("pomb: opening database");
     assert!(
-        !seen.iter().any(|line| line.starts_with("pomb listening")),
+        !seen.iter().any(|line| line.starts_with(LISTENING_LINE)),
         "no startup marker before listening"
     );
     let (status, log) = server.signal_and_wait("-TERM", Duration::from_secs(30));
