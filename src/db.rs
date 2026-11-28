@@ -1700,10 +1700,36 @@ fn split_settings_reads(txn: &WriteTransaction, tables: &[Rows]) -> DbResult<()>
     Ok(())
 }
 
-/// Sets each stored role's standard key from its current name, where the name is a standard
-/// role's.
+/// Sets the standard key of each stored role whose name is a standard role's and that was made in
+/// one transaction with another standard-named role of its account, as the seeded roles are. A
+/// lone standard-named role is a custom one and keeps no key.
 fn assign_role_keys(txn: &WriteTransaction) -> DbResult<()> {
+    let mut named: BTreeMap<(String, i64), BTreeSet<String>> = BTreeMap::new();
+    for role in rows_in::<AgentRoleRow, _>(&txn.open_table(AGENT_ROLES)?)? {
+        if STANDARD_ROLES
+            .iter()
+            .any(|standard| standard.name == role.name)
+        {
+            named
+                .entry((role.account_id, role.created_at))
+                .or_default()
+                .insert(role.name);
+        }
+    }
+    let batches: BTreeSet<(String, i64)> = named
+        .into_iter()
+        .filter(|(_, names)| names.len() >= 2)
+        .map(|(batch, _)| batch)
+        .collect();
     rewrite_rows(txn, AGENT_ROLES, |_, role| {
+        let account = role.get("account_id").and_then(serde_json::Value::as_str);
+        let created = role.get("created_at").and_then(serde_json::Value::as_i64);
+        let (Some(account), Some(created)) = (account, created) else {
+            return false;
+        };
+        if !batches.contains(&(account.to_owned(), created)) {
+            return false;
+        }
         let key = role
             .get("name")
             .and_then(serde_json::Value::as_str)
@@ -20195,11 +20221,37 @@ mod role_key_upgrade_tests {
         stamp_schema_version(path, version);
     }
 
-    fn key_of(db: &Db, role: &str) -> Option<StandardKey> {
-        db.agent_role(AccountId::ownerless().as_str(), role)
+    #[must_use]
+    fn key_of(db: &Db, account: &AccountId, role: &str) -> Option<StandardKey> {
+        db.agent_role(account.as_str(), role)
             .expect("read")
             .expect("role")
             .standard
+    }
+
+    #[must_use]
+    fn role_id(db: &Db, account: &AccountId, name: &str) -> String {
+        db.list_agent_roles(account.as_str())
+            .expect("roles")
+            .into_iter()
+            .find(|role| role.name == name)
+            .expect("role named")
+            .id
+    }
+
+    fn rewrite_roles(path: &str, mut edit: impl FnMut(&mut JsonObject)) {
+        let raw = redb::Database::create(path).expect("raw open");
+        let txn = raw.begin_write().expect("write txn");
+        rewrite_rows(&txn, AGENT_ROLES, |_, role| {
+            edit(role);
+            true
+        })
+        .expect("rewrite");
+        txn.commit().expect("commit");
+    }
+
+    fn clear_keys(role: &mut JsonObject) {
+        role.insert("standard".to_string(), serde_json::Value::Null);
     }
 
     #[test]
@@ -20207,23 +20259,24 @@ mod role_key_upgrade_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("test.redb");
         let path = path.to_str().expect("utf8 path");
-        let account = AccountId::ownerless();
-        let (reviewer, scribe) = {
+        let (account, reviewer, scribe) = {
             let db = Db::connect(path).expect("connect");
+            let account = db.create_user("owner").expect("user");
             let held = BTreeSet::from([Permission::TasksRead]);
-            let reviewer = db
-                .create_agent_role(account.as_str(), "reviewer", held.clone())
-                .expect("reviewer");
             let scribe = db
                 .create_agent_role(account.as_str(), "scribe", held)
                 .expect("scribe");
-            assert_eq!(reviewer.standard, None);
-            (reviewer.id, scribe.id)
+            let reviewer = role_id(&db, &account, "reviewer");
+            (account, reviewer, scribe.id)
         };
+        rewrite_roles(path, clear_keys);
         stamp(path, 79);
         let db = Db::connect(path).expect("upgrade");
-        assert_eq!(key_of(&db, &reviewer), Some(StandardKey::Reviewer));
-        assert_eq!(key_of(&db, &scribe), None);
+        assert_eq!(
+            key_of(&db, &account, &reviewer),
+            Some(StandardKey::Reviewer)
+        );
+        assert_eq!(key_of(&db, &account, &scribe), None);
         db.update_agent_role(account.as_str(), &reviewer, Some("checker"), None)
             .expect("rename");
         let held = BTreeSet::from([Permission::TasksRead]);
@@ -20232,8 +20285,48 @@ mod role_key_upgrade_tests {
             .expect("custom");
         drop(db);
         let db = Db::connect(path).expect("reopen");
-        assert_eq!(key_of(&db, &reviewer), Some(StandardKey::Reviewer));
-        assert_eq!(key_of(&db, &custom.id), None);
+        assert_eq!(
+            key_of(&db, &account, &reviewer),
+            Some(StandardKey::Reviewer)
+        );
+        assert_eq!(key_of(&db, &account, &custom.id), None);
+    }
+
+    #[test]
+    fn a_custom_reviewer_should_stay_unkeyed_after_the_schema_81_upgrade() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let path = path.to_str().expect("utf8 path");
+        let (account, seeded, custom) = {
+            let db = Db::connect(path).expect("connect");
+            let account = db.create_user("owner").expect("user");
+            let seeded = role_id(&db, &account, "reviewer");
+            db.update_agent_role(account.as_str(), &seeded, Some("checker"), None)
+                .expect("rename");
+            let held = BTreeSet::from([Permission::TasksRead]);
+            let custom = db
+                .create_agent_role(account.as_str(), "reviewer", held)
+                .expect("custom");
+            (account, seeded, custom.id)
+        };
+        rewrite_roles(path, |role| {
+            clear_keys(role);
+            if role.get("id").and_then(serde_json::Value::as_str) == Some(custom.as_str()) {
+                let created = role["created_at"].as_i64().expect("created_at");
+                role.insert("created_at".to_string(), serde_json::json!(created + 10));
+            }
+        });
+        stamp(path, 79);
+        let db = Db::connect(path).expect("upgrade");
+        assert_eq!(key_of(&db, &account, &custom), None);
+        assert_eq!(key_of(&db, &account, &seeded), None);
+        for standard in STANDARD_ROLES
+            .iter()
+            .filter(|standard| standard.key != StandardKey::Reviewer)
+        {
+            let id = role_id(&db, &account, standard.name);
+            assert_eq!(key_of(&db, &account, &id), Some(standard.key));
+        }
     }
 }
 
