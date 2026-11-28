@@ -15315,6 +15315,7 @@ struct AnswerInput {
     responses(
         (status = 200, description = "The question comment with its answer", body = TaskComment),
         (status = 400, description = "Neither choice nor other, both together, a blank or too long other, a choice number the question lacks, a token without a non-empty quote, a quote that is too long, or the comment is not a question"),
+        (status = 403, description = "`permission_denied`: the task is an epic, the choice's column crosses a Done column boundary and the token lacks `epics.manage`. `role_move_forbidden`: the token was issued as a role and the board's column rules do not let that role move a task out of its column into the choice's column. `card_locked`: the task carries a locking label other than `needs:human` and the token lacks `tasks.edit_locked`"),
         (status = 404, description = "Task or comment not found"),
         (status = 409, description = "The question is answered already, its column is gone, `wip_limit_reached`, or `epic_has_open_children`: an epic with a child that is not Done may not enter a WIP-limited or Done column"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -15390,10 +15391,16 @@ async fn answer_comment_question(
                 ));
             }
             if task.row().column_id != destination.row().id {
-                if let Some(from) = account
+                let from_column = account
                     .column(&task.row().column_id)
-                    .map_err(AppError::from)?
-                {
+                    .map_err(AppError::from)?;
+                ensure_epic_close_allowed(
+                    &user,
+                    task.row(),
+                    from_column.as_ref().map(|c| c.row()),
+                    destination.row(),
+                )?;
+                if let Some(from) = &from_column {
                     ensure_role_move_allowed(&account, &user, from.row(), destination.row())?;
                 }
                 ensure_entry_allowed(&account, destination.row(), task.board_id(), task.row())?;

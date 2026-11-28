@@ -7,11 +7,12 @@ use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{TEST_BODY_4_MIB_BYTES, TEST_SHIPPED_COLUMN, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::{Db, NewTaskPlacement};
+use crate::db::{ColumnKind, Db, NewTaskPlacement};
 use crate::models::{AccountId, AuthScope, HistoryKind, NEEDS_HUMAN_LABEL, TaskRow};
 
 const REVIEW_COLUMN: &str = "Review";
 const PARKED_COLUMN: &str = "Parked";
+const CLOSED_COLUMN: &str = "Closed";
 
 /// Edits a valid question to drop or break one part.
 type Breaker = Box<dyn Fn(&mut Value)>;
@@ -490,6 +491,47 @@ async fn a_question_on_an_epic_should_block_it() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let after = detail(&fx, &epic).await;
     assert_eq!(after["column_id"], json!(fx.blocked), "{after}");
+}
+
+#[tokio::test]
+async fn an_epic_question_answer_crossing_done_should_need_epics_manage() {
+    let fx = fixture();
+    mark_blocked(&fx).await;
+    let closed = fx
+        .db
+        .create_column_as(&fx.board_id, CLOSED_COLUMN, None, ColumnKind::Done)
+        .expect("column");
+    let epic = card(&fx, json!({"kind": "epic"})).await;
+    let mut asked = question(&fx);
+    asked["choices"][0]["column_id"] = json!(closed);
+    let (status, comment) = ask(&fx, &epic, asked).await;
+    assert_eq!(status, StatusCode::OK, "{comment}");
+    let comment = comment["id"].as_str().expect("id");
+
+    let (status, refused) = answer(
+        &fx,
+        Caller::Token,
+        &epic,
+        comment,
+        json!({"choice": 1, "quote": "ship it"}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["code"], "permission_denied", "{refused}");
+    assert_eq!(refused["permission"], "epics.manage", "{refused}");
+    let held = detail(&fx, &epic).await;
+    assert_eq!(held["column_id"], json!(fx.blocked), "{held}");
+    assert_eq!(held["labels"], json!(["needs:human"]), "{held}");
+    assert_eq!(
+        comments(&fx, &epic).await[0]["question"]["answer"],
+        Value::Null
+    );
+    let (status, answered) =
+        answer(&fx, Caller::Browser, &epic, comment, json!({"choice": 1})).await;
+    assert_eq!(status, StatusCode::OK, "{answered}");
+    let moved = detail(&fx, &epic).await;
+    assert_eq!(moved["column_id"], json!(closed), "{moved}");
 }
 
 #[tokio::test]
