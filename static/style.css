@@ -1,6 +1,6 @@
 /* Pomb — KanbanFlow-style light board. */
 
-/* KF-233: Open Sans Bold (KanbanFlow's UI font — their public CSS font
+/* Open Sans Bold (KanbanFlow's UI font — their public CSS font
    stack leads with Open Sans). Self-hosted latin subset (18KB) so the
    Boards button matches KanbanFlow's text metrics with no network
    dependency. Scoped to .boards-btn only; the app-wide stack is untouched. */
@@ -20,7 +20,7 @@
   --accent: #2563eb;
   --danger: #dc2626;
   --radius: 10px;
-  /* KanbanFlow board tokens: WIP-limit violation styling (KF-034). */
+  /* KanbanFlow board tokens: WIP-limit violation styling. */
   --board-headerWarningTextColor: darkred;
   --board-warningLineColor: #ff8080;
   --btn-bg: #ffffff;
@@ -354,7 +354,7 @@ body {
 
 /* ---------- top bar ---------- */
 
-/* KF-233: KanbanFlow's dark bar is #333333, 34px tall (golden board/02:
+/* KanbanFlow's dark bar is #333333, 34px tall (golden board/02:
    rows 0-33) with no shaded rows below it; the Boards button sits at x=10,
    so the bar's left padding is 10px, not 1rem. */
 .topbar {
@@ -371,14 +371,14 @@ body {
 }
 
 .topbar h1 { font-size: 1.15rem; margin: 0; font-weight: 600; }
-/* KF-233: stretch to the bar's full height so the Boards button can sit at
+/* Stretch to the bar's full height so the Boards button can sit at
    its exact (10,4) offset via margin-top instead of vertical centering. */
 .topbar-left { display: flex; align-items: flex-start; align-self: stretch; gap: 0.9rem; }
 .topbar-right { display: flex; align-items: center; gap: 10px; }
 .user { color: var(--topbar-ink-muted); font-size: 0.9rem; }
-/* KF-029: initials avatar circle in the dark top bar (KanbanFlow parity). */
-/* KF-195: the avatar is now the account-menu button. */
-/* KF-213: the avatar sits in a rounded-square well like the other top-bar
+/* Initials avatar circle in the dark top bar (KanbanFlow parity). */
+/* The avatar is now the account-menu button. */
+/* The avatar sits in a rounded-square well like the other top-bar
    icons. The account menu is position:fixed and anchored by JS to the
    button's rect, so restyling the wrap does not move the menu. */
 .account-wrap {
@@ -393,8 +393,8 @@ body {
   flex: none;
 }
 .account-wrap:hover { background: var(--topbar-well-hover-bg); }
-/* KF-234: top-bar account avatar is KanbanFlow's white circle with brown
-   initials (GM-005) — not a dark disc with white initials. */
+/* Top-bar account avatar is KanbanFlow's white circle with brown
+   initials — not a dark disc with white initials. */
 .user-avatar {
   width: 22px;
   height: 22px;
@@ -413,7 +413,7 @@ body {
 }
 button.user-avatar:hover { background: var(--topbar-avatar-hover-bg); }
 button.user-avatar:focus-visible { outline: 2px solid var(--topbar-focus-ring); outline-offset: 2px; }
-/* KF-195: account dropdown menu in the dark top bar. */
+/* Account dropdown menu in the dark top bar. */
 .account-menu-head {
   padding: 0.45rem 0.6rem;
   font-size: 0.8rem;
@@ -433,7 +433,7 @@ button.user-avatar:focus-visible { outline: 2px solid var(--topbar-focus-ring); 
 }
 .account-signout { margin: 0; }
 .account-signout button { width: 100%; }
-/* KF-310: notifications panel popover under the bell (empty state). */
+/* Notifications panel popover under the bell (empty state). */
 .notifications-panel { min-width: 16rem; max-width: calc(100vw - 16px); }
 .notifications-panel-head {
   padding: 0.45rem 0.6rem;
@@ -502,8 +502,8 @@ button.user-avatar:focus-visible { outline: 2px solid var(--topbar-focus-ring); 
   text-align: center;
   white-space: nowrap;
 }
-/* KF-030/KF-031: icon buttons in the dark top bar (KanbanFlow parity).
-   KF-213: rounded-square button wells (were bare icons). */
+/* Icon buttons in the dark top bar (KanbanFlow parity).
+   Rounded-square button wells (were bare icons). */
 .topbar-icon-btn {
   background: var(--topbar-well-bg);
   border: none;
@@ -522,7 +522,7 @@ button.user-avatar:focus-visible { outline: 2px solid var(--topbar-focus-ring); 
 }
 .topbar-icon-btn:hover { color: var(--topbar-ink-strong); background: var(--topbar-well-hover-bg); }
 .topbar-icon-btn:focus-visible { outline: 2px solid var(--topbar-focus-ring); outline-offset: 2px; }
-/* KF-235: bell icon glyph — pixel-exact 17x17 reconstruction of the GM-007
+/* Bell icon glyph — pixel-exact 17x17 reconstruction of the
    golden (dome / mouth slit / rim bar / clapper); true 17x17px box so the
    rendered glyph bbox matches the golden exactly. */
 .topbar-icon-btn .topbar-bell-icon { display: block; width: 17px; height: 17px; }
@@ -564,7 +564,7 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
 .topbar .btn-ghost { color: var(--topbar-ink-muted); }
 .topbar .btn-ghost:hover { color: var(--topbar-ink-strong); background: var(--topbar-ghost-hover-bg); }
 
-/* KF-022: centered brand mark in the dark top bar (KanbanFlow parity). */
+/* Centered brand mark in the dark top bar (KanbanFlow parity). */
 .brand-logo {
   position: absolute;
   left: 50%;
@@ -582,7 +582,7 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
 .brand-logo:hover { text-decoration: none; opacity: 0.92; }
 .brand-logo-name { color: var(--topbar-ink); }
 
-/* KF-324: at narrow viewports the absolutely-centered wordmark overlaps the
+/* At narrow viewports the absolutely-centered wordmark overlaps the
    topbar-right icon buttons (e.g. #notifications-btn) — the logo paints
    above static siblings. Hide it below 768px so the wordmark and bell never
    overlap at any viewport width. */
@@ -590,7 +590,7 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
   .brand-logo { display: none; }
 }
 
-/* KF-023: board tabs in the dark top bar (KanbanFlow parity). */
+/* Board tabs in the dark top bar (KanbanFlow parity). */
 .board-tabs { display: flex; align-items: center; gap: 0.25rem; }
 .board-tab {
   display: inline-flex;
@@ -623,8 +623,8 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
 .board-tab-add { font-size: 1.15rem; padding: 0.3rem 0.6rem; color: var(--ink-faint); }
 .board-tab-add:hover { color: var(--topbar-ink-strong); }
 
-/* KF-174: single Boards button (KanbanFlow parity).
-   KF-233: golden board/02: 100x26 #515151 at (10,4), 2px corners; the
+/* Single Boards button (KanbanFlow parity).
+   Golden board/02: 100x26 #515151 at (10,4), 2px corners; the
    18px glyph (3px bars at page y 10, 15, 20) starts at x=18, and the
    14px bold label at x=44. */
 .boards-btn {
@@ -661,7 +661,7 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
 }
 .boards-btn:focus-visible { outline: 2px solid var(--topbar-focus-ring); outline-offset: 2px; }
 
-/* KF-032: layout-edit view ("Layout: <board>"). */
+/* Layout-edit view ("Layout: <board>"). */
 .layout-view { padding: 2rem 2.5rem; max-width: 60rem; }
 .layout-view-head { display: flex; align-items: center; justify-content: space-between; }
 .layout-view-head h2 { margin: 0; font-size: 1.3rem; }
@@ -669,8 +669,8 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
 .layout-view-hint { color: var(--muted); margin: 0 0 1.25rem; }
 .layout-view-close { font-size: 1.5rem; line-height: 1; }
 
-/* KF-180: arrange area — columns and swimlanes lists with drag handles. */
-/* KF-246: green "Add column" button right-aligned at the end of the column list. */
+/* Arrange area — columns and swimlanes lists with drag handles. */
+/* Green "Add column" button right-aligned at the end of the column list. */
 .layout-list-add { display: flex; justify-content: flex-end; margin: 0.75rem 0 0; }
 .layout-arrange { display: flex; gap: 2.5rem; margin: 0 0 1.25rem; flex-wrap: wrap; }
 .layout-arrange-group { flex: 1 1 16rem; min-width: 0; }
@@ -716,11 +716,11 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
 
 /* ---------- board toolbar ---------- */
 
-/* KF-178: gray board-header row (KanbanFlow parity) — board name + member
+/* Gray board-header row (KanbanFlow parity) — board name + member
    avatar + Invite (+) + Timer pill + Filter + Edit layout (pencil) + Menu.
-   Replaces the KF-173 minimal name bar; the dark topbar keeps only
+   Replaces the minimal name bar; the dark topbar keeps only
    Boards / brand / user controls. */
-/* KF-361: KanbanFlow's row is 46px with 17px/10px side padding; items
+/* KanbanFlow's row is 46px with 17px/10px side padding; items
    centre on it (34px title line and shortcuts, 28px discs). */
 .board-header-row {
   display: flex;
@@ -728,19 +728,19 @@ body.dark #finder-btn { color: #ffffff; opacity: 0.7; }
   box-sizing: border-box;
   height: 46px;
   padding: 0 10px 0 17px;
-  /* KF-237: KanbanFlow's board bar is #f2f2f2. KF-358: no divider of its
+  /* KanbanFlow's board bar is #f2f2f2. It has no divider of its
      own; the board frame's top edge (10px gutter insets) is the divider. */
   background: var(--kf-hover-bg);
   position: relative;
   z-index: 45;
 }
 
-/* KF-358: the layout-edit view draws no board frame, so the bar keeps its
+/* The layout-edit view draws no board frame, so the bar keeps its
    own #c2c2c2 divider there. */
 body:has(> #layout-view:not([hidden])) > .board-header-row {
   border-bottom: 1px solid var(--board-bar-divider);
 }
-/* KF-209: spacer pushes timer/filter/edit/menu icons to the right (KanbanFlow parity). */
+/* Spacer pushes timer/filter/edit/menu icons to the right (KanbanFlow parity). */
 .board-header-spacer {
   flex: 1 1 auto;
 }
@@ -748,12 +748,12 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   font-size: 18px;
   font-weight: 700;
   margin: 0 16px 0 0;
-  /* KF-483: KanbanFlow's board title is #333. */
+  /* KanbanFlow's board title is #333. */
   color: var(--text-charcoal);
   line-height: 34px;
 }
-/* KF-178: member avatar in the gray row (owner, single-admin model).
-   KF-237: KanbanFlow parity — white 28px circle, brown #9f6021 initials,
+/* Member avatar in the gray row (owner, single-admin model).
+   KanbanFlow parity — white 28px circle, brown #9f6021 initials,
    subtle drop shadow. */
 .board-header-row .owner-avatar.board-member-avatar {
   width: 1.75rem;
@@ -764,7 +764,7 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   box-shadow: 0 1px 1px var(--badge-shadow-color);
   margin-right: 6px;
 }
-/* KF-178: gray-row icon buttons for Invite / Filter / Edit layout / Menu. */
+/* Gray-row icon buttons for Invite / Filter / Edit layout / Menu. */
 .board-bar-btn {
   border: 1px solid var(--clear);
   background: var(--clear);
@@ -780,7 +780,7 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
 }
 .board-bar-btn:hover { background: var(--icon-on-bg); }
 .board-bar-btn:focus-visible { outline: 2px solid var(--blue-500); outline-offset: 1px; }
-/* KF-238: board "Menu" button matches KanbanFlow (GM-020): solid 2px bars,
+/* Board "Menu" button matches KanbanFlow: solid 2px bars,
    #494949, bold label, wider icon-to-text gap. */
 #board-menu-btn {
   color: var(--finder-btn-ink);
@@ -793,8 +793,8 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   flex: 0 0 auto;
   display: block;
 }
-/* KF-237: invite (+) is a white 28px circle button with a dark #4d4d4d "+"
-   (KanbanFlow parity, GM-016: 11px glyph, 3px stroke). The row's 0.55rem
+/* Invite (+) is a white 28px circle button with a dark #4d4d4d "+"
+   (KanbanFlow parity, 11px glyph, 3px stroke). The row's 0.55rem
    gap is tightened to KanbanFlow's 6px avatar->invite spacing. The id
    selector keeps this above .board-bar-btn:hover's background. */
 #invite-btn {
@@ -808,7 +808,7 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   color: var(--invite-ink);
   box-shadow: 0 1px 1px var(--badge-shadow-color);
 }
-/* KF-361: 34px shortcut boxes 6px apart, an 18px gap, then the 80px Menu
+/* 34px shortcut boxes 6px apart, an 18px gap, then the 80px Menu
    button flush with the 10px right padding. */
 #filter-btn,
 #epics-btn,
@@ -875,15 +875,15 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
 /* ---------- board table ---------- */
 
 .board-wrap {
-  /* KF-358: the wrap paints KanbanFlow's #f2f2f2 gutter; the framed board
+  /* The wrap paints KanbanFlow's #f2f2f2 gutter; the framed board
      (.board-table-wrap) carries the 10px insets so the legend stays
-     full-bleed (KF-212). */
+     full-bleed. */
   padding: 0;
   background: var(--kf-hover-bg);
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  /* KF-249: the wrap is a flex item of the board page's flex column (see
+  /* The wrap is a flex item of the board page's flex column (see
      body:has(> .board-layout) below), so flex:1 gives it exactly the space
      between the board header row and the viewport bottom. */
   flex: 1 1 auto;
@@ -891,7 +891,7 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   min-height: 0;
 }
 
-/* KF-457: the board region between the board header and the legend is the
+/* The board region between the board header and the legend is the
    only scroll container, as KanbanFlow's #board-wrapper: columns scroll
    under a fixed board header and legend, never the page. */
 .board-scroll {
@@ -915,19 +915,19 @@ body.dark .board-scroll::-webkit-scrollbar { background-color: #555555; }
 body.dark .board-scroll::-webkit-scrollbar-thumb { background-color: #777777; }
 body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
 
-/* KF-249 / KF-354 / KF-457: KanbanFlow's legend is a 23px segment row
+/* KanbanFlow's legend is a 23px segment row
    pinned under the board region, always the full viewport width. No
    padding, no vertical dividers between segments. */
 .color-legend {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  /* KF-212: edge-to-edge — no horizontal inset (KanbanFlow parity). */
+  /* Edge-to-edge — no horizontal inset (KanbanFlow parity). */
   padding: 0;
   background: var(--kf-hover-bg);
 }
 
-/* KF-249: segment row — 23px = 1px per-segment top edge + 22px fills. */
+/* Segment row — 23px = 1px per-segment top edge + 22px fills. */
 .color-legend-segments {
   flex: 0 0 auto;
   display: flex;
@@ -944,7 +944,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   text-align: center;
   line-height: 22px;
   font-size: 12px;
-  /* KF-249: KanbanFlow's text is Arial-like (KF-167 reference); the body
+  /* KanbanFlow's text is Arial-like; the body
      stack resolves to Noto/DejaVu on Linux, whose glyph shapes differ, so
      the legend names Arial first. fontconfig maps it to Liberation Sans
      (Arial-metric-compatible) here. */
@@ -954,9 +954,9 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   overflow: hidden;
 }
 
-/* KF-126: flush grid — continuous table with thin dividers, no gaps
+/* Flush grid — continuous table with thin dividers, no gaps
    (KanbanFlow parity).
-   KF-211/KF-457: columns share the table width equally down to KanbanFlow's
+   Columns share the table width equally down to KanbanFlow's
    220px (28px collapsed, plus the lane column), then hold that width and
    the board region scrolls. Chrome ignores th min-width under
    table-layout:fixed, so the floor sits on the table; the template sets
@@ -971,7 +971,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
 }
 .board-table:has(> thead .corner-cell) { --lane-column-width: 112px; }
 .board-table.board-table--names-folded { --lane-column-width: 32px; }
-/* KF-503: with every column collapsed the table sizes to its strips, as
+/* With every column collapsed the table sizes to its strips, as
    KanbanFlow's `width: auto`. */
 .board-table:not(:has(> thead .columnHeader:not(.columnHeader--collapsed))) {
   width: auto;
@@ -980,15 +980,15 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
 
 .board-table thead th {
   position: sticky;
-  /* KF-147: top must be 0, not 3.4rem. The 3.4rem assumed a viewport-relative
-     offset below the page topbar, but .board-scroll (KF-457) is a scroll
+  /* Top must be 0, not 3.4rem. The 3.4rem assumed a viewport-relative
+     offset below the page topbar, but .board-scroll is a scroll
      container, so sticky offsets resolve against it — pushing
      the header ~2.8rem down over the first swimlane row's cards (which then
      fail hit-testing as "obscured"). With top:0 the header rests in flow at
      rest and sticks to the scroller's top if it ever scrolls internally. */
   top: 0;
   z-index: 5;
-  /* KF-358: the frame's top edge rides on the sticky header, so it stays
+  /* The frame's top edge rides on the sticky header, so it stays
      under the board bar while the wrap scrolls. The 3x3 border image holds
      the #c3c3c3 rules, the #d7d7d7 separator and KanbanFlow's blended
      crossings (#cdcdcd on the frame top, #d3d3d3 on the rule under the
@@ -998,9 +998,9 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   border-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAJ0lEQVQI1y3BoQEAMAwCwc/+s6EisgYKS03vRlKTAMDdlW92t7YBeGWIEBfY/8NBAAAAAElFTkSuQmCC") 1 / 1px 0 0 0 / 0 stretch;
 }
 
-/* KF-358: column headers also paint the rule under them, outset 1px over
+/* Column headers also paint the rule under them, outset 1px over
    the first row's own rule, so it stays over scrolling cards without
-   changing the layout. 37px is KF-311's 36px band plus the frame top. */
+   changing the layout. 37px is the 36px header band plus the frame top. */
 .board-table thead .columnHeader {
   height: 37px;
   border-image-width: 1px 0 1px 1px;
@@ -1008,30 +1008,30 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
 }
 #column-headers-row .columnHeader:first-child { border-image-width: 1px 0 1px 0; }
 
-/* KF-358: opaque, so a scrolled lane label never shows through. */
+/* Opaque, so a scrolled lane label never shows through. */
 .corner-cell {
   width: var(--lane-column-width);
   border: none;
   background: var(--surface-white);
-  /* KF-445: the header rule runs under the corner cell too. */
+  /* The header rule runs under the corner cell too. */
   box-shadow: 0 1px 0 var(--rule-c3);
 }
 
-/* KF-049: flat light-gray header, not a white card (KanbanFlow parity). */
-/* KF-211: fluid column width — auto (shares table width equally under
-   table-layout:fixed); the table holds the 220px floor (KF-457). */
+/* Flat light-gray header, not a white card (KanbanFlow parity). */
+/* Fluid column width — auto (shares table width equally under
+   table-layout:fixed); the table holds the 220px floor. */
 .columnHeader {
   position: relative;
   min-width: 220px;
-  /* KF-311: #eeeeee, KanbanFlow's computed header background. */
+  /* #eeeeee, KanbanFlow's computed header background. */
   background: var(--hover-light);
   border: none;
-  /* KF-182: vertical separators between columns (KanbanFlow parity).
-     KF-358: #d7d7d7 on each column's left edge, pixel-measured on the
+  /* Vertical separators between columns (KanbanFlow parity).
+     #d7d7d7 on each column's left edge, pixel-measured on the
      09-30 capture (separators at x 390/770/1149/1529 at 1919 wide). */
   border-left: 1px solid var(--rule-d7);
   border-radius: 0;
-  /* KF-311: KanbanFlow left-aligns the name 11px in from the column's left
+  /* KanbanFlow left-aligns the name 11px in from the column's left
      edge; the "+" is out of flow at the right. */
   padding: 7px 36px 0 10px;
   text-align: left;
@@ -1039,11 +1039,11 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   cursor: default;
 }
 
-/* KF-182: no separator before the first column (the frame is its edge). */
+/* No separator before the first column (the frame is its edge). */
 #column-headers-row .columnHeader:first-child { border-left: none; }
 
 
-/* KF-036: name + count on one line, e.g. "In progress 0 / 3". */
+/* Name + count on one line, e.g. "In progress 0 / 3". */
 .columnHeader-titleRow {
   display: flex;
   align-items: baseline;
@@ -1051,7 +1051,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   min-width: 0;
 }
 
-/* KF-311: KanbanFlow's name is 15px bold #111111 on a 22.5px line. */
+/* KanbanFlow's name is 15px bold #111111 on a 22.5px line. */
 .columnHeader-name {
   min-width: 0;
   cursor: pointer;
@@ -1070,12 +1070,12 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   color: var(--kf-ink-muted);
 }
 
-/* KF-514: a long name ellipsizes at least 4px short of the sum badge. */
+/* A long name ellipsizes at least 4px short of the sum badge. */
 .columnHeader-name:has(+ .columnHeader-countBadge[data-column-sum]) {
   margin-right: 4px;
 }
 
-/* KF-311: "n / m" is 12px bold #666666, 8px after the name and 1px
+/* "n / m" is 12px bold #666666, 8px after the name and 1px
    below its baseline. */
 .columnHeader-count {
   position: relative;
@@ -1145,8 +1145,8 @@ body.dark .columnHeader-bandRow .columnHeader-groupBand--over { --band-rule: var
 body.dark .columnHeader-bandRow .columnHeader-groupBand:not(.columnHeader-groupBand--over) { color: var(--btn-ink); }
 body.dark .columnHeader--grouped:not(.columnHeader--groupedOver) { box-shadow: inset 0 2px 0 var(--btn-border); }
 
-/* KF-371: an expanded header's Column sum (Task count or Estimated hours)
-   ends the title row, so the name ellipsizes before it; the KF-313 rule
+/* An expanded header's Column sum (Task count or Estimated hours)
+   ends the title row, so the name ellipsizes before it; the rule
    on its right separates it from the "+". */
 .columnHeader-countBadge[data-column-sum] {
   position: relative;
@@ -1163,11 +1163,11 @@ body.dark .columnHeader--grouped:not(.columnHeader--groupedOver) { box-shadow: i
   pointer-events: none;
 }
 
-/* KF-037: the column add-task button is big and green. */
-/* KF-192: at the header's right edge (KanbanFlow parity) — the KF-182
+/* The column add-task button is big and green. */
+/* At the header's right edge (KanbanFlow parity) — the
    centered-below-title placement was wrong per the 2026-09-30 battery's
    live KanbanFlow check. Out of flow so the title row stays centered. */
-/* KF-311: a 34px box 2px in from the column's right edge holding
+/* A 34px box 2px in from the column's right edge holding
    KanbanFlow's 22px plus with 4px arms. */
 .columnHeader-add {
   position: absolute;
@@ -1190,14 +1190,14 @@ body.dark .columnHeader--grouped:not(.columnHeader--groupedOver) { box-shadow: i
 
 .columnHeader-add:hover { background: var(--clear); border-color: var(--add-green); color: var(--add-green); }
 
-/* WIP limit exceeded (KF-034, KF-035): darkred count + red warning line.
+/* WIP limit exceeded: darkred count + red warning line.
    The header background stays unchanged — no amber wash. */
 .columnHeader--warning .columnHeader-count {
   color: var(--board-headerWarningTextColor);
   font-weight: 700;
 }
 
-/* KF-311: across the header's bottom rule, inset to the cards' 8px. */
+/* Across the header's bottom rule, inset to the cards' 8px. */
 .columnHeader-warningLine {
   position: absolute;
   left: 8px;
@@ -1207,11 +1207,11 @@ body.dark .columnHeader--grouped:not(.columnHeader--groupedOver) { box-shadow: i
   background: var(--board-warningLineColor);
 }
 
-/* KF-362: KanbanFlow's overdue strip heads the column body: 27px #f3f3f3
+/* KanbanFlow's overdue strip heads the column body: 27px #f3f3f3
    over a #d7d7d7 rule, bold 10px #8b0000 text 11px in from the column
    edge, and a #ff8080 bar as wide as the text across the rule. */
 .columnOverdue {
-  /* KF-486: the strip starts below the header's 3px warning line; the 1px
+  /* The strip starts below the header's 3px warning line; the 1px
      margin keeps the strip's 28px footprint and the shadow keeps its colour
      on that row beside the line. */
   height: 27px;
@@ -1231,14 +1231,14 @@ body.dark .columnHeader--grouped:not(.columnHeader--groupedOver) { box-shadow: i
   height: 27px;
   margin-left: 3px;
   padding: 0 7px;
-  /* KF-530: the box starts at y 119; the 28px line height keeps the text on
+  /* The box starts at y 119; the 28px line height keeps the text on
      the row it had. */
   line-height: 28px;
   vertical-align: top;
 }
 .columnOverdue[hidden] { display: none; }
 .columnOverdue + .task-list { height: calc(100% - 28px); }
-/* KF-385: with one row of cells each column scrolls on its own, as in
+/* With one row of cells each column scrolls on its own, as in
    KanbanFlow; the list leaves the row's height to the board. */
 .board-table tbody tr.swimlane-row:only-child > .board-cell > .task-list {
   position: absolute;
@@ -1248,7 +1248,7 @@ body.dark .columnHeader--grouped:not(.columnHeader--groupedOver) { box-shadow: i
   overflow-y: auto;
 }
 .board-table tbody tr.swimlane-row:only-child > .board-cell > .columnOverdue + .task-list { top: 28px; }
-/* KF-440: a filter that clears the count hides the strip and gives its
+/* A filter that clears the count hides the strip and gives its
    28px back. */
 .columnOverdue[hidden] + .task-list { height: 100%; }
 .board-table tbody tr.swimlane-row:only-child > .board-cell > .columnOverdue[hidden] + .task-list { top: 0; height: auto; }
@@ -1262,14 +1262,14 @@ body.dark .columnHeader--grouped:not(.columnHeader--groupedOver) { box-shadow: i
   background: var(--board-warningLineColor);
 }
 
-/* KF-223: collapsed column strip (KanbanFlow parity, 09-30 captures): a
+/* Collapsed column strip (KanbanFlow parity, 09-30 captures): a
    27px strip plus its 1px separator. The header keeps the normal header
    background and height and holds only the count, darkred over the WIP
    limit. The name runs top-down in the white body. Click anywhere
    expands. */
 .columnHeader--collapsed {
   width: 28px;
-  /* KF-211: clear the .columnHeader min-width floor. */
+  /* Clear the .columnHeader min-width floor. */
   min-width: 0;
   max-width: 28px;
   padding-left: 0;
@@ -1288,7 +1288,7 @@ body.dark .columnHeader--grouped:not(.columnHeader--groupedOver) { box-shadow: i
   font-weight: 700;
 }
 
-/* KF-241: 12px bold, 1px below the strut's baseline like the expanded
+/* 12px bold, 1px below the strut's baseline like the expanded
    header's "n / m". */
 .columnHeader--collapsed .columnHeader-countBadge {
   position: relative;
@@ -1301,11 +1301,11 @@ body.dark .columnHeader--grouped:not(.columnHeader--groupedOver) { box-shadow: i
 }
 
 .columnHeader--collapsed .columnHeader-countBadge--over {
-  /* KF-241: violated strip count renders DARKRED. */
+  /* Violated strip count renders DARKRED. */
   color: var(--board-headerWarningTextColor);
 }
 
-/* KF-223/KF-241: 3px #ff8080 line across the header's bottom rule, inset
+/* 3px #ff8080 line across the header's bottom rule, inset
    3px from the strip edges, when over the WIP limit or overdue. */
 .columnHeader--collapsed .columnHeader-warningLine {
   position: absolute;
@@ -1316,10 +1316,10 @@ body.dark .columnHeader--grouped:not(.columnHeader--groupedOver) { box-shadow: i
   border-radius: 0;
 }
 
-/* KF-223: clips the name to its own cell, so it never paints past the
+/* Clips the name to its own cell, so it never paints past the
    frame or adds scroll height. As a size container its height bounds the
    rotated name, which ends in an ellipsis when the cell is too short.
-   KF-241: the name's ink starts 12px below the cell's top rule. */
+   The name's ink starts 12px below the cell's top rule. */
 .collapsedColumn-nameBox {
   position: absolute;
   inset: 10px 0 0;
@@ -1344,7 +1344,7 @@ body.dark .columnHeader--grouped:not(.columnHeader--groupedOver) { box-shadow: i
   will-change: transform;
   text-transform: uppercase;
   white-space: nowrap;
-  /* KF-487: KanbanFlow's name takes the body's system font, 118px for
+  /* KanbanFlow's name takes the body's system font, 118px for
      "IN PROGRESS" in the 10-17 golden. */
   font-family: system-ui, Arial, "Helvetica Neue", Helvetica, sans-serif;
   font-size: 16px;
@@ -1552,13 +1552,13 @@ body.dark .swimlane-filler-label { background: #3e3e3e; border-right-color: #2b2
 body.dark .swimlane-filler-cell { border-left-color: #2b2b2b; }
 body.dark .swimlane-filler-cell::after { background: #262626; }
 
-/* KF-202: board table wrap — flex row holding the board table plus
+/* Board table wrap — flex row holding the board table plus
    folded-swimlane side strips. KanbanFlow renders folded swimlanes as
    narrow vertical strips with rotated labels, not horizontal bars. */
 .board-table-wrap {
   display: flex;
   align-items: stretch;
-  /* KF-358: KanbanFlow's framed board — 10px gutter, 1px #c3c3c3 frame
+  /* KanbanFlow's framed board — 10px gutter, 1px #c3c3c3 frame
      whose bottom edge sits 9px above the viewport bottom, and white column
      bodies that fill the frame whatever the card count. min-content keeps
      the frame around the table floor on narrow viewports. */
@@ -1573,11 +1573,11 @@ body.dark .swimlane-filler-cell::after { background: #262626; }
 
 .board-table-wrap .board-table {
   flex: 1 1 auto;
-  /* KF-358: a definite height lets each .task-list fill its body. */
+  /* A definite height lets each .task-list fill its body. */
   height: 100%;
 }
 
-/* KF-457: KanbanFlow counts the frame's side edges into the first and last
+/* KanbanFlow counts the frame's side edges into the first and last
    columns, so every column spans (width - 20px) / N. The table overlaps
    the frame's side borders and the edge cells keep a clear 1px border
    that shows the frame through. */
@@ -1595,12 +1595,12 @@ body.dark .swimlane-filler-cell::after { background: #262626; }
 }
 
 
-/* board cells — KF-126: flush with subtle borders, not floating cards.
-   KF-355: KanbanFlow's column bodies are pure white (pixel-measured
+/* Board cells — flush with subtle borders, not floating cards.
+   KanbanFlow's column bodies are pure white (pixel-measured
    #ffffff 2026-10-12), not #f7f8fa. */
 .board-cell {
   background: var(--surface-white);
-  /* KF-358: #c3c3c3 rule under the header row and #e4e4e4 column
+  /* #c3c3c3 rule under the header row and #e4e4e4 column
      separators; the frame draws the outer edges. */
   border: none;
   border-top: 1px solid var(--rule-c3);
@@ -1614,7 +1614,7 @@ body.dark .swimlane-filler-cell::after { background: #262626; }
 .board-table tbody tr > .board-cell:first-child { border-left: none; }
 
 
-/* KF-358: separator crossings on the header rule and the frame bottom
+/* Separator crossings on the header rule and the frame bottom
    blend to #d3d3d3. */
 .board-cell:not(:first-child)::before,
 .board-table tbody tr:last-child > .board-cell:not(:first-child)::after {
@@ -1632,12 +1632,12 @@ body.dark .swimlane-filler-cell::after { background: #262626; }
 .board-cell--collapsed { background: var(--surface-white); padding: 0; cursor: pointer; }
 .board-cell--collapsed .task-list { display: none; }
 
-/* KF-457: an overflowing column shows KanbanFlow's 7px scrollbar. */
+/* An overflowing column shows KanbanFlow's 7px scrollbar. */
 .task-list::-webkit-scrollbar { width: 7px; }
 .task-list::-webkit-scrollbar-thumb { background-color: var(--bar-border); }
 body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 
-/* KF-363: KanbanFlow's cards sit 8px in from the column edges and 8px
+/* KanbanFlow's cards sit 8px in from the column edges and 8px
    apart. */
 .task-list {
   display: flex;
@@ -1645,13 +1645,13 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   gap: 8px;
   padding: 8px;
   min-height: 84px;
-  /* KF-358: fill the stretched column body so a card can be dropped
+  /* Fill the stretched column body so a card can be dropped
      anywhere in it. */
   height: 100%;
   box-sizing: border-box;
 }
 
-/* KF-371: "Load more tasks" under an archiving column's first page. */
+/* "Load more tasks" under an archiving column's first page. */
 .archive-load-more {
   display: block;
   width: 100%;
@@ -1664,7 +1664,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   cursor: pointer;
 }
 .archive-load-more:hover { text-decoration: underline; }
-/* KF-365: KanbanFlow's Done-column day header: bold 12px #888888 over a
+/* KanbanFlow's Done-column day header: bold 12px #888888 over a
    #d8d8d8 rule 9px in from the column edges; cards start 10px below the
    rule, the next header 14px. */
 .done-group-label {
@@ -1703,7 +1703,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   min-height: 3rem;
 }
 
-/* KF-386: a dragged card's slot is KanbanFlow's blank #fafafa box; the two
+/* A dragged card's slot is KanbanFlow's blank #fafafa box; the two
    classes outrank the card's colour classes. */
 .task-card.sortable-placeholder {
   min-height: 0;
@@ -1716,12 +1716,12 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 
 .drag-ghost { opacity: 0.4; }
 
-/* KF-048: the column being dragged renders blank/empty mid-drag
+/* The column being dragged renders blank/empty mid-drag
    (KanbanFlow parity) — the placeholder shows the drop position. */
 .column-drag-ghost { visibility: hidden; }
 
 /* ---------- task color families (exact KanbanFlow hex values) ----------
-   KF-429: borders follow KanbanFlow's taskBorderColor theme variables. */
+   Borders follow KanbanFlow's taskBorderColor theme variables. */
 
 .taskColor-yellow { background-color: var(--addtask-bg); }
 .taskBorderColor-yellow { border-color: var(--task-yellow-border); }
@@ -1775,13 +1775,13 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 
 /* ---------- task cards ---------- */
 
-/* KF-051: uniform ~2px border in the task's border color all around
+/* Uniform ~2px border in the task's border color all around
    (border-color comes from the taskBorderColor-* class on the card).
-   KF-191: reverts the KF-179 white+stripe experiment — live KanbanFlow
+   Live KanbanFlow
    renders full-card color tints (background from taskColor-*), verified
    by the 2026-09-30 battery against the live oracle. */
 .task-card {
-  /* KF-245: border-width/style WITHOUT the `border` shorthand — the
+  /* border-width/style WITHOUT the `border` shorthand — the
      shorthand resets border-color to currentColor (near-black) and, at
      equal specificity, wins over the taskBorderColor-* rules above,
      hiding the color-matched border shade. Width/style alone leave
@@ -1789,7 +1789,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   border-width: 1px;
   border-style: solid;
   border-radius: 3px;
-  /* KF-363: KanbanFlow's card box: 5px 7px 0 padding, 12px/18px #222222
+  /* KanbanFlow's card box: 5px 7px 0 padding, 12px/18px #222222
      text; a one-line card is 30px tall. */
   padding: 5px 7px 0;
   font-size: 12px;
@@ -1798,8 +1798,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   cursor: pointer;
 }
 
-/* KF-191: keep the KF-179 shadow hover — the pre-KF-179 hover referenced
-   --taskColorBorder, which is no longer defined on the card. */
+/* Keep the shadow hover: --taskColorBorder is not defined on the card. */
 .task-card:hover { box-shadow: 0 1px 3px var(--popover-shadow-color); }
 .task-card:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
@@ -1829,10 +1828,10 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 
 .card-done { color: var(--status-ontime); font-weight: 600; }
 
-/* KF-103: the live "+ 42m" inside the card time badge (10-05 capture: #8B0000). */
+/* The live "+ 42m" inside the card time badge (10-05 capture: #8B0000). */
 .card-live-inc { color: var(--kf-darkred); }
 
-/* KF-053: card metadata footer — the board-configured task properties. */
+/* Card metadata footer — the board-configured task properties. */
 .card-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1865,7 +1864,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   font-weight: 700;
 }
 
-/* KF-550: the card the timer selected keeps its 1 px box; a 3 px solid frame
+/* The card the timer selected keeps its 1 px box; a 3 px solid frame
    in the card colour and a 3 px dashed one in its border colour sit 2 px
    outside it (golden timer/22), and the timing avatar's ring is dashed. */
 .task-card.card-timer-selected {
@@ -1884,12 +1883,12 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 .task-card.card-timer-selected::after { border: 3px dashed var(--taskColorBorder); }
 .card-avatar.avatar-timing { border-style: dashed; }
 
-/* KF-224: card icon row in fixed order (description / due dates /
+/* Card icon row in fixed order (description / due dates /
    subtasks / comments / time), avatar right-aligned; icons render only for
-   features the task has. KF-376: KanbanFlow's white-filled #808080 glyphs.
-   KF-363: the row starts at the title's baseline box; 16px icons sit 2px
+   features the task has. KanbanFlow's white-filled #808080 glyphs.
+   The row starts at the title's baseline box; 16px icons sit 2px
    down at a 24px pitch and 5px above the row's end; the 27px avatar row
-   is 31px. KF-457: on a narrow card the avatar wraps to its own line, as
+   is 31px. On a narrow card the avatar wraps to its own line, as
    KanbanFlow's does at 220px columns. */
 .card-iconrow {
   display: flex;
@@ -1912,7 +1911,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   align-items: center;
   line-height: 1;
 }
-/* KF-363: "0h / 4h" is 10px #606060, 1px after the clock. */
+/* "0h / 4h" is 10px #606060, 1px after the clock. */
 .card-ico-time {
   display: inline-flex;
   align-items: center;
@@ -1963,7 +1962,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 }
 .card-circle img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
 .card-ico-time svg { color: var(--card-glyph); }
-/* KF-377: the disc's centre sits 19px in from the card's right edge, 2px
+/* The disc's centre sits 19px in from the card's right edge, 2px
    into the padding. */
 .card-avatar {
   margin: 0 -2px 4px auto;
@@ -1971,7 +1970,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   height: 27px;
   border-radius: 50%;
   background: var(--surface-white);
-  /* KF-482: the 1px ring is the card's border colour (#59d600 on green,
+  /* The 1px ring is the card's border colour (#59d600 on green,
      #70b0ff on blue in the 10-17 goldens). */
   border: 1px solid var(--taskColorBorder);
   color: var(--card-badge-ink);
@@ -1982,7 +1981,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   font-weight: 700;
   flex: none;
 }
-/* KF-378: the timing user's avatars (board header and timed card) carry
+/* The timing user's avatars (board header and timed card) carry
    KanbanFlow's play badge: a 12 px white disc, 1 px black ring and black
    triangle, overhanging the avatar's bottom-right by 3 px (10-05 capture). */
 .avatar-timing { position: relative; overflow: visible; }
@@ -1995,34 +1994,34 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   height: 12px;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Ccircle cx='6' cy='6' r='5.5' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M4.4 3.8v4.4L8.1 6z'/%3E%3C/svg%3E") no-repeat;
 }
-/* KF-243: a title row that carries the avatar grows to its 27px height
-   and the title sits at the top, matching GM-069. */
+/* A title row that carries the avatar grows to its 27px height
+   and the title sits at the top, matching the golden. */
 .card-title-has-avatar {
   display: flow-root;
   margin-bottom: 0;
 }
-/* KF-539: the avatar floats after the name, so a name that fills the line
+/* The avatar floats after the name, so a name that fills the line
    keeps its width and the avatar drops to the next line (responsive/1120). */
 .card-title-has-avatar .card-avatar { float: right; }
 
-/* KF-224: card sections. Due-dates and subtasks sections sit under a
+/* Card sections. Due-dates and subtasks sections sit under a
    dotted divider tinted with the card color (--taskColorBorder comes from
    the taskColorVars-* class on the card). */
-/* KF-363: sections sit under a 1px dashed rule in the card's border
+/* Sections sit under a 1px dashed rule in the card's border
    colour; the due line is 10px on a 15px line with 4px above and below. */
 .card-duesec, .card-subsec {
   border-top: 1px dashed var(--taskColorBorder, var(--panel-line));
 }
 .card-duesec { padding: 4px 0; }
 .card-subsec { padding: 6px 0; }
-/* KF-244: "Due: Friday 5:00 PM (Done)" — dark near-black text per GM-069
+/* "Due: Friday 5:00 PM (Done)" — dark near-black text per the golden
    pixels (text core rgb(34,34,34)); .task-dueDateColumn is KanbanFlow's
-   class for the parenthetical, the due date's target column (KF-259). */
-/* KF-259: KanbanFlow's due line is 10px/15px; only the date is bold. */
+   class for the parenthetical, the due date's target column. */
+/* KanbanFlow's due line is 10px/15px; only the date is bold. */
 .card-dueline { color: var(--text-dark); font-size: 10px; line-height: 15px; }
 .card-dueline strong { font-weight: 700; }
-/* KF-259: KanbanFlow's overdue due line: #8b0000 text after a red "!"
-   disc (#be0000) in a 22px left gutter (cards/06 golden); the line is a 22px box, 4px above, 3px below (KF-539). */
+/* KanbanFlow's overdue due line: #8b0000 text after a red "!"
+   disc (#be0000) in a 22px left gutter (cards/06 golden); the line is a 22px box, 4px above, 3px below. */
 .card-dueline.card-due-overdue { color: var(--kf-darkred); font-weight: 400; position: relative; padding: 4px 0 3px 22px; }
 .card-dueline.card-due-overdue::before {
   content: '!'; position: absolute; left: 2px; top: 4px;
@@ -2030,14 +2029,14 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   font-size: 11px; font-weight: 700; line-height: 15px; text-align: center;
 }
 
-/* KF-224: inline subtasks — custom square checkboxes (native input
+/* Inline subtasks — custom square checkboxes (native input
    hidden), no strikethrough on done items (KanbanFlow parity). */
 .subTasks {
   list-style: none;
   margin: 0;
   padding: 0;
 }
-/* KF-364: 18px rows 7px apart, a 16px box with a #999999 rim, 5px to the
+/* 18px rows 7px apart, a 16px box with a #999999 rim, 5px to the
    name; done names are #777777. */
 .subTasks li { margin-bottom: 7px; }
 .subTasks li:last-child { margin-bottom: 0; }
@@ -2086,7 +2085,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 
 /* ---------- add-task dialog ---------- */
 
-/* KF-302: KanbanFlow's add-task dialog: 500px wide with 30px padding, 25px
+/* KanbanFlow's add-task dialog: 500px wide with 30px padding, 25px
    from the top over a #000/.6 overlay, tinted with the chosen colour (the
    face inline, the border colour in --addTaskBorder). */
 .addTask-overlay {
@@ -2327,8 +2326,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 
 /* ---------- color legend ---------- */
 
-/* KF-249: the legend strip rules now live with the board table (KF-205
-   block above). The old per-segment padding/font/divider rules were
+/* The legend strip rules now live with the board table (block above). The old per-segment padding/font/divider rules were
    removed: KanbanFlow's strip is 33px (1px rule + 9px band + 23px segment
    row), fills are flush with no vertical dividers, labels are 12px #222. */
 
@@ -2364,7 +2362,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 #grouping-date-dialog .dlg.grouping-date-dlg { width: 220px; }
 #grouping-date-dialog .gd-input { box-sizing: border-box; width: 100%; height: 30px; }
 
-/* (KF-183 checkmark removed by KF-353: toggle switches show the state now.) */
+/* (The checkmark was removed: toggle switches show the state now.) */
 
 .menu-pop a {
   display: block;
@@ -2391,7 +2389,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 
 .menu-floating { position: fixed; }
 
-/* KF-542: KanbanFlow's card context menu (cards/01, cards/03 goldens): a
+/* KanbanFlow's card context menu (cards/01, cards/03 goldens): a
    184px panel, 4px radius, 5px above and below, flush 34px rows with 15px
    text and an 18px icon 12px before it. */
 #card-ctx-menu {
@@ -2413,7 +2411,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 #card-ctx-menu .menu-item-icon { width: 18px; height: 18px; margin-right: 12px; vertical-align: baseline; align-items: center; justify-content: center; }
 #card-ctx-menu .menu-arrow { float: none; margin-left: auto; }
 
-/* KF-333: KanbanFlow's card Color submenu: a 140px flush list of 34px rows
+/* KanbanFlow's card Color submenu: a 140px flush list of 34px rows
    tinted with each colour (inline), 15px text, no hover change. */
 #card-ctx-submenu.card-sub--color {
   width: 140px;
@@ -2454,7 +2452,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   border-left: 2px solid var(--tm-line);
 }
 
-/* KF-223: "Show details" column popover (KanbanFlow parity, 09-30
+/* "Show details" column popover (KanbanFlow parity, 09-30
    capture): 377px box with a #c3c3c3 border, a 30px #eeeeee title band
    over a #d7d7d7 rule, and a 34px body; both lines centred. */
 .details-popup {
@@ -2518,7 +2516,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   justify-content: center;
   padding: 25px 1rem;
   z-index: 100;
-  overflow: hidden; /* KF-250: the modal scrolls internally; the backdrop never scrolls */
+  overflow: hidden; /* The modal scrolls internally; the backdrop never scrolls */
 }
 
 .task-modal {
@@ -2541,7 +2539,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   position: relative;
 }
 
-/* KF-250: lock the board behind the modal so it cannot scroll while open. */
+/* Lock the board behind the modal so it cannot scroll while open. */
 body.modal-open { overflow: hidden; }
 
 .task-modal-head {
@@ -2550,7 +2548,7 @@ body.modal-open { overflow: hidden; }
   align-items: center;
   padding: 0.7rem 1rem;
   border-bottom: 1px solid var(--icon-on-bg);
-  flex-shrink: 0; /* KF-250: the header never collapses when the body scrolls */
+  flex-shrink: 0; /* The header never collapses when the body scrolls */
 }
 
 .task-modal-head input,
@@ -2571,7 +2569,7 @@ body.modal-open { overflow: hidden; }
 .task-modal-head input:focus,
 .task-modal-head textarea:focus { border-color: var(--accent); outline: none; background: var(--surface-white); }
 
-/* KF-524: the title wraps over as many 28px lines as it needs (goldens
+/* The title wraps over as many 28px lines as it needs (goldens
    modal/23 and modal/27); the close button leaves the flow so the text
    runs to 30px from the modal's right edge. */
 .task-modal-head { position: relative; padding-right: 30px; }
@@ -2622,8 +2620,8 @@ body.modal-open { overflow: hidden; }
 
 /* KanbanFlow parity: vertical action toolbar OUTSIDE the modal's right edge,
    against the dimmed board — 44px white circles with #666 glyphs and white
-   label pills to the right of each circle (KF-252). Geometry measured from
-   GM-076-modal-open.png (1919x998, DPR 1) via connected-component pixel
+   label pills to the right of each circle. Geometry measured from
+   the modal-open golden (1919x998, DPR 1) via connected-component pixel
    scans: circles 44px dia (bbox x1265-1310/y50-95 at >238 thr), 56px vertical
    pitch, first circle top 26px below the wrap top, 11px right of the modal
    edge; pills h28 left-aligned at circle_right+11, #555 13px text. */
@@ -2655,7 +2653,7 @@ body.modal-open { overflow: hidden; }
   flex: 0 0 auto;
   border-radius: 50%;
   background: var(--surface-white);
-  /* GM-076: no border ring on the circles — edge goes board->AA->white. */
+  /* No border ring on the circles — edge goes board->AA->white. */
   border: none;
   box-shadow: 0 1px 5px var(--black-22);
   display: flex;
@@ -2667,8 +2665,8 @@ body.modal-open { overflow: hidden; }
 }
 
 .tm-icon-btn:hover .tm-icon { background: var(--surface-soft); }
-/* GM-076: the + text glyph renders ~2x the 20px icon size (21px wide in the
-   master); emoji glyphs match at 20px, so only it scales up. (KF-320: the
+/* The + text glyph renders ~2x the 20px icon size (21px wide in the
+   master); emoji glyphs match at 20px, so only it scales up. (the
    Move arrow is an inline SVG sized ~21px wide with a 2px shaft.) */
 .tm-icon.tm-glyph-lg { font-size: 38px; }
 
@@ -2678,7 +2676,7 @@ body.modal-open { overflow: hidden; }
   line-height: 1.2;
   color: var(--text-medium);
   background: var(--surface-white);
-  /* GM-076: no border ring on the pills either; ~3px radius, soft shadow. */
+  /* No border ring on the pills either; ~3px radius, soft shadow. */
   border: none;
   border-radius: 3px;
   padding: 6px 11px;
@@ -2739,7 +2737,7 @@ body.modal-open { overflow: hidden; }
 
 .tm-menu button:hover { background: var(--divider-soft); }
 
-/* KF-282: timer-area context menu — items are disabled while no task is
+/* Timer-area context menu — items are disabled while no task is
    timed (KanbanFlow grays inapplicable items). */
 #timer-ctx-menu button:disabled {
   color: var(--ink-faint);
@@ -2747,7 +2745,7 @@ body.modal-open { overflow: hidden; }
 }
 #timer-ctx-menu button:disabled:hover { background: none; }
 
-/* KF-013: hover menu on the task modal's "Time spent" stat. */
+/* Hover menu on the task modal's "Time spent" stat. */
 .tm-stat-menu { position: relative; }
 .tm-hover-menu {
   display: none;
@@ -2795,7 +2793,7 @@ body.modal-open { overflow: hidden; }
 }
 
 
-/* Subtasks section (KanbanFlow parity, KF-058). */
+/* Subtasks section (KanbanFlow parity). */
 .tm-section-title {
   font-size: 0.95rem;
   font-weight: 700;
@@ -2841,9 +2839,9 @@ body.modal-open { overflow: hidden; }
   overflow-wrap: anywhere;
 }
 
-/* KF-264: per-row drag/menu handle (GM-085): muted-gray vertical ellipsis
+/* Per-row drag/menu handle: muted-gray vertical ellipsis
    replacing the old × delete button. Opens a small menu with
-   "Delete subtask" (styled in-page confirm, KF-047 pattern). */
+   "Delete subtask" (styled in-page confirm pattern). */
 .tm-subtask-handle {
   border: none;
   background: transparent;
@@ -2863,7 +2861,7 @@ body.modal-open { overflow: hidden; }
 
 .tm-subtask-addrow { margin-top: 0.35rem; }
 
-/* KF-265: KanbanFlow (GM-085) renders "Add subtask..." as a plain unstyled
+/* KanbanFlow renders "Add subtask..." as a plain unstyled
    text row — no box, no border; the text sits in the subtask-name column at
    #666 on the transparent modal background. Height-preserving: the old 1px
    borders are folded into the vertical padding so the row's outer height
@@ -2873,7 +2871,7 @@ body.modal-open { overflow: hidden; }
   box-sizing: border-box;
   border: none;
   border-radius: 0;
-  /* left edge aligns with .tm-subtask-name: row pad 0.4rem + check 1rem +
+  /* Left edge aligns with .tm-subtask-name: row pad 0.4rem + check 1rem +
      check UA margins (4px left + 3px right) + flex gap 0.5rem = 37.4px */
   padding: calc(0.45rem + 1px) 0.6rem calc(0.45rem + 1px) calc(1.9rem + 7px);
   font: inherit;
@@ -2885,9 +2883,9 @@ body.modal-open { overflow: hidden; }
 
 .tm-subtask-addrow input:focus { outline: none; border: none; background: transparent; }
 
-/* Members row avatars in the modal body (KF-261, GM-074): 30px avatar
+/* Members row avatars in the modal body: 30px avatar
    discs + a 30px ⊕ add-member button, replacing the old text chips.
-   Geometry transcribed from GM-074 at DPR 1 (the masters are 1919x998
+   Geometry transcribed from the golden at DPR 1 (the masters are 1919x998
    CSS px, not 1440x900 @ 4/3): disc outer 782-811 x 137-166 = 30px,
    1px task-border ring; initials ink 16x9 = 16px/400 "cs"; button outer
    817-846 x 137-166 = 30px, 1px translucent ring and fill; plus glyph
@@ -2947,7 +2945,7 @@ body.modal-open { overflow: hidden; }
 
 .people-error { color: var(--error-ink); margin: 0.4rem 0; }
 
-/* Members dialog (KanbanFlow parity, KF-060). */
+/* Members dialog (KanbanFlow parity). */
 .members-dlg-head {
   display: flex;
   align-items: center;
@@ -3011,10 +3009,10 @@ body.modal-open { overflow: hidden; }
 
 .member-menu-btn:hover, .member-menu-btn[aria-expanded="true"] { background: var(--divider-soft); color: var(--ink); }
 
-/* Card context-menu submenu arrow + nested submenu (KF-050). */
+/* Card context-menu submenu arrow + nested submenu. */
 .menu-arrow { float: right; margin-left: 1.2rem; color: var(--muted); }
 
-/* KF-329: KanbanFlow's card context menu shows a per-item line icon. */
+/* KanbanFlow's card context menu shows a per-item line icon. */
 .menu-pop .menu-item-icon {
   display: inline-flex;
   width: 16px;
@@ -3026,7 +3024,7 @@ body.modal-open { overflow: hidden; }
 .menu-pop .menu-item-icon svg { display: block; }
 
 /* Two-column grid for the "Task properties to display on board" dialog
-   section (KF-043). */
+   section. */
 .dlg-grid2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -3064,8 +3062,8 @@ body.modal-open { overflow: hidden; }
 .tm-description-text {
   font-size: 14px;
   line-height: 20px;
-  /* GM-070 measured: description text ink is #333333 (solid core
-     (51,51,51): 238px in GM-070-modal-open.png, 538px in gm-v3-modal-golden-crop.png). */
+  /* Measured: description text ink is #333333 (solid core
+     (51,51,51): 238px in the modal-open golden, 538px in gm-v3-modal-golden-crop.png). */
   color: var(--text-charcoal);
   white-space: normal;
   overflow-wrap: break-word;
@@ -3288,7 +3286,7 @@ textarea.tm-field-input { resize: vertical; }
 
 .check-label input { width: 1.1rem; height: 1.1rem; }
 
-/* KF-044: stacked checkbox label (title + sub-label) + blue info note. */
+/* Stacked checkbox label (title + sub-label) + blue info note. */
 .check-label-stacked { align-items: flex-start; }
 .check-sub { display: block; font-weight: 400; font-size: 0.8rem; color: var(--muted); }
 .dlg-note-info {
@@ -3448,7 +3446,7 @@ textarea.tm-field-input { resize: vertical; }
   padding: 0.1rem 0.4rem;
 }
 
-/* KF-012: stopped sessions read "Stopped Pomodoro with reason 'X'" in red. */
+/* Stopped sessions read "Stopped Pomodoro with reason 'X'" in red. */
 .entry-interrupted { color: var(--danger); font-size: 0.78rem; font-weight: 600; }
 
 /* ---------- login ---------- */
@@ -3521,7 +3519,7 @@ textarea.tm-field-input { resize: vertical; }
 
 /* ---------- timer pill & popup ---------- */
 
-/* KF-239: the timer control sits in the board-header row left of the Filter
+/* The timer control sits in the board-header row left of the Filter
    funnel (golden board/02). Idle it is a 34px clock icon like the other
    row shortcuts; while timing it becomes KanbanFlow's dark #484848 chip
    (golden timer/22, 28). */
@@ -3550,7 +3548,7 @@ textarea.tm-field-input { resize: vertical; }
   opacity: 0.7;
 }
 #timer-pill.timer-pill--idle:hover { background: var(--icon-on-bg); }
-/* KF-463: golden timer/28: 145x34, 20px bold digits at x=44, the icon
+/* Golden timer/28: 145x34, 20px bold digits at x=44, the icon
    ending at x=33 and a 25px chevron disc ending 10px from the edge. */
 #timer-pill:not(.timer-pill--idle) {
   min-width: 145px;
@@ -3593,8 +3591,8 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
 
 .timer-pill-stop { color: var(--danger); }
 
-/* KF-325: KanbanFlow's running pill shows a solid red rounded square
-   (20x20, #ff7070 — measured from the GM-103 golden), not a text glyph. */
+/* KanbanFlow's running pill shows a solid red rounded square
+   (20x20, #ff7070 — measured from the golden), not a text glyph. */
 .timer-pill-stopbox {
   display: inline-block;
   width: 20px;
@@ -3605,7 +3603,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   flex: none;
 }
 
-/* KF-426: during a break the chip shows a solid green triangle, about
+/* During a break the chip shows a solid green triangle, about
    16x19 CSS px in the panel ▶ green (golden 28), not a text glyph. */
 .timer-pill-playbox {
   display: inline-block;
@@ -3639,7 +3637,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   transform: rotate(45deg);
 }
 
-/* KF-325: KanbanFlow's running countdown reads white on the dark pill. */
+/* KanbanFlow's running countdown reads white on the dark pill. */
 #timer-pill.running #timer-pill-time { color: var(--on-color); }
 
 #timer-pill.running .timer-pill-icon { animation: timer-blink 1.5s infinite; }
@@ -3654,7 +3652,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   border-radius: 6px;
   padding: 0.4rem 0.5rem;
 }
-/* KF-328: duration dropdowns live in the light timer-settings dialog. */
+/* Duration dropdowns live in the light timer-settings dialog. */
 .dlg-light .timer-select {
   background: var(--on-color);
   color: var(--ink);
@@ -3675,7 +3673,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
 .dlg-light .timer-popup-close:hover { color: var(--ink); }
 .dlg-light .dlg-actions .kf-btn { margin: 0; }
 
-/* KF-366: KanbanFlow's Pomodoro panel, measured from the 10-05 capture
+/* KanbanFlow's Pomodoro panel, measured from the 10-05 capture
    (1905 px layout): 260 px wide, #3E3E3E, 15 px side padding, a 108x42
    button beside the clock, a 30 px #515151 task row, and a 51 px #2E2E2E
    footer band of four icon tabs. */
@@ -3769,7 +3767,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   cursor: pointer;
 }
 
-/* KF-485: Stop and Take break are 104 px wide, Start 106. */
+/* Stop and Take break are 104 px wide, Start 106. */
 #tp-stop,
 #tp-take-break { width: 104px; }
 
@@ -3805,7 +3803,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   font-weight: 700;
 }
 
-/* KF-485: the idle "No task selected" row is 28 px at y 165 and its "Select
+/* The idle "No task selected" row is 28 px at y 165 and its "Select
    task" link sits at y 200 (golden timer/14). */
 .timer-task-none { justify-content: center; height: 28px; margin-top: 21px; }
 .timer-task-none + .timer-task-link-row { margin-top: 5px; }
@@ -3843,7 +3841,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   background: none;
   border: none;
   color: var(--timer-link-ink);
-  /* KF-529: golden timer/25 "Change task": 13.3333px, 77x16 at x 1083. */
+  /* Golden timer/25 "Change task": 13.3333px, 77x16 at x 1083. */
   font-family: system-ui, Arial, Helvetica, sans-serif;
   font-size: 13.3333px;
   line-height: 16px;
@@ -3855,7 +3853,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
 
 .timer-task-link:hover { color: var(--on-color); }
 
-/* KF-279: the TODAY log (10-05 capture): bold "TODAY", the day total and
+/* The TODAY log (10-05 capture): bold "TODAY", the day total and
    pomodoro count; 44 px #4D4D4D entry boxes 4 px apart with a 10 px task
    dot, the name, an italic "start – end" line and a ⋮; "•••" expands. */
 .timer-today {
@@ -3979,7 +3977,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
 .timer-foot-btn span { font-size: 10px; line-height: 10px; color: var(--kf-rule-soft); }
 .timer-foot-btn:hover, .timer-foot-btn:hover span { color: var(--on-color); }
 
-/* KF-001: "Select task" mode pill, centered over the board-header row. */
+/* "Select task" mode pill, centered over the board-header row. */
 .timer-select-pill {
   position: fixed;
   top: 39px;
@@ -4013,7 +4011,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
 
 /* ---------- why did you stop? ---------- */
 
-/* KF-452: dark golden 30 — the menu takes the panel's place at its 260 px
+/* Dark golden 30 — the menu takes the panel's place at its 260 px
    width: "‹ Why did you stop?" over 45 px reason rows. */
 .why-stop-menu {
   position: fixed;
@@ -4108,7 +4106,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
 
 .why-task-done:hover { background: var(--white-07); }
 
-/* "Task done" is the final why-stop menu item (KF-011) */
+/* "Task done" is the final why-stop menu item */
 .why-stop-reasons button.why-done { color: var(--entry-badge-b-ink); font-weight: 600; }
 
 /* ---------- toast ---------- */
@@ -4178,7 +4176,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   font-size: 0.8rem;
 }
 
-/* KF-334: the card menu's "Move task" popover sits at the card, no dimming. */
+/* The card menu's "Move task" popover sits at the card, no dimming. */
 .dlg-overlay.dlg-overlay--popover {
   display: block;
   background: var(--clear);
@@ -4221,7 +4219,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
 }
 
 /* ---------- light dialogs ----------
-   KF-328: this block MUST stay after the `.dlg` base above — at equal
+   This block MUST stay after the `.dlg` base above — at equal
    specificity the later rule wins, and the base previously overrode the
    light theme, rendering every dlg-light dialog dark. */
 .dlg-light {
@@ -4245,7 +4243,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   padding: 0.5rem 0.6rem;
   font-size: 0.9rem;
   font-family: inherit;
-  /* KF-328: native date/time pickers render their chrome light. */
+  /* Native date/time pickers render their chrome light. */
   color-scheme: light;
 }
 
@@ -4270,7 +4268,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
 
 .dlg-close:hover { color: var(--divider-soft); }
 
-/* KF-328: on light dialogs the close × darkens on hover instead. */
+/* On light dialogs the close × darkens on hover instead. */
 .dlg-light .dlg-close:hover { color: var(--ink-strong); }
 
 .dlg-inline-error {
@@ -4293,7 +4291,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   margin-bottom: 0.25rem;
 }
 
-/* KF-274: static value shown in place of a select inside a dialog field. */
+/* Static value shown in place of a select inside a dialog field. */
 .dlg-field > span.dlg-static {
   display: block;
   font-size: 0.9rem;
@@ -4356,7 +4354,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   color: var(--divider-soft);
 }
 
-/* KF-271: checkbox expanders in the manual-time / edit-entry dialogs reuse
+/* Checkbox expanders in the manual-time / edit-entry dialogs reuse
    .check-label; give them a touch of breathing room. */
 #manual-time-overlay .check-label,
 #edit-entry-overlay .check-label {
@@ -4597,7 +4595,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   gap: 0.5rem;
 }
 
-/* ---------- timer log day groups (KF-090) ---------- */
+/* ---------- timer log day groups ---------- */
 
 .log-status {
   color: var(--ink-faint);
@@ -4606,7 +4604,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   text-align: center;
 }
 
-/* KF-461: golden 20's rows, scoped to the timer log list: a white bordered
+/* Golden 20's rows, scoped to the timer log list: a white bordered
    day box, rows split by dashed lines, an italic 11 px status line. */
 .timer-log-list .log-day-group {
   background: var(--surface-white);
@@ -4696,7 +4694,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
 
 .timer-log-list .log-add-entry:hover { background: var(--kf-primary-darker); border-color: var(--kf-primary-darker); }
 
-/* ---------- statistics page (KF-092) ---------- */
+/* ---------- statistics page ---------- */
 
 .bar-svg {
   width: 100%;
@@ -4727,7 +4725,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   white-space: nowrap;
 }
 
-/* KF-344: Throughput report page — line chart (inline SVG). */
+/* Throughput report page — line chart (inline SVG). */
 .line-chart {
   width: 100%;
   max-width: 720px;
@@ -4769,7 +4767,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   stroke-dasharray: 6 4;
 }
 
-/* KF-339: Cumulative flow report page — column legend. */
+/* Cumulative flow report page — column legend. */
 .cfd-legend {
   display: flex;
   gap: 1rem;
@@ -4795,7 +4793,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   border-radius: 2px;
 }
 
-/* KF-340: Cycle & lead time report — moving-average trend line (dashed gray,
+/* Cycle & lead time report — moving-average trend line (dashed gray,
    matching KanbanFlow's "Trend (moving average)" series). */
 .chart-trend {
   stroke: var(--chart-gray);
@@ -4803,7 +4801,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   stroke-dasharray: 6 4;
 }
 
-/* KF-340: Cycle & lead time report — legend under the chart. */
+/* Cycle & lead time report — legend under the chart. */
 .chart-legend {
   display: flex;
   gap: 1.5rem;
@@ -4831,7 +4829,7 @@ body.dark #timer-pill.timer-pill--idle { color: var(--on-color); }
   border-top: 2px dashed var(--chart-gray);
 }
 
-/* KF-342: Monte Carlo forecasting report — settings sidebar + results. */
+/* Monte Carlo forecasting report — settings sidebar + results. */
 .mc-layout {
   display: flex;
   gap: 28px;
@@ -4897,7 +4895,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   stroke-dasharray: 5 4;
 }
 
-/* KF-392: body text colour, so the total reads in light mode and follows
+/* Body text colour, so the total reads in light mode and follows
    body.dark's --ink in dark mode. */
 .spent-total {
   font-size: 1.05rem;
@@ -5067,7 +5065,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 
 .setup-intro { color: var(--muted); margin: 0 0 1rem; }
 
-/* ---------- board chrome: KanbanFlow board-bar controls (KF-132, KF-133) ---------- */
+/* ---------- board chrome: KanbanFlow board-bar controls ---------- */
 
 .boardbar-sep {
   width: 1px;
@@ -5112,7 +5110,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   color: var(--status-upcoming);
 }
 
-/* ---------- help dialog (KF-379, account/09 golden) ---------- */
+/* ---------- help dialog (account/09 golden) ---------- */
 /* Centred by the flex overlay, like KanbanFlow's (y=61 at 1440x612), over
    a light 0.2 backdrop. */
 #help-dialog { background: var(--badge-shadow-color); }
@@ -5133,7 +5131,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   justify-content: center;
   flex: 0 0 52px;
   height: 52px;
-  /* KF-555: puts the first two tabs at x 486 and 639 at 1440 px (golden account/09). */
+  /* Puts the first two tabs at x 486 and 639 at 1440 px (golden account/09). */
   padding-left: 2.6px;
 
   background: var(--black-02);
@@ -5151,7 +5149,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   cursor: pointer;
 }
 .help-tab--active { color: var(--text-charcoal); border-bottom-color: var(--kf-orange); }
-/* KF-475: an 18px × at x 1038-1055, y 79-94 of the golden. */
+/* An 18px × at x 1038-1055, y 79-94 of the golden. */
 .help-close {
   position: absolute;
   right: 11px;
@@ -5163,7 +5161,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   color: var(--kf-ink-muted);
   cursor: pointer;
 }
-/* KF-475: KanbanFlow's 10px square scrollbar (#999999 on #dddddd) leaves
+/* KanbanFlow's 10px square scrollbar (#999999 on #dddddd) leaves
    the search 590px wide at 1440x612. */
 .help-body { overflow-y: auto; padding: 30px 50px; font-size: 15px; }
 .help-body::-webkit-scrollbar { width: 10px; }
@@ -5179,7 +5177,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   border-radius: 2px;
   font-size: 16px;
 }
-/* KF-475: focus keeps the grey border, with no blue ring. */
+/* Focus keeps the grey border, with no blue ring. */
 .help-search:focus { outline: none; }
 .help-group {
   margin: 0 0 3px;
@@ -5190,7 +5188,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   font-weight: 700;
   line-height: 33px;
 }
-/* KF-555: a 27 px summary inside a 5 px padded, 38 px row (golden account/09). */
+/* A 27 px summary inside a 5 px padded, 38 px row (golden account/09). */
 .help-subject { margin: 0 10px; padding: 5px 0; border-bottom: 1px solid var(--kf-divider); }
 /* Chevron on the right, pointing down, up when open (account/09). */
 .help-subject summary {
@@ -5204,7 +5202,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   list-style: none;
 }
 .help-subject summary::-webkit-details-marker { display: none; }
-/* KF-475: a 19x10 chevron with a 2px stroke, 1px in from the row's end. */
+/* A 19x10 chevron with a 2px stroke, 1px in from the row's end. */
 .help-subject summary::after {
   content: '';
   flex: none;
@@ -5219,8 +5217,8 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 .help-subject[open] summary::after { transform: translateY(6.5px) rotate(225deg); }
 .help-subject p { margin: 0 0 10px; color: var(--text-strong); }
 
-/* ---------- board filter panel (KF-134, KF-096) ---------- */
-/* KF-215: right-docked sidebar (KanbanFlow parity) — ~245px wide, full
+/* ---------- board filter panel ---------- */
+/* Right-docked sidebar (KanbanFlow parity) — ~245px wide, full
    height. BoardChrome.positionFilterPanel() measures the dark topbar +
    gray board-header row and sets the panel's top/height inline so the
    panel (including its own Filter title + close button) docks *below* the
@@ -5229,7 +5227,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
    (z-index 50) and below the gray board-header row (positioned with
    z-index 45), so the funnel toggle stays fully visible and clickable
    while the panel is open. */
-/* KF-215: KanbanFlow's .boardMenu panel (board/03, board/11 goldens):
+/* KanbanFlow's .boardMenu panel (board/03, board/11 goldens):
    250px, docked under the top bar, #f7f7f7 with a #ecebeb 35px header. */
 .filter-panel {
   position: fixed;
@@ -5300,7 +5298,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 
 .filter-opt input { accent-color: var(--accent); }
 
-/* KF-175: filter dropdowns (KanbanFlow parity); KF-215: 30px tall,
+/* Filter dropdowns (KanbanFlow parity); 30px tall,
    1px #666 border, 13px text. */
 .filter-select {
   width: 100%;
@@ -5329,7 +5327,7 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   color: var(--muted);
 }
 
-/* KF-215: "Add labels..." field with KanbanFlow's list button. */
+/* "Add labels..." field with KanbanFlow's list button. */
 .filter-labels-field { display: flex; height: 30px; }
 #filter-labels-input {
   flex: 1 1 auto;
@@ -5358,10 +5356,10 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   overflow-y: auto;
 }
 
-/* KF-215: Remember filter is KanbanFlow's switch (board/03 switch
+/* Remember filter is KanbanFlow's switch (board/03 switch
    styles: 38x15 #9e9e9e track, 19.5px #fafafa knob; on: #f9c243 track,
    #f5a033 knob). */
-/* KF-215: board/03's separator (1px #e6e6e6, 7px margins) and a 34px row. */
+/* The board/03 separator (1px #e6e6e6, 7px margins) and a 34px row. */
 .filter-separator { height: 1px; margin: 7px 0; background: var(--kf-divider); }
 .filter-remember {
   display: flex;
@@ -5446,9 +5444,9 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
 .filter-bookmarks-add button { flex: none; white-space: nowrap; }
 .filter-bookmarks-add input { flex: 1 1 auto; min-width: 0; border: 1px solid var(--kf-input-border); padding: 3px 4px; font-size: 12px; }
 
-/* ---------- board menu + reports submenu (KF-135, KF-136, KF-099) ---------- */
+/* ---------- board menu + reports submenu ---------- */
 
-/* KF-367: KanbanFlow's board menu panel: 250px, #f7f7f7, full height under
+/* KanbanFlow's board menu panel: 250px, #f7f7f7, full height under
    the top bar, a 35px #ecebeb title band, 34px rows of 15px text with 18px
    icons at .6 opacity, #e6e6e6 separators. */
 #board-menu,
@@ -5564,12 +5562,12 @@ body.dark .mc-pop { background: #2b2b2b; border-color: #4a4a4a; }
   background: var(--switch-on-knob);
 }
 
-/* KF-353 supersedes KF-183's checkmark: the toggle switches now show the
+/* The toggle switches now show the
    on/off state, so the ::before checkmark is removed. */
 
 /* ---------- dark mode (board menu toggle) ---------- */
 
-/* KF-373: KanbanFlow's dark mode themes only the board (live capture
+/* KanbanFlow's dark mode themes only the board (live capture
    2026-10-16, chipflow-goldens/dark/, values from its [data-theme=dark]
    variable table): top bar, board header, table, column headers, Done
    labels, the column details popover and the layout editor's header
@@ -5626,7 +5624,7 @@ body.dark .board-cell--collapsed {
   border-bottom: 1px solid #222222;
   border-left-color: #2b2b2b;
 }
-/* KF-556: the edge cell's left rim is #222222 where the frame shows through in light. */
+/* The edge cell's left rim is #222222 where the frame shows through in light. */
 body.dark .board-table-wrap > .board-table:first-child tbody tr > :first-child { border-left-color: #222222; }
 body.dark .board-cell:not(:first-child)::before,
 body.dark .board-table tbody tr:last-child > .board-cell:not(:first-child)::after { background: #262626; }
@@ -5642,7 +5640,7 @@ body.dark .columnHeader {
   background: #3e3e3e;
   border-left-color: #2b2b2b;
 }
-/* KF-362: KanbanFlow's dark overdue strip. */
+/* KanbanFlow's dark overdue strip. */
 body.dark .columnOverdue {
   border-bottom-color: #2b2b2b;
   background: #444444;
@@ -5663,7 +5661,7 @@ body.dark .done-group-label {
   color: #eeeeee;
   border-bottom-color: #eeeeee;
 }
-/* KF-386: a dragged card's slot takes KanbanFlow's dark placeholder. */
+/* A dragged card's slot takes KanbanFlow's dark placeholder. */
 body.dark .task-card.sortable-placeholder {
   border-color: #444444;
   background: #444444;
@@ -5698,7 +5696,7 @@ body.dark .layout-view-actions .btn {
   color: #ffffff;
 }
 
-/* KF-215: no dark rules for the filter panel; KanbanFlow keeps it light
+/* No dark rules for the filter panel; KanbanFlow keeps it light
    in dark mode (dark/11 golden). */
 
 /* ---------- large task names (board menu toggle) ---------- */
@@ -5708,7 +5706,7 @@ body.large-names .card-title { font-size: 14px; }
 .color-legend-segment { cursor: pointer; }
 .color-legend-segment--filtered { font-weight: 700; }
 .color-legend-rename { width: 90%; font: inherit; text-align: center; }
-/* ---- Timer settings modal (KF-074) ---- */
+/* ---- Timer settings modal ---- */
 .dlg-timer-settings { width: min(640px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
 .dlg-timer-settings .dlg-title { display: flex; align-items: center; justify-content: space-between; }
 .timer-settings-body { display: flex; gap: 1rem; min-height: 320px; flex: 1; overflow: hidden; }
@@ -5743,13 +5741,13 @@ body.large-names .card-title { font-size: 14px; }
 .toolbar-btn-danger { color: var(--danger); }
 .toolbar-btn-danger:hover { background: var(--danger-soft-bg); }
 
-/* ---- Time spent report (KF-091, KF-292) ---- */
-/* KF-515: a long board name shrinks its select instead of widening the page. */
+/* ---- Time spent report ---- */
+/* A long board name shrinks its select instead of widening the page. */
 .timer-log-filters label { min-width: 0; max-width: 100%; }
 .timer-log-filters select { max-width: 100%; min-width: 0; }
 .spent-total { font-size: 1rem; font-weight: 700; margin-bottom: 0.8rem; }
 .spent-list { display: flex; flex-direction: column; gap: 0.8rem; }
-/* KF-292: KanbanFlow-style report table — date | bar+percent | tasks | breaks | duration%. */
+/* KanbanFlow-style report table — date | bar+percent | tasks | breaks | duration%. */
 .spent-bar-cell { min-width: 140px; }
 .spent-bar-wrap { display: flex; align-items: center; gap: 0.5rem; }
 .spent-bar-track { flex: 1; height: 10px; background: var(--divider); border-radius: 5px; overflow: hidden; }
@@ -5763,7 +5761,7 @@ body.large-names .card-title { font-size: 14px; }
 .spent-task:first-child { border-top: none; }
 .spent-task-time { font-variant-numeric: tabular-nums; color: var(--muted); }
 .spent-bookmarks { margin-top: 1rem; color: var(--muted); font-size: 0.9rem; }
-/* KF-393: the Bookmarks header toggles the saved-filter list. */
+/* The Bookmarks header toggles the saved-filter list. */
 .spent-bookmarks-head {
   background: none; border: none; padding: 0; cursor: pointer;
   color: var(--text-strong); font-size: 13px; font-weight: 700;
@@ -5782,7 +5780,7 @@ body.large-names .card-title { font-size: 14px; }
 .tm-title-wrap input { width: 100%; }
 .tm-subtitle { font-size: 0.8rem; color: var(--muted); padding: 0 0.5rem; }
 
-/* KF-256: the three trailing subline icons (subtask-list, comment bubble, eye)
+/* The three trailing subline icons (subtask-list, comment bubble, eye)
    after "Created: ..." in the task modal (v3 golden crop). Static indicators,
    vertically centered on the subline text. */
 .tm-subline-icons { display: inline-flex; align-items: center; gap: 8px; margin-left: 17px; vertical-align: middle; }
@@ -5795,13 +5793,13 @@ body.large-names .card-title { font-size: 14px; }
 }
 .tm-color-name {
   font-size: 0.9rem;
-  /* KF-257: golden GM-073 text core is (51,51,51) = #333333. */
+  /* Golden text core is (51,51,51) = #333333. */
   color: var(--text-charcoal);
 }
-/* KF-258: the Time spent value is the plain duration ("2h 30m") — golden
-   GM-073 value-text core is (51,51,51) = #333333, same as the other row values. */
+/* The Time spent value is the plain duration ("2h 30m") — golden
+   value-text core is (51,51,51) = #333333, same as the other row values. */
 .tm-time-spent { font-size: 0.9rem; color: var(--text-charcoal); }
-/* KF-067: the completed-pomodoro count beside Time spent ("● 2 Pomodori"). */
+/* The completed-pomodoro count beside Time spent ("● 2 Pomodori"). */
 .tm-pomodori {
   display: inline-flex;
   align-items: center;
@@ -5819,7 +5817,7 @@ body.large-names .card-title { font-size: 14px; }
   background: var(--timer-red);
 }
 
-/* KF-278: Time spent hover menu with tooltip and action menu */
+/* Time spent hover menu with tooltip and action menu */
 .tm-time-tooltip {
   z-index: 1000;
   background-color: var(--ink-strong);
@@ -5887,7 +5885,7 @@ body.large-names .card-title { font-size: 14px; }
 .tm-comment-filter .tm-label-chip {
   background: var(--white-50); border-color: var(--btn-shadow-color);
 }
-/* KF-260: neutral label chips per GM-073 (fill (255,245,225), 1px (191,183,168)
+/* Neutral label chips per the golden (fill (255,245,225), 1px (191,183,168)
    border, dark text, ~5px corners) — KanbanFlow has no blue-tinted chips. */
 button.tm-label-chip { cursor: pointer; }
 .tm-label-chip.tm-label-sug { background: var(--surface-faint); border-style: dashed; color: var(--ink); }
@@ -5897,7 +5895,7 @@ button.tm-label-chip { cursor: pointer; }
 }
 .tm-label-x:hover { color: var(--danger); }
 
-/* KF-259: KanbanFlow's modal due value (modal/01 golden): plain 14px/28px
+/* KanbanFlow's modal due value (modal/01 golden): plain 14px/28px
    text, #333 or #8b0000 when overdue; the date is bold, the target column
    is not. */
 .tm-due-chip {
@@ -5962,7 +5960,7 @@ button.tm-label-chip { cursor: pointer; }
 }
 .tm-history-table th { color: var(--muted); font-weight: 600; font-size: 0.75rem; }
 
-/* Comments (KanbanFlow parity, KF-254, GM-070). All geometry sampled from
+/* Comments (KanbanFlow parity). All geometry sampled from
    gm-v3-modal-golden-crop.png (1919x998 DPR1; modal border-box left = 9px
    in crop coords). "Comments N" full-bleed header band; per-comment avatar
    circle, author + relative timestamp, warm-white body box, smiley + kebab
@@ -6376,7 +6374,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 
 /* Labels / due-date dialogs */
 .labels-dlg, .duedate-dlg { min-width: min(24rem, 90vw); }
-/* KF-437: KanbanFlow's alert box (golden modal/25): 290px wide, growing
+/* KanbanFlow's alert box (golden modal/25): 290px wide, growing
    to 340px before the text wraps, 20px padding, 15px #444 text and 75x30
    light buttons, over a 0.25 black dim that covers the due dialog too. */
 .kf-modalbox-overlay { background: var(--btn-shadow-color); }
@@ -6412,16 +6410,16 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   line-height: 14px;
 }
 .kf-modalbox .btn:focus { outline: none; box-shadow: 0 0 8px 1px var(--black-10); }
-/* KF-432: the past due date confirm's red OK (golden modal/26). */
+/* The past due date confirm's red OK (golden modal/26). */
 .kf-modalbox .btn-danger {
   border-color: var(--kf-danger);
   background: var(--kf-danger);
   box-shadow: 0 3px 2px -2px var(--btn-shadow-color);
   color: var(--surface-white);
 }
-/* KF-401: KanbanFlow's red Delete in the Edit due date dialog. */
+/* KanbanFlow's red Delete in the Edit due date dialog. */
 .duedate-dlg #dd-delete { background: var(--kf-danger); border-color: var(--kf-danger); color: var(--surface-white); margin-right: auto; }
-/* KF-436: KanbanFlow's due dialog buttons (goldens modal/22 and /23, the
+/* KanbanFlow's due dialog buttons (goldens modal/22 and /23, the
    r3 Edit due date capture): 30px tall, bold 14px, under a 1px rule 8px
    above them. Add alone is 130px at the right; Delete and Update are
    125px at either end. */
@@ -6446,16 +6444,16 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 .duedate-dlg #dd-delete[hidden] + #dd-add { width: 130px; }
 .labels-list { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.6rem; min-height: 1.5rem; }
 .labels-suggestions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-/* KF-270: the "Add due date" dialog's inline calendar grid.
-   KF-328: the dialog is light now, so the grid is light too. */
+/* The "Add due date" dialog's inline calendar grid.
+   The dialog is light now, so the grid is light too. */
 .dd-cal-inline { border: 1px solid var(--divider); border-radius: 8px; padding: 0.5rem; margin-bottom: 0.75rem; background: var(--surface-white); }
-/* KF-328: calendar day/nav styling inside light dialogs. */
+/* Calendar day/nav styling inside light dialogs. */
 .dlg-light .mt-cal-day { color: var(--ink); }
 .dlg-light .mt-cal-day:hover { background: var(--divider-soft); }
 .dlg-light .mt-cal-day.other-month { color: var(--ink-faint); }
 .dlg-light .mt-cal-head button { background: var(--divider-soft); color: var(--ink); }
 .dlg-light .mt-cal-head button:hover { background: var(--divider); }
-/* KF-328: the manual-time dialog is light; its calendar popup follows.
+/* The manual-time dialog is light; its calendar popup follows.
    (The edit-entry popup stays dark — out of scope.) */
 #manual-time-overlay .mt-cal-popup {
   background: var(--surface-white);
@@ -6474,7 +6472,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 .dlg-light .mt-cal-quick { border-top-color: var(--divider); }
 .dlg-light .mt-cal-quick button { color: var(--ink-subtle); }
 .dlg-light .mt-cal-quick button:hover { background: var(--divider-soft); color: var(--ink); }
-/* KF-328: the manual-time date-picker toggle in the light dialog. */
+/* The manual-time date-picker toggle in the light dialog. */
 .dlg-light #mt-cal-btn {
   background: var(--divider-soft);
   border: 1px solid var(--field-border);
@@ -6488,7 +6486,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 .card-label {
   display: inline-block; background: var(--tlp-row-hover); border: 1px solid var(--indigo-border); color: var(--indigo-ink);
   border-radius: 999px; padding: 0 0.45rem; font-size: 0.7rem; margin-right: 0.25rem;
-  cursor: pointer; /* KF-165: clicking a label chip filters the board. */
+  cursor: pointer; /* Clicking a label chip filters the board. */
 }
 .card-due { font-size: 0.75rem; color: var(--muted); margin-right: 0.35rem; white-space: nowrap; }
 .card-due-overdue { color: var(--danger); font-weight: 700; }
@@ -6499,9 +6497,9 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   width: 100%; border: 1px solid var(--popover-shadow-color); border-radius: 6px;
   padding: 0.4rem 0.5rem; font: inherit; font-size: 0.9rem; margin-bottom: 0.4rem;
 }
-/* ---------- board settings shell (KF-110, KF-111, KF-082, KF-083) ---------- */
+/* ---------- board settings shell ---------- */
 
-/* KF-331: KanbanFlow board-settings chrome (recovered GM-134 reference,
+/* KanbanFlow board-settings chrome (recovered reference,
    1920x1000 capture, pixel-sampled 2026-10-16): pale-blue #d3e8f2 page,
    ONE centered 900px container, square corners, no border, soft drop
    shadow, #e8e8e8 header band, #f4f4f4 nav column, white content inset
@@ -6520,8 +6518,8 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 .board-settings-page {
   max-width: none;
   margin: 0;
-  /* KF-357: below the 34px top bar, the container starts at KanbanFlow's
-     y 74. KF-447: the box ends 40px above the 30px site footer, which sits
+  /* Below the 34px top bar, the container starts at KanbanFlow's
+     y 74. The box ends 40px above the 30px site footer, which sits
      at the bottom of a short page (golden settings/02 and /14). */
   padding: 40px 1rem 40px;
   min-height: calc(100vh - 64px);
@@ -6535,9 +6533,9 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   box-shadow: 0 2px 10px var(--btn-shadow-color);
 }
 
-/* KF-331: header and nav text is Arial-metric like KanbanFlow's (advance
+/* Header and nav text is Arial-metric like KanbanFlow's (advance
    widths of "View board" and "Board settings: General" match Arial 18px
-   and bold 22px within 1px); same scoped opt-in as KF-249. */
+   and bold 22px within 1px); same scoped opt-in as the color legend. */
 .bshell-header,
 .bshell-nav { font-family: Arial, "Helvetica Neue", Helvetica, sans-serif; }
 
@@ -6595,7 +6593,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   padding: 10px 0 1rem;
 }
 
-/* KF-331: 38.796875px reproduces the reference's nav row rounding exactly
+/* 38.796875px reproduces the reference's nav row rounding exactly
    (text tops step 39 39 38 39 39 39 39 38). */
 .bshell-nav-item {
   display: block; padding: 0 1rem 0 1.5rem;
@@ -6649,7 +6647,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   .bshell-fill .bshell-content { min-height: 0; overflow-y: auto; }
 }
 
-/* KF-331: inside the single container there are no cards — sections
+/* Inside the single container there are no cards — sections
    flow directly on the white content face, separated by whitespace.
    Scoped to the board settings page only. */
 .board-settings-page .settings-section {
@@ -6684,7 +6682,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
 
 .settings-saved { color: var(--status-ontime); font-weight: 600; }
 
-/* KF-331: section flow spacing now comes from .settings-section's
+/* Section flow spacing now comes from .settings-section's
    margin, so the danger zone no longer adds its own top margin. */
 .board-settings-page .settings-section.bshell-danger { border-top: 1px solid var(--danger-border-soft); padding-top: 1rem; }
 
@@ -7037,7 +7035,7 @@ body.dark:has(.settings-page):not(:has(.bshell-report)) .kf-btn-success,
 body.dark:has(.settings-page):not(:has(.bshell-report)) .bs-create-btn { color: var(--on-color); }
 body.dark:has(.settings-page):not(:has(.bshell-report)) .owner-avatar { background: #4b5563; color: var(--on-color); }
 
-/* KF-356: KanbanFlow's Colors tab, measured on the KF-331 reference at a
+/* KanbanFlow's Colors tab, measured on the reference at a
    1905px layout viewport: Arial text, a #d9edf7 info box with #bce8f1
    top and bottom rules, a heading row with bordered buttons, and tables
    with a #f5f5f5 header row and #dddddd row rules. */
@@ -7132,7 +7130,7 @@ body.dark:has(.settings-page):not(:has(.bshell-report)) .owner-avatar { backgrou
 .color-cell-actions .kf-btn { margin: 0 4px 0 0; }
 .color-cell-actions .kf-btn:last-child { margin-right: 0; }
 
-/* KF-082: 30px round drag handle holding a six-dot grip at opacity 0.5. */
+/* 30px round drag handle holding a six-dot grip at opacity 0.5. */
 .color-drag {
   display: flex;
   align-items: center;
@@ -7147,7 +7145,7 @@ body.dark:has(.settings-page):not(:has(.bshell-report)) .owner-avatar { backgrou
 .color-drag:active { cursor: grabbing; }
 .color-admin-row.sortable-drag { background: var(--surface-faint); box-shadow: 0 4px 12px var(--shadow-panel); }
 
-/* KF-087: 100x30 swatch with the standard color name inside. */
+/* 100x30 swatch with the standard color name inside. */
 .color-swatch-named {
   display: block;
   box-sizing: border-box;
@@ -7180,15 +7178,15 @@ body.dark:has(.settings-page):not(:has(.bshell-report)) .owner-avatar { backgrou
 }
 .bc-copy-row:hover { background: var(--divider-soft); }
 
-/* ---------- boards sidebar (KF-088) ---------- */
+/* ---------- boards sidebar ---------- */
 
 .board-layout { display: flex; align-items: stretch; min-height: 0; }
 
-/* KF-249: the board page is a full-viewport flex column so the color legend
+/* The board page is a full-viewport flex column so the color legend
    sits flush at the viewport bottom (KanbanFlow parity — zero board-bg gap
    below the strip). Scoped with :has to the board page only (this is the
    only page with .board-layout as a direct body child). The :not([hidden])
-   guard keeps the layout-edit view (KF-032, which hides main.board-wrap)
+   guard keeps the layout-edit view (which hides main.board-wrap)
    in normal block flow instead of pushing it below a stretched empty
    flex item. Modal overlay, filter panel, toast, and menus are all
    position:fixed, so they are unaffected by the flex container. */
@@ -7197,7 +7195,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) {
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
-  /* KF-457: KanbanFlow stops shrinking at 700px and clips the rest. */
+  /* KanbanFlow stops shrinking at 700px and clips the rest. */
   min-width: 700px;
 }
 @media (max-width: 699.98px) {
@@ -7239,9 +7237,9 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   }
 }
 
-/* KF-172: Boards panel is an overlay drawer (KanbanFlow parity), not a persistent sidebar */
-/* KF-240: KanbanFlow's drawer is a DARK sidebar (v8.md "Left dark sidebar"),
-   #333333 matching the dark top bar (KF-233); all inner elements dark-adapted. */
+/* Boards panel is an overlay drawer (KanbanFlow parity), not a persistent sidebar */
+/* KanbanFlow's drawer is a DARK sidebar (v8.md "Left dark sidebar"),
+   #333333 matching the dark top bar; all inner elements dark-adapted. */
 .boards-sidebar {
   position: fixed; left: 0; top: 0; bottom: 0; z-index: 1000;
   width: 260px; flex: none;
@@ -7255,7 +7253,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   transition: transform 0.2s ease-out;
 }
 .boards-sidebar.open { transform: translateX(0); }
-/* KF-196: a closed drawer must not linger in the accessibility tree or
+/* A closed drawer must not linger in the accessibility tree or
    intercept hits (spurious "obscured" actionability errors). The hidden
    attribute is applied after the close transition finishes. */
 .boards-sidebar[hidden] { display: none; }
@@ -7265,7 +7263,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .boards-scrim[hidden] { display: none; }
 
-/* KF-541: KanbanFlow's boards dropdown (board/09 golden): a 260px panel with
+/* KanbanFlow's boards dropdown (board/09 golden): a 260px panel with
    a 2px radius and a soft shadow, a full-width search box, 39px rows under
    1px rules, a blue left bar on the current board and a footer holding the
    Create board button. */
@@ -7302,7 +7300,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .bs-create-btn:hover { background: var(--kf-primary-hover); }
 
-/* ---------- boards dropdown menu (KF-330) ---------- */
+/* ---------- boards dropdown menu ---------- */
 .boards-dropdown-container {
   position: relative;
   display: inline-block;
@@ -7324,12 +7322,12 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   margin-top: 8px;
 }
 
-/* KF-330: dropdown menu needs to be positioned properly relative to the button */
+/* Dropdown menu needs to be positioned properly relative to the button */
 .boards-dropdown[hidden] {
   display: none;
 }
 
-/* ---------- timer settings extras (KF-075, KF-076) ---------- */
+/* ---------- timer settings extras ---------- */
 
 .ts-drag {
   cursor: grab; color: var(--ink-faint); font-size: 1rem; letter-spacing: -2px;
@@ -7357,7 +7355,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .ts-activity-remove { border: none; background: none; color: var(--ink-faint); cursor: pointer; font-size: 1.1rem; }
 .ts-activity-remove:hover { color: var(--danger); }
 
-/* ---------- timer log modal (KF-286): wide white centered modal over the dimmed board ---------- */
+/* ---------- timer log modal: wide white centered modal over the dimmed board ---------- */
 
 .timer-log-overlay {
   position: fixed;
@@ -7373,7 +7371,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 
 .timer-log-overlay[hidden] { display: none; }
 
-/* KF-461: golden 20 — a 660 px #fafafa dialog, 400 px tall at least. */
+/* Golden 20 — a 660 px #fafafa dialog, 400 px tall at least. */
 .timer-log-modal {
   background: var(--panel-bg);
   color: var(--text-dark);
@@ -7451,7 +7449,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 
 .timer-log-modal .icon-btn:hover { background: var(--icon-on-bg); }
 
-/* KF-461/KF-497: golden 20's one-row toolbar — 30 px selects with #bbb
+/* Golden 20's one-row toolbar — 30 px selects with #bbb
    borders 10 px apart (board 110, period 180, entry type 180) and four 30 px
    icon buttons 5 px apart. */
 .timer-log-modal .timer-log-filters { gap: 10px; align-items: center; }
@@ -7475,8 +7473,8 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   text-decoration: none;
 }
 
-/* KF-290: nested "Custom (absolute)" date-range dialog over the timer log
-   (KanbanFlow GM-121): Start/End fields, two side-by-side month calendars
+/* Nested "Custom (absolute)" date-range dialog over the timer log
+   (KanbanFlow): Start/End fields, two side-by-side month calendars
    with selected dates highlighted, green Done button. */
 .log-custom-dialog-overlay {
   position: fixed;
@@ -7587,7 +7585,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   overflow-y: auto;
 }
 
-/* KF-428: the day group header (goldens 20): "Today" at 20 px #111 with a
+/* The day group header (goldens 20): "Today" at 20 px #111 with a
    10 px right margin, then the total and the completed-pomodoro count at
    13 px #666, 20 px apart. */
 .log-day-title { margin: 0 10px 10px 0; font-size: 20px; font-weight: 400; line-height: 30px; color: var(--ink-print); }
@@ -7597,7 +7595,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   color: var(--ink-subtle);
 }
 
-/* ---------- Time spent "Print" sheet (KF-295, GM-169) ---------- */
+/* ---------- Time spent "Print" sheet ---------- */
 
 .spent-print-overlay {
   position: fixed;
@@ -7670,7 +7668,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 
 
-/* KF-341: Due date performance report — summary counts row. */
+/* Due date performance report — summary counts row. */
 .report-summary {
   display: flex;
   flex-wrap: wrap;
@@ -7691,7 +7689,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .report-status-late { color: var(--status-late); }
 .report-status-overdue { color: var(--danger); }
 .report-status-upcoming { color: var(--status-upcoming); }
-/* KF-336: Board history report — chronological change feed. */
+/* Board history report — chronological change feed. */
 .history-feed {
   display: flex;
   flex-direction: column;
@@ -7865,7 +7863,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .calendar-grid {
   display: grid;
-  /* KF-416: minmax(0, 1fr) keeps the seven day columns equal; a long chip
+  /* minmax(0, 1fr) keeps the seven day columns equal; a long chip
      name truncates instead of widening its column. */
   grid-template-columns: repeat(7, minmax(0, 1fr));
   grid-template-rows: 28px;
@@ -7934,11 +7932,11 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   text-overflow: ellipsis;
 }
 
-/* KF-349: report pages have no dark variant. KanbanFlow keeps its reports
+/* Report pages have no dark variant. KanbanFlow keeps its reports
    light in dark mode (live capture 2026-10-16), and Pomb only applies
    the dark preference on the board page (BoardChrome.restorePrefs). */
 
-/* KF-368: delete-board page on the settings shell (KanbanFlow reference
+/* Delete-board page on the settings shell (KanbanFlow reference
    kanbanflow-delete-board-dialog-20260929.png at 1920x1000): a 600px box,
    centred 40px title band, red alert, 38px buttons and a 30px #333333 site
    footer at the bottom of the page. */
@@ -7970,7 +7968,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   color: var(--kf-alert-ink);
 }
 .kf-alert p { margin: 0 0 9px; }
-/* KF-473: a spaceless board name breaks inside the alert instead of
+/* A spaceless board name breaks inside the alert instead of
    widening the page. */
 .delete-board-page .kf-alert { overflow-wrap: anywhere; }
 .kf-alert p:last-child { margin-bottom: 0; }
@@ -8023,10 +8021,10 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .site-footer a { color: inherit; }
 
-/* KF-491: the settings body is at least 400 px tall (golden settings/02). */
+/* The settings body is at least 400 px tall (golden settings/02). */
 .board-settings-page .bshell-body { min-height: 400px; }
 
-/* KF-505: the due dialog is KanbanFlow's 280 px popover (goldens modal/23
+/* The due dialog is KanbanFlow's 280 px popover (goldens modal/23
    and dark/modal/23). */
 #duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg {
   width: 280px;
@@ -8046,7 +8044,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 #duedate-dialog.dlg-overlay--popover .mt-cal-quick { margin-top: 4px; padding-top: 4px; }
 
-/* KF-505: no quick links in the popover; the title is centred. */
+/* No quick links in the popover; the title is centred. */
 #duedate-dialog.dlg-overlay--popover .mt-cal-quick { display: none; }
 #duedate-dialog.dlg-overlay--popover .dlg-title {
   position: relative;
@@ -8059,10 +8057,10 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   top: 0;
 }
 
-/* KF-485: the button labels are 20 px as in the golden (Take break wraps). */
+/* The button labels are 20 px as in the golden (Take break wraps). */
 .timer-btn { font-size: 20px; letter-spacing: 0; line-height: 1.1; padding: 0 6px; }
 
-/* KF-481: the quick-add Members popover (250 px at the dialog's (30,180)). */
+/* The quick-add Members popover (250 px at the dialog's (30,180)). */
 .addMembersPop {
   position: absolute;
   left: 30px;
@@ -8129,7 +8127,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .addMembersPop-name { font-size: 13px; font-weight: 700; }
 
-/* KF-505: inner layout of the popover, in px from its top-left (golden
+/* Inner layout of the popover, in px from its top-left (golden
    dark/modal/23): 32 header, inputs 125x30 at (10,65) and (145,65),
    calendar 256x201 at (12,96), Target column 260x30 at (10,324), buttons
    125x30 at y 400. */
@@ -8182,24 +8180,24 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 #duedate-dialog.dlg-overlay--popover .check-label { height: 15px; margin-top: 10px; }
 #duedate-dialog.dlg-overlay--popover .dlg-actions { position: absolute; left: 10px; top: 391px; margin: 0; width: 260px; }
 
-/* KF-485: Take break is two 16 px lines (golden timer/26). */
+/* Take break is two 16 px lines (golden timer/26). */
 #tp-take-break { padding: 0 20px; font-size: 16px; line-height: 18px; }
 
-/* KF-527: the Edit due date popover's shadow, header band, calendar day
+/* The Edit due date popover's shadow, header band, calendar day
    cells and Repeat checkbox (golden dark/modal/23). */
 #duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg { box-shadow: 0 2px 9px 4px var(--popover-shadow-color); }
 #duedate-dialog.dlg-overlay--popover .dlg-title { border-radius: 2px 2px 0 0; background: var(--kf-title-bg); }
 #duedate-dialog.dlg-overlay--popover .mt-cal-day:not(.selected):not(.other-month) { background: var(--kf-day-bg); }
 #duedate-dialog.dlg-overlay--popover #dd-repeat { width: 15px; height: 15px; }
 
-/* KF-528: a subtask due date shows Date, Time, the calendar and Add only, in
+/* A subtask due date shows Date, Time, the calendar and Add only, in
    a 280x350 popover (golden modal/22). */
 #duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg.duedate-dlg--add { height: 350px; }
 #duedate-dialog.dlg-overlay--popover .duedate-dlg--add .dd-cal-inline + .dlg-field,
 #duedate-dialog.dlg-overlay--popover .duedate-dlg--add .check-label { display: none; }
 #duedate-dialog.dlg-overlay--popover .duedate-dlg--add .dlg-actions { top: 301px; }
 
-/* KF-552: the bell's unread badge, 17 px red disc at the button's top right
+/* The bell's unread badge, 17 px red disc at the button's top right
    (golden timer/26); the added-time text on a live card is #8b0000. */
 #notifications-btn { position: relative; }
 .notification-badge {
@@ -8222,7 +8220,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .notification-badge[hidden] { display: none; }
 .card-ico-time:has(.card-live-inc) { color: var(--kf-darkred); padding-right: 12.37px; }
 
-/* KF-547: the time estimate editor is a 184x130 popover (golden modal/27):
+/* The time estimate editor is a 184x130 popover (golden modal/27):
    32 px title, a 164x30 input, a rule, and an 82x30 Add button. */
 #estimate-dialog .dlg.estimate-dlg {
   box-sizing: border-box;
@@ -8264,7 +8262,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 #estimate-dialog #est-add { width: 82px; height: 30px; padding: 0; }
 
 
-/* KF-546: the due popover's own text and calendar colours (golden modal/22
+/* The due popover's own text and calendar colours (golden modal/22
    and modal/23): 2 px corners, #333 body text, black inputs on a #666
    border, bold 14 px title, 12 px #666 days, a #33aaff selected day. */
 #duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg { border-radius: 2px; color: var(--kf-ink); }
@@ -8292,7 +8290,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   color: var(--on-color);
 }
 
-/* KF-554: General tab (golden settings/02): 18 px bold labels, 16 px
+/* General tab (golden settings/02): 18 px bold labels, 16 px
    values, a rule, then the Actions buttons. */
 .board-settings-page .kf-general { padding: 5px 15px 0; }
 .kf-setting-head { display: flex; align-items: flex-start; }
@@ -8330,7 +8328,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .kf-general-actions { display: flex; gap: 5px; }
 .kf-general-actions .kf-btn-large { font-family: system-ui, Arial, "Helvetica Neue", Helvetica, sans-serif; }
 
-/* KF-545: a subtask's due date sits between its name and its menu handle. */
+/* A subtask's due date sits between its name and its menu handle. */
 .tm-subtask-due {
   flex: none;
   font-size: 12px;
@@ -8340,7 +8338,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .tm-subtask-due.tm-due-overdue { color: var(--kf-darkred); }
 
-/* KF-481: quick-add Labels popover, inline Description and More menu. */
+/* Quick-add Labels popover, inline Description and More menu. */
 .addLabelsPop { left: 129px; top: 180px; width: 300px; }
 .addLabelsPop-row { display: flex; margin: 10px 10px 0; }
 .addLabelsPop-input {

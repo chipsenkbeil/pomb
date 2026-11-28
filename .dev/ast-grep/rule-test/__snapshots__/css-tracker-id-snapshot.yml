@@ -1,0 +1,14 @@
+id: css-tracker-id
+snapshots:
+  "/* Move target from GM-164. */\n":
+    labels:
+    - source: "/* Move target from GM-164. */"
+      style: primary
+      start: 0
+      end: 30
+  "/* Dark bar, KF-233. */\n.a { color: red; }\n":
+    labels:
+    - source: "/* Dark bar, KF-233. */"
+      style: primary
+      start: 0
+      end: 23

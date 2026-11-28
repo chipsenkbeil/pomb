@@ -1,0 +1,10 @@
+id: css-tracker-id
+valid:
+  - |
+    /* Keep the column order as the board stores it. */
+invalid:
+  - |
+    /* Move target from GM-164. */
+  - |
+    /* Dark bar, KF-233. */
+    .a { color: red; }

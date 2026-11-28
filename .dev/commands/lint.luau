@@ -510,6 +510,15 @@ return dev_command({
                 "static",
                 "tests/js",
             })
+            lint:check("css tracker ids", {
+                "ast-grep",
+                "scan",
+                "--config",
+                "sgconfig.yml",
+                "--filter",
+                "css-tracker-id",
+                "static",
+            })
             lint:check("js own check helper", {
                 "ast-grep",
                 "scan",
