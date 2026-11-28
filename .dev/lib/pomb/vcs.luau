@@ -102,13 +102,25 @@ function M.merge_base(root, remote_main)
     return code == 0 and out:match("^%x+") or nil
 end
 
----Update the remote-tracking `main` of `remote`.
+---Tell whether commit `rev` is `remote_main` or one of its ancestors.
+---@param root string absolute path of the repository
+---@param rev string full commit id
+---@param remote_main string remote branch as `remote/main`
+---@return boolean ancestor false when it is not, or when either side names no commit
+function M.is_ancestor(root, rev, remote_main)
+    if is_jj(root) then
+        return jj_commit(root, ("%s & ::%s"):format(rev, jj_revset(remote_main))) ~= nil
+    end
+    return devos.run({ "git", "merge-base", "--is-ancestor", rev, remote_main }, quiet(root)) == 0
+end
+
+---Update the remote-tracking branches of `remote`.
 ---@param root string absolute path of the repository, a jj one when `.jj` exists there
 ---@param remote string remote name
 ---@return integer code exit status of the fetch
 function M.fetch(root, remote)
     local argv = is_jj(root) and { "jj", "--no-pager", "git", "fetch", "--remote", remote }
-        or { "git", "fetch", "-q", remote, "main" }
+        or { "git", "fetch", "-q", remote }
     return devos.run(argv, { cwd = root }) or 1
 end
 

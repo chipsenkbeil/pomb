@@ -106,6 +106,20 @@ case("merge_base is nil for an unknown remote branch", function(fix)
     t.eq(vcs.merge_base(fix.work, "gerrit/missing"), nil)
 end)
 
+case("is_ancestor holds for a commit on the remote main", function(fix, kind)
+    t.eq(vcs.is_ancestor(fix.work, fix.base, "gerrit/main"), true)
+    t.eq(vcs.is_ancestor(fix.work, fix.moved, "gerrit/main"), true)
+    t.eq(jj_calls(fix):find("::main@gerrit", 1, true) ~= nil, kind == Kind.JJ)
+end)
+
+case("is_ancestor fails for a commit the remote main lacks", function(fix)
+    t.eq(vcs.is_ancestor(fix.work, fix.head, "gerrit/main"), false)
+end)
+
+case("is_ancestor fails for an unknown remote branch", function(fix)
+    t.eq(vcs.is_ancestor(fix.work, fix.base, "gerrit/missing"), false)
+end)
+
 case("fetch updates the remote branch through its checkout kind", function(fix, kind)
     local dir = fix.work:match("^(.*)/work$")
     git(dir, "clone", "-q", "-b", "main", "remote.git", "other")

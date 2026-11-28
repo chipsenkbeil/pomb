@@ -3,6 +3,7 @@ local fs = require("@dev/fs")
 local t = require("@dev/testing")
 local testenv = require("@dev/testenv")
 local gitenv = require("@lib/pomb/gitenv")
+local jjenv = require("@lib/pomb/jjenv")
 local testkit = require("@lib/pomb/testkit")
 
 devos.defaults.env = gitenv.env
@@ -10,21 +11,28 @@ devos.defaults.env = gitenv.env
 local CHANGE_ID = "Change-Id: I0123456789abcdef0123456789abcdef01234567"
 
 local git = gitenv.git
+local case = jjenv.case
+local Kind = jjenv.Kind
 
 local function commit(dir, message)
     git(dir, "commit", "-q", "--allow-empty", "-m", message)
 end
 
-local function fixture()
+local function fixture(kind)
     local dir = assert(fs.realpath(testenv.tempdir()))
     local remote = dir .. "/remote.git"
     local work = dir .. "/work"
     git(dir, "init", "-q", "--bare", "remote.git")
     git(dir, "clone", "-q", "remote.git", "work")
+    git(work, "remote", "rename", "origin", "gerrit")
     git(work, "checkout", "-q", "-b", "main")
     commit(work, "base")
-    git(work, "push", "-q", "origin", "main")
-    assert(fs.mkdir(work .. "/bin"))
+    git(work, "push", "-q", "gerrit", "main")
+    if kind == Kind.JJ then
+        jjenv.install(work)
+    else
+        assert(fs.mkdir(work .. "/bin"))
+    end
     local guard = work .. "/bin/jj-git-guard"
     assert(fs.write(guard, '#!/bin/sh\nshift 2\nexec git push "$@"\n'))
     assert(devos.run({ "chmod", "755", guard }) == 0)
@@ -36,6 +44,10 @@ end
 local function helper(fix, name, ...)
     local words = { "-l", fix.work .. "/.dev/helpers/" .. name .. ".luau", ... }
     return testenv.command(fix.work, words, { env = {} })
+end
+
+local function jj_calls(fix)
+    return table.concat(testenv.calls(fix.work, "jj"), "\n")
 end
 
 local function remote_main(fix)
@@ -91,18 +103,19 @@ t.test("push_main accepts a Change-Id trailer", function()
     fs.remove(fix.dir, { recursive = true })
 end)
 
-t.test("push_tag tags a commit on main and pushes the tag", function()
-    local fix = fixture()
+case("push_tag tags a commit on main and pushes the tag", function(kind)
+    local fix = fixture(kind)
     local sha = git(fix.work, "rev-parse", "HEAD")
     local out, code, err = helper(fix, "push_tag", "v1.2.3", sha)
     t.eq(code, 0, err)
+    t.eq(jj_calls(fix):find("::main@gerrit", 1, true) ~= nil, kind == Kind.JJ)
     t.eq(out, "Tagged v1.2.3 at " .. sha .. ".\n")
     t.eq(git(fix.remote, "rev-parse", "v1.2.3^{commit}"), sha)
     fs.remove(fix.dir, { recursive = true })
 end)
 
-t.test("push_tag refuses a tag that exists on the remote", function()
-    local fix = fixture()
+case("push_tag refuses a tag that exists on the remote", function(kind)
+    local fix = fixture(kind)
     local sha = git(fix.work, "rev-parse", "HEAD")
     t.eq(select(2, helper(fix, "push_tag", "v1.2.3", sha)), 0)
     git(fix.work, "tag", "-d", "v1.2.3")
@@ -112,23 +125,24 @@ t.test("push_tag refuses a tag that exists on the remote", function()
     fs.remove(fix.dir, { recursive = true })
 end)
 
-t.test("push_tag refuses a commit that is not on main", function()
-    local fix = fixture()
+case("push_tag refuses a commit that is not on main", function(kind)
+    local fix = fixture(kind)
     commit(fix.work, "unpushed")
     local sha = git(fix.work, "rev-parse", "HEAD")
     local _, code, err = helper(fix, "push_tag", "v1.2.3", sha)
     t.eq(code, 1)
-    t.ok(err:find("is not on origin/main.", 1, true), err)
+    t.ok(err:find("is not on gerrit/main.", 1, true), err)
     fs.remove(fix.dir, { recursive = true })
 end)
 
-t.test("delete_remote_branch prints the tip and deletes the branch", function()
-    local fix = fixture()
-    git(fix.work, "push", "-q", "origin", "HEAD:refs/heads/topic")
+case("delete_remote_branch prints the tip and deletes the branch", function(kind)
+    local fix = fixture(kind)
+    git(fix.work, "push", "-q", "gerrit", "HEAD:refs/heads/topic")
     local tip = git(fix.remote, "rev-parse", "refs/heads/topic")
     local out, code, err = helper(fix, "delete_remote_branch", "topic")
     t.eq(code, 0, err)
-    t.eq(out, "Deleting origin/topic at " .. tip .. ".\n")
+    t.eq(out, "Deleting gerrit/topic at " .. tip .. ".\n")
+    t.eq(jj_calls(fix):find("git fetch --remote gerrit", 1, true) ~= nil, kind == Kind.JJ)
     local _, shown = devos.capture({
         "git",
         "-C",
@@ -142,14 +156,14 @@ t.test("delete_remote_branch prints the tip and deletes the branch", function()
     fs.remove(fix.dir, { recursive = true })
 end)
 
-t.test("delete_remote_branch refuses main and a missing branch", function()
-    local fix = fixture()
+case("delete_remote_branch refuses main and a missing branch", function(kind)
+    local fix = fixture(kind)
     local _, code, err = helper(fix, "delete_remote_branch", "main")
     t.eq(code, 1)
     t.ok(err:find("Refused to delete main.", 1, true), err)
     _, code, err = helper(fix, "delete_remote_branch", "nope")
     t.eq(code, 1)
-    t.ok(err:find("No branch nope exists on origin.", 1, true), err)
+    t.ok(err:find("No branch nope exists on gerrit.", 1, true), err)
     t.eq(remote_main(fix), git(fix.work, "rev-parse", "HEAD"))
     fs.remove(fix.dir, { recursive = true })
 end)

@@ -4,6 +4,7 @@ local dev_command = require("@dev/command")
 local dev_os = require("@dev/os")
 local forge = require("@lib/pomb/forge")
 local project = require("@dev/project")
+local vcs = require("@lib/pomb/vcs")
 
 local words = { ... }
 
@@ -19,25 +20,21 @@ if not remote then
     return 1
 end
 
-local code = dev_os.run({ "git", "fetch", "-q", remote }, { cwd = root })
+local code = vcs.fetch(root, remote)
 if code ~= 0 then
-    return code or 1
+    return code
 end
 for _, branch in ipairs(words) do
     if branch == "main" or branch == "HEAD" or branch == "" then
         dev_command.note("Refused to delete " .. branch .. ".")
         return 1
     end
-    local tip
-    tip, code = dev_os.capture(
-        { "git", "rev-parse", "-q", "--verify", "refs/remotes/" .. remote .. "/" .. branch },
-        { cwd = root, stderr = "null" }
-    )
-    if code ~= 0 then
+    local tip = vcs.resolve(root, remote .. "/" .. branch)
+    if not tip then
         dev_command.note("No branch " .. branch .. " exists on " .. remote .. ".")
         return 1
     end
-    dev_command.say("Deleting " .. remote .. "/" .. branch .. " at " .. tip:gsub("%s+$", "") .. ".")
+    dev_command.say("Deleting " .. remote .. "/" .. branch .. " at " .. tip .. ".")
     dev_os.stdout:flush()
     code = dev_os.run(
         { "jj-git-guard", "push", "--", remote, ":refs/heads/" .. branch },

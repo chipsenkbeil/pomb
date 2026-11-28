@@ -4,6 +4,7 @@ local dev_command = require("@dev/command")
 local dev_os = require("@dev/os")
 local forge = require("@lib/pomb/forge")
 local project = require("@dev/project")
+local vcs = require("@lib/pomb/vcs")
 
 local words = { ... }
 
@@ -20,24 +21,16 @@ if not remote then
     return 1
 end
 
-local code = dev_os.run({ "git", "fetch", "-q", remote }, { cwd = root })
+local code = vcs.fetch(root, remote)
 if code ~= 0 then
-    return code or 1
+    return code
 end
-local out
-out, code = dev_os.capture(
-    { "git", "rev-parse", "-q", "--verify", rev .. "^{commit}" },
-    { cwd = root, stderr = "null" }
-)
-if code ~= 0 then
+local sha = vcs.resolve(root, rev)
+if not sha then
     dev_command.note("No commit named " .. rev .. " exists.")
     return 1
 end
-local sha = out:gsub("%s+$", "")
-if
-    dev_os.run({ "git", "merge-base", "--is-ancestor", sha, remote .. "/main" }, { cwd = root })
-    ~= 0
-then
+if not vcs.is_ancestor(root, sha, remote .. "/main") then
     dev_command.note("Commit " .. sha .. " is not on " .. remote .. "/main.")
     return 1
 end

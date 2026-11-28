@@ -47,6 +47,11 @@ case "$rev" in
     x=${x%')'}
     exec '@git@' merge-base HEAD "${x#*@}/${x%@*}"
     ;;
+*' & ::'*)
+    x=${rev#*' & ::'}
+    '@git@' merge-base --is-ancestor "${rev%%' & '*}" "${x#*@}/${x%@*}" && echo "${rev%%' & '*}"
+    exit 0
+    ;;
 *@*) exec '@git@' rev-parse --verify --quiet "${rev#*@}/${rev%@*}^{commit}" ;;
 *) exec '@git@' rev-parse --verify --quiet "$rev^{commit}" ;;
 esac
