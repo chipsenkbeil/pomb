@@ -7,7 +7,14 @@ local ROOT = testkit.root
 local JOBS = assert(fs.read(ROOT .. "/.ci/jobs.lua"))
 local SERVER = assert(fs.read(ROOT .. "/.dev/commands/parity/startserver.luau"))
 local GLOB = '"$out/$src"/seed-*.err'
-local LOGS = { "seed-gm.err", "seed-vt.err", "seed-ep.err", "seed-pn.err" }
+local LOGS: { string } = {}
+local seen: { [string]: boolean } = {}
+for name in SERVER:gmatch("seed%-%w+%.err") do
+    if not seen[name] then
+        seen[name] = true
+        LOGS[#LOGS + 1] = name
+    end
+end
 
 t.test("the regress job names no seeder log", function()
     for _, log in ipairs(LOGS) do
@@ -19,10 +26,9 @@ t.test("the regress job copies seed-*.err by glob", function()
     t.ok(JOBS:find(GLOB, 1, true), "jobs.lua has no " .. GLOB .. " loop")
 end)
 
-t.test("every seeder log in startserver.luau matches the glob", function()
-    local found = 0
-    for _ in SERVER:gmatch("seed%-%a+%.err") do
-        found = found + 1
+t.test("seeder logs are read from start-server", function()
+    t.ok(#LOGS > 0, "startserver.luau names no seeder log")
+    for _, log in ipairs(LOGS) do
+        t.ok(log:find("^seed%-.+%.err$") ~= nil, `{log} does not match seed-*.err`)
     end
-    t.eq(found, #LOGS)
 end)
