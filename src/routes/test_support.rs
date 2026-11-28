@@ -209,6 +209,51 @@ pub(crate) async fn call(
     }
 }
 
+/// Runs a passkey ceremony pair, the options request then the finish with `authenticator`'s new
+/// credential, and returns the finish reply.
+pub(crate) async fn enroll(
+    app: &axum::Router,
+    authenticator: &mut SoftAuthenticator,
+    route: &str,
+    start: Value,
+) -> Reply {
+    enroll_named(app, authenticator, route, start, "Passkey").await
+}
+
+/// Runs [`enroll`] for a passkey labelled `name`.
+pub(crate) async fn enroll_named(
+    app: &axum::Router,
+    authenticator: &mut SoftAuthenticator,
+    route: &str,
+    start: Value,
+    name: &str,
+) -> Reply {
+    let started = call(app, "POST", &format!("{route}/options"), &[], Some(start)).await;
+    assert_eq!(started.status, StatusCode::OK, "{route}: {}", started.body);
+    let credential = authenticator.register(&started.body["options"]);
+    let body =
+        json!({"ceremony": started.body["ceremony"], "credential": credential, "name": name});
+    call(app, "POST", route, &[], Some(body)).await
+}
+
+/// Mints an admin-scope API token with the browser session `cookie` and returns it.
+pub(crate) async fn mint_token(app: &axum::Router, cookie: &str) -> String {
+    let body = json!({"name": "agent", "scopes": ["admin"]});
+    let minted = call(
+        app,
+        "POST",
+        "/api/v1/auth/tokens",
+        &[("cookie", cookie)],
+        Some(body),
+    )
+    .await;
+    assert_eq!(minted.status, StatusCode::OK, "{}", minted.body);
+    minted.body["raw_token"]
+        .as_str()
+        .expect("raw token")
+        .to_string()
+}
+
 pub(crate) async fn call_bearer(
     app: &axum::Router,
     token: &str,

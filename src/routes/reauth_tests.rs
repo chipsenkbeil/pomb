@@ -4,12 +4,11 @@ use chrono::{Duration, Utc};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use super::access_tests::mint_token;
 use super::multi_tests::{Instance, finish, pair, recovery_code, start};
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{
-    Reply, SoftAuthenticator, add_passkey, call, held_disk, session_of, sign_in,
+    Reply, SoftAuthenticator, add_passkey, call, held_disk, mint_token, session_of, sign_in,
 };
 use crate::auth::REAUTH_WINDOW_SECS;
 use crate::db::Db;

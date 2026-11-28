@@ -9,10 +9,10 @@ use redb::{
 };
 use serde_json::{Value, json};
 
-use super::access_tests::{enroll, mint_token, seed};
+use super::access_tests::seed;
 use super::server::{TEST_PUBLIC_URL, passkey_mode, unthrottled_limits};
 use super::test_support::{
-    Reply, SoftAuthenticator, add_passkey, call, held_disk, session_of, sign_in,
+    Reply, SoftAuthenticator, add_passkey, call, enroll, held_disk, mint_token, session_of, sign_in,
 };
 use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;

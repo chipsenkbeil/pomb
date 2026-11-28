@@ -9,7 +9,8 @@ use tower::ServiceExt;
 use super::multi_tests::admin_settings;
 use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{
-    Reply, SoftAuthenticator, TEST_TODO_COLUMN, add_passkey, call, held_disk, session_of,
+    SoftAuthenticator, TEST_TODO_COLUMN, add_passkey, call, enroll, enroll_named, held_disk,
+    session_of,
 };
 use super::{ROUTE_ACCESS, RouteClass, Writes, router};
 use crate::AppState;
@@ -520,51 +521,6 @@ pub(crate) async fn seeded() -> Seeded {
         b_ids,
         pending_cookie: None,
     }
-}
-
-/// Runs a passkey ceremony pair, the options request then the finish with `authenticator`'s new
-/// credential, and returns the finish reply.
-pub(crate) async fn enroll(
-    app: &axum::Router,
-    authenticator: &mut SoftAuthenticator,
-    route: &str,
-    start: Value,
-) -> Reply {
-    enroll_named(app, authenticator, route, start, "Passkey").await
-}
-
-/// Runs [`enroll`] for a passkey labelled `name`.
-async fn enroll_named(
-    app: &axum::Router,
-    authenticator: &mut SoftAuthenticator,
-    route: &str,
-    start: Value,
-    name: &str,
-) -> Reply {
-    let started = call(app, "POST", &format!("{route}/options"), &[], Some(start)).await;
-    assert_eq!(started.status, StatusCode::OK, "{route}: {}", started.body);
-    let credential = authenticator.register(&started.body["options"]);
-    let body =
-        json!({"ceremony": started.body["ceremony"], "credential": credential, "name": name});
-    call(app, "POST", route, &[], Some(body)).await
-}
-
-/// Mints an admin-scope API token with the browser session `cookie` and returns it.
-pub(crate) async fn mint_token(app: &axum::Router, cookie: &str) -> String {
-    let body = json!({"name": "agent", "scopes": ["admin"]});
-    let minted = call(
-        app,
-        "POST",
-        "/api/v1/auth/tokens",
-        &[("cookie", cookie)],
-        Some(body),
-    )
-    .await;
-    assert_eq!(minted.status, StatusCode::OK, "{}", minted.body);
-    minted.body["raw_token"]
-        .as_str()
-        .expect("raw token")
-        .to_string()
 }
 
 /// Seeds a multi-mode instance through its real paths: the admin through setup, and a member
