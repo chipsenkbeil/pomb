@@ -8,7 +8,7 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, held_disk, none_mode};
+use super::test_support::{Reply, call, call_bearer, held_disk, none_mode};
 use crate::auth::{hash_inbound_address, new_api_token_record};
 use crate::db::{
     AccountAction, AdminActionOutcome, Db, MAX_INBOUND_PER_BOARD, NewInbound, OwnerChange,
@@ -72,8 +72,7 @@ impl Fixture {
     }
 
     async fn send(&self, token: &str, method: &str, uri: &str, body: Option<Value>) -> Reply {
-        let bearer = format!("Bearer {token}");
-        call(&self.app, method, uri, &[("authorization", &bearer)], body).await
+        call_bearer(&self.app, token, method, uri, body).await
     }
 
     async fn admin(&self, method: &str, uri: &str, body: Option<Value>) -> Reply {

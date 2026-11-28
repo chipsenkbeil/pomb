@@ -209,6 +209,17 @@ pub(crate) async fn call(
     }
 }
 
+pub(crate) async fn call_bearer(
+    app: &axum::Router,
+    token: &str,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> Reply {
+    let bearer = format!("Bearer {token}");
+    call(app, method, uri, &[("authorization", &bearer)], body).await
+}
+
 pub(crate) fn none_mode(public_url: Option<&str>) -> SignIn {
     SignIn::new(AuthChoice::Chosen(AuthMode::None), "127.0.0.1", public_url).expect("none mode")
 }
@@ -335,8 +346,7 @@ impl Fixture {
     }
 
     pub(crate) async fn send(&self, method: &str, uri: &str, body: Option<Value>) -> Reply {
-        let bearer = format!("Bearer {}", self.token);
-        call(&self.app, method, uri, &[("authorization", &bearer)], body).await
+        call_bearer(&self.app, &self.token, method, uri, body).await
     }
 
     pub(crate) async fn task(&self, column: &str, name: &str) -> String {
@@ -402,5 +412,19 @@ pub(crate) fn drop_seeded_roles(db: &Db, account: &AccountId) {
     for role in db.list_agent_roles(account.as_str()).expect("roles") {
         db.delete_agent_role(account.as_str(), &role.id)
             .expect("delete");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn call_bearer_should_send_the_token_as_a_bearer_header() {
+        let fx = Fixture::new();
+        let bare = call(&fx.app, "GET", "/api/notifications", &[], None).await;
+        assert_eq!(bare.status, StatusCode::UNAUTHORIZED, "{}", bare.body);
+        let reply = call_bearer(&fx.app, &fx.token, "GET", "/api/notifications", None).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     }
 }

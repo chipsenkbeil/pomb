@@ -9,7 +9,7 @@ use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{
     Reply, TEST_BLOCKED_COLUMN, TEST_DONE_COLUMN, TEST_SHIPPED_COLUMN, TEST_TODO_COLUMN, call,
-    held_disk,
+    call_bearer, held_disk,
 };
 use crate::AppState;
 use crate::auth::new_api_token_record;
@@ -83,8 +83,7 @@ impl Fixture {
     }
 
     async fn send(&self, method: &str, uri: &str, body: Option<Value>) -> Reply {
-        let auth = format!("Bearer {}", self.token);
-        let reply = call(&self.app, method, uri, &[("authorization", &auth)], body).await;
+        let reply = call_bearer(&self.app, &self.token, method, uri, body).await;
         assert_eq!(
             reply.status,
             StatusCode::OK,

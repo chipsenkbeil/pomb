@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, call, held_disk};
+use super::test_support::{Reply, call_bearer, held_disk};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{AccountAction, Db};
@@ -63,8 +63,7 @@ impl Fixture {
     }
 
     async fn send(&self, token: &str, method: &str, uri: &str, body: Option<Value>) -> Reply {
-        let bearer = format!("Bearer {token}");
-        call(&self.app, method, uri, &[("authorization", &bearer)], body).await
+        call_bearer(&self.app, token, method, uri, body).await
     }
 
     fn scoped_token(&self, account: &AccountId) -> String {

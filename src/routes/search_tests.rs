@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::server::{passkey_mode, unthrottled_limits};
 use super::test_support::{
-    Reply, TEST_DOING_COLUMN, TEST_DONE_COLUMN, TEST_SHIPPED_COLUMN, TEST_TODO_COLUMN, call,
+    Reply, TEST_DOING_COLUMN, TEST_DONE_COLUMN, TEST_SHIPPED_COLUMN, TEST_TODO_COLUMN, call_bearer,
     held_disk,
 };
 use super::{SEARCH_BUDGET_SECS, router, run_search};
@@ -65,8 +65,7 @@ impl Fixture {
     }
 
     async fn send(&self, token: &str, method: &str, uri: &str, body: Option<Value>) -> Reply {
-        let bearer = format!("Bearer {token}");
-        call(&self.app, method, uri, &[("authorization", &bearer)], body).await
+        call_bearer(&self.app, token, method, uri, body).await
     }
 
     async fn task(&self, body: Value) -> String {

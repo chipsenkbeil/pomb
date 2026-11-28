@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::test_support::{Reply, TEST_TODO_COLUMN, call, held_disk, none_mode};
+use super::test_support::{Reply, TEST_TODO_COLUMN, call, call_bearer, held_disk, none_mode};
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{Db, MAX_WEBHOOKS_PER_BOARD, NewWebhook};
@@ -59,8 +59,7 @@ impl Fixture {
     }
 
     async fn send(&self, token: &str, method: &str, uri: &str, body: Option<Value>) -> Reply {
-        let bearer = format!("Bearer {token}");
-        call(&self.app, method, uri, &[("authorization", &bearer)], body).await
+        call_bearer(&self.app, token, method, uri, body).await
     }
 
     async fn admin(&self, method: &str, uri: &str, body: Option<Value>) -> Reply {
