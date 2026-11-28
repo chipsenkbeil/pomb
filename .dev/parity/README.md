@@ -101,7 +101,9 @@ served from a local cache of the CDN, fonts awaited, network idle plus two
 animation frames plus a fixed delay. Entries with `"clock": "controlled"`
 install a paused browser clock and move the server clock (`ft-<port>.txt`,
 re-read by libfaketime about once a second) in step with it through the
-`advance` step.
+`advance` step. The step first waits up to 5 seconds for in-flight requests,
+and prints a warning naming the pending URLs when it gives up with any still
+pending.
 
 ## Manifest
 

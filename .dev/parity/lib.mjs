@@ -208,6 +208,10 @@ const waitForRequests = async (page, quietMs = 100, timeoutMs = 5000) => {
     else if (Date.now() - quietSince >= quietMs) return;
     await page.waitForTimeout(25);
   }
+  if (pending.size > 0) {
+    const urls = [...pending].map((req) => req.url()).join(', ');
+    console.warn(`waitForRequests gave up after ${timeoutMs} ms with ${pending.size} request${pending.size === 1 ? '' : 's'} pending: ${urls}`);
+  }
 };
 
 // Replay a setup step list. Step kinds are documented in README.md.
