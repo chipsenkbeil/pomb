@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -7,6 +8,10 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
+use redb::{
+    MultimapTableDefinition, MultimapTableHandle, ReadableDatabase, ReadableMultimapTable,
+    ReadableTable, TableDefinition, TableHandle,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
@@ -14,10 +19,10 @@ use tower::ServiceExt;
 use super::router;
 use super::server::{TEST_PUBLIC_URL, passkey_mode, unthrottled_limits};
 use crate::api_error::ErrorCode;
-use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
-use crate::db::Db;
+use crate::auth::{AuthChoice, AuthMode, SignIn, hash_session_token, new_api_token_record};
+use crate::db::{BootstrapToken, Db, ModeSwitch};
 use crate::disk::{DiskGuard, DiskProbe};
-use crate::models::{AccountId, Actor, AuthScope, TaskKind};
+use crate::models::{AccountId, Actor, AuthScope, InstanceMode, TaskKind};
 use crate::permissions::{STANDARD_ROLES, StandardRole};
 use crate::{AppState, BODY_LIMIT_BYTES};
 
@@ -457,6 +462,358 @@ pub(crate) fn drop_seeded_roles(db: &Db, account: &AccountId) {
     for role in db.list_agent_roles(account.as_str()).expect("roles") {
         db.delete_agent_role(account.as_str(), &role.id)
             .expect("delete");
+    }
+}
+
+/// The sessions table, which a test rewrites in a closed database file.
+pub(crate) const SESSIONS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("sessions");
+
+/// Every row of every table in a closed database file, by table name, as text.
+pub(crate) type Dump = BTreeMap<String, Vec<(String, String)>>;
+
+/// Reads every row of every table and multimap in the closed database file at `path`.
+#[must_use]
+pub(crate) fn dump(path: &Path) -> Dump {
+    let db = redb::ReadOnlyDatabase::open(path).expect("read-only open");
+    let txn = db.begin_read().expect("read txn");
+    let mut tables = Dump::new();
+    for handle in txn.list_tables().expect("tables") {
+        let name = handle.name().to_string();
+        let mut rows = Vec::new();
+        if let Ok(tbl) = txn.open_table(TableDefinition::<&str, &[u8]>::new(&name)) {
+            for item in tbl.iter().expect("iter") {
+                let (key, value) = item.expect("row");
+                rows.push((
+                    key.value().to_string(),
+                    String::from_utf8_lossy(value.value()).into_owned(),
+                ));
+            }
+        } else if let Ok(tbl) = txn.open_table(TableDefinition::<&str, &str>::new(&name)) {
+            for item in tbl.iter().expect("iter") {
+                let (key, value) = item.expect("row");
+                rows.push((key.value().to_string(), value.value().to_string()));
+            }
+        } else if let Ok(tbl) = txn.open_table(TableDefinition::<&str, u64>::new(&name)) {
+            for item in tbl.iter().expect("iter") {
+                let (key, value) = item.expect("row");
+                rows.push((key.value().to_string(), value.value().to_string()));
+            }
+        } else {
+            let tbl = txn
+                .open_table(TableDefinition::<&str, i64>::new(&name))
+                .expect("a table of strings, bytes or numbers");
+            for item in tbl.iter().expect("iter") {
+                let (key, value) = item.expect("row");
+                rows.push((key.value().to_string(), value.value().to_string()));
+            }
+        }
+        tables.insert(name, rows);
+    }
+    for handle in txn.list_multimap_tables().expect("multimaps") {
+        let name = handle.name().to_string();
+        let mut rows = Vec::new();
+        if let Ok(tbl) = txn.open_multimap_table(MultimapTableDefinition::<&str, &str>::new(&name))
+        {
+            for item in tbl.iter().expect("iter") {
+                let (key, values) = item.expect("row");
+                for value in values {
+                    let value = value.expect("value");
+                    rows.push((key.value().to_string(), value.value().to_string()));
+                }
+            }
+        } else {
+            let tbl = txn
+                .open_multimap_table(MultimapTableDefinition::<i64, &str>::new(&name))
+                .expect("a multimap of strings or numbers");
+            for item in tbl.iter().expect("iter") {
+                let (key, values) = item.expect("row");
+                for value in values {
+                    let value = value.expect("value");
+                    rows.push((key.value().to_string(), value.value().to_string()));
+                }
+            }
+        }
+        tables.insert(name, rows);
+    }
+    tables
+}
+
+/// A multi-mode instance on a database file of its own.
+pub(crate) struct Instance {
+    /// Keeps the database directory alive.
+    pub(crate) _dir: tempfile::TempDir,
+    /// The database file.
+    pub(crate) path: PathBuf,
+    /// The database behind [`Instance::app`].
+    pub(crate) db: Db,
+    /// The router under test.
+    pub(crate) app: axum::Router,
+    /// The setup code the first passkey needs.
+    pub(crate) code: String,
+}
+
+/// Returns a multi-mode router over `db` that accepts `bootstrap`, and its setup code.
+fn multi_app(db: &Db, bootstrap: Option<&str>) -> (axum::Router, String) {
+    let sign_in = passkey_mode();
+    let code = sign_in
+        .relying_party()
+        .expect("relying party")
+        .issue_setup_code();
+    let state = AppState::new(db.clone(), bootstrap.and_then(BootstrapToken::new), sign_in)
+        .with_disk(held_disk(db))
+        .with_mode(InstanceMode::Multi)
+        .with_public_url(Some(TEST_PUBLIC_URL.to_string()))
+        .with_limits(unthrottled_limits());
+    (router(state), code)
+}
+
+impl Instance {
+    /// Opens a fresh database in multi mode behind a router that accepts `bootstrap`.
+    pub(crate) fn new(bootstrap: Option<&str>) -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("multi.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        assert_eq!(
+            db.apply_mode(InstanceMode::Multi).expect("mode"),
+            ModeSwitch::Switched {
+                from: InstanceMode::Single
+            }
+        );
+        let (app, code) = multi_app(&db, bootstrap);
+        Self {
+            _dir: dir,
+            path,
+            db,
+            app,
+            code,
+        }
+    }
+
+    /// Closes the database, reads every row in it, and opens it again behind a fresh router.
+    pub(crate) fn downgrade_to_version_19_and_reopen(self) -> Self {
+        let Self {
+            _dir,
+            path,
+            code,
+            db,
+            app,
+        } = self;
+        drop(app);
+        db.flush_activity().expect("flush activity");
+        drop(db);
+        {
+            let raw = redb::Database::create(&path).expect("raw open");
+            let txn = raw.begin_write().expect("write txn");
+            txn.delete_table(TableDefinition::<&str, &str>::new("passkeys_by_credential"))
+                .expect("drop credential index");
+            for index in [
+                "tokens_by_account",
+                "sessions_by_user",
+                "devices_by_account",
+            ] {
+                txn.delete_multimap_table(MultimapTableDefinition::<&str, &str>::new(index))
+                    .expect("drop index");
+            }
+            txn.open_table(TableDefinition::<&str, u64>::new("meta"))
+                .expect("meta")
+                .insert("schema_version", 19)
+                .expect("stamp");
+            txn.commit().expect("commit");
+        }
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("upgrade");
+        let (app, _) = multi_app(&db, None);
+        Self {
+            _dir,
+            path,
+            db,
+            app,
+            code,
+        }
+    }
+
+    pub(crate) fn dump_and_reopen(self) -> (Self, Dump) {
+        let Self {
+            _dir,
+            path,
+            code,
+            db,
+            app,
+        } = self;
+        drop(app);
+        db.flush_activity().expect("flush activity");
+        drop(db);
+        let rows = dump(&path);
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("reconnect");
+        let (app, _) = multi_app(&db, None);
+        (
+            Self {
+                _dir,
+                path,
+                db,
+                app,
+                code,
+            },
+            rows,
+        )
+    }
+
+    /// Closes the database, sets the `verified_at` of each session in `edits` in its file, and
+    /// opens it again behind a fresh router.
+    pub(crate) fn restamp(self, edits: &[(&str, Option<String>)]) -> Self {
+        let Self {
+            _dir,
+            path,
+            code,
+            db,
+            app,
+        } = self;
+        drop(app);
+        db.flush_activity().expect("flush activity");
+        drop(db);
+        {
+            let file = redb::Database::create(&path).expect("open");
+            let txn = file.begin_write().expect("write txn");
+            {
+                let mut sessions = txn.open_table(SESSIONS).expect("sessions");
+                for (token, verified_at) in edits {
+                    let raw = sessions
+                        .get(hash_session_token(token).as_str())
+                        .expect("get")
+                        .expect("session")
+                        .value()
+                        .to_vec();
+                    let mut row: Value = serde_json::from_slice(&raw).expect("session row");
+                    row["verified_at"] = verified_at.clone().map_or(Value::Null, Value::String);
+                    let raw = serde_json::to_vec(&row).expect("json");
+                    sessions
+                        .insert(hash_session_token(token).as_str(), raw.as_slice())
+                        .expect("insert");
+                }
+            }
+            txn.commit().expect("commit");
+        }
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("reconnect");
+        let (app, _) = multi_app(&db, None);
+        Self {
+            _dir,
+            path,
+            db,
+            app,
+            code,
+        }
+    }
+
+    /// Returns the id of the account with `handle`.
+    #[must_use]
+    pub(crate) fn account(&self, handle: &str) -> AccountId {
+        self.db
+            .account_by_handle(handle)
+            .expect("read")
+            .expect("account")
+            .account_id()
+    }
+}
+
+/// Runs first-run setup for the admin `Admin`, whose handle is stored as `admin`.
+pub(crate) async fn set_up_admin(
+    instance: &Instance,
+    authenticator: &mut SoftAuthenticator,
+) -> Reply {
+    let start = json!({"username": "Admin", "code": instance.code});
+    enroll(&instance.app, authenticator, "/api/v1/auth/setup", start).await
+}
+
+/// Mints an invite link with the admin's session `cookie` and returns its token.
+pub(crate) async fn mint_invite(app: &axum::Router, cookie: &str) -> String {
+    let minted = call(
+        app,
+        "POST",
+        "/api/v1/admin/invites",
+        &[("cookie", cookie)],
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(minted.status, StatusCode::OK, "{}", minted.body);
+    let url = minted.body["url"].as_str().expect("invite url");
+    assert!(url.starts_with("https://pomb.test/signup/"), "{url}");
+    url.rsplit('/').next().expect("token").to_string()
+}
+
+/// Registers `handle` through the invite `token` with `authenticator`.
+pub(crate) async fn register(
+    app: &axum::Router,
+    token: &str,
+    handle: &str,
+    authenticator: &mut SoftAuthenticator,
+) -> Reply {
+    let start = json!({"invite": token, "handle": handle});
+    enroll(app, authenticator, "/api/v1/auth/register", start).await
+}
+
+/// Starts a ceremony at `route` and returns its options reply.
+pub(crate) async fn start(app: &axum::Router, route: &str, body: Value) -> Reply {
+    call(app, "POST", &format!("{route}/options"), &[], Some(body)).await
+}
+
+/// Finishes the ceremony `started` at `route` with a new credential from `authenticator`.
+pub(crate) async fn finish(
+    app: &axum::Router,
+    route: &str,
+    started: &Reply,
+    authenticator: &mut SoftAuthenticator,
+) -> Reply {
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let credential = authenticator.register(&started.body["options"]);
+    let body = json!({"ceremony": started.body["ceremony"], "credential": credential});
+    call(app, "POST", route, &[], Some(body)).await
+}
+
+/// Returns the recovery code a setup, registration or recovery showed.
+#[must_use]
+pub(crate) fn recovery_code(reply: &Reply) -> String {
+    reply.body["recovery_code"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no recovery code: {}", reply.body))
+        .to_string()
+}
+
+/// A multi-mode instance with its admin `admin` and a member `bob`, each signed in.
+pub(crate) struct Pair {
+    /// The instance.
+    pub(crate) instance: Instance,
+    /// The admin's session cookie.
+    pub(crate) admin: String,
+    /// The admin's recovery code.
+    pub(crate) admin_code: String,
+    /// The admin's passkey.
+    pub(crate) admin_key: SoftAuthenticator,
+    /// The member's session cookie.
+    pub(crate) member: String,
+    /// The member's recovery code.
+    pub(crate) member_code: String,
+    /// The member's passkey.
+    pub(crate) member_key: SoftAuthenticator,
+}
+
+/// Sets up the admin, then registers `Bob` through an invite link.
+pub(crate) async fn pair(bootstrap: Option<&str>) -> Pair {
+    let instance = Instance::new(bootstrap);
+    let mut admin_key = SoftAuthenticator::new(21);
+    let setup = set_up_admin(&instance, &mut admin_key).await;
+    assert_eq!(setup.status, StatusCode::OK, "{}", setup.body);
+    let admin = session_of(&setup);
+    let token = mint_invite(&instance.app, &admin).await;
+    let mut member_key = SoftAuthenticator::new(22);
+    let joined = register(&instance.app, &token, "Bob", &mut member_key).await;
+    assert_eq!(joined.status, StatusCode::OK, "{}", joined.body);
+    Pair {
+        admin_code: recovery_code(&setup),
+        member_code: recovery_code(&joined),
+        member: session_of(&joined),
+        admin,
+        admin_key,
+        member_key,
+        instance,
     }
 }
 
