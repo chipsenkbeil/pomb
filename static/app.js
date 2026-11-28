@@ -15472,10 +15472,11 @@
       return bodies;
     };
 
-    const isRefusal = (err) => !!err && err.status >= 400 && err.status < 500 && ![401, 403, 408, 429].includes(err.status);
+    const RETRYABLE_STATUSES = [401, 403, 408, 429];
+    const isRefusal = (err) => !!err && err.status >= 400 && err.status < 500 && !RETRYABLE_STATUSES.includes(err.status);
     const importLegacyBookmarks = (key, post, storage, toast, have = () => [], locks) => {
       let refused = 0;
-      const keep = (rest) => {
+      const saveRemaining = (rest) => {
         try {
           if (rest.length) storage.setItem(key, JSON.stringify(rest));
           else storage.removeItem(key);
@@ -15486,23 +15487,23 @@
       };
       const run = (pending, i) => {
         if (i === pending.length) {
-          keep([]);
+          saveRemaining([]);
           return finish();
         }
         if (have().includes(pending[i].name)) {
-          keep(pending.slice(i + 1));
+          saveRemaining(pending.slice(i + 1));
           return run(pending, i + 1);
         }
         return post(pending[i]).then(() => {
-          keep(pending.slice(i + 1));
+          saveRemaining(pending.slice(i + 1));
           return run(pending, i + 1);
         }, (err) => {
           if (!isRefusal(err)) {
-            keep(pending.slice(i));
+            saveRemaining(pending.slice(i));
             return finish();
           }
           refused += 1;
-          keep(pending.slice(i + 1));
+          saveRemaining(pending.slice(i + 1));
           return run(pending, i + 1);
         });
       };

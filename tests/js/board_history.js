@@ -98,6 +98,7 @@ const toaster = () => {
   return { seen, toast: (message) => seen.push(message) };
 };
 const names = (raw) => JSON.parse(raw).map((b) => b.name);
+const importLabel = (name) => (text) => name + ' ' + text;
 
 const cases = [];
 const testCase = (fn) => cases.push(fn);
@@ -107,9 +108,10 @@ testCase(async () => {
   const { sent, post } = replier([{ status: 409 }, undefined, { status: 400 }]);
   const { seen, toast } = toaster();
   await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast);
-  check('history_bookmark_import_should_drop_refused_entries_and_toast_once posts every entry', sent, ['A', 'B', 'C']);
-  check('history_bookmark_import_should_drop_refused_entries_and_toast_once clears the refused entries', storage.getItem(HISTORY_KEY), null);
-  check('history_bookmark_import_should_drop_refused_entries_and_toast_once toasts once with the count', seen, ['Dropped 2 old bookmarks the board refused.']);
+  const label = importLabel('history_bookmark_import_should_drop_refused_entries_and_toast_once');
+  check(label('posts every entry'), sent, ['A', 'B', 'C']);
+  check(label('clears the refused entries'), storage.getItem(HISTORY_KEY), null);
+  check(label('toasts once with the count'), seen, ['Dropped 2 old bookmarks the board refused.']);
 });
 
 testCase(async () => {
@@ -117,9 +119,10 @@ testCase(async () => {
   const { sent, post } = replier([undefined, new TypeError('Failed to fetch')]);
   const { seen, toast } = toaster();
   await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast);
-  check('history_bookmark_import_should_keep_entries_after_a_network_failure stops at the failed entry', sent, ['A', 'B']);
-  check('history_bookmark_import_should_keep_entries_after_a_network_failure keeps the failed and later entries', names(storage.getItem(HISTORY_KEY)), ['B', 'C']);
-  check('history_bookmark_import_should_keep_entries_after_a_network_failure shows no toast', seen, []);
+  const label = importLabel('history_bookmark_import_should_keep_entries_after_a_network_failure');
+  check(label('stops at the failed entry'), sent, ['A', 'B']);
+  check(label('keeps the failed and later entries'), names(storage.getItem(HISTORY_KEY)), ['B', 'C']);
+  check(label('shows no toast'), seen, []);
 });
 
 testCase(async () => {
@@ -137,21 +140,23 @@ testCase(async () => {
   const { sent, post } = replier([]);
   const { seen, toast } = toaster();
   await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast);
-  check('history_bookmark_import_should_post_in_order_and_clear_the_key_with_no_toast posts in order', sent, ['A', 'B', 'C']);
-  check('history_bookmark_import_should_post_in_order_and_clear_the_key_with_no_toast shrinks the key after each post', storage.writes, [['B', 'C'], ['C']]);
-  check('history_bookmark_import_should_post_in_order_and_clear_the_key_with_no_toast clears the key', storage.getItem(HISTORY_KEY), null);
-  check('history_bookmark_import_should_post_in_order_and_clear_the_key_with_no_toast shows no toast', seen, []);
+  const label = importLabel('history_bookmark_import_should_post_in_order_and_clear_the_key_with_no_toast');
+  check(label('posts in order'), sent, ['A', 'B', 'C']);
+  check(label('shrinks the key after each post'), storage.writes, [['B', 'C'], ['C']]);
+  check(label('clears the key'), storage.getItem(HISTORY_KEY), null);
+  check(label('shows no toast'), seen, []);
 });
 
 testCase(async () => {
+  const label = importLabel('history_bookmark_import_should_keep_entries_on_session_and_rate_limit_replies');
   for (const status of [401, 403, 408, 429]) {
     const storage = storageWith(legacyList(['A', 'B']));
     const { sent, post } = replier([{ status }]);
     const { seen, toast } = toaster();
     await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast);
-    check('history_bookmark_import_should_keep_entries_on_session_and_rate_limit_replies keeps the entry after ' + status, names(storage.getItem(HISTORY_KEY)), ['A', 'B']);
-    check('history_bookmark_import_should_keep_entries_on_session_and_rate_limit_replies stops after ' + status, sent, ['A']);
-    check('history_bookmark_import_should_keep_entries_on_session_and_rate_limit_replies shows no toast after ' + status, seen, []);
+    check(label('keeps the entry after ' + status), names(storage.getItem(HISTORY_KEY)), ['A', 'B']);
+    check(label('stops after ' + status), sent, ['A']);
+    check(label('shows no toast after ' + status), seen, []);
   }
 });
 
@@ -188,9 +193,10 @@ testCase(async () => {
     BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast, () => [], locks),
     BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast, () => [], locks),
   ]);
-  check('history_bookmark_import_should_post_each_entry_once_across_tabs posts each entry once', sent, ['A', 'B', 'C']);
-  check('history_bookmark_import_should_post_each_entry_once_across_tabs locks the per-board name', locks.held, [HISTORY_KEY, HISTORY_KEY]);
-  check('history_bookmark_import_should_post_each_entry_once_across_tabs clears the key', storage.getItem(HISTORY_KEY), null);
+  const label = importLabel('history_bookmark_import_should_post_each_entry_once_across_tabs');
+  check(label('posts each entry once'), sent, ['A', 'B', 'C']);
+  check(label('locks the per-board name'), locks.held, [HISTORY_KEY, HISTORY_KEY]);
+  check(label('clears the key'), storage.getItem(HISTORY_KEY), null);
 });
 
 testCase(async () => {
@@ -198,9 +204,10 @@ testCase(async () => {
   const { sent, post } = replier([]);
   const { seen, toast } = toaster();
   await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast, () => ['A', 'C']);
-  check('history_bookmark_import_should_skip_entries_already_on_the_board posts only the missing entry', sent, ['B']);
-  check('history_bookmark_import_should_skip_entries_already_on_the_board drops the skipped entries', storage.getItem(HISTORY_KEY), null);
-  check('history_bookmark_import_should_skip_entries_already_on_the_board shows no toast', seen, []);
+  const label = importLabel('history_bookmark_import_should_skip_entries_already_on_the_board');
+  check(label('posts only the missing entry'), sent, ['B']);
+  check(label('drops the skipped entries'), storage.getItem(HISTORY_KEY), null);
+  check(label('shows no toast'), seen, []);
 });
 
 testCase(async () => {
@@ -208,8 +215,9 @@ testCase(async () => {
   const { sent, post } = replier([{ status: 500 }]);
   const { toast } = toaster();
   await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast, () => ['A']);
-  check('history_bookmark_import_should_keep_an_entry_until_its_post_succeeds skips the known entry', sent, ['B']);
-  check('history_bookmark_import_should_keep_an_entry_until_its_post_succeeds keeps the failed entry', names(storage.getItem(HISTORY_KEY)), ['B']);
+  const label = importLabel('history_bookmark_import_should_keep_an_entry_until_its_post_succeeds');
+  check(label('skips the known entry'), sent, ['B']);
+  check(label('keeps the failed entry'), names(storage.getItem(HISTORY_KEY)), ['B']);
 });
 
 testCase(async () => {
@@ -217,8 +225,9 @@ testCase(async () => {
   const { sent, post } = replier([]);
   const { toast } = toaster();
   await BoardHistoryPage.importLegacyBookmarks(HISTORY_KEY, post, storage, toast, () => [], undefined);
-  check('history_bookmark_import_should_run_without_navigator_locks posts the entry', sent, ['A']);
-  check('history_bookmark_import_should_run_without_navigator_locks clears the key', storage.getItem(HISTORY_KEY), null);
+  const label = importLabel('history_bookmark_import_should_run_without_navigator_locks');
+  check(label('posts the entry'), sent, ['A']);
+  check(label('clears the key'), storage.getItem(HISTORY_KEY), null);
 });
 
 testCase(async () => {
